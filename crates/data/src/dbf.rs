@@ -141,14 +141,14 @@ fn ldid_code_page(ldid: u8) -> Option<u16> {
     })
 }
 
-pub(crate) fn encoding(cpg: Option<&[u8]>, ldid: u8, notes: &mut Vec<String>) -> DbfEncoding {
+pub(crate) fn encoding(cpg: Option<&[u8]>, ldid: u8, notes: &mut crate::loss::Notes) -> DbfEncoding {
     if let Some(bytes) = cpg {
         let label = if bytes.len() <= MAX_CPG_BYTES { std::str::from_utf8(bytes).unwrap_or("") } else { "" };
         let label = label.trim().trim_start_matches('\u{feff}').trim();
         if let Some(encoding) = DbfEncoding::from_name(label) {
             return encoding;
         }
-        notes.push("Shapefile: unsupported or empty .cpg; using the .dbf code page, or UTF-8 if unavailable".into());
+        notes.push("Shapefile: unsupported or empty .cpg; using the .dbf code page, or UTF-8 if unavailable");
     }
     // No language driver: UTF-8, as it always was, without a note.
     if ldid == 0 {
@@ -418,7 +418,7 @@ pub(crate) fn date(field: &[u8]) -> std::result::Result<Option<crate::date::Date
 }
 
 /// A code-page label should be a few bytes. Bound reads even for a hostile sidecar.
-pub(crate) fn read_cpg(path: &std::path::Path, notes: &mut Vec<String>) -> Option<Vec<u8>> {
+pub(crate) fn read_cpg(path: &std::path::Path, notes: &mut crate::loss::Notes) -> Option<Vec<u8>> {
     match try_read_cpg(path) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -583,10 +583,10 @@ mod tests {
 
     #[test]
     fn a_page_rustgis_cant_decode_is_named_in_the_note() {
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         assert!(matches!(encoding(None, 0x6C, &mut notes), DbfEncoding::Utf8));
         assert_eq!(notes, ["Shapefile: unsupported .dbf code page 0x6C (code page 863, DOS French Canadian); using UTF-8"]);
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         encoding(None, 0xFF, &mut notes);
         assert_eq!(notes, ["Shapefile: unsupported .dbf code page 0xFF; using UTF-8"]);
     }
@@ -595,7 +595,7 @@ mod tests {
     /// and with a code page that can't be decoded; a code page that is decoded is named by it.
     #[test]
     fn utf8_is_what_text_is_read_as_unless_another_encoding_is_named() {
-        let read = |cpg: Option<&[u8]>, ldid| encoding(cpg, ldid, &mut Vec::new()).name();
+        let read = |cpg: Option<&[u8]>, ldid| encoding(cpg, ldid, &mut crate::loss::Notes::new()).name();
         for (cpg, ldid) in [(None, 0), (None, 0xF0), (Some(b"UTF-8".as_slice()), 0x03), (Some(b"65001".as_slice()), 0), (None, 0x6C)] {
             assert_eq!(read(cpg, ldid), "UTF-8");
         }
@@ -613,7 +613,7 @@ mod tests {
     /// aren't. A DOS page gives every byte a character.
     #[test]
     fn bytes_that_cant_be_read_are_those_the_declared_decoder_replaces() {
-        let page = |cpg: &[u8]| encoding(Some(cpg), 0, &mut Vec::new());
+        let page = |cpg: &[u8]| encoding(Some(cpg), 0, &mut crate::loss::Notes::new());
         let (sjis, big5, utf8) = (page(b"932"), page(b"950"), page(b"UTF-8"));
         assert!(sjis.malformed(b"X\x82") && sjis.malformed(b"\x82 ") && sjis.malformed(b"\xff"));
         assert!(!sjis.malformed(b"\x93\x8c\x8b\x9e") && !sjis.malformed(b"plain") && !sjis.malformed(b""));

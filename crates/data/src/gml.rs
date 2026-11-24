@@ -620,10 +620,16 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
     }
     let mut report = ReadReport::default();
     if over > 0 {
-        report.messages.push(format!("{over} features of more than {MAX_LAYERS} feature types were left out"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("{over} features of more than {MAX_LAYERS} feature types were left out"),
+        ));
     }
     if let Some(s) = &unknown_srs {
-        report.messages.push(format!("unknown coordinate system '{s}': coordinates are read as they are"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::AssumedCrs,
+            format!("unknown coordinate system '{s}': coordinates are read as they are"),
+        ));
     }
     let transform = match file_srs {
         Some((c, swap)) => Some((if c == Crs::LonLat { None } else { Some(c.transformer().map_err(DataError::Format)?) }, swap)),
@@ -738,16 +744,19 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
             rep.messages.extend(crate::io::beyond_lonlat_note("features", beyond, c).map(|n| format!("{}: {n}", ds.name)));
         }
         if file_srs.is_none() && outside {
-            rep.messages.push("the GML doesn't say its coordinate system (srsName) and its coordinates aren't longitude/latitude");
+            rep.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::AssumedCrs,
+                "the GML doesn't say its coordinate system (srsName) and its coordinates aren't longitude/latitude",
+            ));
         }
         // Said with the layer it happened in, which may be the only one added.
         if kind.lost > 0 {
             let what =
                 if kind.lost == 1 { "ring or surface patch of a geometry was" } else { "rings or surface patches of geometries were" };
-            rep.messages.push(format!(
+            rep.messages.push(crate::loss::Note::loss(crate::loss::LossCode::DroppedRing, format!(
                 "{}: {} {what} left out: too few points, unreadable coordinates, a patch with no exterior ring or of a kind not read, or an exterior ring past the first",
                 ds.name, kind.lost
-            ));
+            )));
         }
         if zm > 0 {
             ds.zm_dropped = true;
@@ -761,26 +770,32 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         }
         if parts > 0 {
             let what = if parts == 1 { "part" } else { "parts" };
-            rep.messages.push(format!(
-                "{}: {parts} {what} of multi-geometries not read (a reference, too short, invalid coordinates, or of a kind not read)",
-                ds.name
+            rep.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedGeometry,
+                format!(
+                    "{}: {parts} {what} of multi-geometries not read (a reference, too short, invalid coordinates, or of a kind not read)",
+                    ds.name
+                ),
             ));
         }
         if kind.approximated > 0 {
             let what = if kind.approximated == 1 { "feature" } else { "features" };
-            rep.messages.push(format!(
-                "{}: {} {what} had curve segments approximated by their control points ({})",
-                ds.name,
-                kind.approximated,
-                kind.approximated_names.said()
+            rep.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::ApproximatedCurve,
+                format!(
+                    "{}: {} {what} had curve segments approximated by their control points ({})",
+                    ds.name,
+                    kind.approximated,
+                    kind.approximated_names.said()
+                ),
             ));
         }
         if kind.centred > 0 {
             let what = if kind.centred == 1 { "feature" } else { "features" };
-            rep.messages.push(format!(
+            rep.messages.push(crate::loss::Note::loss(crate::loss::LossCode::ApproximatedCurve, format!(
                 "{}: {} {what} had curve segments given by a centre point (ArcByCenterPoint or CircleByCenterPoint): the centre was read as a vertex, so the line doesn't follow the curve there",
                 ds.name, kind.centred
-            ));
+            )));
         }
         if unread > 0 {
             let what = if unread == 1 { "property" } else { "properties" };
@@ -791,20 +806,26 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         }
         if kind.repeated > 0 {
             let what = if kind.repeated == 1 { "value" } else { "values" };
-            rep.messages.push(format!(
-                "{}: {} {what} of repeated properties not read, only the last is kept ({})",
-                ds.name,
-                kind.repeated,
-                kind.repeated_names.said()
+            rep.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedValue,
+                format!(
+                    "{}: {} {what} of repeated properties not read, only the last is kept ({})",
+                    ds.name,
+                    kind.repeated,
+                    kind.repeated_names.said()
+                ),
             ));
         }
         if kind.capped > 0 {
             let what = if kind.capped == 1 { "value" } else { "values" };
-            rep.messages.push(format!(
-                "{}: {} {what} of properties past the first {MAX_COLUMNS} names not read ({})",
-                ds.name,
-                kind.capped,
-                kind.capped_names.said()
+            rep.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedOverLimit,
+                format!(
+                    "{}: {} {what} of properties past the first {MAX_COLUMNS} names not read ({})",
+                    ds.name,
+                    kind.capped,
+                    kind.capped_names.said()
+                ),
             ));
         }
         out.push((ds, rep));
@@ -984,11 +1005,8 @@ mod tests {
         assert!(!layers[0].0.zm_dropped, "{:?}", layers[0].1.messages);
         // The part left out is said.
         assert!(
-            layers[0]
-                .1
-                .messages
-                .iter()
-                .any(|m| m == "r: 1 part of multi-geometries not read (a reference, too short, invalid coordinates, or of a kind not read)"),
+            layers[0].1.messages.iter().any(|m| m.as_str()
+                == "r: 1 part of multi-geometries not read (a reference, too short, invalid coordinates, or of a kind not read)"),
             "{:?}",
             layers[0].1.messages
         );
@@ -1081,7 +1099,10 @@ mod tests {
         assert_eq!((ds.features.len(), rep.skipped), (2, 0));
         assert!(matches!(&ds.features[1].geometry, Some(Geometry::Line(l)) if l.len() == 2));
         let said: Vec<&crate::loss::Note> = rep.messages.iter().filter(|m| m.contains("multi-geometries")).collect();
-        assert_eq!(said, ["m: 1 part of multi-geometries not read (a reference, too short, invalid coordinates, or of a kind not read)"]);
+        assert_eq!(
+            said.iter().map(|n| n.as_str()).collect::<Vec<_>>(),
+            ["m: 1 part of multi-geometries not read (a reference, too short, invalid coordinates, or of a kind not read)"]
+        );
     }
 
     /// Properties that aren't attributes (a nested record, a time, a second shape) are said on

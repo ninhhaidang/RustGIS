@@ -190,13 +190,22 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
     let mut report = ReadReport { skipped, ..ReadReport::default() };
     if excess_points > 0 {
         let (pairs, verb) = if excess_points == 1 { ("pair", "was") } else { ("pairs", "were") };
-        report.messages.push(format!("{excess_points} excess GeoRSS Point coordinate {pairs} {verb} left out"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedGeometry,
+            format!("{excess_points} excess GeoRSS Point coordinate {pairs} {verb} left out"),
+        ));
     }
     if skipped > 0 {
-        report.messages.push(format!("{skipped} items had places that couldn't be read"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedFeature,
+            format!("{skipped} items had places that couldn't be read"),
+        ));
     }
     if without > 0 {
-        report.messages.push(format!("{without} items have no place and were left out"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedFeature,
+            format!("{without} items have no place and were left out"),
+        ));
     }
     if lost_holes > 0 {
         let what = if lost_holes == 1 {
@@ -236,7 +245,7 @@ mod tests {
             assert_eq!(layers.len(), 1);
             assert_eq!(layers[0].0.features[0].geometry, Some(Geometry::Point(Coord::new(2.0, 1.0))));
             assert_eq!(layers[0].0.value(0, 0), &Value::Text("kept".into()));
-            assert_eq!(layers[0].1.messages, ["2 excess GeoRSS Point coordinate pairs were left out"]);
+            assert_eq!(layers[0].1.messages.texts().collect::<Vec<_>>(), ["2 excess GeoRSS Point coordinate pairs were left out"]);
             let clean = xml.replace("1 2 3 4 5 6", "1 2");
             assert!(read("a.rss", clean.as_bytes()).unwrap()[0].1.messages.is_empty());
         }

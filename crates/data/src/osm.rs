@@ -772,19 +772,27 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
     }
     if short_ways > 0 {
         let subject = if short_ways == 1 { "tagged way left out because it has" } else { "tagged ways left out because they have" };
-        report.messages.push(format!("{short_ways} {subject} fewer than two nodes"));
+        report
+            .messages
+            .push(crate::loss::Note::loss(crate::loss::LossCode::DroppedFeature, format!("{short_ways} {subject} fewer than two nodes")));
     }
     if no_closed_outer > 0 {
         let subject = if no_closed_outer == 1 { "relation left out because it has" } else { "relations left out because they have" };
-        report.messages.push(format!("{no_closed_outer} {subject} no usable closed outer ring"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedFeature,
+            format!("{no_closed_outer} {subject} no usable closed outer ring"),
+        ));
     }
     if osm.capped {
         report
             .messages
-            .push("the extract is larger than RustGIS reads at once: the rest is left out (use a smaller extract; on the desktop, files over 256 MB open through GDAL when it is installed)");
+            .push(crate::loss::Note::loss(crate::loss::LossCode::DroppedOverLimit, "the extract is larger than RustGIS reads at once: the rest is left out (use a smaller extract; on the desktop, files over 256 MB open through GDAL when it is installed)"));
     }
     if missing > 0 {
-        report.messages.push(format!("{missing} ways or relations refer to nodes or ways the file doesn't hold"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedFeature,
+            format!("{missing} ways or relations refer to nodes or ways the file doesn't hold"),
+        ));
     }
     for (count, one, many) in [
         (
@@ -815,12 +823,15 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
     ] {
         if count > 0 {
             let subject = if count == 1 { one } else { many };
-            report.messages.push(format!("{count} {subject}"));
+            report.messages.push(crate::loss::Note::loss(crate::loss::LossCode::DroppedGeometry, format!("{count} {subject}")));
         }
     }
     if containment_limited > 0 {
         let subject = if containment_limited == 1 { "inner ring was" } else { "inner rings were" };
-        report.messages.push(format!("{containment_limited} OSM {subject} omitted after the containment-test limit of {MAX_MEMBERS}"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("{containment_limited} OSM {subject} omitted after the containment-test limit of {MAX_MEMBERS}"),
+        ));
     }
     // The notices are the file's: said once, with the first layer.
     let mut out: Vec<(Dataset, ReadReport)> =
@@ -1157,12 +1168,15 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(lossy[1].0.features.iter().collect::<Vec<_>>(), clean[1].0.features.iter().collect::<Vec<_>>());
         assert_eq!(lossy[0].1.skipped, 0);
-        assert_eq!(lossy[0].1.messages, ["1 OSM sub-relation member was omitted because nested relations are not supported"]);
+        assert_eq!(
+            lossy[0].1.messages.texts().collect::<Vec<_>>(),
+            ["1 OSM sub-relation member was omitted because nested relations are not supported"]
+        );
         assert!(lossy[1].1.messages.is_empty());
         let omitted =
             read("nested.pbf", &finite_member_arrays_file(ways, &[(200, &[8], &[201], &[2]), (201, &[7], &[101], &[1])])).unwrap();
         assert_eq!(omitted[0].1.skipped, 1);
-        assert_eq!(omitted[0].1.messages, ["1 relation left out because it has no usable closed outer ring"]);
+        assert_eq!(omitted[0].1.messages.texts().collect::<Vec<_>>(), ["1 relation left out because it has no usable closed outer ring"]);
     }
 
     /// Parallel member arrays must agree; valid geometry must not hide an unmatched tail.
@@ -1210,7 +1224,10 @@ pub(crate) mod tests {
         let lossy = read("budget.pbf", &finite_omission_file(ways, Some(&members))).unwrap();
         assert_eq!(lossy[1].0.features.iter().collect::<Vec<_>>(), clean[1].0.features.iter().collect::<Vec<_>>());
         assert_eq!(lossy[0].1.skipped, 0);
-        assert_eq!(lossy[0].1.messages, ["1 OSM inner ring was omitted after the containment-test limit of 100000"]);
+        assert_eq!(
+            lossy[0].1.messages.texts().collect::<Vec<_>>(),
+            ["1 OSM inner ring was omitted after the containment-test limit of 100000"]
+        );
         assert!(lossy[1].1.messages.is_empty());
     }
 
@@ -1228,7 +1245,7 @@ pub(crate) mod tests {
         assert_eq!(layers.len(), 2);
         assert_eq!(layers[1].0.features.iter().collect::<Vec<_>>(), clean[1].0.features.iter().collect::<Vec<_>>());
         assert_eq!(layers[0].1.skipped, 0, "a member is not a whole skipped feature");
-        assert_eq!(layers[0].1.messages, ["1 relation member left out at the per-relation limit of 100000"]);
+        assert_eq!(layers[0].1.messages.texts().collect::<Vec<_>>(), ["1 relation member left out at the per-relation limit of 100000"]);
         assert!(layers[1].1.messages.is_empty());
     }
 
@@ -1240,7 +1257,7 @@ pub(crate) mod tests {
         assert_eq!(layers[1].0.features.len(), 1);
         assert_eq!(layers[1].0.features[0].attrs[0], Value::Int(103));
         assert_eq!(layers[0].1.skipped, 2);
-        assert_eq!(layers[0].1.messages, ["2 tagged ways left out because they have fewer than two nodes"]);
+        assert_eq!(layers[0].1.messages.texts().collect::<Vec<_>>(), ["2 tagged ways left out because they have fewer than two nodes"]);
     }
 
     #[test]
@@ -1257,7 +1274,7 @@ pub(crate) mod tests {
             assert_eq!(layers.len(), 1);
             assert_eq!(layers[0].0.features.len(), 1);
             assert_eq!(layers[0].1.skipped, 1);
-            assert_eq!(layers[0].1.messages, [reason], "refs={refs:?}, members={members:?}");
+            assert_eq!(layers[0].1.messages.texts().collect::<Vec<_>>(), [reason], "refs={refs:?}, members={members:?}");
         }
     }
 
@@ -1267,7 +1284,8 @@ pub(crate) mod tests {
         let layers = read("missing-outer.pbf", &sample_with_missing_outer(true)).unwrap();
         assert_eq!(layers.iter().map(|(ds, _)| ds.features.len()).collect::<Vec<_>>(), [1, 2, 2]);
         assert_eq!(layers[0].1.skipped, 1);
-        assert_eq!(layers[0].1.messages, ["1 ways or relations refer to nodes or ways the file doesn't hold"]);
+        assert_eq!(layers[0].1.messages.texts().collect::<Vec<_>>(), ["1 ways or relations refer to nodes or ways the file doesn't hold"]);
+        assert_eq!(layers[0].1.messages[0].loss, Some(crate::loss::LossCode::DroppedFeature));
         assert!(layers.iter().skip(1).all(|(_, report)| report.skipped == 0 && report.messages.is_empty()));
     }
 
@@ -1304,7 +1322,9 @@ pub(crate) mod tests {
             assert_eq!(parts[0].len(), rings);
             assert_eq!(parts[0][0], vec![Coord::new(0.0, 0.0), Coord::new(10.0, 0.0), Coord::new(0.0, 10.0), Coord::new(0.0, 0.0)]);
             assert_eq!(report.skipped, 0, "no feature was skipped");
-            report.messages.clone()
+            // Parts of a polygon that is kept are its geometry's loss, not a feature's.
+            assert!(report.messages.iter().all(|m| m.loss == Some(crate::loss::LossCode::DroppedGeometry)), "{report:?}");
+            report.messages.texts().map(str::to_string).collect::<Vec<_>>()
         };
         assert!(kept(clean, 2).is_empty());
         for (bytes, message) in cases {

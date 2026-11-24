@@ -233,7 +233,10 @@ fn an_unknown_coordinate_system_is_said() {
     let bytes = answer(&[message(8, &number(1, 999_999)), transform(false, 1.0, 0.0, 0.0), feature(&[geometry(&[], &[1, 2])])]);
     let (ds, report) = read(&bytes, "t").unwrap();
     assert!(ds.crs.is_none());
-    assert_eq!(report.messages, ["coordinate system 999999 can't be used; coordinates are read as longitude/latitude"]);
+    assert_eq!(
+        report.messages.texts().collect::<Vec<_>>(),
+        ["coordinate system 999999 can't be used; coordinates are read as longitude/latitude"]
+    );
 }
 
 #[test]
@@ -241,7 +244,11 @@ fn an_answer_without_a_coordinate_system_is_said_to_be_read_as_longitude_latitud
     let bytes = answer(&[transform(false, 1.0, 0.0, 0.0), feature(&[geometry(&[], &[1, 2])])]);
     let (ds, report) = read(&bytes, "t").unwrap();
     assert_eq!(ds.features[0].geometry, Some(Geometry::Point(c(1.0, 2.0))));
-    assert_eq!(report.messages, ["the answer names no coordinate system; coordinates are read as longitude/latitude"]);
+    assert_eq!(
+        report.messages.texts().collect::<Vec<_>>(),
+        ["the answer names no coordinate system; coordinates are read as longitude/latitude"]
+    );
+    assert_eq!(report.messages[0].loss, Some(crate::loss::LossCode::AssumedCrs));
 }
 
 #[test]
@@ -326,7 +333,10 @@ fn a_page_cut_at_the_record_limit_says_so() {
     let bytes = answer(&[number(9, 1), field("OBJECTID", OID), feature(&[uint(1)])]);
     assert!(read_page(&bytes, "t").unwrap().exceeded_transfer_limit);
     let (_, report) = read(&bytes, "t").unwrap();
-    assert_eq!(report.messages, ["the service sent 1 features only (its record limit); the rest aren't in this answer"]);
+    assert_eq!(
+        report.messages.texts().collect::<Vec<_>>(),
+        ["the service sent 1 features only (its record limit); the rest aren't in this answer"]
+    );
 }
 
 #[test]
@@ -494,7 +504,10 @@ fn a_wkts_own_shift_wins_over_its_wkid() {
     assert!(!crate::raster::wkt::parses(&String::from_utf8_lossy(&broken)));
     let (p, messages) = at(&page([number(1, 27700), message(5, &broken)].concat()));
     assert!((p.x - by_code.x).abs() < 1e-9 && (p.y - by_code.y).abs() < 1e-9, "{p:?} {by_code:?}");
-    assert_eq!(messages, ["the coordinate system's WKT isn't valid UTF-8; the bytes that can't be read are replaced with U+FFFD"]);
+    assert_eq!(
+        messages.texts().collect::<Vec<_>>(),
+        ["the coordinate system's WKT isn't valid UTF-8; the bytes that can't be read are replaced with U+FFFD"]
+    );
     // A non-EPSG Esri code: its WKT is read only for another body's system, so a byte that
     // breaks the WKT is said, and a byte in a name is not. The WKT's shift (OSGB 1936's) is set
     // aside for the code's, which is said.
@@ -502,7 +515,10 @@ fn a_wkts_own_shift_wins_over_its_wkid() {
     let albers = crate::filegdb::crs_of_code(102033).unwrap().transformer().unwrap().to_lonlat(xy).unwrap();
     let (p, messages) = at(&page([number(1, 102033), message(5, &broken)].concat()));
     assert!((p.x - albers.x).abs() < 1e-9 && (p.y - albers.y).abs() < 1e-9, "{p:?} {albers:?}");
-    assert_eq!(messages, ["the coordinate system's WKT isn't valid UTF-8; the bytes that can't be read are replaced with U+FFFD"]);
+    assert_eq!(
+        messages.texts().collect::<Vec<_>>(),
+        ["the coordinate system's WKT isn't valid UTF-8; the bytes that can't be read are replaced with U+FFFD"]
+    );
     let (p, messages) = at(&page([number(1, 102033), message(5, &not_utf8)].concat()));
     assert!((p.x - albers.x).abs() < 1e-9 && (p.y - albers.y).abs() < 1e-9, "{p:?} {albers:?}");
     assert_eq!(

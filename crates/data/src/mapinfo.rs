@@ -435,7 +435,10 @@ pub fn read(mif: &str, mid: Option<&str>, name: &str) -> Result<(Dataset, ReadRe
         Some(c) => match c.transformer() {
             Ok(t) => Some(t),
             Err(e) => {
-                report.messages.push(format!("the coordinate system: {e}; coordinates are kept as they are"));
+                report.messages.push(crate::loss::Note::loss(
+                    crate::loss::LossCode::AssumedCrs,
+                    format!("the coordinate system: {e}; coordinates are kept as they are"),
+                ));
                 None
             }
         },

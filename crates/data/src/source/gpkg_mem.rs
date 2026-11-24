@@ -158,7 +158,7 @@ impl GpkgMemSource {
                 .ok_or_else(|| DataError::Format(format!("no feature table '{l}' (tables: {})", tables.join(", "))))?,
             None => tables.first().cloned().ok_or_else(|| DataError::Format("the GeoPackage has no feature tables".into()))?,
         };
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         if layer.is_none() && tables.len() > 1 {
             notes.push(format!("the first of {} feature tables ({})", tables.len(), tables.join(", ")));
         }
@@ -222,7 +222,7 @@ impl GpkgMemSource {
             // (`SourceInfo::coordinate_system`), as a Shapefile's .prj does (#1476).
             crs: reproject.info_crs(),
             indexed: false,
-            notes: notes.into(),
+            notes,
             zm_dropped: false,
         };
         let mut src = GpkgMemSource { info, db, table, geom_col, field_cols, reproject };

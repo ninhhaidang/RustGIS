@@ -665,7 +665,7 @@ fn a_nan_shape_outside_an_area_its_system_cant_bound_is_counted_as_of_the_layer(
             p
         };
         let view = Extent::new(-120.0, -30.0, 10.0, 30.0);
-        let r = Reproject::from_crs(crs, &mut Vec::new());
+        let r = Reproject::from_crs(crs, &mut crate::loss::Notes::new());
         assert!(r.extent_from_lonlat(&view).is_none(), "the view's edge is refused");
         const SAID: &str = "have a coordinate that isn't a number under a bounding box that is one";
         let said = |notes: &[crate::loss::Note]| notes.iter().filter(|n| n.contains(SAID)).map(|n| n.text.clone()).collect::<Vec<_>>();
@@ -722,7 +722,15 @@ fn a_nan_shape_under_a_finite_box_is_said_when_left_out() {
             p
         };
         const SAID: &str = "have a coordinate that isn't a number under a bounding box that is one";
-        let said = |notes: &[crate::loss::Note]| notes.iter().filter(|n| n.contains(SAID)).map(|n| n.text.clone()).collect::<Vec<_>>();
+        // Each read says the shapes it left out as dropped features, which the checks below see.
+        let said = |notes: &[crate::loss::Note]| {
+            notes
+                .iter()
+                .filter(|n| n.contains(SAID))
+                .inspect(|n| assert_eq!(n.loss, Some(crate::loss::LossCode::DroppedFeature), "{n:?}"))
+                .map(|n| n.text.clone())
+                .collect::<Vec<_>>()
+        };
         let chunk_notes = |src: &dyn FeatureSource, extent| {
             let batch = src.visit_chunks(extent, 1 << 20, &mut |_| Ok(())).unwrap();
             (batch.skipped, said(&batch.notes))

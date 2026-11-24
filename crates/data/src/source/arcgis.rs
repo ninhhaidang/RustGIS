@@ -389,9 +389,9 @@ impl ArcgisSource {
         let mut notes: crate::loss::Notes =
             losses.messages().into_iter().map(|n| n.map_text(|t| format!("{t}, counted in the pages read for the view"))).collect();
         if unplaced > 0 {
-            notes.push(format!(
+            notes.push(crate::loss::Note::loss(crate::loss::LossCode::DroppedFeature, format!(
                 "{unplaced} features have coordinates outside their coordinate system, so are left out of the view, counted in the pages read for it"
-            ));
+            )));
         }
         notes
     }

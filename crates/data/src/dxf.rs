@@ -1636,26 +1636,36 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
         report.messages.push(why);
     }
     if opts.crs.is_none() {
-        report
-            .messages
-            .push("a DXF drawing doesn't say its coordinate system (give \"crs\", such as EPSG:2263): coordinates are kept as they are");
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::AssumedCrs,
+            "a DXF drawing doesn't say its coordinate system (give \"crs\", such as EPSG:2263): coordinates are kept as they are",
+        ));
     }
     if out.capped {
-        report.messages.push(format!("the drawing makes more than {MAX_FEATURES} features: the rest are left out"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("the drawing makes more than {MAX_FEATURES} features: the rest are left out"),
+        ));
     }
     if out.vertex_capped {
-        report.messages.push(format!("the drawing's features hold more than {MAX_TOTAL_VERTICES} coordinates: the rest are left out"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("the drawing's features hold more than {MAX_TOTAL_VERTICES} coordinates: the rest are left out"),
+        ));
     }
     if out.paper > 0 {
-        report.messages.push(format!(
-            "{} entities of the drawing's layouts (paper space) were left out; add the drawing with \"paperSpace\" to draw them",
-            out.paper
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedFeature,
+            format!(
+                "{} entities of the drawing's layouts (paper space) were left out; add the drawing with \"paperSpace\" to draw them",
+                out.paper
+            ),
         ));
     }
     if out.blocked > 0 {
-        report.messages.push(format!(
-            "{} inserted blocks (图块) were left out; add the drawing with \"blocks\": true to draw their contents",
-            out.blocked
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedFeature,
+            format!("{} inserted blocks (图块) were left out; add the drawing with \"blocks\": true to draw their contents", out.blocked),
         ));
     }
     if out.trimmed {
@@ -1871,7 +1881,7 @@ mod tests {
                 ]);
                 let layers = read("a.dxf", &bytes, &Options { crs: Some(Crs::LonLat), ..Options::default() }).unwrap();
                 assert_eq!(layers[0].0.features[0].geometry, Some(Geometry::Line(vec![vec![Coord::new(0., 0.), Coord::new(2., 2.)]])));
-                assert_eq!(layers[0].1.messages, ["1 vertex without Y was left out of spline paths"]);
+                assert_eq!(layers[0].1.messages.texts().collect::<Vec<_>>(), ["1 vertex without Y was left out of spline paths"]);
                 assert_eq!(layers[0].1.skipped, 0);
             }
         }
@@ -1928,7 +1938,10 @@ mod tests {
                 Some(Geometry::Polygon(vec![vec![vec![Coord::new(0., 0.), Coord::new(2., 0.), Coord::new(0., 2.), Coord::new(0., 0.)]]]))
             );
             let subject = if count == 1 { "ring was" } else { "rings were" };
-            assert_eq!(layers[0].1.messages, [format!("{count} short HATCH boundary {subject} left out of polygons")]);
+            assert_eq!(
+                layers[0].1.messages.texts().collect::<Vec<_>>(),
+                [format!("{count} short HATCH boundary {subject} left out of polygons")]
+            );
             assert_eq!(layers[0].1.skipped, 0);
         }
     }
@@ -2035,7 +2048,7 @@ mod tests {
             assert_eq!(layers.iter().map(|(d, _)| d.features.len()).sum::<usize>(), 1);
             assert_eq!(layers[0].1.skipped, 1);
             assert_eq!(
-                layers[0].1.messages,
+                layers[0].1.messages.texts().collect::<Vec<_>>(),
                 ["1 entities couldn't be read or placed (missing blocks, blocks nested too deep or in a cycle) and were left out"]
             );
         }
@@ -2048,7 +2061,7 @@ mod tests {
         let layers = read("a.dxf", text.as_bytes(), &Options { layer: Some("keep"), ..opts }).unwrap();
         assert_eq!(layers[0].0.features.len(), 2);
         assert_eq!(
-            layers[0].1.messages,
+            layers[0].1.messages.texts().collect::<Vec<_>>(),
             [
                 "1 entities of the drawing's layouts (paper space) were left out; add the drawing with \"paperSpace\" to draw them",
                 "2 vertices without Y were left out of spline paths",
@@ -2959,7 +2972,7 @@ mod tests {
         let kept = layers[0].0.features.len();
         assert_eq!(kept, MAX_TOTAL_VERTICES / 300);
         assert_eq!(
-            layers[0].1.messages,
+            layers[0].1.messages.texts().collect::<Vec<_>>(),
             [
                 format!("the drawing's features hold more than {MAX_TOTAL_VERTICES} coordinates: the rest are left out"),
                 format!("{kept} unreadable POLYLINE vertices were left out of their lines"),
@@ -3303,7 +3316,7 @@ mod tests {
             );
             assert_eq!(report.skipped, 0);
             assert_eq!(
-                report.messages[0],
+                report.messages[0].as_str(),
                 "a DXF drawing doesn't say its coordinate system (give \"crs\", such as EPSG:2263): coordinates are kept as they are"
             );
             assert_eq!(report.messages.len(), if end == "9" { 2 } else { 1 });

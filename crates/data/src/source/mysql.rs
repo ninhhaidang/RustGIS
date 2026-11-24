@@ -713,7 +713,7 @@ impl MysqlSource {
     /// Opens a table's geometry column (`family`: the one family to read of a column of mixed
     /// types). `crs` (`EPSG:…`) is the coordinate system of a geometry whose SRID is 0.
     pub fn open(conn: Arc<Conn>, table: Table, family: Option<Family>, crs: Option<&str>) -> Result<Self> {
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let g = ident(&table.column);
         let from = table.sql_from();
         let server = conn.server;
@@ -756,13 +756,14 @@ impl MysqlSource {
                     srid = u32::from(code);
                     notes.extend(note);
                 }
-                None => notes.push(
-                    "the geometry doesn't say its coordinate system; read as longitude/latitude (add it again with \"crs\", such as EPSG:2263)".into(),
-                ),
+                None => notes.push(crate::loss::Note::loss(
+                    crate::loss::LossCode::AssumedCrs,
+                    "the geometry doesn't say its coordinate system; read as longitude/latitude (add it again with \"crs\", such as EPSG:2263)",
+                )),
             }
         }
         if let Some(note) = tls_note(&conn.config.tls, conn.is_plain()) {
-            notes.push(note.into());
+            notes.push(note);
         }
         let reproject = Reproject::from_epsg(Some(srid), &mut notes);
         let wkb = format!("ST_AsBinary({g}{})", server.axis_option());
@@ -805,9 +806,7 @@ impl MysqlSource {
         // Ids stable between reads: the key; without one, the rows are numbered as read.
         let numbered = pk.is_none();
         if numbered {
-            notes.push(
-                "no single-column integer key: features are numbered as read, so their ids can change from one read to the next".into(),
-            );
+            notes.push("no single-column integer key: features are numbered as read, so their ids can change from one read to the next");
         }
         let order = pk.as_deref().map(|k| format!("ORDER BY t.{}", ident(k))).unwrap_or_default();
         let id = pk.map(|k| ident(&k)).unwrap_or_else(|| "`rustgis rn`".into());
@@ -825,7 +824,7 @@ impl MysqlSource {
                 count: None,
                 crs: if srid == 0 { "EPSG:4326".into() } else { format!("EPSG:{srid}") },
                 indexed: false,
-                notes: notes.into(),
+                notes,
                 zm_dropped: false,
             },
             conn,
@@ -1315,7 +1314,7 @@ mod tests {
 
     #[test]
     fn refused_database_view_is_not_a_whole_table_sample() {
-        let r = Reproject::from_crs(crate::raster::Crs::from_epsg(32617).unwrap(), &mut Vec::new());
+        let r = Reproject::from_crs(crate::raster::Crs::from_epsg(32617).unwrap(), &mut crate::loss::Notes::new());
         let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit: 10, own: None };
         let all = Extent::new(-84.0, 0.0, -78.0, 25.0);
         assert!(native_window(&req, all, &r).unwrap_err().to_string().contains("can't be bounded"));

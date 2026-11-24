@@ -341,7 +341,7 @@ fn read_with(file_name: &str, bytes: &[u8], given: Option<Crs>, keep_named: bool
     }
     let Reading { counts, mut built, rows, reach, mut said, relations, .. } = reading;
     said.object_links += relate(&mut built, relations);
-    let mut notes = Vec::new();
+    let mut notes = crate::loss::Notes::new();
     let crs = coordinate_system(file_name, given, named, index.vertical_named, &reach, &mut notes)?;
     if let Some(other) = &index.other {
         notes.push(format!(

@@ -226,9 +226,12 @@ impl GeoJsonSource {
         if rest.get("type").and_then(Json::as_str) != Some("FeatureCollection") {
             return Err(DataError::Unsupported("only GeoJSON FeatureCollections are read in place".into()));
         }
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         if scan.skipped > 0 {
-            notes.push(format!("{} features had unreadable geometry", scan.skipped));
+            notes.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedFeature,
+                format!("{} features had unreadable geometry", scan.skipped),
+            ));
         }
         let reproject = Reproject::known(declared_crs(&rest, &mut notes)?);
         // The declaration may come after the features, so only now can each be tried: those with
@@ -266,7 +269,7 @@ impl GeoJsonSource {
             count: Some(scan.places.len() as u64),
             crs: reproject.label(),
             indexed: false,
-            notes: notes.into(),
+            notes,
             zm_dropped: false,
         };
         let zm = scan.zm.len() as u64;

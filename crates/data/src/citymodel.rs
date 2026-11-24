@@ -464,7 +464,7 @@ pub(crate) fn coordinate_system(
     named: Option<&str>,
     vertical_named: bool,
     reach: &Reach,
-    notes: &mut Vec<String>,
+    notes: &mut crate::loss::Notes,
 ) -> Result<Crs> {
     let crs = match (given, named) {
         (Some(crs), named) => {
@@ -489,7 +489,7 @@ pub(crate) fn coordinate_system(
             DataError::Format(format!("{file_name}: it names a coordinate system RustGIS doesn't know ({system}); give one with the crs parameter of layer.addData (from the command line, Python or the AI Assistant)"))
         })?,
         (None, None) if reach.within(180.0, 90.0) => {
-            notes.push("the file names no coordinate system: its coordinates are read as longitude/latitude".into());
+            notes.push(crate::loss::Note::loss(crate::loss::LossCode::AssumedCrs, "the file names no coordinate system: its coordinates are read as longitude/latitude"));
             return Ok(Crs::LonLat);
         }
         (None, None) => {
@@ -502,7 +502,7 @@ pub(crate) fn coordinate_system(
         return Err(DataError::Format(format!("{file_name}: {} is a geocentric coordinate system, which isn't a map's", crs.label())));
     }
     if crs == Crs::LonLat && !reach.within(180.5, 90.5) {
-        notes.push("coordinates are not longitude/latitude; RustGIS reads them as WGS 84 and they may draw out of place".into());
+        notes.push("coordinates are not longitude/latitude; RustGIS reads them as WGS 84 and they may draw out of place");
     }
     if let Some(unit) = crs.height_unit_not_metre().filter(|_| !vertical_named) {
         notes.push(format!(
@@ -564,7 +564,7 @@ pub(crate) fn finish(
     mut rows: Vec<Row>,
     mut built: Vec<Built>,
     mut counts: Counts,
-    notes: Vec<String>,
+    notes: crate::loss::Notes,
     crs: Crs,
 ) -> Result<Vec<(Dataset, ReadReport)>> {
     // Converted once every object is in: a reader that streams its objects knows its system, and
@@ -1082,7 +1082,10 @@ fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Co
     if total > MAX_LAYERS
         && let Some((_, report)) = out.first_mut()
     {
-        report.messages.push(format!("{} of {total} layers are left out: only the first {MAX_LAYERS} are read", total - MAX_LAYERS));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("{} of {total} layers are left out: only the first {MAX_LAYERS} are read", total - MAX_LAYERS),
+        ));
     }
     out
 }

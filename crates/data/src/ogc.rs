@@ -6363,7 +6363,7 @@ mod tests {
             report
                 .messages
                 .iter()
-                .any(|m| m == "coordinate system 999999 can't be used; coordinates are read in EPSG:2056, the system asked for"),
+                .any(|m| m.as_str() == "coordinate system 999999 can't be used; coordinates are read in EPSG:2056, the system asked for"),
             "{:?}",
             report.messages
         );

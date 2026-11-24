@@ -63,7 +63,7 @@ fn explicit_method_1028_warns_for_known_geopackage_authorities() {
     let sphere = wkt.replace("298.257223563", "0");
     let wkt1 = crate::raster::wkt::to_wkt(Crs::from_epsg(4087).unwrap()).unwrap();
     for (definition, code, warned) in [(wkt, 4087, true), (&sphere, 4087, false), (&wkt1, 4087, false), (wkt, 3857, false)] {
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let row =
             GpkgSrs { organization: Some("EPSG".into()), code: Some(code), definition: Some(definition.into()), definition_12_063: None };
         let read = gpkg_reproject(100001, Some(row), &mut notes).unwrap();
@@ -86,7 +86,7 @@ fn explicit_method_1028_warns_for_known_geopackage_authorities() {
         [("GEOGCRS[", true), (r#"ENGCRS["site",EDATUM["site"]]"#, true), (&wkt.replace(r#",ID["EPSG",1028]"#, ""), true), (&sphere, false)]
     {
         assert_ne!(wkt2, wkt);
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let row = GpkgSrs {
             organization: Some("EPSG".into()),
             code: Some(4087),
@@ -124,7 +124,7 @@ fn a_geopackage_row_read_by_its_code_says_its_definitions_grid() {
     let xy = Coord::new(430_000.0, 4_580_000.0);
     let by_code = Crs::from_epsg(23031).unwrap().transformer().unwrap().to_lonlat(xy).unwrap();
     for (definition, wkt2, notice) in [(bound.as_str(), false, true), (bound.as_str(), true, true), (ED50_UTM31, false, false)] {
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let row = GpkgSrs {
             organization: Some("EPSG".into()),
             code: Some(23031),
@@ -158,7 +158,7 @@ fn a_geopackage_rows_code_gives_way_to_its_definitions_shift() {
         definition_12_063: wkt2.map(Into::into),
     };
     let read = |row: GpkgSrs| {
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let read = gpkg_reproject(100001, Some(row), &mut notes).unwrap();
         (read, notes)
     };
@@ -243,7 +243,7 @@ fn a_geopackage_rows_unread_wkt2_is_said_beside_its_code() {
         definition_12_063: Some(wkt2.into()),
     };
     let read = |row: GpkgSrs| {
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let read = gpkg_reproject(100001, Some(row), &mut notes).unwrap();
         (read, notes)
     };
@@ -261,7 +261,7 @@ fn a_geopackage_rows_unread_wkt2_is_said_beside_its_code() {
     // The same notice as without a code.
     assert_eq!(read(row(None, &other, "PROJCRS[")).1, notes);
     // And when the code is used: the WKT1 gives the code's own shift, or none, or there is none.
-    let by_code = notes[0].replace("so its WKT1 definition is used", "so EPSG:27700 is used");
+    let by_code = notes[0].as_str().replace("so its WKT1 definition is used", "so EPSG:27700 is used");
     let bng = crate::raster::wkt::tests::bng_wkt1();
     for wkt1 in [Some(bng.clone()), Some(bng.replace(&format!(",{BNG_SHIFT}"), "")), None] {
         let (r, used) = read(GpkgSrs { definition: wkt1, ..row(Some(27700), "", "PROJCRS[") });
@@ -307,7 +307,7 @@ fn a_geopackage_rows_unread_bound_definition_is_said_beside_its_code() {
         definition_12_063: wkt2.map(Into::into),
     };
     let read = |row: GpkgSrs| {
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let read = gpkg_reproject(100001, Some(row), &mut notes).unwrap();
         (read, notes)
     };
@@ -321,7 +321,7 @@ fn a_geopackage_rows_unread_bound_definition_is_said_beside_its_code() {
         let (r, notes) = read(row(None, definition, wkt2));
         assert_eq!(r.crs, Crs::LonLat);
         assert_eq!(
-            notes,
+            notes.texts().collect::<Vec<_>>(),
             [
                 "its coordinate system (srs_id 100001) can't be read (the shift from NAD27 to WGS 84 isn't known); read as longitude/latitude"
             ]
@@ -2501,6 +2501,54 @@ fn shapefile_text_keeps_its_leading_spaces_and_counts_null_markers() {
     assert!(whole_report.messages.iter().chain(&report.messages).all(|m| !m.contains("written as Null")), "{:?}", report.messages);
 }
 
+/// A `.dbf` number that isn't finite (nan or inf) is read as empty in place as it is whole, and
+/// said as `dropped.value` both ways; a blank one isn't counted.
+#[test]
+fn shapefile_in_place_says_numbers_that_arent_finite() {
+    let d = dir().join("shp-nonfinite");
+    std::fs::create_dir_all(&d).unwrap();
+    let mut ds = Dataset::new("depths", GeometryType::Point, vec![Field::new("depth", FieldType::Double)]);
+    for (i, v) in [Value::Float(1_234_567.0), Value::Float(2.5), Value::Null].into_iter().enumerate() {
+        ds.push(Some(Geometry::Point(Coord::new(i as f64, 0.0))), vec![v]);
+    }
+    let p = d.join("depths.shp");
+    write_shapefile(&ds, &p);
+    let dbf = p.with_extension("dbf");
+    let mut bytes = std::fs::read(&dbf).unwrap();
+    // The whole number as written (`1234567.000…`), replaced by `nan` in the same width.
+    let at = bytes.windows(7).position(|w| w == b"1234567").unwrap();
+    let end = at + bytes[at..].iter().position(|c| *c == b' ' || *c == 0x1A).unwrap_or(bytes.len() - at);
+    bytes[at..end].fill(b' ');
+    bytes[end - 3..end].copy_from_slice(b"nan");
+    std::fs::write(&dbf, bytes).unwrap();
+    let (whole, whole_report) = crate::io::read_path(&p).unwrap();
+    let (inplace, report) = materialize(open_path(&p, None).unwrap().as_ref()).unwrap();
+    let values: Vec<&Value> = whole.features.iter().map(|f| &f.attrs[0]).collect();
+    assert_eq!(values.iter().filter(|v| ***v == Value::Null).count(), 2, "{values:?}");
+    assert!(values.contains(&&Value::Float(2.5)), "{values:?}");
+    assert_eq!(inplace.features, whole.features);
+    let said = "1 number isn't finite (nan or inf) and was read as empty, in 'depth'";
+    for messages in [&whole_report.messages, &report.messages] {
+        let notes: Vec<_> = messages.iter().filter(|m| m.contains("finite")).collect();
+        assert_eq!(notes.len(), 1, "{messages:?}");
+        assert!(notes[0].as_str().ends_with(said), "{messages:?}");
+        assert_eq!(notes[0].loss, Some(crate::loss::LossCode::DroppedValue));
+    }
+    // A read of a sample (here the first and third records) counts only what it read, and says so.
+    let some = open_path(&p, None).unwrap().read(&Request { limit: 2, ..Request::all() }).unwrap();
+    assert!(!some.complete);
+    let sampled: Vec<_> = some.notes.iter().filter(|m| m.contains("finite")).collect();
+    assert_eq!(sampled.len(), 1, "{:?}", some.notes);
+    assert_eq!(sampled[0].as_str(), format!("in the records read (a sample of the layer, which may hold more), {said}"));
+    assert_eq!(sampled[0].loss, Some(crate::loss::LossCode::DroppedValue));
+    // Finite numbers and a blank one say nothing, in place or whole.
+    let p = d.join("clean.shp");
+    write_shapefile(&ds, &p);
+    let (_, whole_report) = crate::io::read_path(&p).unwrap();
+    let (_, report) = materialize(open_path(&p, None).unwrap().as_ref()).unwrap();
+    assert!(whole_report.messages.iter().chain(&report.messages).all(|m| !m.contains("finite")), "{:?}", report.messages);
+}
+
 #[test]
 fn shapefile_in_place_reprojects_from_its_prj() {
     let d = dir().join("shp-utm");
@@ -2525,7 +2573,23 @@ fn shapefile_in_place_reprojects_from_its_prj() {
     // Without the .prj the coordinates are taken as they are, and that's said.
     std::fs::remove_file(p.with_extension("prj")).unwrap();
     let src = open_path(&p, None).unwrap();
-    assert!(src.info().notes.iter().any(|n| n.contains("not longitude/latitude")), "{:?}", src.info().notes);
+    let said: Vec<_> = src.info().notes.iter().filter(|n| n.contains("not longitude/latitude")).collect();
+    assert_eq!(said.len(), 1, "{:?}", src.info().notes);
+    assert_eq!(said[0].loss, Some(crate::loss::LossCode::AssumedCrs), "assumed without a .prj");
+    let (_, whole) = crate::io::read_path(&p).unwrap();
+    let said: Vec<_> = whole.messages.iter().filter(|n| n.contains("not longitude/latitude")).collect();
+    assert_eq!((said.len(), said.first().and_then(|n| n.loss)), (1, Some(crate::loss::LossCode::AssumedCrs)), "{:?}", whole.messages);
+    // A .prj that says WGS 84 gives the system, so nothing is assumed: the same note, uncoded,
+    // as a whole read says it.
+    let wgs84 = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
+    std::fs::write(p.with_extension("prj"), wgs84).unwrap();
+    let src = open_path(&p, None).unwrap();
+    let said: Vec<_> = src.info().notes.iter().filter(|n| n.contains("not longitude/latitude")).collect();
+    assert_eq!(said.len(), 1, "{:?}", src.info().notes);
+    assert_eq!(said[0].loss, None, "declared in the .prj");
+    let (_, whole) = crate::io::read_path(&p).unwrap();
+    let said: Vec<_> = whole.messages.iter().filter(|n| n.contains("not longitude/latitude")).collect();
+    assert_eq!((said.len(), said.first().and_then(|n| n.loss)), (1, None), "{:?}", whole.messages);
 }
 
 #[test]
@@ -2683,7 +2747,7 @@ fn geojson_in_place_rejects_partial_collections_with_a_notice() {
         let src = geojson::GeoJsonSource::open_with(&p, "x", in_memory).unwrap();
         assert_eq!(src.info().count, Some(1));
         assert_eq!(src.skipped_at_open(), 1);
-        assert_eq!(src.info().notes, ["1 features had unreadable geometry"]);
+        assert_eq!(src.info().notes.texts().collect::<Vec<_>>(), ["1 features had unreadable geometry"]);
         let (ds, streamed_report) = materialize(&src).unwrap();
         assert_eq!(ds.features, whole.features);
         assert_eq!(streamed_report.skipped, report.skipped);
@@ -3753,12 +3817,12 @@ fn geoparquet_columns_not_kept_or_read_as_numbers_are_said() {
     // Read in place: the source's notes, which adding the layer gives as notices.
     let src = open_path(&path, None).unwrap();
     let info = src.info();
-    assert_eq!(info.notes, vec![left_out.to_string()]);
+    assert_eq!(info.notes.texts().collect::<Vec<_>>(), vec![left_out.to_string()]);
     let names: Vec<&str> = info.fields.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["name", "seen", "logged", "day"]);
     // Read whole: the same, in the read's report, and the values as said.
     let (ds, report) = materialize(src.as_ref()).unwrap();
-    assert_eq!(report.messages, vec![format!("columns: {left_out}")]);
+    assert_eq!(report.messages.texts().collect::<Vec<_>>(), vec![format!("columns: {left_out}")]);
     assert_eq!(
         ds.features[0].attrs,
         vec![
@@ -3800,11 +3864,11 @@ fn flatgeobuf_binary_columns_are_said_and_left_out() {
 
     let note = "1 column of a type RustGIS has no field for was left out: blob (binary)";
     let src = open_path(&path, None).unwrap();
-    assert_eq!(src.info().notes, vec![note.to_string()]);
+    assert_eq!(src.info().notes.texts().collect::<Vec<_>>(), vec![note.to_string()]);
     let names: Vec<&str> = src.info().fields.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["name", "value"]);
     let (ds, report) = materialize(src.as_ref()).unwrap();
-    assert_eq!(report.messages, vec![format!("blobs: {note}")]);
+    assert_eq!(report.messages.texts().collect::<Vec<_>>(), vec![format!("blobs: {note}")]);
     assert_eq!(ds.features[0].attrs, vec![Value::Text("a".into()), Value::Int(42)]);
 
     let clean = d.path().join("clean.fgb");
@@ -4728,7 +4792,7 @@ fn a_feature_just_outside_an_extent_is_left_out_of_its_read() {
 /// from its meridian, where transverse Mercator refuses places: such a view isn't bounded.
 #[test]
 fn a_query_box_leaves_out_nothing_in_view_when_its_edge_is_refused() {
-    let r = Reproject::from_crs(Crs::from_epsg(32617).unwrap(), &mut Vec::new());
+    let r = Reproject::from_crs(Crs::from_epsg(32617).unwrap(), &mut crate::loss::Notes::new());
     let t = r.transformer().unwrap();
     for view in [
         Extent::new(-120.0, -30.0, 10.0, 30.0),
@@ -4796,7 +4860,7 @@ fn a_view_its_system_cant_bound_reads_what_is_in_view() {
     }
     ds.push(None, vec![Value::Int(-1)]);
     let view = Extent::new(-120.0, -30.0, 10.0, 30.0);
-    let r = Reproject::from_crs(Crs::from_epsg(32617).unwrap(), &mut Vec::new());
+    let r = Reproject::from_crs(Crs::from_epsg(32617).unwrap(), &mut crate::loss::Notes::new());
     assert!(r.extent_from_lonlat(&view).is_none(), "the view's edge is refused");
     for ext in ["shp", "fgb", "gpkg", "parquet", "geojson"] {
         let p = d.join(format!("pts.{ext}"));

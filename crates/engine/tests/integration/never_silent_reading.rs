@@ -947,7 +947,8 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
             || native.features[0].geometry != Some(rustgis_engine::data::Geometry::Point(rustgis_engine::geom::Coord::new(1.0, 2.0)))
             || native.features[0].attrs != [rustgis_engine::data::Value::Int(1)]
             || report.skipped != 0
-            || report.messages != if collection { vec![collection_note] } else { vec![] }
+            || report.messages.texts().collect::<Vec<_>>() != if collection { vec![collection_note] } else { vec![] }
+            || report.messages.iter().any(|m| m.loss != Some(LossCode::DroppedGeometry))
         {
             return Err(std::io::Error::other(format!("CSV collection retained data or notice differs: {native:?}, {report:?}")));
         }
@@ -966,8 +967,8 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
             check_dbf_date(&native, dbf_invalid)?;
         }
         let expected = if csv_extra { &extra_messages } else { &dbf_messages };
-        // The invalid date is said as `dropped.value`; the extra cell isn't coded yet.
-        let coded = report.messages.iter().all(|m| (m.loss == Some(LossCode::DroppedValue)) == dbf_invalid);
+        let code = if csv_extra { LossCode::DroppedExtraAttributes } else { LossCode::DroppedValue };
+        let coded = report.messages.iter().all(|m| m.loss == Some(code));
         if report.skipped != 0 || report.messages.texts().collect::<Vec<_>>() != *expected || !coded {
             return Err(std::io::Error::other(format!("tabular native report: {report:?}")));
         }
@@ -993,7 +994,10 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
             || content == include_bytes!("../../testdata/reading-losses/book-z.xls")
             || content == include_bytes!("../../testdata/reading-losses/book-z.xlsb");
         let errors = content == include_bytes!("../../testdata/reading-losses/book-error.xlsx");
-        if collection && report.messages != [collection_note] {
+        if collection
+            && (report.messages.texts().collect::<Vec<_>>() != [collection_note]
+                || report.messages[0].loss != Some(LossCode::DroppedGeometry))
+        {
             return Err(std::io::Error::other(format!("native spreadsheet collection notice: {report:?}")));
         }
         if errors && report.messages != ["1 spreadsheet error cell was read as empty, in 'note'"] {
@@ -1035,7 +1039,7 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
     }
     if dxf_vertex {
         let native = rustgis_engine::data::dxf::read(file, content, &Default::default()).map_err(std::io::Error::other)?;
-        if native.len() != 1 || native[0].1.skipped != 0 || native[0].1.messages != dxf_messages {
+        if native.len() != 1 || native[0].1.skipped != 0 || native[0].1.messages.texts().collect::<Vec<_>>() != dxf_messages {
             return Err(std::io::Error::other(format!("DXF vertex native report: {native:?}")));
         }
         check_dxf_vertex(&native[0].0, dxf_vertex_lossy)?;
@@ -1045,8 +1049,7 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
     }
     if dxf_height {
         let native = rustgis_engine::data::dxf::read(file, content, &Default::default()).map_err(std::io::Error::other)?;
-        // The varying heights lost are coded `dropped.zm`; nothing else is.
-        let expected: Vec<Option<LossCode>> = dxf_messages.iter().map(|m| m.contains("varying Z").then_some(LossCode::DroppedZm)).collect();
+        let expected: Vec<Option<LossCode>> = dxf_messages.iter().map(|m| dxf_code(m)).collect();
         if native.len() != 1
             || native[0].1.skipped != 0
             || native[0].1.messages.texts().collect::<Vec<_>>() != dxf_messages
@@ -1151,7 +1154,7 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
         check_dxf_height(&s.map().layers[0].dataset)?;
         let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
         let codes: Vec<Option<LossCode>> = s.notices_since(mark).iter().map(|n| n.loss()).collect();
-        let expected: Vec<Option<LossCode>> = dxf_messages.iter().map(|m| m.contains("varying Z").then_some(LossCode::DroppedZm)).collect();
+        let expected: Vec<Option<LossCode>> = dxf_messages.iter().map(|m| dxf_code(m)).collect();
         if said != dxf_messages || codes != expected {
             return Err(std::io::Error::other(format!("DXF height command notices: {said:?}")));
         }
@@ -1289,4 +1292,16 @@ fn xml_losses_keep_data_and_reach_command() {
     }
     assert_eq!(checked, 17, "ten logical cases, seventeen rows with the KMZ twins");
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// The code a DXF fixture's notice carries: `dropped.zm` for the varying heights lost and
+/// `assumed.crs` for the system the drawing doesn't say; nothing else is coded.
+fn dxf_code(message: &str) -> Option<LossCode> {
+    if message.contains("varying Z") {
+        Some(LossCode::DroppedZm)
+    } else if message.contains("doesn't say its coordinate system") {
+        Some(LossCode::AssumedCrs)
+    } else {
+        None
+    }
 }

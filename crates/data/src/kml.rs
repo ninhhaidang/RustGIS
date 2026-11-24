@@ -727,7 +727,10 @@ impl Reader {
                 self.geometry_losses.report(name, &mut report);
                 report.skipped = self.skipped;
                 if self.skipped > 0 {
-                    report.messages.push(format!("{name}: {} placemarks without a geometry RustGIS draws were skipped", self.skipped));
+                    report.messages.push(crate::loss::Note::loss(
+                        crate::loss::LossCode::DroppedFeature,
+                        format!("{name}: {} placemarks without a geometry RustGIS draws were skipped", self.skipped),
+                    ));
                 }
                 if self.duplicate_entries > 0 {
                     report.messages.push(format!(
@@ -736,7 +739,10 @@ impl Reader {
                     ));
                 }
                 if self.dropped_keys > 0 {
-                    report.messages.push(format!("{name}: extended data past {MAX_KEYS} distinct names was left out"));
+                    report.messages.push(crate::loss::Note::loss(
+                        crate::loss::LossCode::DroppedOverLimit,
+                        format!("{name}: extended data past {MAX_KEYS} distinct names was left out"),
+                    ));
                 }
                 if !renamed.is_empty() {
                     let listed: Vec<String> = renamed

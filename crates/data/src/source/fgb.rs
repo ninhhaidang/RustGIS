@@ -30,7 +30,7 @@ pub(crate) fn header_feature_count(path: &Path) -> Result<u64> {
 }
 
 /// The system a FlatGeobuf header says, read as a GeoPackage row's is ([`super::declared_reproject`]).
-fn header_reproject(header_crs: Option<flatgeobuf::Crs<'_>>, notes: &mut Vec<String>) -> Result<Reproject> {
+fn header_reproject(header_crs: Option<flatgeobuf::Crs<'_>>, notes: &mut crate::loss::Notes) -> Result<Reproject> {
     // The header's system is read as a GeoPackage row's is ([`super::declared_reproject`]): by
     // its EPSG code, or by its WKT when the WKT gives another shift to WGS 84 or there is no
     // EPSG code (#1855). The code is an EPSG one only when the organization is EPSG (or not
@@ -52,9 +52,15 @@ fn header_reproject(header_crs: Option<flatgeobuf::Crs<'_>>, notes: &mut Vec<Str
         // names the system, or a negative code, which can't be an EPSG one.
         None => {
             if !epsg_org && let Some(org) = organization {
-                notes.push(format!("its coordinate system is defined by {org}, not EPSG; read as longitude/latitude"));
+                notes.push(crate::loss::Note::loss(
+                    crate::loss::LossCode::AssumedCrs,
+                    format!("its coordinate system is defined by {org}, not EPSG; read as longitude/latitude"),
+                ));
             } else if let Some(code) = code {
-                notes.push(format!("its coordinate system's code {code} isn't an EPSG code; read as longitude/latitude"));
+                notes.push(crate::loss::Note::loss(
+                    crate::loss::LossCode::AssumedCrs,
+                    format!("its coordinate system's code {code} isn't an EPSG code; read as longitude/latitude"),
+                ));
             }
             Reproject::from_crs(Crs::LonLat, notes)
         }
@@ -67,7 +73,7 @@ fn header_reproject(header_crs: Option<flatgeobuf::Crs<'_>>, notes: &mut Vec<Str
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn header_coord_crs(path: &Path) -> Result<Result<Crs>> {
     let reader = open_reader(BufReader::new(std::fs::File::open(path)?))?;
-    Ok(header_reproject(reader.header().crs(), &mut Vec::new()).map(|r| r.crs()))
+    Ok(header_reproject(reader.header().crs(), &mut crate::loss::Notes::new()).map(|r| r.crs()))
 }
 
 /// Whether a FlatGeobuf's header says WGS 84 longitude/latitude or no system: EPSG:4326 (or no
@@ -227,7 +233,7 @@ impl FgbSource {
     fn prepare<R: Read + Seek>(r: R, input: Input, name: &str) -> Result<FgbOpen> {
         let reader = open_reader(r)?;
         let h = reader.header();
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let reproject = header_reproject(h.crs(), &mut notes)?;
         let mut date_columns = Vec::new();
         let mut fields = Vec::new();
@@ -277,7 +283,7 @@ impl FgbSource {
             crs: reproject.info_crs(),
             // The crate's index search assumes the default node size; other files are scanned.
             indexed: h.index_node_size() == flatgeobuf::packed_r_tree::PackedRTree::DEFAULT_NODE_SIZE && count > 0,
-            notes: notes.into(),
+            notes,
             zm_dropped: false,
         };
         info.note_columns(

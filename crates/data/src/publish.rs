@@ -241,7 +241,7 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
             format!("{} of its records are marked deleted, and writing it again would remove them from the file", table.deleted),
         ));
     }
-    let mut encoding_notes = Vec::new();
+    let mut encoding_notes = crate::loss::Notes::new();
     let ldid = original.dbf.get(29).copied().unwrap_or(0);
     let style = DbfStyle {
         encoding: crate::dbf::encoding(original.cpg.as_ref().map(|(_, b)| b.as_slice()), ldid, &mut encoding_notes),
@@ -251,7 +251,7 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
     // A code page RustGIS can't write (one it reads as UTF-8 for want of a decoder): edited text
     // would be written in UTF-8 under the file's language driver.
     if let Some(note) = encoding_notes.first() {
-        return Err(refused(path, format!("{note}, so its text can't be written in its own code page")));
+        return Err(refused(path, format!("{}, so its text can't be written in its own code page", note.as_str())));
     }
 
     // 1. It reads as the layer was read: in the layer's system, and in the file's own

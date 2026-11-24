@@ -158,7 +158,10 @@ impl Losses {
     pub fn messages(&self) -> crate::loss::Notes {
         let mut out = crate::loss::Notes::new();
         if self.no_crs {
-            out.push("the answer names no coordinate system; coordinates are read as longitude/latitude");
+            out.push(crate::loss::Note::loss(
+                crate::loss::LossCode::AssumedCrs,
+                "the answer names no coordinate system; coordinates are read as longitude/latitude",
+            ));
         }
         if self.unreadable > 0 {
             out.push(format!("{} values don't fit their field's type and are left empty", self.unreadable));
@@ -200,9 +203,9 @@ pub fn read(bytes: &[u8], name: &str) -> Result<(Dataset, ReadReport)> {
     let mut page = read_page(bytes, name)?;
     page.report.messages.extend(page.losses.messages());
     if page.exceeded_transfer_limit {
-        page.report.messages.push(format!(
-            "the service sent {} features only (its record limit); the rest aren't in this answer",
-            page.dataset.features.len()
+        page.report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("the service sent {} features only (its record limit); the rest aren't in this answer", page.dataset.features.len()),
         ));
     }
     Ok((page.dataset, page.report))
@@ -337,7 +340,10 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
             || esri_wkt_over_code(code, wkt.as_deref()).is_some()
             || !wkt.as_deref().is_some_and(crate::raster::wkt::parses))
     {
-        report.messages.push("the coordinate system's WKT isn't valid UTF-8; the bytes that can't be read are replaced with U+FFFD");
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::ChangedEncoding,
+            "the coordinate system's WKT isn't valid UTF-8; the bytes that can't be read are replaced with U+FFFD",
+        ));
     }
     let said_before = report.messages.len();
     let (crs, to_lonlat) = crate::filegdb::esri_crs(code, wkt.as_deref(), &mut report)?;

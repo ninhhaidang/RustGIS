@@ -475,15 +475,18 @@ fn read_with(file_name: &str, text: &str, budget: usize) -> Result<Vec<(Dataset,
         // Geometries left out are said with why; their features are kept, with their attributes,
         // so they aren't counted as skipped.
         if bad > 0 {
-            rep.messages.push(format!(
+            rep.messages.push(crate::loss::Note::loss(crate::loss::LossCode::DroppedGeometry, format!(
                 "{} couldn't be read (unreadable coordinates or arcs, a member of a collection that can't be read, or a kind of geometry not read): kept as features without geometry",
                 counted(bad, "geometry", "geometries")
-            ));
+            )));
         }
         if cut > 0 {
-            rep.messages.push(format!(
-                "{} left out at the limit of {budget} coordinates rebuilt from the file's arcs: kept as features without geometry",
-                counted(cut, "geometry", "geometries")
+            rep.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedGeometry,
+                format!(
+                    "{} left out at the limit of {budget} coordinates rebuilt from the file's arcs: kept as features without geometry",
+                    counted(cut, "geometry", "geometries")
+                ),
             ));
         }
         let lost: usize = used.iter().filter_map(|i| topo.arcs_lost.get(*i)).sum();
@@ -508,9 +511,12 @@ fn read_with(file_name: &str, text: &str, budget: usize) -> Result<Vec<(Dataset,
     if objects.len() > MAX_OBJECTS
         && let Some((_, rep)) = out.first_mut()
     {
-        rep.messages.push(format!(
-            "{} left out past the limit of {MAX_OBJECTS} objects: only the first {MAX_OBJECTS} are read",
-            counted(objects.len() - MAX_OBJECTS, "object", "objects")
+        rep.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!(
+                "{} left out past the limit of {MAX_OBJECTS} objects: only the first {MAX_OBJECTS} are read",
+                counted(objects.len() - MAX_OBJECTS, "object", "objects")
+            ),
         ));
     }
     if out.is_empty() {

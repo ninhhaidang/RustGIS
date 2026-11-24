@@ -83,6 +83,21 @@ loss_codes! {
         Dropped,
         "Keep the source file's coordinate system definition with the export."
     ),
+    DroppedFeature => (
+        "dropped.feature",
+        Dropped,
+        "Correct those features in the source, or read the source in the way the notice suggests."
+    ),
+    DroppedGeometry => (
+        "dropped.geometry",
+        Dropped,
+        "Correct the geometry in the source, or give the coordinate system its coordinates are in."
+    ),
+    DroppedOverLimit => (
+        "dropped.over-limit",
+        Dropped,
+        "Read less at once, such as by filtering or clipping the source first."
+    ),
     ChangedTruncated => ("changed.truncated", Changed, "Use a decimal field to keep the fractional part."),
     ChangedBody => ("changed.body", Changed, "Export in the layer's own coordinate system, which keeps its body."),
     ChangedEncoding => (
@@ -105,10 +120,20 @@ loss_codes! {
         Approximated,
         "Export in the layer's own coordinate system, or give that system with a known transformation to WGS 84."
     ),
+    ApproximatedCurve => (
+        "approximated.curve",
+        Approximated,
+        "Keep the source file where exact curves matter: RustGIS draws curves as straight segments."
+    ),
     AssumedNullMarker => (
         "assumed.null-marker",
         Assumed,
         "Write the value another way if the text Null is meant as text, not as an empty value."
+    ),
+    AssumedCrs => (
+        "assumed.crs",
+        Assumed,
+        "Give the coordinate system the coordinates are in (\"crs\" when adding the data, or Define Projection)."
     ),
 }
 

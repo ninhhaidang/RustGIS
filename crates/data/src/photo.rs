@@ -366,10 +366,16 @@ impl Reader {
             let shown: Vec<&str> = left_out.iter().take(10).map(String::as_str).collect();
             let more = if left_out.len() > 10 { format!(" (and {} more)", left_out.len() - 10) } else { String::new() };
             let what = if left_out.len() == 1 { "1 photo".to_string() } else { format!("{} photos", left_out.len()) };
-            self.report.messages.push(format!("{what} left out: {}{more}", shown.join("; ")));
+            self.report.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedFeature,
+                format!("{what} left out: {}{more}", shown.join("; ")),
+            ));
         }
         if self.over {
-            self.report.messages.push(format!("a photo layer holds up to {MAX_PHOTOS} photos; the rest were left out"));
+            self.report.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedOverLimit,
+                format!("a photo layer holds up to {MAX_PHOTOS} photos; the rest were left out"),
+            ));
         }
         (self.ds, self.report)
     }

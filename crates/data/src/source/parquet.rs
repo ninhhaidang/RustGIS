@@ -223,7 +223,7 @@ impl ParquetSource {
         if schema.column(geom_col).physical_type() != Physical::BYTE_ARRAY {
             return Err(DataError::Format(format!("geometry column '{primary}' is not binary")));
         }
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let crs = col_meta.and_then(|c| c.get("crs"));
         let code = crs_code(crs);
         // Another body's system is said, or refused when its coordinates aren't longitude/latitude.
@@ -235,7 +235,10 @@ impl ParquetSource {
             notes.push(format!("its coordinate system: {note}"));
         } else if code.is_none() && crs.is_some_and(|c| !c.is_null() && !is_crs84(c)) {
             // A coordinate system given without an EPSG code (and not OGC:CRS84) can't be converted.
-            notes.push("its coordinate system has no EPSG code; read as longitude/latitude".into());
+            notes.push(crate::loss::Note::loss(
+                crate::loss::LossCode::AssumedCrs,
+                "its coordinate system has no EPSG code; read as longitude/latitude",
+            ));
         }
         let reproject = Reproject::from_epsg(code, &mut notes);
         let covering = find_covering(md, col_meta, &primary);
@@ -315,7 +318,7 @@ impl ParquetSource {
             count,
             crs: reproject.label(),
             indexed: covering.is_some(),
-            notes: notes.into(),
+            notes,
             zm_dropped: false,
         };
         info.note_columns(

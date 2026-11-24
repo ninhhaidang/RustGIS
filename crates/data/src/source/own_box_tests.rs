@@ -121,7 +121,7 @@ fn a_geojson_read_in_place_given_its_box_in_its_own_system_tests_features_there(
 
 #[test]
 fn a_box_in_its_own_system_is_tested_without_converting() {
-    let mut notes = Vec::new();
+    let mut notes = crate::loss::Notes::new();
     let r = Reproject::from_crs(utm31(), &mut notes);
     let (lonlat, utm) = around_paris();
     let far = Geometry::Line(vec![vec![Coord::new(451_500.0, 5_411_500.0), Coord::new(1e9, 5_411_500.0)]]);
@@ -144,7 +144,7 @@ fn a_box_in_its_own_system_is_tested_without_converting() {
 
 #[test]
 fn a_coordinate_that_isnt_a_number_is_left_out_in_its_own_system_too() {
-    let mut notes = Vec::new();
+    let mut notes = crate::loss::Notes::new();
     let r = Reproject::from_crs(utm31(), &mut notes);
     let (lonlat, utm) = around_paris();
     let req = Request { extent: Some(lonlat), limit: 1, own: Some((utm31(), utm)) };
@@ -177,7 +177,7 @@ fn the_whole_plane_holds_a_shape_with_no_place() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_row_with_no_place_in_longitude_latitude_is_kept_outside_any_extent() {
-    let mut notes = Vec::new();
+    let mut notes = crate::loss::Notes::new();
     let r = Reproject::from_crs(utm31(), &mut notes);
     let (lonlat, _) = around_paris();
     let far = Geometry::Line(vec![vec![Coord::new(451_500.0, 5_411_500.0), Coord::new(1e9, 5_411_500.0)]]);

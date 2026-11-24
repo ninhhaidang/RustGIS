@@ -261,7 +261,10 @@ pub(crate) fn esri_crs(code: Option<u32>, wkt: Option<&str>, report: &mut ReadRe
                     Ok(t) if c != Crs::LonLat => (Some(c), Some(t)),
                     Ok(_) => (None, None),
                     Err(e) => {
-                        report.messages.push(format!("coordinate system: {e}; coordinates are read as longitude/latitude"));
+                        report.messages.push(crate::loss::Note::loss(
+                            crate::loss::LossCode::AssumedCrs,
+                            format!("coordinate system: {e}; coordinates are read as longitude/latitude"),
+                        ));
                         (None, None)
                     }
                 }
@@ -270,7 +273,10 @@ pub(crate) fn esri_crs(code: Option<u32>, wkt: Option<&str>, report: &mut ReadRe
                 if let Some(refused) = planetary::refused_wkt(wkt, &e) {
                     return Err(DataError::Format(format!("coordinate system: {refused}")));
                 }
-                report.messages.push(format!("coordinate system: {e}; coordinates are read as longitude/latitude"));
+                report.messages.push(crate::loss::Note::loss(
+                    crate::loss::LossCode::AssumedCrs,
+                    format!("coordinate system: {e}; coordinates are read as longitude/latitude"),
+                ));
                 (None, None)
             }
         },
@@ -433,7 +439,10 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
     report.unread_dates = crate::source::unread_dates_note(&ds.fields, &unread_dates);
     report.messages.extend(report.unread_dates.clone());
     if curves > 0 {
-        report.messages.push(format!("{curves} curved segments are drawn as straight lines"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::ApproximatedCurve,
+            format!("{curves} curved segments are drawn as straight lines"),
+        ));
     }
     if let Some(c) = crs.filter(|_| to_lonlat.is_some()) {
         report.messages.extend(crate::io::beyond_lonlat_note("features", beyond, c));

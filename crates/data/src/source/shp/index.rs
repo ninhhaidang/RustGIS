@@ -45,7 +45,7 @@ impl DiskIndex {
     /// [`DataError::Cancelled`](crate::DataError::Cancelled) when Cancel was pressed, which
     /// [`Index::open`] passes on; any other error when neither can be had, for it to scan the
     /// records instead.
-    pub fn open(path: &Path, len: u64, notes: &mut Vec<String>) -> Result<Self> {
+    pub fn open(path: &Path, len: u64, notes: &mut crate::loss::Notes) -> Result<Self> {
         use super::cache;
         use crate::source::external::{fnv1a, stamp};
         // Cancel is looked at once even when the index is reused, so an opening can always be
@@ -402,7 +402,7 @@ enum Storage {
     Scan { path: std::path::PathBuf, len: u64 },
 }
 impl Index {
-    pub fn open(path: &Path, len: u64, notes: &mut Vec<String>) -> Result<Self> {
+    pub fn open(path: &Path, len: u64, notes: &mut crate::loss::Notes) -> Result<Self> {
         match DiskIndex::open(path, len, notes) {
             Ok(disk) => Ok(Self { count: disk.count, bounds: disk.bounds, unboxed: disk.unboxed, storage: Storage::Disk(disk) }),
             // Canceled while it was built: the run stops, not a scan in its place.
@@ -414,7 +414,7 @@ impl Index {
         }
     }
     /// The index without a cache: the records' headers scanned now, and again for each read.
-    fn scanning(path: &Path, len: u64, notes: &mut Vec<String>) -> Result<Self> {
+    fn scanning(path: &Path, len: u64, notes: &mut crate::loss::Notes) -> Result<Self> {
         let Scanned { count, note, bounds, unboxed } = scanned(path, len)?;
         if !note.is_empty() {
             notes.push(note);
@@ -682,7 +682,7 @@ mod tests {
         crate::io::write_path(&ds, &path).unwrap();
         let len = std::fs::metadata(&path).unwrap().len();
         super::super::cache::with_index_dir(tmp.path().join("cache"), || {
-            let index = Index::open(&path, len, &mut Vec::new()).unwrap();
+            let index = Index::open(&path, len, &mut crate::loss::Notes::new()).unwrap();
             assert!(index.indexed());
             for (area, many) in [([2.5f32, 2.5, 4.5, 5.5], false), ([0.0, 0.0, 12.0, 15.0], true), ([50.0, 50.0, 60.0, 60.0], false)] {
                 let mut expected = Vec::new();
@@ -779,7 +779,7 @@ mod tests {
                 .unwrap();
             ids
         };
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let scan = Index::scanning(&path, len, &mut notes).unwrap();
         assert!(!scan.indexed());
         assert_eq!((scan.bounds, scan.unboxed), (whole, 0));
@@ -834,7 +834,7 @@ mod tests {
         std::fs::write(&path, &b).unwrap();
         let len = b.len() as u64;
         let second = Some([12.0, 22.0, 12.5, 22.5]);
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let scan = Index::scanning(&path, len, &mut notes).unwrap();
         assert_eq!((scan.bounds, scan.unboxed), (second, 0));
         super::super::cache::with_index_dir(tmp.path().join("cache"), || {
@@ -857,8 +857,8 @@ mod tests {
         crate::io::write_path(&ds, &path).unwrap();
         let mut b = std::fs::read(&path).unwrap();
         let len = b.len() as u64;
-        let mut notes = Vec::new();
-        let both = |p: &Path, notes: &mut Vec<String>, cache: &str| {
+        let mut notes = crate::loss::Notes::new();
+        let both = |p: &Path, notes: &mut crate::loss::Notes, cache: &str| {
             let scan = Index::scanning(p, len, notes).unwrap();
             let disk = super::super::cache::with_index_dir(tmp.path().join(cache), || Index::open(p, len, notes).unwrap());
             assert!(disk.indexed());
@@ -895,7 +895,7 @@ mod tests {
         // Records of 28 bytes from 100 to 240, each read 60 bytes ahead: past the real end (taken as
         // 100 bytes further) from the fourth.
         let len = std::fs::metadata(&path).unwrap().len() + 100;
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let scan = Index::scanning(&path, len, &mut notes).unwrap();
         assert_eq!(scan.count, 3);
         assert!(notes.iter().any(|n| n.contains("couldn't be read from record 4; the rest are left out")), "{notes:?}");
@@ -952,7 +952,7 @@ mod tests {
         let probe = std::sync::Arc::new(crate::progress::tests::Counted::default());
         probe.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         let _installed = crate::progress::install(Some(probe));
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         super::super::cache::with_index_dir(tmp.path().join("cache"), || {
             assert!(matches!(Index::open(&path, len, &mut notes), Err(crate::DataError::Cancelled)));
         });

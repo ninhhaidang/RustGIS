@@ -740,18 +740,18 @@ fn projection(geometry: &str, columns: impl IntoIterator<Item = (String, String)
 const FINE_TIMES_SAMPLE: u64 = 100_000;
 
 /// What a layer says of `datetime2` and `datetimeoffset` columns that hold 100-nanosecond digits
-/// (`fine`), which are read to the microsecond: the columns where a row looked at (up to 100,000,
+/// (`fine`), which are read to the microsecond: the columns where a row looked at among those the layer reads (`rows`, up to 100,000,
 /// whichever the server returns) has one, and those that may when the rows looked at have none but
 /// weren't all of them (or the look failed).
-fn fine_times_note(conn: &Conn, from: &str, fine: &[String]) -> Vec<String> {
+fn fine_times_note(conn: &Conn, from: &str, rows: &str, fine: &[String]) -> crate::loss::Notes {
     if fine.is_empty() {
-        return Vec::new();
+        return crate::loss::Notes::new();
     }
     let checks: Vec<String> =
         fine.iter().map(|c| format!("MAX(CASE WHEN DATEPART(NANOSECOND, {}) % 1000 <> 0 THEN 1 ELSE 0 END)", ident(c))).collect();
     let cols: Vec<String> = fine.iter().map(|c| ident(c)).collect();
     let sql = format!(
-        "SELECT COUNT_BIG(*), {} FROM (SELECT TOP ({}) {} FROM {from}) s",
+        "SELECT COUNT_BIG(*), {} FROM (SELECT TOP ({}) {} FROM {from} t WHERE {rows}) s",
         checks.join(", "),
         FINE_TIMES_SAMPLE + 1,
         cols.join(", ")
@@ -765,23 +765,26 @@ fn fine_times_note(conn: &Conn, from: &str, fine: &[String]) -> Vec<String> {
 /// [`fine_times_note`]'s text: `found` counts, for each column of `fine`, whether a row looked at
 /// has a 100-nanosecond digit (`None` when the look failed); `complete` is whether the rows looked
 /// at were all of them.
-fn fine_times_said(fine: &[String], found: Option<&[usize]>, complete: bool) -> Vec<String> {
+fn fine_times_said(fine: &[String], found: Option<&[usize]>, complete: bool) -> crate::loss::Notes {
     if fine.is_empty() {
-        return Vec::new();
+        return crate::loss::Notes::new();
     }
     let fields: Vec<Field> = fine.iter().map(|c| Field::new(c.clone(), FieldType::DateTime)).collect();
     let Some(found) = found else {
-        return vec![format!(
+        return crate::loss::Notes::from(vec![format!(
             "date-times in {} may hold 100-nanosecond digits (they couldn't be checked): any are read to the microsecond, the last digit left out",
             crate::io::named_fields(&fields, &vec![1; fine.len()])
-        )];
+        )]);
     };
     let has = |i: usize| found.get(i).is_some_and(|&n| n > 0);
-    let mut notes = Vec::new();
+    let mut notes = crate::loss::Notes::new();
     if (0..fine.len()).any(has) {
-        notes.push(format!(
-            "date-times in {} hold 100-nanosecond digits: they're read to the microsecond, the last digit left out",
-            crate::io::named_fields(&fields, found)
+        notes.push(crate::loss::Note::loss(
+            crate::loss::LossCode::ChangedRounded,
+            format!(
+                "date-times in {} hold 100-nanosecond digits: they're read to the microsecond, the last digit left out",
+                crate::io::named_fields(&fields, found)
+            ),
         ));
     }
     let rest: Vec<usize> = (0..fine.len()).map(|i| usize::from(!has(i))).collect();
@@ -794,13 +797,25 @@ fn fine_times_said(fine: &[String], found: Option<&[usize]>, complete: bool) -> 
     notes
 }
 
+/// The condition that keeps only `family`'s geometries in column `g` (none for every family), as
+/// a read and the date-time probe both ask for them.
+fn family_clause(g: &str, family: Option<Family>) -> String {
+    let Some(f) = family else { return String::new() };
+    let dim = match f {
+        Family::Points => 0,
+        Family::Lines => 1,
+        Family::Polygons => 2,
+    };
+    format!(" AND {g}.STDimension() = {dim}")
+}
+
 impl SqlServerSource {
     /// Opens one family of a spatial column. `crs` supplies the coordinate system for SRID 0.
     pub fn open(conn: Arc<Conn>, table: Table, family: Option<Family>, crs: Option<&str>) -> Result<Self> {
         if conn.major < 11 {
             return Err(DataError::Unsupported("SQL Server tables are read from SQL Server 2012 and later".into()));
         }
-        let mut notes = Vec::new();
+        let mut notes = crate::loss::Notes::new();
         let g = ident(&table.column);
         let geography = table.geography();
         let columns = gdb::columns_of(&conn, &table.schema, &table.name)?;
@@ -835,14 +850,17 @@ impl SqlServerSource {
                     srid = u32::from(code);
                     notes.extend(note);
                 }
-                None => notes.push("the geometry doesn't say its coordinate system; read as longitude/latitude (add it again with \"crs\", such as EPSG:2263)".into()),
+                None => notes.push(crate::loss::Note::loss(
+                    crate::loss::LossCode::AssumedCrs,
+                    "the geometry doesn't say its coordinate system; read as longitude/latitude (add it again with \"crs\", such as EPSG:2263)",
+                )),
             }
         }
         if conn.config.encrypt == Encrypt::Off {
-            notes.push("the connection isn't encrypted after login (encrypt=false)".into());
+            notes.push("the connection isn't encrypted after login (encrypt=false)");
         }
         if conn.config.trust_cert {
-            notes.push("the server's certificate isn't checked (trust-server-certificate=true)".into());
+            notes.push("the server's certificate isn't checked (trust-server-certificate=true)");
         }
         let reproject = Reproject::from_epsg(Some(srid), &mut notes);
         let cols = conn.query("SELECT COLUMN_NAME, LOWER(DATA_TYPE), DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @P1 AND TABLE_NAME = @P2 ORDER BY ORDINAL_POSITION", &[&table.schema, &table.name])?;
@@ -854,7 +872,12 @@ impl SqlServerSource {
             })
             .filter_map(|r| text_of(at(r, 0)))
             .collect();
-        notes.extend(fine_times_note(&conn, &from, &fine));
+        notes.extend(fine_times_note(
+            &conn,
+            &from,
+            &format!("{g} IS NOT NULL AND {g}.STSrid = {raw_srid}{}", family_clause(&g, family)),
+            &fine,
+        ));
         let keys = conn.query("SELECT k.COLUMN_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS c JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE k ON k.CONSTRAINT_SCHEMA = c.CONSTRAINT_SCHEMA AND k.CONSTRAINT_NAME = c.CONSTRAINT_NAME WHERE c.CONSTRAINT_TYPE = 'PRIMARY KEY' AND c.TABLE_SCHEMA = @P1 AND c.TABLE_NAME = @P2", &[&table.schema, &table.name])?;
         let mut key = if keys.len() == 1 { keys.first().and_then(|r| text_of(at(r, 0))) } else { None };
         // The registered ObjectID column is the feature id when the table has it.
@@ -878,9 +901,7 @@ impl SqlServerSource {
             notes.extend(r.notes);
         }
         if projection.numbered {
-            notes.push(
-                "no single-column integer key: features are numbered as read, so their ids can change from one read to the next".into(),
-            );
+            notes.push("no single-column integer key: features are numbered as read, so their ids can change from one read to the next");
         }
         let mut src = SqlServerSource {
             info: SourceInfo {
@@ -892,7 +913,7 @@ impl SqlServerSource {
                 count: None,
                 crs: if srid == 0 { "EPSG:4326".into() } else { format!("EPSG:{srid}") },
                 indexed: false,
-                notes: notes.into(),
+                notes,
                 zm_dropped: false,
             },
             conn,
@@ -975,14 +996,7 @@ impl SqlServerSource {
             let ty = if self.geography { "geography" } else { "geometry" };
             w.push_str(&format!(" AND {g}.Filter({ty}::STGeomFromText('{window}', {})) = 1", self.raw_srid));
         }
-        if let Some(f) = self.family {
-            let dim = match f {
-                Family::Points => 0,
-                Family::Lines => 1,
-                Family::Polygons => 2,
-            };
-            w.push_str(&format!(" AND {g}.STDimension() = {dim}"));
-        }
+        w.push_str(&family_clause(&g, self.family));
         w
     }
 
@@ -1272,12 +1286,15 @@ mod tests {
         // whole without any, say nothing; a larger table without any in the rows looked at may.
         let fine = ["seen".to_string(), "logged".to_string()];
         assert_eq!(
-            fine_times_said(&fine, Some(&[0, 1]), true),
+            fine_times_said(&fine, Some(&[0, 1]), true).texts().collect::<Vec<_>>(),
             ["date-times in 'logged' hold 100-nanosecond digits: they're read to the microsecond, the last digit left out"]
         );
+        assert_eq!(fine_times_said(&fine, Some(&[0, 1]), true)[0].loss, Some(crate::loss::LossCode::ChangedRounded));
         assert!(fine_times_said(&fine, Some(&[0, 0]), true).is_empty());
+        // What only may have been rounded is said without a code.
         let notes = fine_times_said(&fine, Some(&[0, 0]), false);
         assert!(notes.len() == 1 && notes[0].starts_with("date-times in 'seen', 'logged' may hold"), "{notes:?}");
+        assert_eq!(notes[0].loss, None);
         // Columns that have them are named apart from those that may.
         let notes = fine_times_said(&fine, Some(&[1, 0]), false);
         assert!(
@@ -1286,6 +1303,7 @@ mod tests {
                 && notes[1].starts_with("date-times in 'logged' may hold"),
             "{notes:?}"
         );
+        assert_eq!((notes[0].loss, notes[1].loss), (Some(crate::loss::LossCode::ChangedRounded), None));
         assert!(fine_times_said(&fine, Some(&[1, 1]), false).len() == 1);
         // A look that failed says so, naming every column.
         let notes = fine_times_said(&fine, None, true);
@@ -1293,6 +1311,7 @@ mod tests {
             notes.len() == 1 && notes[0].starts_with("date-times in 'seen', 'logged' may hold") && notes[0].contains("couldn't be checked"),
             "{notes:?}"
         );
+        assert_eq!(notes[0].loss, None);
         assert!(fine_times_said(&[], Some(&[]), false).is_empty() && fine_times_said(&[], None, false).is_empty());
         // A seventh digit of a second is cut; the offset after it stays.
         assert_eq!(to_micros("2026-03-05T14:30:00.1234567+02:00"), "2026-03-05T14:30:00.123456+02:00");
@@ -1328,7 +1347,7 @@ mod tests {
 
     #[test]
     fn refused_database_view_is_not_a_whole_table_sample() {
-        let r = Reproject::from_crs(Crs::from_epsg(32617).unwrap(), &mut Vec::new());
+        let r = Reproject::from_crs(Crs::from_epsg(32617).unwrap(), &mut crate::loss::Notes::new());
         let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit: 10, own: None };
         let all = Extent::new(-84.0, 0.0, -78.0, 25.0);
         assert!(native_window(&req, all, &r, false, 160).unwrap_err().to_string().contains("can't be bounded"));
@@ -1338,7 +1357,7 @@ mod tests {
 
     #[test]
     fn native_windows_respect_database_compatibility() {
-        let reproject = Reproject::from_crs(Crs::LonLat, &mut Vec::new());
+        let reproject = Reproject::from_crs(Crs::LonLat, &mut crate::loss::Notes::new());
         let req = Request { extent: Some(Extent::new(-180.0, -90.0, 180.0, 90.0)), limit: 100, own: None };
         for compatibility in [0, 80, 90, 100] {
             assert_eq!(native_window(&req, Extent::EMPTY, &reproject, true, compatibility).unwrap(), None);

@@ -938,7 +938,7 @@ impl Reproject {
         authority: Option<&str>,
         code: Option<i64>,
         wkt: Option<&str>,
-        notes: &mut Vec<String>,
+        notes: &mut crate::loss::Notes,
     ) -> Option<Result<Reproject>> {
         use crate::raster::planetary::{Declared, declared};
         Some(match declared(authority, code, wkt)? {
@@ -951,7 +951,7 @@ impl Reproject {
     }
 
     /// From an EPSG code; an unknown or missing code is taken as longitude/latitude, with a note.
-    pub(crate) fn from_epsg(code: Option<u32>, notes: &mut Vec<String>) -> Reproject {
+    pub(crate) fn from_epsg(code: Option<u32>, notes: &mut crate::loss::Notes) -> Reproject {
         let crs = match code {
             None | Some(0) => Crs::LonLat,
             Some(c) => match Crs::from_epsg(c) {
@@ -959,7 +959,10 @@ impl Reproject {
                 None => {
                     // Unknown, or one only the desktop app can use (an azimuthal equidistant one in
                     // the web app), which it says.
-                    notes.push(format!("{}; read as longitude/latitude", crate::raster::crs::unusable_epsg(c)));
+                    notes.push(crate::loss::Note::loss(
+                        crate::loss::LossCode::AssumedCrs,
+                        format!("{}; read as longitude/latitude", crate::raster::crs::unusable_epsg(c)),
+                    ));
                     Crs::LonLat
                 }
             },
@@ -969,13 +972,13 @@ impl Reproject {
 
     /// From a coordinate system; one that can't be converted is taken as longitude/latitude, with
     /// a note.
-    pub(crate) fn from_crs(crs: Crs, notes: &mut Vec<String>) -> Reproject {
+    pub(crate) fn from_crs(crs: Crs, notes: &mut crate::loss::Notes) -> Reproject {
         let t = match crs {
             Crs::LonLat => None,
             other => match other.transformer() {
                 Ok(t) => Some(t),
                 Err(e) => {
-                    notes.push(format!("{e}; read as longitude/latitude"));
+                    notes.push(crate::loss::Note::loss(crate::loss::LossCode::AssumedCrs, format!("{e}; read as longitude/latitude")));
                     None
                 }
             },
@@ -1183,7 +1186,7 @@ pub(crate) struct GpkgSrs {
 /// extension) takes priority over its `definition`, as OGC 12-128r19 F.10 says. With no row for
 /// `srs_id`, it is taken as an EPSG code only for WGS 84 and Web Mercator, the ids writers commonly
 /// use without defining.
-pub(crate) fn gpkg_reproject(srs_id: i64, row: Option<GpkgSrs>, notes: &mut Vec<String>) -> Result<Reproject> {
+pub(crate) fn gpkg_reproject(srs_id: i64, row: Option<GpkgSrs>, notes: &mut crate::loss::Notes) -> Result<Reproject> {
     let wkt2 = row.as_ref().and_then(|r| defined(r.definition_12_063.as_deref()));
     let wkt1 = row.as_ref().and_then(|r| defined(r.definition.as_deref()));
     // An EPSG code: the row's when its organization is EPSG (a table-local id such as 100001
@@ -1214,7 +1217,10 @@ pub(crate) fn gpkg_reproject(srs_id: i64, row: Option<GpkgSrs>, notes: &mut Vec<
     // Longitude/latitude is what WGS 84 and the spec's "undefined geographic" id 0 mean; any other
     // id, the "undefined cartesian" -1 too, is assumed to be it.
     if srs_id != 0 && srs_id != 4326 {
-        notes.push(format!("{what} has no EPSG code; read as longitude/latitude"));
+        notes.push(crate::loss::Note::loss(
+            crate::loss::LossCode::AssumedCrs,
+            format!("{what} has no EPSG code; read as longitude/latitude"),
+        ));
     }
     Ok(Reproject::from_crs(Crs::LonLat, notes))
 }
@@ -1250,7 +1256,7 @@ pub(crate) struct DeclaredCrs<'a> {
 /// as longitude/latitude. An Earth definition beside another body's IAU code is read, and said.
 /// `None` when there is nothing to read it by: no EPSG code, no definition and no other body's
 /// code; the format then says what its coordinates are taken as.
-pub(crate) fn declared_reproject(declared: DeclaredCrs, notes: &mut Vec<String>) -> Option<Result<Reproject>> {
+pub(crate) fn declared_reproject(declared: DeclaredCrs, notes: &mut crate::loss::Notes) -> Option<Result<Reproject>> {
     let DeclaredCrs { what, organization, code: declared_code, epsg, wkt1, wkt2 } = declared;
     let definition = wkt2.or(wkt1);
     if let Some(code) = epsg
@@ -1299,8 +1305,9 @@ pub(crate) fn declared_reproject(declared: DeclaredCrs, notes: &mut Vec<String>)
     // its organization and code (an IAU one). Its longitude/latitude are read with a notice. Other
     // coordinates are refused, because they would land in the wrong place. A planetary definition
     // that `read_wkt` reads is converted like any other, with its own notice.
-    let other_body =
-        |definition: Option<&str>, notes: &mut Vec<String>| Reproject::planetary(what, organization, declared_code, definition, notes);
+    let other_body = |definition: Option<&str>, notes: &mut crate::loss::Notes| {
+        Reproject::planetary(what, organization, declared_code, definition, notes)
+    };
     // Else the WKT it is defined with: a custom system, or a code this build doesn't know.
     if let Some(mut definition) = definition {
         // The definition read is the WKT2 whenever there is one.
@@ -1315,7 +1322,7 @@ pub(crate) fn declared_reproject(declared: DeclaredCrs, notes: &mut Vec<String>)
             // Unless the WKT2 is another body's system that is refused: it is the one that counts.
             // (One the WKT2 can't tell the coordinates of, as when it can't be parsed, gives way,
             // so the code isn't asked here: an IAU projected code would refuse a WKT1 that reads.)
-            if let Some(Err(refused)) = Reproject::planetary(what, None, None, Some(definition), &mut Vec::new()) {
+            if let Some(Err(refused)) = Reproject::planetary(what, None, None, Some(definition), &mut crate::loss::Notes::new()) {
                 return Some(Err(refused));
             }
             notes.push(format!("{what}: its WKT2 definition can't be read ({e}), so its WKT1 definition is used"));
@@ -1342,7 +1349,10 @@ pub(crate) fn declared_reproject(declared: DeclaredCrs, notes: &mut Vec<String>)
                 if let Some(reproject) = wkt2.into_iter().chain([definition]).find_map(|d| other_body(Some(d), notes)) {
                     return Some(reproject);
                 }
-                notes.push(format!("{what} can't be read ({e}); read as longitude/latitude"));
+                notes.push(crate::loss::Note::loss(
+                    crate::loss::LossCode::AssumedCrs,
+                    format!("{what} can't be read ({e}); read as longitude/latitude"),
+                ));
                 Crs::LonLat
             }
         };

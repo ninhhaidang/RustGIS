@@ -164,13 +164,18 @@ An `--allow` that names no kind or code is refused with status 2, as is `--allow
 | `dropped.calculation-result` | Correct the expression or check the input rows named in the notice. |
 | `dropped.zm` | Keep the source file where heights or measures matter: RustGIS keeps x and y only. |
 | `dropped.crs-name` | Keep the source file's coordinate system definition with the export. |
+| `dropped.feature` | Correct those features in the source, or read the source in the way the notice suggests. |
+| `dropped.geometry` | Correct the geometry in the source, or give the coordinate system its coordinates are in. |
+| `dropped.over-limit` | Read less at once, such as by filtering or clipping the source first. |
 | `changed.truncated` | Use a decimal field to keep the fractional part. |
 | `changed.body` | Export in the layer's own coordinate system, which keeps its body. |
 | `changed.encoding` | Put a .cpg file naming the file's own encoding beside it. |
 | `changed.rounded` | Keep the source file where times finer than a microsecond matter. |
 | `changed.position` | Export in a coordinate system that holds the positions, such as WGS 84. |
 | `approximated.datum` | Export in the layer's own coordinate system, or give that system with a known transformation to WGS 84. |
+| `approximated.curve` | Keep the source file where exact curves matter: RustGIS draws curves as straight segments. |
 | `assumed.null-marker` | Write the value another way if the text Null is meant as text, not as an empty value. |
+| `assumed.crs` | Give the coordinate system the coordinates are in ("crs" when adding the data, or Define Projection). |
 
 Not every loss has a code yet: losses still reported without one don't stop a strict run.
 
