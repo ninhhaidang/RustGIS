@@ -34,9 +34,9 @@ pub(super) enum Refusal {
     TooMuch,
     /// It has more XML nodes than [`XML_NODES`], or nests deeper than [`DEPTH`].
     TooNested,
-    /// A shape's radius is in em or ex: font sizes, which no font is loaded to give, so it may be
-    /// any size.
-    FontRadius,
+    /// A shape's radius may be any size: in em or ex, font sizes, which no font is loaded to give,
+    /// or in % of a size that may be any ([`viewport`]).
+    UnknownRadius,
     /// It has filters, text, images, animation or links to other files, which aren't drawn (the
     /// module says why).
     Undrawn,
@@ -90,8 +90,9 @@ pub(super) fn read(text: &str) -> Result<usvg::Tree, Refusal> {
     if doc.descendants().any(undrawn) {
         return Err(Refusal::Undrawn);
     }
-    if doc.descendants().any(font_radius) {
-        return Err(Refusal::FontRadius);
+    let sized = viewport(&doc).is_some();
+    if doc.descendants().any(|n| unknown_radius(n, sized)) {
+        return Err(Refusal::UnknownRadius);
     }
     with_sheet(&doc, |sheet| {
         elements(&doc, sheet)?;
@@ -105,23 +106,27 @@ pub(super) fn read(text: &str) -> Result<usvg::Tree, Refusal> {
     };
     usvg::Tree::from_xmltree(&doc, &opt).map_err(|e| match e {
         usvg::Error::ElementsLimitReached => Refusal::TooMuch,
+        // usvg checks the depth of every node, a comment or a line break too, which the count
+        // doesn't walk.
+        usvg::Error::ParsingFailed(roxmltree::Error::NodesLimitReached) => Refusal::TooNested,
         _ => Refusal::NotSvg,
     })
 }
 
-/// Whether shape `n` has a radius in em or ex other than 0 ([`Refusal::FontRadius`]), of those
-/// usvg reads for it: a circle's `r`, an ellipse's or a rectangle's `rx` and `ry`.
-fn font_radius(n: roxmltree::Node) -> bool {
-    use svgtypes::LengthUnit::{Em, Ex};
+/// Whether shape `n` has a radius whose size can't be known ([`Refusal::UnknownRadius`]), of those
+/// usvg reads for it (a circle's `r`, an ellipse's or a rectangle's `rx` and `ry`): one in em or
+/// ex other than 0, a font's size, or one in % other than 0 when the size it is a part of isn't
+/// known (`sized`, from [`viewport`]).
+fn unknown_radius(n: roxmltree::Node, sized: bool) -> bool {
+    use svgtypes::LengthUnit::{Em, Ex, Percent};
     let radii: &[&str] = match n.tag_name().name() {
         "circle" => &["r"],
         "ellipse" | "rect" => &["rx", "ry"],
         _ => return false,
     };
-    radii
-        .iter()
-        .filter_map(|a| n.attribute(*a))
-        .any(|v| v.trim().parse::<svgtypes::Length>().is_ok_and(|l| matches!(l.unit, Em | Ex) && l.number != 0.0))
+    radii.iter().filter_map(|a| n.attribute(*a)).any(|v| {
+        v.trim().parse::<svgtypes::Length>().is_ok_and(|l| l.number != 0.0 && (matches!(l.unit, Em | Ex) || (l.unit == Percent && !sized)))
+    })
 }
 
 /// Whether `n` is something that isn't drawn: text, an image, animation, or what an SVG takes from
@@ -339,7 +344,14 @@ fn elements(doc: &roxmltree::Document, sheet: &simplecss::StyleSheet) -> Result<
             ids.entry(id).or_insert(n);
         }
     }
-    let mut counter = Counter { ids, seen: std::collections::HashMap::new(), viewport: viewport(doc), sheet, matched: 0, deep: false };
+    let mut counter = Counter {
+        ids,
+        seen: std::collections::HashMap::new(),
+        viewport: viewport(doc).unwrap_or(f64::from(f32::MAX)),
+        sheet,
+        matched: 0,
+        deep: false,
+    };
     let refused = |c: &Counter| if c.deep { Refusal::TooNested } else { Refusal::TooMuch };
     let all = counter.count(doc.root_element(), 0).ok_or_else(|| refused(&counter))?;
     // A marker sits on the vertices (`marker-mid`) and both ends of the shapes that set it, by
@@ -442,9 +454,10 @@ impl<'a> Counter<'a, '_> {
 
 /// The largest a viewport of `doc` may be, which a length in % is a part of: its view boxes and the
 /// sizes of its `<svg>`s, `<symbol>`s and `<use>`s, as usvg takes them for one (100 a side
-/// without). The root's size in % is of 100 a side; any other in %, em or ex may be any size, the
-/// largest an f32 holds.
-fn viewport(doc: &roxmltree::Document) -> f64 {
+/// without). The root's size in % is of 100 a side. `None` when one may be any size: the root's in
+/// em or ex, or another's in %, em or ex.
+fn viewport(doc: &roxmltree::Document) -> Option<f64> {
+    use svgtypes::LengthUnit::{Em, Ex, Percent};
     let root = doc.root_element();
     let mut largest = 100.0f64;
     for n in doc.descendants().filter(|n| n.is_element()) {
@@ -452,13 +465,19 @@ fn viewport(doc: &roxmltree::Document) -> f64 {
             largest = largest.max(b.w.abs()).max(b.h.abs());
         }
         if matches!(n.tag_name().name(), "svg" | "symbol" | "use") {
-            let of = if n == root { 100.0 } else { f64::from(f32::MAX) };
             for side in ["width", "height"].iter().filter_map(|&a| n.attribute(a)) {
-                largest = largest.max(length(side, of));
+                let unknown = side
+                    .trim()
+                    .parse::<svgtypes::Length>()
+                    .is_ok_and(|l| l.number != 0.0 && (matches!(l.unit, Em | Ex) || (l.unit == Percent && n != root)));
+                if unknown {
+                    return None;
+                }
+                largest = largest.max(length(side, 100.0));
             }
         }
     }
-    largest
+    Some(largest)
 }
 
 /// The points shape element `n` comes to once read, both ends counted (a marker may sit on each):
@@ -888,6 +907,14 @@ mod tests {
         assert_eq!(read(&svg(&format!(r#"<marker id="m">{rects}</marker>{marked}"#))).err(), Some(Refusal::TooMuch));
         let deep = format!("{}{}", "<g>".repeat(DEPTH as usize + 1), "</g>".repeat(DEPTH as usize + 1));
         assert_eq!(doc(&deep), None);
+        // usvg checks the depth of every node, a comment or a line break too, which the count
+        // doesn't walk: past it is too nested, never "not an SVG". One level less draws.
+        let at = |levels: usize, inner: &str| read(&svg(&format!("{}{inner}{}", "<g>".repeat(levels), "</g>".repeat(levels))));
+        let deepest = (1..=DEPTH as usize).rev().find(|&l| at(l, "").is_ok()).unwrap_or_default();
+        for inner in ["<!-- -->", "\n"] {
+            assert_eq!(at(deepest, inner).err(), Some(Refusal::TooNested), "{inner:?}");
+            assert!(at(deepest - 1, inner).is_ok(), "{inner:?}");
+        }
         // A path of 20,000 segments draws; used ten times its numbers are counted ten times, past
         // what reading takes.
         let long = format!(r#"<defs><path id="p" d="M0 0{}"/></defs>"#, " L1 1".repeat(20_000));
@@ -922,7 +949,7 @@ mod tests {
             let text = svg(body);
             let doc = roxmltree::Document::parse(&text).unwrap();
             let shape = doc.descendants().find(|n| ["path", "circle", "ellipse", "rect"].contains(&n.tag_name().name())).unwrap();
-            (points_of(shape, viewport(&doc)), read(&text).map(|t| drawn(t.root())))
+            (points_of(shape, viewport(&doc).unwrap_or(f64::from(f32::MAX))), read(&text).map(|t| drawn(t.root())))
         };
         for body in [
             r#"<path d="M0 0A1 1 0 1 1 1 1"/>"#,
@@ -946,10 +973,12 @@ mod tests {
             let drawn = drawn.unwrap_or_else(|why| panic!("{body}: {why:?}"));
             assert!(points >= drawn && points < POINTS, "{body}: {points} counted, {drawn} drawn");
         }
-        // A % radius in a viewport whose size isn't known (a nested one in %) counts as the
-        // largest it may come to, as one in em or ex does.
+        // A % radius in a viewport whose size isn't known (a nested one in %, a root in em) is
+        // refused for it, as one in em or ex is (#2713).
         let nested = svg(r#"<svg width="50%" height="50%"><circle r="50%"/></svg>"#);
-        assert_eq!(read(&nested).err(), Some(Refusal::TooMuch));
+        assert_eq!(read(&nested).err(), Some(Refusal::UnknownRadius));
+        let em_root = r#"<svg xmlns="http://www.w3.org/2000/svg" width="2em" height="2em"><rect width="9" height="9" rx="10%"/></svg>"#;
+        assert_eq!(read(em_root).err(), Some(Refusal::UnknownRadius));
         // Against a nested viewport of its own size.
         let large = svg(r#"<svg viewBox="0 0 1e30 1e30"><circle r="50%"/></svg>"#);
         assert_eq!(read(&large).err(), Some(Refusal::TooMuch));
@@ -967,7 +996,7 @@ mod tests {
         }
         // A radius in em or ex, a font's size, is refused as such (#2713).
         let em = r#"<rect width="9" height="9" rx="2em"/>"#;
-        assert_eq!((counted(em).0, read(&svg(em)).err()), (u64::MAX, Some(Refusal::FontRadius)));
+        assert_eq!((counted(em).0, read(&svg(em)).err()), (u64::MAX, Some(Refusal::UnknownRadius)));
     }
 
     /// What isn't an SVG, or reads past its bounds, is refused while it is read: an entity loop,
@@ -1166,7 +1195,7 @@ mod tests {
         let points = |tag: &str, list: &str| {
             let text = svg(&format!(r#"<{tag} points="{list}"/>"#));
             let doc = roxmltree::Document::parse(&text).unwrap();
-            points_of(doc.descendants().find(|n| n.has_tag_name(tag)).unwrap(), viewport(&doc))
+            points_of(doc.descendants().find(|n| n.has_tag_name(tag)).unwrap(), viewport(&doc).unwrap_or(f64::from(f32::MAX)))
         };
         assert_eq!(points("polyline", "12.345,67.891 10.5,20.25 30.125,40.5"), 3 + 2);
         assert_eq!(points("polygon", "1e5,2 -3.5-4 .5.5"), 3 + 2);

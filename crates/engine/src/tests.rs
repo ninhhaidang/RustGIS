@@ -2700,8 +2700,8 @@ fn svg_image_markers_that_dont_draw_are_said_with_why() {
             "Image markers in \"Cities\", \"Rivers\" are SVGs with more than 40,000 XML nodes or nested deeper than 64 levels and are drawn as circles",
         ),
         (
-            MarkerRefusal::SvgFontRadius,
-            "Image markers in \"Cities\", \"Rivers\" are SVGs with a radius in em or ex, whose size RustGIS can't know, and are drawn as circles",
+            MarkerRefusal::SvgUnknownRadius,
+            "Image markers in \"Cities\", \"Rivers\" are SVGs with a radius whose size RustGIS can't know (in em or ex, or in % of a size in em, ex or %), and are drawn as circles",
         ),
         (MarkerRefusal::SvgTooSmall, "Image markers in \"Cities\", \"Rivers\" are SVGs too small to draw and are drawn as circles"),
         (MarkerRefusal::SvgNotUtf8, "Image markers in \"Cities\", \"Rivers\" are SVGs that aren't UTF-8 text and are drawn as circles"),

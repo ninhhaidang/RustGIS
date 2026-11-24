@@ -84,8 +84,9 @@ pub enum MarkerRefusal {
     /// It is an SVG with more XML nodes than `svg::XML_NODES` (40,000) or nested deeper than
     /// `svg::DEPTH` (64).
     SvgTooNested,
-    /// It is an SVG with a radius in em or ex, a font's size, which may be any.
-    SvgFontRadius,
+    /// It is an SVG with a radius that may be any size: in em or ex, a font's size, or in % of a
+    /// size in em, ex or % (other than the whole SVG's in %).
+    SvgUnknownRadius,
     /// It is an SVG too small to scale up to a pixmap (its size near 0).
     SvgTooSmall,
     /// It is an SVG that isn't UTF-8 text.
@@ -135,7 +136,7 @@ refusal_phrases! {
     TooManyPixels => "has more pixels than 2048 × 2048",
     TooMuchToDraw => "is an SVG with more to draw than a 2048 × 2048 image",
     SvgTooNested => "is an SVG with more than 40,000 XML nodes or nested deeper than 64 levels",
-    SvgFontRadius => "is an SVG with a radius in em or ex, whose size RustGIS can't know",
+    SvgUnknownRadius => "is an SVG with a radius whose size RustGIS can't know (in em or ex, or in % of a size in em, ex or %)",
     SvgTooSmall => "is an SVG too small to draw",
     SvgNotUtf8 => "is an SVG that isn't UTF-8 text",
     SvgUndrawn => "is an SVG with filters, text, images, animation or links to other files, which RustGIS doesn't draw in marker images",
@@ -347,7 +348,7 @@ impl From<svg::Refusal> for MarkerRefusal {
             svg::Refusal::NotSvg => MarkerRefusal::NotAnImage,
             svg::Refusal::TooMuch => MarkerRefusal::TooMuchToDraw,
             svg::Refusal::TooNested => MarkerRefusal::SvgTooNested,
-            svg::Refusal::FontRadius => MarkerRefusal::SvgFontRadius,
+            svg::Refusal::UnknownRadius => MarkerRefusal::SvgUnknownRadius,
             svg::Refusal::Undrawn => MarkerRefusal::SvgUndrawn,
         }
     }
@@ -747,7 +748,7 @@ mod tests {
                 TooManyPixels,
                 TooMuchToDraw,
                 SvgTooNested,
-                SvgFontRadius,
+                SvgUnknownRadius,
                 SvgTooSmall,
                 SvgNotUtf8,
                 SvgUndrawn,
@@ -814,7 +815,7 @@ mod tests {
     }
 
     /// Each refusal says its own cause (#2713): a long image, an SVG nested deep or with many
-    /// nodes, a radius in em or ex, one too small to draw, one that isn't UTF-8.
+    /// nodes, a radius whose size can't be known, one too small to draw, one that isn't UTF-8.
     #[test]
     fn an_image_is_refused_for_its_own_cause() {
         use MarkerRefusal::*;
@@ -831,15 +832,30 @@ mod tests {
             (long_png, TooManyBytes),
             (svg(&deep), SvgTooNested),
             (svg(&nodes), SvgTooNested),
-            (svg(r#"<circle r="1em"/>"#), SvgFontRadius),
-            (svg(r#"<rect width="9" height="9" rx="2ex"/>"#), SvgFontRadius),
+            (svg(r#"<circle r="1em"/>"#), SvgUnknownRadius),
+            (svg(r#"<rect width="9" height="9" rx="2ex"/>"#), SvgUnknownRadius),
+            // A radius in % of a size in em or ex, or of a nested one in %.
+            (
+                b64(
+                    r#"<svg xmlns="http://www.w3.org/2000/svg" width="2em" height="2em" viewBox="0 0 100 100"><circle cx="50" cy="50" r="10%"/></svg>"#,
+                ),
+                SvgUnknownRadius,
+            ),
+            (svg(r#"<svg width="50%" height="50%"><circle r="50%"/></svg>"#), SvgUnknownRadius),
             (b64(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1e-40 1e-40"/>"#), SvgTooSmall),
             (not_utf8, SvgNotUtf8),
         ] {
             assert_eq!(marker_in(&mut Store::default(), &image).err(), Some(why), "{why:?}");
         }
         // A radius of 0 em is 0, drawn; so is one in em where the shape takes no such radius.
-        for drawn in [r#"<circle r="0em"/>"#, r#"<circle r="5" rx="1em"/>"#, r#"<rect width="9" height="9" r="1em"/>"#] {
+        for drawn in [
+            r#"<circle r="0em"/>"#,
+            r#"<circle r="5" rx="1em"/>"#,
+            r#"<rect width="9" height="9" r="1em"/>"#,
+            // A % radius of a size it knows, and a nested size in % with no % radius.
+            r#"<circle r="10%"/>"#,
+            r#"<svg width="50%" height="50%"><circle r="5"/></svg>"#,
+        ] {
             assert!(marker_in(&mut Store::default(), &svg(drawn)).is_ok(), "{drawn}");
         }
     }

@@ -2189,7 +2189,7 @@ pub(crate) fn picture_notices_by<'a>(
         MarkerRefusal::TooManyPixels,
         MarkerRefusal::TooMuchToDraw,
         MarkerRefusal::SvgTooNested,
-        MarkerRefusal::SvgFontRadius,
+        MarkerRefusal::SvgUnknownRadius,
         MarkerRefusal::SvgTooSmall,
         MarkerRefusal::SvgNotUtf8,
         MarkerRefusal::SvgUndrawn,
@@ -2236,7 +2236,7 @@ pub(crate) fn picture_notices_by<'a>(
             ],
         ));
     }
-    let [not_images, too_long, too_large, too_much, too_nested, font_radius, too_small, not_utf8, filtered, past_run] = &bad;
+    let [not_images, too_long, too_large, too_much, too_nested, unknown_radius, too_small, not_utf8, filtered, past_run] = &bad;
     if !not_images.is_empty() {
         notices.push(NoticeText::format(
             "Image markers in {names} aren't PNG, JPEG or SVG images and are drawn as circles",
@@ -2268,8 +2268,8 @@ pub(crate) fn picture_notices_by<'a>(
             "Image markers in {names} are SVGs with more than 40,000 XML nodes or nested deeper than 64 levels and are drawn as circles",
         ),
         (
-            font_radius,
-            "Image markers in {names} are SVGs with a radius in em or ex, whose size RustGIS can't know, and are drawn as circles",
+            unknown_radius,
+            "Image markers in {names} are SVGs with a radius whose size RustGIS can't know (in em or ex, or in % of a size in em, ex or %), and are drawn as circles",
         ),
         (too_small, "Image markers in {names} are SVGs too small to draw and are drawn as circles"),
         (not_utf8, "Image markers in {names} are SVGs that aren't UTF-8 text and are drawn as circles"),

@@ -100,8 +100,8 @@ impl MarkerImage {
                         "This image can't be a marker: it is an SVG with more than 40,000 XML nodes or nested deeper than 64 levels"
                     )
                     .to_string(),
-                    MarkerRefusal::SvgFontRadius => {
-                        tl!("This image can't be a marker: it is an SVG with a radius in em or ex, whose size RustGIS can't know").to_string()
+                    MarkerRefusal::SvgUnknownRadius => {
+                        tl!("This image can't be a marker: it is an SVG with a radius whose size RustGIS can't know (in em or ex, or in % of a size in em, ex or %)").to_string()
                     }
                     MarkerRefusal::SvgTooSmall => tl!("This image can't be a marker: it is an SVG too small to draw").to_string(),
                     MarkerRefusal::SvgNotUtf8 => tl!("This image can't be a marker: it is an SVG that isn't UTF-8 text").to_string(),
