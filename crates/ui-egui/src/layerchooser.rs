@@ -23,6 +23,15 @@ pub struct Chooser {
     /// The project it was opened for (`Session::opened`): another project opened since drops it,
     /// so its layers never go to the wrong project.
     opened: u64,
+    /// Set when it is dropped (answered, cancelled, closed, or its project replaced): the listing
+    /// still on its way stops between a GeoPackage's tables.
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for Chooser {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Add Data's question for a file it can link instead of copying (#2350), from `info.fileLayers`'
@@ -94,7 +103,11 @@ pub fn add_file(app: &mut RustGisApp, path: &str) -> Result<Value, String> {
     let slot: crate::Slot<Result<Value, String>> = crate::Slot::default();
     let out = slot.clone();
     let listed = path.to_string();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = stop.clone();
     crate::work_off_frame("rustgis-list-layers", &slot, move || {
+        // A chooser cancelled or closed stops it between a GeoPackage's tables.
+        let _stop = rustgis_engine::data::progress::also_stop_when(stopped);
         let mut session = rustgis_engine::Session::new(rustgis_engine::Project::default());
         let result = session.run("info.fileLayers", &json!({"path": listed, "link": true}));
         *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
@@ -108,6 +121,7 @@ pub fn add_file(app: &mut RustGisApp, path: &str) -> Result<Value, String> {
         pick,
         link: None,
         opened,
+        stop,
     });
     Ok(json!({"choosing": path}))
 }
@@ -331,7 +345,16 @@ mod tests {
     fn listed(opened: u64, path: &str, result: Result<Value, String>) -> Chooser {
         let slot: crate::Slot<Result<Value, String>> = crate::Slot::default();
         *slot.lock().unwrap() = Some(result);
-        Chooser { path: path.to_string(), listing: Some(slot), layers: Vec::new(), filter: String::new(), pick: true, link: None, opened }
+        Chooser {
+            path: path.to_string(),
+            listing: Some(slot),
+            layers: Vec::new(),
+            filter: String::new(),
+            pick: true,
+            link: None,
+            opened,
+            stop: Default::default(),
+        }
     }
 
     const KML: &str = r#"<kml xmlns="http://www.opengis.net/kml/2.2"><Document>
@@ -561,6 +584,45 @@ mod tests {
         let layers = &h.state().session.map().layers;
         assert_eq!(layers.len(), before + 4);
         assert!(layers[..2].iter().all(|l| !l.is_streamed()));
+    }
+
+    /// Cancel, or the window closed, stops the listing still on its way (AGENTS.md › Never hold
+    /// the window): a GeoPackage's tables stop being opened and counted (#2350).
+    #[test]
+    fn cancel_stops_the_listing_on_its_way() {
+        use egui_kittest::kittest::Queryable;
+        let app = RustGisApp::new(Session::new(Project::default()));
+        let mut h = harness(app);
+        let opened = h.state().session.opened;
+        let mut c = listed(opened, "/nonexistent/survey.gpkg", Ok(json!({})));
+        c.listing = Some(crate::Slot::default());
+        let stop = c.stop.clone();
+        h.state_mut().ui.choosing.push(c);
+        h.run_steps(2);
+        assert!(!stop.load(std::sync::atomic::Ordering::Relaxed));
+        h.get_by_label("Cancel").click();
+        h.run_steps(2);
+        assert!(h.state().ui.choosing.is_empty());
+        assert!(stop.load(std::sync::atomic::Ordering::Relaxed), "the listing is told to stop");
+    }
+
+    /// Another project opened while the listing is on its way drops the chooser, and the listing
+    /// stops as on Cancel (#2827).
+    #[test]
+    fn another_project_stops_the_listing_on_its_way() {
+        let app = RustGisApp::new(Session::new(Project::default()));
+        let mut h = harness(app);
+        let opened = h.state().session.opened;
+        let mut c = listed(opened, "/nonexistent/survey.gpkg", Ok(json!({})));
+        c.listing = Some(crate::Slot::default());
+        let stop = c.stop.clone();
+        h.state_mut().ui.choosing.push(c);
+        h.run_steps(2);
+        assert!(!stop.load(std::sync::atomic::Ordering::Relaxed));
+        h.state_mut().session.run("project.new", &json!({})).unwrap();
+        h.run_steps(2);
+        assert!(h.state().ui.choosing.is_empty());
+        assert!(stop.load(std::sync::atomic::Ordering::Relaxed), "the listing is told to stop");
     }
 
     /// The setting: off, a file is added whole without listing it; it is kept as a preference.

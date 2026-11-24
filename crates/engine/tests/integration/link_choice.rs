@@ -122,3 +122,17 @@ fn a_geojson_file_read_whole_is_copied_whatever_its_count() {
     assert_eq!(listed(&mut s, &path)["link"]["linked"], false);
     assert!(!added_linked(&path), "read whole: copied");
 }
+
+#[test]
+fn a_listing_stopped_between_tables_asks_nothing() {
+    // Cancel is looked at between a GeoPackage's tables: once it is pressed, the tables left
+    // aren't opened and counted, and no question is made of what was read.
+    let f = Fixture::new("link-stop");
+    let path = f.file("survey.gpkg");
+    gpkg_file(&path, &["roads", "wells"]);
+    let mut s = session();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let _stopped = rustgis_engine::data::progress::also_stop_when(stop);
+    let v = listed(&mut s, &path);
+    assert!(v.get("link").is_none(), "{v}");
+}

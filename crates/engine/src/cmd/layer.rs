@@ -27,7 +27,7 @@ pub fn commands() -> Vec<C> {
         ),
         C::new("info.fileLayers", "List Layers in File", "Home › Add › Add Data", file_layers).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
-            .params(r#"{"path": string, "crs"?: "EPSG:… for a CityJSON model (.city.json, a .json, or in a zip) or a CityGML model (.gml, .xml, or in a zip): it replaces the system a model file names; in a zip, it is used for a model naming none RustGIS knows (as layer.addData)", "link"?: "bool: for a file Add Data can link instead of copying (GeoPackage, GeoParquet, FlatGeobuf, Shapefile, .geojson; desktop), also say how it would take it, as link: linked (what it does without stream) and copy (whether it can be read whole); it opens each table, so only when asked"}"#),
+            .params(r#"{"path": string, "crs"?: "EPSG:… for a CityJSON model (.city.json, a .json, or in a zip) or a CityGML model (.gml, .xml, or in a zip): it replaces the system a model file names; in a zip, it is used for a model naming none RustGIS knows (as layer.addData)", "link"?: "bool: for a file Add Data can link instead of copying (GeoPackage, GeoParquet, FlatGeobuf, Shapefile, .geojson; desktop), also say how it would take it, as link: linked (what it does without stream; for a .geojson, by its size alone, so Add Data sends the answer, as layer.addData unasked also looks at its count) and copy (whether it can be read whole); it opens each table, so only when asked"}"#),
         C::new("info.fileColumns", "List Columns in File", "Home › Add › Add Data › Delimited Text", file_columns).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).view().params(
             r#"{"path": "a delimited text file (CSV, TSV, TXT, DAT, or gzip-compressed text) or a spreadsheet", "delimiter"?: ","|";"|"\\t"|"|", "layer"?: "a spreadsheet's sheet (the first by default)", "crs"?: "EPSG:… (or WKT), as layer.addData: a projected system keeps the columns found by name"}"#,
         ),
@@ -2525,7 +2525,10 @@ fn streams_by_count(count: Option<u64>) -> bool {
 /// before), files read whole, and those it can't open (`layer.addData` then says why).
 /// `linked` is what `layer.addData` does without `"stream"`, by the same rules
 /// ([`streams_geojson`], [`past_cap_shapefile`] and [`streams_shapefile`], [`streams_by_count`],
-/// linked when any table would be). `copy` is whether it can be read whole: a GeoJSON file or a
+/// linked when any table would be), except a `.geojson` file: by its size alone, as reading its
+/// count means parsing it, so Add Data always sends the answer (`layer.addData` unasked, once it
+/// reads such a file in place, also copies one of few features). A Cancel stops it between
+/// tables, with no question. `copy` is whether it can be read whole: a GeoJSON file or a
 /// Shapefile (and its `.dbf`) within [`rustgis_data::io::max_bytes`]; a source's whole read is
 /// bounded where it is read.
 #[cfg(not(target_arch = "wasm32"))]
@@ -2543,6 +2546,8 @@ fn link_choice(path: &str, tables: &[String]) -> Option<Value> {
         let gpkg = lower.ends_with(".gpkg");
         let mut linked = false;
         for table in tables.iter().map(|t| gpkg.then_some(t.as_str())) {
+            // Cancel (the chooser closed) is looked at between tables: each open counts its rows.
+            rustgis_data::progress::check().ok()?;
             let src = rustgis_data::source::open_path(Path::new(path), table).ok()?;
             linked |= streams_by_count(src.info().count);
         }
