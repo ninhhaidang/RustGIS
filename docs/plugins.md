@@ -760,10 +760,13 @@ that needs it left out.
   address taken from the one before, runs once per step, up to 64 times. The browser follows
   redirects itself, and the server must allow requests from web pages (CORS).
 
-Service discovery a plugin starts follows the same rule. The service or catalogue address it gives
-`service.add`, `service.layers`, `service.coverage`, `service.groupPlan`, `service.import`,
-`service.refresh` or `catalog.search` must be on the internet, and the documents read from it,
-any `text` the plugin supplies and everything they name are held to the internet too.
+The commands a plugin runs follow the same rule. A web address it gives one that connects (the
+`url` of `stac.search`, `portal.add`, `layer.addUrl`, `map.addTiles` or `osm.download`, a portal's
+address, a service or catalogue to discover) must be on the internet, or the command is refused
+before anything is read. Every request such a command makes connects only to the internet,
+wherever its name resolves: the address itself, the requests made from it (a listing, a search,
+the next page), those a saved connection sends, and the documents read from it, any `text` the
+plugin supplies and everything they name.
 
 Use `host::call("host.fetch", json!({"url": url}))` in the Rust SDK, or
 `host::call("host.fetch", json!({"url": url, "json": false}))` for the text only.

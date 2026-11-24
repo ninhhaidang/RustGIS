@@ -711,6 +711,10 @@ impl Session {
         } else if decision != Decision::Allow {
             return Err("this operation needs your approval".into());
         }
+        // Plugins reach only the internet: so does every command one runs that connects.
+        if node.effects.contains(super::Effect::Network) {
+            self.hold_plugin_addresses(&node.params)?;
+        }
         Ok(Arc::new(node))
     }
     /// Keeps the admitted node and synchronous request predicate through nested execution; restores both on panic.
@@ -725,7 +729,13 @@ impl Session {
         }
         let still = continuation.map(|c| Arc::new(move || c.check().is_ok()) as crate::render::rustgis_tiles::cache::Still);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::render::rustgis_tiles::cache::with_optional_still(still, || f(self))
+            // Plugins reach only the internet: so does every request a command one runs makes,
+            // the ones it derives from an address it was given (a listing, a search, a next page)
+            // and the ones a saved connection sends.
+            let held = node.effects.contains(super::Effect::Network) && self.plugin_held();
+            crate::render::rustgis_tiles::cache::with_optional_still(still, || {
+                crate::render::rustgis_tiles::cache::held_to_public(held, || f(self))
+            })
         }));
         let complete =
             if let Some(cursor) = &mut self.policy.cursor { cursor.frames.pop().is_none_or(|(n, at)| n.len() == at) } else { true };

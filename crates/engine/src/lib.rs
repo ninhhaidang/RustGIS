@@ -1931,6 +1931,7 @@ impl Session {
             // And the coordinate systems that needed a missing datum grid, after every command.
             self.say_grid_notes();
             self.say_unplaced();
+            self.say_public_only_full();
             // A plugin's command waiting for its fetches answers `pending` and runs again when they
             // land: logged then, once. (Another command's `pending`, a download the web app makes, is
             // logged as it is asked for: nothing runs it again.)
@@ -3291,6 +3292,7 @@ impl Session {
             self.grid_notes_checked = Some(web_time::Instant::now());
             self.say_grid_notes();
             self.say_unplaced();
+            self.say_public_only_full();
         }
     }
 
@@ -3300,6 +3302,24 @@ impl Session {
     pub fn note_shown_systems(&mut self) {
         for m in &mut self.project.maps {
             m.note_shown_system();
+        }
+    }
+
+    /// Says once that the table of web addresses held to the internet is full
+    /// ([`render::rustgis_tiles::cache::take_public_only_full`]): from then on, until RustGIS
+    /// restarts, an address it has no record of is read only from the internet, so the user's own
+    /// on this computer or the local network is refused.
+    fn say_public_only_full(&mut self) {
+        // A copy run ahead (`requests_into`, desktop only) leaves it for the session that takes
+        // its results.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.requests_into.is_some() {
+            return;
+        }
+        if render::rustgis_tiles::cache::take_public_only_full() {
+            self.warn(
+                "web addresses: RustGIS has recorded as many addresses that may reach only the internet as it can hold, so until it restarts an address it hasn't seen before is read only from the internet, not this computer or the local network",
+            );
         }
     }
 

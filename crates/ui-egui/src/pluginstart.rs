@@ -204,6 +204,8 @@ mod tests {
     /// Queued plugins leave owned URL requests to the app; string zoom options survive delivery.
     #[test]
     fn queued_plugin_downloads_keep_their_claim_and_zoom() {
+        // The plugin's downloads come from this computer (a test server or address).
+        rustgis_engine::cmd::plugins::fetch::plugins_reach_this_computer();
         let _turn = crate::fetching::turn();
         use rustgis_engine::render::rustgis_tiles::cache;
         use std::sync::{Arc, Mutex};

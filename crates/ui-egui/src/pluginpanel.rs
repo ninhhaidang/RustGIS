@@ -1467,6 +1467,8 @@ mod tests {
     /// the frame, as the browser does, and the layer lands as the plugin asked for it (#1144).
     #[test]
     fn a_plugin_adds_data_by_address_off_the_frame() {
+        // The plugin's downloads come from this computer (a test server or address).
+        rustgis_engine::cmd::plugins::fetch::plugins_reach_this_computer();
         let _turn = crate::fetching::turn();
         use rustgis_engine::plugins;
         use std::io::{Read, Write};
@@ -1514,6 +1516,8 @@ mod tests {
     /// The real deferred request and probe loop refuse a withdrawn plugin before a fallback send.
     #[test]
     fn permission_policy_plugin_deferred_probe_refuses_before_fallback() {
+        // The plugin's downloads come from this computer (a test server or address).
+        rustgis_engine::cmd::plugins::fetch::plugins_reach_this_computer();
         let _turn = crate::fetching::turn();
         use rustgis_engine::{plugins, render::rustgis_tiles::cache};
         use std::sync::{
@@ -1587,6 +1591,8 @@ mod tests {
     /// without first reading its header to see whether it could be read in place.
     #[test]
     fn a_scan_by_address_is_downloaded_whole_without_a_probe() {
+        // The plugin's downloads come from this computer (a test server or address).
+        rustgis_engine::cmd::plugins::fetch::plugins_reach_this_computer();
         let _turn = crate::fetching::turn();
         use rustgis_engine::plugins;
         use std::io::{Read, Write};
@@ -1635,6 +1641,8 @@ mod tests {
     /// `layer.addUrl` answers what was added (#1330).
     #[test]
     fn a_plugin_reads_a_window_off_the_frame() {
+        // The plugin's downloads come from this computer (a test server or address).
+        rustgis_engine::cmd::plugins::fetch::plugins_reach_this_computer();
         let _turn = crate::fetching::turn();
         use rustgis_engine::plugins;
         use std::sync::atomic::Ordering;

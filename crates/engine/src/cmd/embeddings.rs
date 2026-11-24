@@ -808,10 +808,12 @@ fn read_window(url: &str, area: [f64; 4], cell: Option<f64>) -> Result<super::la
     use std::sync::atomic::{AtomicBool, Ordering};
     let asked = super::layer::WindowAsked::of(url, area, cell, AEF_BANDS);
     let stop = AtomicBool::new(false);
+    // The reader carries the request context on (a plugin's command reaches only the internet).
+    let still = crate::render::rustgis_tiles::cache::current_still();
     let w = std::thread::scope(|scope| {
-        let reader = std::thread::Builder::new()
-            .name("AlphaEarth window".into())
-            .spawn_scoped(scope, || super::layer::read_window_raster(&asked, &stop));
+        let reader = std::thread::Builder::new().name("AlphaEarth window".into()).spawn_scoped(scope, || {
+            crate::render::rustgis_tiles::cache::with_optional_still(still, || super::layer::read_window_raster(&asked, &stop))
+        });
         let Ok(reader) = reader else { return super::layer::read_window_raster(&asked, &stop) };
         while !reader.is_finished() {
             if rustgis_data::progress::check().is_err() {

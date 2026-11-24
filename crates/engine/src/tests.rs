@@ -19833,6 +19833,8 @@ fn plugin_bridges_cannot_run_another_plugins_tools() {
 fn plugin_downloads_are_left_to_the_app() {
     let mut s = world();
     plugin("eng-url", &["edit", "network"]);
+    // Its downloads come from this computer (a test server).
+    fetch_mode(true, true);
     let (undo, layers) = (s.undo.len(), s.map().layers.len());
     // Nothing answers there: a download that waited fails.
     let url = "http://127.0.0.1:9/places.csv";
@@ -20661,6 +20663,108 @@ fn a_document_a_plugin_supplies_names_only_the_internet() {
     let out = forward(&mut s, id, "catalog.search", search).unwrap();
     assert_eq!(out["records"][0]["links"].as_array().map_or(0, Vec::len), 0, "{out}");
     rustgis_plugins::unload(id);
+}
+
+/// A server on this computer for the commands that take an address: a GeoJSON file and a STAC
+/// API's collections, and the paths it was asked for.
+fn local_data_server() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let points = br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"n":1},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
+    let collections = br#"{"collections":[{"id":"scenes","title":"Scenes","links":[]}],"links":[]}"#;
+    serve_files(vec![("/points.geojson".into(), points.to_vec()), ("/stac/collections".into(), collections.to_vec())])
+}
+
+/// Plugins reach only the internet, and so does every command a plugin runs that connects: an
+/// address it gives on this computer or the local network is refused before anything is read,
+/// naming it and why (the STAC, open data portal, web file, tile and OpenStreetMap commands
+/// among them), and nothing is added.
+#[test]
+fn a_plugin_cannot_name_a_local_address_to_a_command() {
+    let mut s = world();
+    let id = "eng-address-local";
+    plugin(id, &["network", "edit"]);
+    let (base, asked) = local_data_server();
+    let lan = "http://192.168.21.4";
+    let (layers, tiles) = (s.map().layers.len(), s.map().tiles.len());
+    let cases = [
+        ("stac.collections", json!({"url": format!("{base}/stac")}), format!("{base}/stac")),
+        ("stac.search", json!({"url": format!("{base}/stac"), "collections": ["scenes"], "bbox": [0, 0, 1, 1]}), format!("{base}/stac")),
+        ("stac.addAsset", json!({"url": format!("{base}/stac/item.json")}), format!("{base}/stac/item.json")),
+        (
+            "stac.addCube",
+            json!({"url": format!("{base}/stac"), "collection": "scenes", "asset": "red", "bbox": [0, 0, 1, 1], "start": "2024-01-01", "end": "2024-02-01"}),
+            format!("{base}/stac"),
+        ),
+        ("portal.search", json!({"portal": "ckan", "url": format!("{lan}/ckan"), "query": "parcels"}), format!("{lan}/ckan")),
+        (
+            "portal.files",
+            json!({"dataset": "0123456789abcdef", "portal": "arcgis-portal", "url": format!("{lan}/portal")}),
+            format!("{lan}/portal"),
+        ),
+        ("portal.add", json!({"url": format!("{base}/points.geojson")}), format!("{base}/points.geojson")),
+        ("portal.add", json!({"url": format!("{base}/store.zarr"), "use": "zarr"}), format!("{base}/store.zarr")),
+        ("portal.add", json!({"url": "https://data.example.com/points.geojson", "portal": lan}), lan.to_string()),
+        ("layer.addUrl", json!({"url": format!("{base}/points.geojson")}), format!("{base}/points.geojson")),
+        ("map.addTiles", json!({"url": format!("{lan}/tiles/{{z}}/{{x}}/{{y}}.png")}), format!("{lan}/tiles/{{z}}/{{x}}/{{y}}.png")),
+        (
+            "osm.download",
+            json!({"bbox": [1, 2, 1.01, 2.01], "tags": "building", "url": format!("{base}/api/interpreter")}),
+            format!("{base}/api/interpreter"),
+        ),
+    ];
+    for (op, p, url) in cases {
+        let e = forward(&mut s, id, op, p).unwrap_err();
+        assert!(
+            e.contains(&url) && e.contains("plugins fetch only from the internet, not this computer or the local network"),
+            "{op}: {e}"
+        );
+    }
+    assert_eq!(asked.lock().unwrap().as_slice(), &[] as &[String], "nothing was read from this computer");
+    assert_eq!((s.map().layers.len(), s.map().tiles.len()), (layers, tiles), "nothing was added");
+    // An address on the internet is taken, and read only from there, wherever its name resolves.
+    let public = "https://tiles.plugin-named.example/{z}/{x}/{y}.png";
+    forward(&mut s, id, "map.addTiles", json!({"url": public})).unwrap();
+    use crate::render::rustgis_tiles::{address::Reach, cache};
+    assert_eq!(cache::ceiling_for("https://tiles.plugin-named.example/3/4/5.png"), Reach::Public);
+    rustgis_plugins::unload(id);
+}
+
+/// A plugin's command is held to the internet in every request it makes, not only at the address
+/// it gives: a bucket it names is listed through the user's connection that serves it, whose
+/// endpoint is on this computer, and the listing is refused there, while the user's own listing of
+/// it is read.
+#[test]
+fn a_plugin_lists_a_bucket_only_from_the_internet() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if isolate_process_test("tests::a_plugin_lists_a_bucket_only_from_the_internet") {
+        return;
+    }
+    let listing = br#"<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>plugin-held-bucket</Name><Prefix></Prefix><IsTruncated>false</IsTruncated><Contents><Key>a.tif</Key><Size>3</Size></Contents></ListBucketResult>"#;
+    let base = serve(listing, 1);
+    let mut s = world();
+    s.run("s3.connect", &json!({"name": "local-minio", "endpoint": base, "buckets": ["plugin-held-bucket"], "anonymous": true})).unwrap();
+    let id = "eng-s3-local";
+    plugin(id, &["network"]);
+    let e = forward(&mut s, id, "s3.list", json!({"bucket": "plugin-held-bucket"})).unwrap_err();
+    assert!(e.contains("local network"), "{e}");
+    let own = s.run("s3.list", &json!({"bucket": "plugin-held-bucket"})).unwrap();
+    assert_eq!(own["objects"][0]["url"], "s3://plugin-held-bucket/a.tif", "{own}");
+    rustgis_plugins::unload(id);
+}
+
+/// The user's own addresses on this computer are read as ever: only a plugin's are held to the
+/// internet.
+#[test]
+fn the_users_own_local_address_is_still_read() {
+    let mut s = world();
+    let (base, asked) = local_data_server();
+    let added = s.run("layer.addUrl", &json!({"url": format!("{base}/points.geojson"), "name": "Mine"})).unwrap();
+    assert!(added["layer"].is_u64(), "{added}");
+    let listed = s.run("stac.collections", &json!({"url": format!("{base}/stac")})).unwrap();
+    assert_eq!(listed["collections"][0]["id"], "scenes", "{listed}");
+    s.run("map.addTiles", &json!({"url": format!("{base}/tiles/{{z}}/{{x}}/{{y}}.png"), "name": "Local tiles"})).unwrap();
+    assert!(s.map().tiles.iter().any(|t| t.name == "Local tiles"));
+    let asked = asked.lock().unwrap();
+    assert!(asked.iter().any(|p| p == "/points.geojson") && asked.iter().any(|p| p == "/stac/collections"), "{asked:?}");
 }
 
 /// Where nothing may wait (the browser), `host.fetch` answers pending: the command is undone,
@@ -49501,6 +49605,8 @@ fn a_window_asked_for_the_view_keeps_the_view_it_was_asked_in() {
     let (base, _) = serve_ranges(example(1024, 256));
     let mut s = world();
     plugin("eng-window-view", &["edit", "network"]);
+    // Its downloads come from this computer (a test server).
+    fetch_mode(true, true);
     let layers = s.map().layers.len();
     s.run("map.zoomToExtent", &json!({"extent": [10.3, 45.55, 10.45, 45.7]})).unwrap();
     let seen = crate::cmd::workspace::view_extent(&s);
@@ -49543,6 +49649,8 @@ fn a_plugin_command_runs_again_when_its_window_is_added() {
     let (base, _) = serve_ranges(example(1024, 256));
     let mut s = world();
     plugin("eng-window", &["edit", "network"]);
+    // Its downloads come from this computer (a test server).
+    fetch_mode(true, true);
     let layers = s.map().layers.len();
     let url = format!("{base}/scene.tif");
     let bbox = json!([10.25, 45.5, 10.5, 45.75]);
@@ -51220,6 +51328,8 @@ fn a_plugin_commands_grib_range_is_added_when_the_app_completes_it() {
     let (base, _) = serve_ranges(file.clone());
     let mut s = world();
     plugin("eng-grib-range", &["edit", "network"]);
+    // Its downloads come from this computer (a test server).
+    fetch_mode(true, true);
     let url = format!("{base}/run/PREC.grb");
     let p = json!({"op": "layer.addUrl", "params": {"url": url, "bytes": [88, 175], "name": "Rain"}});
     s.run_leaving_downloads("plugin:eng-grib-range/f", &p).unwrap();

@@ -45,7 +45,7 @@ rustix = { version = "1.1", features = ["process", "fs"] }
 [dev-dependencies]
 tempfile = "3"
 # PDF downloads drawn off the frame (#2336).
-rustgis-engine = { workspace = true, features = ["pdf"] }
+rustgis-engine = { workspace = true, features = ["pdf", "testing"] }
 rustgis-plugins = { workspace = true, features = ["testing"] }
 # Copernicus Data Space sign-ins at a fake token endpoint on 127.0.0.1.
 rustgis-tiles = { workspace = true, features = ["testing"] }

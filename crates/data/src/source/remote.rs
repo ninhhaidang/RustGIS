@@ -99,7 +99,11 @@ pub fn with_optional_still<T>(still: Option<Still>, f: impl FnOnce() -> T) -> T 
     }
     let previous = current_still();
     let combined = match (previous.clone(), still) {
-        (Some(a), Some(b)) => Some(std::sync::Arc::new(move || a() && b()) as Still),
+        (Some(a), Some(b)) => {
+            let held = is_held_still(&a) || is_held_still(&b);
+            let both = std::sync::Arc::new(move || a() && b()) as Still;
+            Some(if held { held_still(both) } else { both })
+        }
         (Some(a), None) => Some(a),
         (None, b) => b,
     };
@@ -119,6 +123,32 @@ pub fn with_captured_still<T>(still: Option<Still>, f: impl FnOnce() -> T) -> T 
     }
     let _restore = Restore(STILL.with(|s| s.replace(still)));
     f()
+}
+
+/// The request contexts whose requests may reach only the internet ([`held_still`]).
+static HELD: std::sync::Mutex<Vec<std::sync::Weak<dyn Fn() -> bool + Send + Sync>>> = std::sync::Mutex::new(Vec::new());
+
+/// Marks `still` as holding its requests to the internet (a plugin's command: plugins reach only
+/// the internet). The mark goes wherever the context does: a worker that re-enters it
+/// ([`current_still`], [`with_optional_still`], [`with_captured_still`]) is held too, and so is a
+/// context it is combined with.
+pub fn held_still(still: Still) -> Still {
+    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    held.retain(|w| w.strong_count() > 0);
+    held.push(std::sync::Arc::downgrade(&still));
+    still
+}
+
+/// Whether `still` was marked by [`held_still`].
+fn is_held_still(still: &Still) -> bool {
+    let at = std::sync::Arc::as_ptr(still).cast::<()>();
+    HELD.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|w| std::sync::Weak::as_ptr(w).cast::<()>() == at)
+}
+
+/// Whether this thread's requests may reach only the internet: its request context was marked
+/// by [`held_still`].
+pub fn requests_held() -> bool {
+    current_still().is_some_and(|still| is_held_still(&still))
 }
 
 /// Checked immediately before a request-producing stage, without suspension before sending.

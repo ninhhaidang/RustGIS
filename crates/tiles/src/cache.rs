@@ -474,6 +474,8 @@ struct PublicOnly {
     /// Once capacity is reached, active public restrictions are never evicted; unknown URLs fail
     /// closed to [`crate::address::Reach::Public`] unless explicitly user-named via [`allow_named`].
     saturated: bool,
+    /// Whether [`take_public_only_full`] has said that capacity was reached.
+    said_full: bool,
 }
 
 fn public_only() -> &'static Mutex<PublicOnly> {
@@ -586,9 +588,28 @@ pub fn allow_named(url: &str) {
     }
 }
 
+/// Runs `f` with every address asked for in it read only from the internet when `held` (a
+/// plugin's command: plugins reach only the internet), whatever is recorded of the address, so
+/// the requests a command derives from the address it was given (a listing, a search, a next
+/// page) are held as that address is. The hold is part of the request context
+/// ([`rustgis_data::source::remote::held_still`]): the workers that carry the context on, as they
+/// carry cancellation, are held too. Requests made later outside it follow what is recorded
+/// ([`restrict_to_public`]).
+pub fn held_to_public<T>(held: bool, f: impl FnOnce() -> T) -> T {
+    if !held {
+        return f();
+    }
+    let still = rustgis_data::source::remote::held_still(Arc::new(|| true));
+    with_optional_still(Some(still), f)
+}
+
 /// The network reach ceiling recorded for `url`: [`crate::address::Reach::Public`] when a web
-/// document named it, [`crate::address::Reach::Local`] otherwise.
+/// document named it, or while this thread's requests are [`held_to_public`],
+/// [`crate::address::Reach::Local`] otherwise.
 pub fn ceiling_for(url: &str) -> crate::address::Reach {
+    if rustgis_data::source::remote::requests_held() {
+        return crate::address::Reach::Public;
+    }
     let base = canonical_resource(url);
     if base.is_empty() {
         return crate::address::Reach::Local;
@@ -603,6 +624,17 @@ pub fn ceiling_for(url: &str) -> crate::address::Reach {
     } else {
         crate::address::Reach::Local
     }
+}
+
+/// Whether the addresses recorded as reaching only the internet ([`restrict_to_public`]) have
+/// filled their table ([`MAX_PUBLIC_ONLY`] addresses or [`MAX_PUBLIC_TEMPLATES`] templates) and
+/// this hasn't said so yet: from then on every address not recorded is read only from the
+/// internet, until the restrictions are reset. True once, for the session to say.
+pub fn take_public_only_full() -> bool {
+    let mut p = public_only().lock().unwrap_or_else(|e| e.into_inner());
+    let new = p.saturated && !p.said_full;
+    p.said_full |= p.saturated;
+    new
 }
 
 /// Resets document-origin public restrictions recorded by [`restrict_to_public`] and [`allow_named`].
@@ -7815,6 +7847,37 @@ Connection: close
         assert_eq!(ceiling_for(tif), crate::address::Reach::Local);
     }
 
+    /// While a thread's requests are held to the internet (a plugin's command), an address with
+    /// nothing recorded of it, as a listing or search derived from the one given, is read only
+    /// from the internet: one on this computer is refused, and read again once the hold ends.
+    #[test]
+    fn a_held_thread_reads_only_from_the_internet() {
+        let _turn = turn();
+        let ok = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_string();
+        let base = serve(vec![ok.clone(), ok]);
+        let derived = format!("{base}/api/collections");
+        assert_eq!(ceiling_for(&derived), crate::address::Reach::Local);
+        let held = held_to_public(true, || {
+            held_to_public(false, || assert_eq!(ceiling_for(&derived), crate::address::Reach::Public, "nested, still held"));
+            // A worker carrying the request context on, as readers carry cancellation, is held.
+            let context = current_still();
+            let worker = derived.clone();
+            let ceiling = std::thread::scope(|scope| {
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || with_optional_still(context, || ceiling_for(&worker)))
+                    .unwrap()
+                    .join()
+                    .unwrap()
+            });
+            assert_eq!(ceiling, crate::address::Reach::Public, "a worker carrying the context");
+            download_blocking(&derived)
+        });
+        let e = held.unwrap_err();
+        assert!(e.contains("local network"), "{e}");
+        assert_eq!(ceiling_for(&derived), crate::address::Reach::Local, "the hold ends with it");
+        assert_eq!(download_blocking(&derived).unwrap(), b"ok");
+    }
+
     /// A read begun while its resource could reach the local network, and answered after a web
     /// document restricted it to public addresses, is not kept for a public read (#2055).
     #[test]
@@ -7848,12 +7911,15 @@ Connection: close
         let first_tpl = "https://dated.example/{YYYY}/{MM}/{DD}.tif";
         restrict_to_public(first_exact);
         restrict_to_public(first_tpl);
+        assert!(!take_public_only_full(), "nothing to say before the table fills");
         for i in 0..(MAX_PUBLIC_TEMPLATES + 8) {
             restrict_to_public(&format!("https://t{i}.example/{{z}}/{{x}}/{{y}}.png"));
         }
         for i in 0..(MAX_PUBLIC_ONLY + 8) {
             restrict_to_public(&format!("https://e.example/asset-{i}.tif"));
         }
+        assert!(take_public_only_full(), "a full table is said");
+        assert!(!take_public_only_full(), "once");
         assert_eq!(ceiling_for(first_exact), crate::address::Reach::Public);
         assert_eq!(ceiling_for("https://dated.example/2025/01/15.tif"), crate::address::Reach::Public);
         assert_eq!(ceiling_for("https://unseen.example/other.tif"), crate::address::Reach::Public, "saturated table fails closed");
