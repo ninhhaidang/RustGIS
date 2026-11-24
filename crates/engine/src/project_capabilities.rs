@@ -66,6 +66,12 @@ impl Project {
         {
             required.push("label-weight");
         }
+        // And their clearances (#2828), for the same reason.
+        if !required.contains(&"label-clearance")
+            && self.styles.iter().any(|s| s.labels.in_order().any(|c| c.clearance != rustgis_map::symbology::DEFAULT_LABEL_CLEARANCE))
+        {
+            required.push("label-clearance");
+        }
         let commands: Vec<&'static str> =
             COMMAND_CAPABILITIES.iter().filter_map(|&(name, uses)| self.uses_commands(uses).then_some(name)).collect();
         required.extend(commands.into_iter().filter(|name| !required.contains(name)).collect::<Vec<_>>());
@@ -142,7 +148,22 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("layout-text-size", command_uses_text_size),
     ("dggs-system", command_uses_dggs_system),
     ("label-weight", command_weighs_labels),
+    ("label-clearance", command_clears_labels),
 ];
+
+/// A saved `labels.placement` that gives a class a clearance other than 2, read as the command
+/// reads it (#2828): an older reader runs it without the key, saying nothing, so the labels would
+/// keep 2 points apart as before. 2 or null is what an older reader keeps.
+fn command_clears_labels(id: &str, params: &Value) -> bool {
+    match id {
+        "labels.placement" => params
+            .get("clearance")
+            .and_then(crate::cmd::labels::number)
+            .is_some_and(|c| rustgis_map::symbology::label_clearance(c) != rustgis_map::symbology::DEFAULT_LABEL_CLEARANCE),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_clears_labels)),
+        _ => false,
+    }
+}
 
 /// A saved `labels.placement` that gives a class a weight other than 5, read as the command reads
 /// it (#2803): an older reader runs it without the key, saying nothing, so the labels would compete
@@ -573,6 +594,12 @@ fn label_weight(layer: &Layer) -> bool {
     layer.labels.in_order().any(|c| c.weight != rustgis_map::symbology::DEFAULT_LABEL_WEIGHT)
 }
 
+/// Whether a layer's label classes keep other than the default room free (#2828): an older reader
+/// would drop the clearances, and place and save the labels as without them.
+fn label_clearance(layer: &Layer) -> bool {
+    layer.labels.in_order().any(|c| c.clearance != rustgis_map::symbology::DEFAULT_LABEL_CLEARANCE)
+}
+
 /// The capabilities a layer needs, in [`map_capabilities`]'s order.
 fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
     [
@@ -583,6 +610,7 @@ fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
         (zarr_window(layer), "zarr-window"),
         (label_guide(layer), "label-guide"),
         (label_weight(layer), "label-weight"),
+        (label_clearance(layer), "label-clearance"),
         (held_natively(&layer.dataset), super::NATIVE_COORDINATES),
     ]
     .into_iter()
@@ -609,13 +637,14 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         mut grid_color,
     ) = (false, false, false, false, false, false, false, false, false, false, false, false, false, false, false);
     let mut polygon = false;
-    let (mut offline_area_id, mut paper, mut native, mut guided, mut weighed) = (false, false, false, false, false);
+    let (mut offline_area_id, mut paper, mut native, mut guided, mut weighed, mut cleared) = (false, false, false, false, false, false);
     for map in maps {
         offline_area_id |= map.offline_area_id.is_some();
         // A blank basemap's paper colour (#2532), which an older reader would draw and save white.
         paper |= map.paper.is_some();
         guided |= map.layers.iter().any(label_guide);
         weighed |= map.layers.iter().any(label_weight);
+        cleared |= map.layers.iter().any(label_clearance);
         // An older reader doesn't know the MGRS graticule (#1042 piece 8): it refuses the
         // project by name rather than failing to read the type.
         mgrs |= map.graticule_type == rustgis_map::graticule::GraticuleType::Mgrs;
@@ -662,6 +691,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         (zarr, "zarr-window"),
         (guided, "label-guide"),
         (weighed, "label-weight"),
+        (cleared, "label-clearance"),
         (offline_area_id, "offline-map-area-id"),
         (paper, "blank-paper"),
         (native, super::NATIVE_COORDINATES),

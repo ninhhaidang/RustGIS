@@ -650,6 +650,14 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   win over the towns' without moving the river layer above them, which would change what draws
   on top (`labels.placement={"layer": "Rivers", "weight": 8}`; a fraction is rounded and a number
   past 0 or 10 brought to it, with a notice; `null` is 5).
+- **Clearance** (Labeling pane › Position): the room, in points, a class's labels keep free of
+  other labels (0 to 100, 2 to start with, the room every label kept before). Two labels keep
+  both their clearances apart: a river's name with 10 keeps a town's with 2 at least 12 points
+  away, so some labels that fitted before are left out or try their other places. 0 lets the
+  class's labels come as close as their halos and backgrounds allow. It counts round the text
+  only, not an icon; vector tile labels keep their style's own padding
+  (`labels.placement={"layer": "Rivers", "clearance": 10}`; a number past 0 or 100 is brought to
+  it, with a notice; `null` is 2).
 - **Callouts** (Labeling pane › Position): a label crowded off its spot moves to the nearest free
   spot nearby, and a line is drawn from its feature to the text, as QGIS's callouts. **at most**
   sets how long the line may be (5 to 500 points, 40 to start with): a label with no free spot
@@ -669,8 +677,9 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   moves and old label locks because replacement data can reuse feature ids, with a counted notice
   and undo restoration. Opening a project, importing a map or styles, or adding a layer file
   reports invalid, duplicate or excess moved-label entries that were ignored, callout lengths that
-  were adjusted, label weights that were not a whole number from 0 to 10, and Show all labels
-  settings that were not true or false. A callout length given
+  were adjusted, label weights that were not a whole number from 0 to 10, label clearances that
+  were not a number from 0 to 100 points, and Show all labels settings that were not true or
+  false. A callout length given
   to `labels.placement` outside 5 to 500 points is brought within range with a notice. Clean
   settings give no such notice.
 - **Font**: the labels' font family, any installed on the computer (Labeling pane › Symbol

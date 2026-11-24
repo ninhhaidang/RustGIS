@@ -207,7 +207,7 @@ labels.fonts search?
 labels.lock on?
 labels.move layer? class? feature to
 labels.pause on?
-labels.placement layer? class? position? to? side? offset? repeat? lineOffset? otherPositions? fit? abbreviations? showAll? weight? callout? guide?
+labels.placement layer? class? position? to? side? offset? repeat? lineOffset? otherPositions? fit? abbreviations? showAll? weight? clearance? callout? guide?
 labels.resetMoved layer? class? all?
 labels.scaleRange layer? class? min? max? clear?
 labels.style layer? class? size? color? halo? haloColor? haloWidth? spacing? stretch? bold? italic? font? background? wrapChar? wrapLength? lineAlign?

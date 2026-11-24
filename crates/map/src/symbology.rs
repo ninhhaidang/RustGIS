@@ -2667,6 +2667,14 @@ pub struct LabelClass {
     /// equal weights keep the layer above and the class listed first ahead.
     #[serde(default = "default_label_weight", deserialize_with = "de_label_weight", skip_serializing_if = "is_default_label_weight")]
     pub weight: u8,
+    /// The room (points, within [`LABEL_CLEARANCE`], [`DEFAULT_LABEL_CLEARANCE`] by default) its
+    /// labels' text keeps free of other labels; two labels keep both their clearances apart.
+    #[serde(
+        default = "default_label_clearance",
+        deserialize_with = "de_label_clearance",
+        skip_serializing_if = "is_default_label_clearance"
+    )]
+    pub clearance: f32,
     /// Callouts: a label crowded off its spot moves to a free one nearby, a line drawn from its
     /// feature to it at most this long (points, within [`CALLOUT_REACH`]), as QGIS's callouts;
     /// none keeps every label in its spot. Labels along lines aren't moved.
@@ -3014,6 +3022,30 @@ fn default_label_weight() -> u8 {
 
 fn is_default_label_weight(w: &u8) -> bool {
     *w == DEFAULT_LABEL_WEIGHT
+}
+
+/// The room a label's text keeps free of other labels (#2828), in points.
+pub const LABEL_CLEARANCE: std::ops::RangeInclusive<f64> = 0.0..=100.0;
+
+/// The clearance of a class that sets none, and of every label before clearances: the padding
+/// every label kept.
+pub const DEFAULT_LABEL_CLEARANCE: f32 = 2.0;
+
+/// A label's clearance: within [`LABEL_CLEARANCE`]; one that isn't a number is the default.
+pub fn label_clearance(v: f64) -> f32 {
+    if v.is_finite() { v.clamp(*LABEL_CLEARANCE.start(), *LABEL_CLEARANCE.end()) as f32 } else { DEFAULT_LABEL_CLEARANCE }
+}
+
+fn de_label_clearance<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    Ok(lenient::<D, f64>(d)?.map_or(DEFAULT_LABEL_CLEARANCE, label_clearance))
+}
+
+fn default_label_clearance() -> f32 {
+    DEFAULT_LABEL_CLEARANCE
+}
+
+fn is_default_label_clearance(c: &f32) -> bool {
+    *c == DEFAULT_LABEL_CLEARANCE
 }
 
 fn is_no_offset(o: &[f32; 2]) -> bool {
@@ -3434,6 +3466,7 @@ impl LabelClass {
             line_offset: 0.0,
             show_all: false,
             weight: DEFAULT_LABEL_WEIGHT,
+            clearance: DEFAULT_LABEL_CLEARANCE,
             callout: None,
             square_to: None,
             guide: None,

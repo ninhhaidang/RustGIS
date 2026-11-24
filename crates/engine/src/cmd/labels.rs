@@ -143,14 +143,14 @@ pub fn commands() -> Vec<C> {
                 // A position that isn't a placement name is refused, not dropped for the others (null:
                 // none, as for the other keys).
                 None if p.get("position").is_some_and(|v| !v.is_null()) => return Err("position must be a placement name".into()),
-                None if ["offset", "repeat", "lineOffset", "otherPositions", "showAll", "weight", "callout", "to", "side", "fit", "abbreviations", "guide"]
+                None if ["offset", "repeat", "lineOffset", "otherPositions", "showAll", "weight", "clearance", "callout", "to", "side", "fit", "abbreviations", "guide"]
                     .iter()
                     .any(|k| p.get(k).is_some()) =>
                 {
                     None
                 }
                 None => {
-                    return Err("position is required (or an offset, a repeat, a lineOffset, otherPositions, showAll, a weight, a callout, to, side, fit, abbreviations or a guide)".into());
+                    return Err("position is required (or an offset, a repeat, a lineOffset, otherPositions, showAll, a weight, a clearance, a callout, to, side, fit, abbreviations or a guide)".into());
                 }
             };
             // Along a line placed curved, the label fitted to the room the line gives (#2265).
@@ -213,6 +213,15 @@ pub fn commands() -> Vec<C> {
             };
             let weight_asked = weight.filter(|w| w.fract() != 0.0 || !rustgis_map::symbology::LABEL_WEIGHT.contains(w));
             let weight = weight.map(rustgis_map::symbology::label_weight);
+            // The room its labels keep free of other labels (#2828): 0 to 100 points, null back to
+            // 2. A number out of range is held to it, and says so.
+            let clearance = match p.get("clearance") {
+                None => None,
+                Some(Value::Null) => Some(f64::from(rustgis_map::symbology::DEFAULT_LABEL_CLEARANCE)),
+                Some(v) => Some(number(v).ok_or("clearance must be a number of points from 0 to 100 (null: 2)")?),
+            };
+            let clearance_asked = clearance.filter(|c| !rustgis_map::symbology::LABEL_CLEARANCE.contains(c));
+            let clearance = clearance.map(rustgis_map::symbology::label_clearance);
             // Every label shown, over the others where they crowd.
             let show_all = match p.get("showAll") {
                 None => None,
@@ -299,6 +308,9 @@ pub fn commands() -> Vec<C> {
                 if let Some(w) = weight {
                     c.weight = w;
                 }
+                if let Some(r) = clearance {
+                    c.clearance = r;
+                }
                 if let Some(f) = fit {
                     c.fit = f;
                 }
@@ -376,12 +388,24 @@ pub fn commands() -> Vec<C> {
                     false,
                 );
             }
+            if let Some(asked) = clearance_asked {
+                let name = s.map().layer(id).map(|l| l.name.clone()).unwrap_or_default();
+                let kept = rustgis_map::symbology::label_clearance(asked);
+                let asked = if asked.abs() < 1e6 { asked.to_string() } else { format!("{asked:e}") };
+                s.notify_text(
+                    NoticeText::format(
+                        "{name}: clearance {asked} adjusted to {kept} (a label's clearance is from 0 to 100 points)",
+                        [("name", name.into()), ("asked", asked.into()), ("kept", kept.to_string().into())],
+                    ),
+                    false,
+                );
+            }
             Ok(done)
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .inputs(super::Inputs::single_layer)
         .when(need_feature_layer)
         .params(
-            r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "position"?: "auto"|"center"|"above"|"below"|"left"|"right"|"aboveRight"|"aboveLeft"|"belowRight"|"belowLeft"|"parallel" (along a line, straight)|"curved" (along a line, following its bends)|"perpendicular" (a point's, square to the nearest line of `to`, starting at the point; none that near: as auto) (required without offset, repeat, lineOffset, otherPositions, showAll, weight, callout, to, side, fit, abbreviations or guide), "to"?: {"layer": a line or polygon layer's name, "within"?: points (1 to 500; 20)} | null, "side"?: "away" (the side of the line the point isn't on; the default)|"left"|"right" (as the line runs), "offset"?: [right, down] points (-200 to 200 each) the label moves from where its position puts it ([0, 0]: none; perpendicular: [out along the normal, down as the text reads]; a label along a line isn't moved), "repeat"?: points (10 to 10000) between a line's labels, spaced out from the one at its middle, at most 32 a line (0 or null: the one at its middle; parallel and curved only), "lineOffset"?: points (-200 to 200) between a line and its label's nearest edge, above the line as the text reads, negative below it (0 or null: on the line; parallel and curved only), "otherPositions"?: bool (a label whose place is taken tries others: a point's round the point, corners first; a line's along the line, nearest its middle first, placed parallel or curved without a repeat; true is refused for any other line label and on polygons), "fit"?: "auto"|"off" (curved along a line: "auto" abbreviates a name that can't follow the line, sets one longer than a third of it on its straightest stretch, and spreads one over labels.style's stretch of a line more than three times its length; "off" or null: as placed), "abbreviations"?: {word: abbreviation} (whole words a fitted label puts short, ignoring case, over the built-in English, Portuguese and Spanish list, as {"Creek": "Cr.", "Córrego": "Cór."}; null or {}: the built-in list alone), "showAll"?: bool (every label drawn, over the others where they crowd), "weight"?: 0 to 10 (where labels compete for a place, the heavier class's wins, whatever its layer's place; equal weights: the layer above, then the class listed first; a fraction rounded; null: 5), "callout"?: true|false|points (5 to 500: a label crowded off its spot moves to a free one nearby, a line drawn back to its feature at most this long; true keeps its length, or 40; false, 0 or null: none; not labels along a line or with an icon), "guide"?: {"layer": a line layer's name (as ridge or valley lines; not drawn by this), "field"?: a field both layers have} | null (points and polygons, not perpendicular ones: each label curved along its guide line, the one with the feature's value in field, else the longest in view under the label inside its polygon, or the nearest to its point within the text's width; a feature with none its text fits along is labelled as without a guide; null: none)}"#,
+            r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "position"?: "auto"|"center"|"above"|"below"|"left"|"right"|"aboveRight"|"aboveLeft"|"belowRight"|"belowLeft"|"parallel" (along a line, straight)|"curved" (along a line, following its bends)|"perpendicular" (a point's, square to the nearest line of `to`, starting at the point; none that near: as auto) (required without offset, repeat, lineOffset, otherPositions, showAll, weight, clearance, callout, to, side, fit, abbreviations or guide), "to"?: {"layer": a line or polygon layer's name, "within"?: points (1 to 500; 20)} | null, "side"?: "away" (the side of the line the point isn't on; the default)|"left"|"right" (as the line runs), "offset"?: [right, down] points (-200 to 200 each) the label moves from where its position puts it ([0, 0]: none; perpendicular: [out along the normal, down as the text reads]; a label along a line isn't moved), "repeat"?: points (10 to 10000) between a line's labels, spaced out from the one at its middle, at most 32 a line (0 or null: the one at its middle; parallel and curved only), "lineOffset"?: points (-200 to 200) between a line and its label's nearest edge, above the line as the text reads, negative below it (0 or null: on the line; parallel and curved only), "otherPositions"?: bool (a label whose place is taken tries others: a point's round the point, corners first; a line's along the line, nearest its middle first, placed parallel or curved without a repeat; true is refused for any other line label and on polygons), "fit"?: "auto"|"off" (curved along a line: "auto" abbreviates a name that can't follow the line, sets one longer than a third of it on its straightest stretch, and spreads one over labels.style's stretch of a line more than three times its length; "off" or null: as placed), "abbreviations"?: {word: abbreviation} (whole words a fitted label puts short, ignoring case, over the built-in English, Portuguese and Spanish list, as {"Creek": "Cr.", "Córrego": "Cór."}; null or {}: the built-in list alone), "showAll"?: bool (every label drawn, over the others where they crowd), "weight"?: 0 to 10 (where labels compete for a place, the heavier class's wins, whatever its layer's place; equal weights: the layer above, then the class listed first; a fraction rounded; null: 5), "clearance"?: points (0 to 100: the room the class's labels keep free of other labels, two labels keeping both their clearances apart; null: 2), "callout"?: true|false|points (5 to 500: a label crowded off its spot moves to a free one nearby, a line drawn back to its feature at most this long; true keeps its length, or 40; false, 0 or null: none; not labels along a line or with an icon), "guide"?: {"layer": a line layer's name (as ridge or valley lines; not drawn by this), "field"?: a field both layers have} | null (points and polygons, not perpendicular ones: each label curved along its guide line, the one with the feature's value in field, else the longest in view under the label inside its polygon, or the nearest to its point within the text's width; a feature with none its text fits along is labelled as without a guide; null: none)}"#,
         ),
         // Labels moved by hand (the Move Label tool, as QGIS's): kept by their feature's id.
         C::new("labels.move", "Move Label", "Labeling › Label Placement", |s, p| {

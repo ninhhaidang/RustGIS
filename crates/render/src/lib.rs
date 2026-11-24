@@ -6445,6 +6445,8 @@ fn render_frame(
                                     line_align: class.line_align,
                                     angle,
                                     collide: rustgis_tiles::Collide {
+                                        // Its class's room kept free of other labels (#2828).
+                                        text_padding: class.clearance,
                                         // Shown all: over the other labels where they crowd.
                                         text_allow_overlap: class.show_all,
                                         // Callouts: a label set by its feature (not along a line,
@@ -8107,10 +8109,17 @@ const MAX_CALLOUT_SEARCHES: usize = 500;
 /// Spots a placement tries for its callouts at most, all its searches together.
 const MAX_CALLOUT_SPOTS: usize = 200_000;
 
-/// A label's text's extent (points, `[x0, y0, x1, y1]`), as placement keeps it clear of the
-/// others: what the Move Label tool picks it by.
+/// A label's text's extent (points, `[x0, y0, x1, y1]`): what the Move Label tool picks it by.
 pub fn label_extent(l: &PlacedLabel) -> Option<[f32; 4]> {
-    boxes_extent(&label_boxes(l).0)
+    boxes_extent(&text_edges(l))
+}
+
+/// A label's text's boxes as its callout's line and the Move Label tool see them: with the room
+/// every label kept before clearances, whatever its class keeps clear of the others (#2828), so a
+/// clearance moves the others off without leaving the line short of the text or widening the pick.
+fn text_edges(l: &PlacedLabel) -> Vec<[f32; 4]> {
+    let text_padding = rustgis_map::symbology::DEFAULT_LABEL_CLEARANCE;
+    label_boxes(&PlacedLabel { collide: rustgis_tiles::Collide { text_padding, ..l.collide }, ..l.clone() }).0
 }
 
 /// The extent of boxes (`[x0, y0, x1, y1]` each); none for none.
@@ -8126,7 +8135,7 @@ fn boxes_extent(boxes: &[[f32; 4]]) -> Option<[f32; 4]> {
 /// For showing a label being moved by hand.
 pub fn callout_to(l: &PlacedLabel) -> Option<[f32; 4]> {
     let [ax, ay] = l.collide.callout_anchor.filter(|_| l.collide.callout_reach > 0.0)?;
-    let line = callout_line(&label_boxes(l).0, [l.x + ax, l.y + ay])?;
+    let line = callout_line(&text_edges(l), [l.x + ax, l.y + ay])?;
     Some([line[0] - l.x, line[1] - l.y, line[2] - l.x, line[3] - l.y])
 }
 
@@ -8142,11 +8151,13 @@ fn callout_line(text: &[[f32; 4]], anchor: [f32; 2]) -> Option<[f32; 4]> {
 }
 
 /// Where a crowded label with a callout goes: the nearest free spot for its text's boxes, inside
-/// the view, whose line from its feature at `anchor` to the nearest edge of its text is at most
-/// `reach` long (points), and which doesn't cover the feature. The offset that moves it there and
-/// that line (from, to), or none.
+/// the view, whose line from its feature at `anchor` to the nearest edge of its text (`edges`,
+/// [`text_edges`]) is at most `reach` long (points), and which doesn't cover the feature. The
+/// offset that moves it there and that line (from, to), or none.
+#[expect(clippy::too_many_arguments, reason = "the boxes that collide and the edges its line ends at, besides where and how far it may go")]
 fn callout_spot(
     text: &[[f32; 4]],
+    edges: &[[f32; 4]],
     anchor: [f32; 2],
     reach: f32,
     free: impl Fn(&[f32; 4]) -> bool,
@@ -8154,7 +8165,7 @@ fn callout_spot(
     h: f32,
     spots: &mut usize,
 ) -> Option<(f32, f32, [f32; 4])> {
-    let ext = boxes_extent(text)?;
+    let ext = boxes_extent(edges)?;
     if !(anchor[0].is_finite() && anchor[1].is_finite() && reach.is_finite()) {
         return None;
     }
@@ -8319,7 +8330,7 @@ fn place_labels_with_previews(
                 // Locked after a callout moved it: there again, with its line.
                 moved_by = Some([dx, dy]);
                 if let Some(f) = feature.filter(|_| collide.callout_reach > 0.0)
-                    && let Some(line) = callout_line(&text, f)
+                    && let Some(line) = callout_line(&text_edges(&l), f)
                 {
                     l.collide.callout = Some(relative(&l, line));
                 }
@@ -8327,7 +8338,7 @@ fn place_labels_with_previews(
                 // Moved by hand: where it was put, a callout's line back to its feature when its class
                 // has callouts (however long: it was put there).
                 if let Some(f) = feature.filter(|_| collide.callout_reach > 0.0)
-                    && let Some(line) = callout_line(&text, f)
+                    && let Some(line) = callout_line(&text_edges(&l), f)
                 {
                     l.collide.callout = Some(relative(&l, line));
                 }
@@ -8343,7 +8354,9 @@ fn place_labels_with_previews(
                 // nearest free spot within its reach, a line drawn back to its feature. With no such
                 // spot it stays, and is left out, or shown over the others when its class shows all.
                 searches -= 1;
-                if let Some((dx, dy, line)) = callout_spot(&text, f, collide.callout_reach, |b| !grid.hits(b), w, h, &mut spots) {
+                if let Some((dx, dy, line)) =
+                    callout_spot(&text, &text_edges(&l), f, collide.callout_reach, |b| !grid.hits(b), w, h, &mut spots)
+                {
                     moved_by = Some([dx, dy]);
                     l.x += dx;
                     l.y += dy;
@@ -8434,6 +8447,9 @@ fn label_boxes(l: &PlacedLabel) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
         // padding across, and up and down.
         let halo = text::drawn_halo_reach(l);
         let [across, up_down] = text::background_reach(l).map(|r| l.collide.text_padding.clamp(0.0, 100.0) + halo.max(r));
+        // A class's clearance (#2828) reaches here as the padding, held to 100 points as a tile
+        // style's `text-padding` always was: at 100 a curved label's square is some 200 points
+        // across, about 7 × 7 grid cells, the bound placement already had for tile labels.
         let p = across.max(up_down);
         let cx = l.center_x();
         if !l.glyphs.is_empty() {
@@ -9126,6 +9142,49 @@ mod tests {
         // Both: a free spot nearby comes before overlapping.
         let p = place(Collide { callout_reach: 40.0, text_allow_overlap: true, ..Default::default() });
         assert!(p.labels[1].collide.callout.is_some());
+    }
+
+    /// A class's clearance keeps other labels off (#2828), not its callout's line or the Move Label
+    /// tool: the line still ends at the text's edge, a crowded label's reach still counts to it, and
+    /// the label is still picked by its text, whatever the clearance.
+    #[test]
+    fn a_clearance_keeps_others_off_but_not_the_callout_or_the_pick() {
+        use rustgis_tiles::Collide;
+        let pinned = |padding: f32| PlacedLabel {
+            y: 50.0,
+            collide: Collide {
+                text_padding: padding,
+                pinned: true,
+                callout_reach: 40.0,
+                callout_anchor: Some([-80.0, 0.0]),
+                ..Default::default()
+            },
+            ..label("Moved", 150.0, None, 0.0)
+        };
+        let (plain, clear) = (pinned(2.0), pinned(12.0));
+        assert_eq!(label_extent(&clear), label_extent(&plain), "picked by its text, not its clearance");
+        assert_eq!(callout_to(&clear), callout_to(&plain), "a drag's line ends at the text");
+        let line =
+            |l: PlacedLabel| place_labels(vec![(l, 1e15, (u32::MAX, 1, 0, 0))], Vec::new(), 300.0, 120.0, false).labels[0].collide.callout;
+        assert_eq!(line(clear), line(plain), "a moved label's line ends at the text");
+        // Crowded off its spot: moved, its line from its feature to its text's nearest edge.
+        let at = |text: &str, collide: Collide| PlacedLabel {
+            y: 50.0,
+            collide: Collide { callout_anchor: Some([0.0, 10.0]), ..collide },
+            ..label(text, 100.0, None, 0.0)
+        };
+        let cands = vec![
+            (at("First", Collide::default()), 2.0, (u32::MAX, 0, 0, 0)),
+            (at("Second", Collide { text_padding: 12.0, callout_reach: 40.0, ..Default::default() }), 1.0, (u32::MAX, 1, 0, 0)),
+        ];
+        let p = place_labels(cands, Vec::new(), 300.0, 120.0, false);
+        let second = p.labels.iter().find(|l| l.text == "Second").expect("moved, not left out");
+        let [x0, y0, x1, y1] = second.collide.callout.expect("a callout's line");
+        let e = label_extent(second).unwrap();
+        let (fx, fy) = (second.x + x0, second.y + y0);
+        let to = [fx.clamp(e[0], e[2]), fy.clamp(e[1], e[3])];
+        assert!(((second.x + x1) - to[0]).abs() < 1e-3 && ((second.y + y1) - to[1]).abs() < 1e-3, "to the text's edge");
+        assert!((x1 - x0).hypot(y1 - y0) <= 40.0, "within its reach, counted to the text");
     }
 
     /// A callout's line is drawn from its feature to the text, in the label's colour.
@@ -10129,15 +10188,16 @@ mod tests {
         // A small text by its feature at (100, 100); only spots 200 points right of it are free.
         let text = [[95.0, 98.0, 105.0, 102.0]];
         let free = |b: &[f32; 4]| b[0] > 300.0;
-        let (dx, _, [x0, y0, x1, y1]) = callout_spot(&text, [100.0, 100.0], 300.0, free, 1000.0, 200.0, &mut 100_000).expect("a spot");
+        let (dx, _, [x0, y0, x1, y1]) =
+            callout_spot(&text, &text, [100.0, 100.0], 300.0, free, 1000.0, 200.0, &mut 100_000).expect("a spot");
         assert!(dx > 195.0);
         let len = (x1 - x0).hypot(y1 - y0);
         assert!((150.0..=300.0).contains(&len), "{len} points");
         // Beyond its reach, none.
-        assert!(callout_spot(&text, [100.0, 100.0], 100.0, free, 1000.0, 200.0, &mut 100_000).is_none());
+        assert!(callout_spot(&text, &text, [100.0, 100.0], 100.0, free, 1000.0, 200.0, &mut 100_000).is_none());
         // The placement's spots used up: it stops looking, and says how many it tried.
         let mut spots = 5;
-        assert!(callout_spot(&text, [100.0, 100.0], 300.0, free, 1000.0, 200.0, &mut spots).is_none());
+        assert!(callout_spot(&text, &text, [100.0, 100.0], 300.0, free, 1000.0, 200.0, &mut spots).is_none());
         assert_eq!(spots, 0);
     }
 
@@ -10335,6 +10395,66 @@ mod tests {
         // Shown all, the lighter one is drawn too.
         m.layer_mut(below).unwrap().labels.default.show_all = true;
         assert_eq!(shown(&mut m).len(), 2, "Show All draws every label whatever its weight");
+    }
+
+    /// A class's clearance is the room its labels keep free of other labels (#2828): two labels
+    /// keep both their clearances apart, as the fixed padding did, a fraction honoured; 0 lets
+    /// them come as close as their halos allow. A label moved by hand keeps its class's.
+    #[test]
+    fn a_label_class_keeps_its_clearance_free_of_other_labels() {
+        let center = Coord::new(2.35, 48.85);
+        let camera = Camera { center: lonlat_to_merc(center), res: 5000.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 800.0, height: 600.0, pixels_per_point: 1.0, camera, sky: false };
+        // Two point layers, "Aaaa" above, "Bbbb" `apart` points to its right, with these
+        // clearances.
+        let map = |apart: f32, [ca, cb]: [f32; 2]| {
+            let mut m = Map::new("Map");
+            for (name, dx, clearance) in [("Bbbb", apart, cb), ("Aaaa", 0.0, ca)] {
+                let mut d = Dataset::new(name, GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+                let at = rustgis_geom::merc_to_lonlat(Coord::new(camera.center.x + f64::from(dx) * camera.res, camera.center.y));
+                d.push(Some(Geometry::Point(at)), vec![Value::Text(name.into())]);
+                let id = m.add_dataset(d);
+                let l = m.layer_mut(id).unwrap();
+                l.labels.enabled = true;
+                l.labels.default.field = "name".into();
+                l.labels.default.placement = rustgis_map::LabelPlacement::Center;
+                l.labels.default.clearance = clearance;
+            }
+            m
+        };
+        let drawn = |m: &mut Map| render(m, &view).unwrap().labels;
+        let shown = |m: &mut Map| {
+            let mut v: Vec<String> = drawn(m).into_iter().map(|l| l.text).collect();
+            v.sort();
+            v
+        };
+        // Far apart, how wide the texts are and how far their halos reach.
+        let far = drawn(&mut map(300.0, [2.0, 2.0]));
+        assert_eq!(far.len(), 2);
+        assert!(far.iter().all(|l| l.collide.text_padding == 2.0), "2 to start with, as before");
+        let reach = |l: &PlacedLabel| text::label_width(l) / 2.0 + text::drawn_halo_reach(l);
+        let (a, b) = (far.iter().find(|l| l.text == "Aaaa").unwrap(), far.iter().find(|l| l.text == "Bbbb").unwrap());
+        // Centres so far apart that `room` points lie between the halos.
+        let apart = |room: f32| reach(a) + reach(b) + room;
+        // Six points between them: 2 + 2 leave both in, as before.
+        assert_eq!(shown(&mut map(apart(6.0), [2.0, 2.0])), ["Aaaa", "Bbbb"]);
+        // Either one's clearance grown to 5 (5 + 2 > 6): the layer above keeps its place.
+        assert_eq!(shown(&mut map(apart(6.0), [5.0, 2.0])), ["Aaaa"], "the upper label's clearance");
+        assert_eq!(shown(&mut map(apart(6.0), [2.0, 5.0])), ["Aaaa"], "the lower label's clearance");
+        // A fraction is honoured: 3.9 + 2 < 6.
+        assert_eq!(shown(&mut map(apart(6.0), [3.9, 2.0])), ["Aaaa", "Bbbb"]);
+        // A point between them: 2 + 2 keep one out, 0 + 0 let both in.
+        assert_eq!(shown(&mut map(apart(1.0), [2.0, 2.0])), ["Aaaa"]);
+        let close = drawn(&mut map(apart(1.0), [0.0, 0.0]));
+        assert_eq!(close.len(), 2, "no clearance: only the halos keep them apart");
+        assert!(close.iter().all(|l| l.collide.text_padding == 0.0));
+        // Moved by hand, a label keeps its class's clearance.
+        let mut m = map(300.0, [9.0, 2.0]);
+        let id = m.layers.iter().find(|l| l.name == "Aaaa").unwrap().id;
+        let fid = m.layer(id).unwrap().dataset.features[0].id;
+        m.layer_mut(id).unwrap().labels.default.moved = vec![rustgis_map::symbology::MovedLabel { id: fid, at: [center.x, center.y] }];
+        let moved = drawn(&mut m).into_iter().find(|l| l.text == "Aaaa").unwrap();
+        assert_eq!(moved.collide.text_padding, 9.0);
     }
 
     /// A tile style's label still comes after every layer's own, the lightest included (#2803).

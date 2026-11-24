@@ -169,6 +169,11 @@ a saved style, or a saved `labels.placement` step (in a task, a model or a scrip
 other than 5: an older reader would apply the style, or run the step, without the weight, saying
 nothing.
 
+Likewise a label class keeping other than 2 points free round its labels (`labels.placement` with a
+`clearance`) requires `label-clearance`, in a layer, a saved style or a saved `labels.placement`
+step: an older reader would place the labels 2 points apart and save them again without the
+clearances, or run the step without it.
+
 Projects with an ink on a legend, colorbar, table or chart (`color` on those elements) require
 `layout-element-ink`, so an older reader refuses them instead of drawing those elements in dark
 grey and saving them again without it. Saved `layout.addElement` and `layout.update` commands

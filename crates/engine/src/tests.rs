@@ -9290,6 +9290,126 @@ fn saved_label_weights_are_required_by_name() {
     assert_eq!(serde_json::to_value(&s.project).unwrap()["requires"], json!(["label-weight"]));
 }
 
+/// A label class takes a clearance (#2828): the points kept free of other labels round its
+/// labels, 0 to 100, 2 by default. A fraction is kept; a number out of range is held and said,
+/// junk refused, null back to 2. It undoes in one step, keeps a lock, is saved only when it isn't
+/// 2, and then requires `label-clearance`, which an older reader refuses rather than drop.
+#[test]
+fn a_label_class_takes_a_clearance() {
+    let mut s = world();
+    let id = s.map().layer_by_name("Cities").unwrap().id;
+    let clearances = |s: &Session| {
+        let l = &s.map().layer(id).unwrap().labels;
+        (l.default.clearance, l.classes.first().map(|c| c.clearance))
+    };
+    let said = |s: &Session, mark| s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>();
+    assert_eq!(clearances(&s), (2.0, None));
+    let mark = s.notice_mark();
+    s.run("labels.placement", &json!({"layer": "Cities", "clearance": 10})).unwrap();
+    assert_eq!(clearances(&s), (10.0, None));
+    assert!(said(&s, mark).is_empty(), "{:?}", said(&s, mark));
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(clearances(&s), (2.0, None), "undoes");
+    // A fraction is kept, as a text number is read.
+    s.run("labels.placement", &json!({"layer": "Cities", "clearance": 2.5})).unwrap();
+    assert_eq!(clearances(&s).0, 2.5);
+    s.run("labels.placement", &json!({"layer": "Cities", "clearance": "0"})).unwrap();
+    assert_eq!(clearances(&s).0, 0.0);
+    for (given, kept, note) in [(json!(500), 100.0, "clearance 500 adjusted to 100"), (json!(-3), 0.0, "clearance -3 adjusted to 0")] {
+        let mark = s.notice_mark();
+        s.run("labels.placement", &json!({"layer": "Cities", "clearance": given})).unwrap();
+        assert_eq!(clearances(&s).0, kept, "{given}");
+        let notes = said(&s, mark);
+        assert!(notes.iter().any(|n| n.contains(note)), "{given}: {notes:?}");
+    }
+    for bad in [json!("wide"), json!(true), json!([1])] {
+        let err = s.run("labels.placement", &json!({"layer": "Cities", "clearance": bad})).unwrap_err();
+        assert!(err.contains("clearance must be a number of points from 0 to 100 (null: 2)"), "{bad}: {err}");
+    }
+    s.run("labels.placement", &json!({"layer": "Cities", "clearance": null})).unwrap();
+    assert_eq!(clearances(&s), (2.0, None), "null: back to 2");
+    // The class named, not Default.
+    s.run("labels.class.add", &json!({"layer": "Cities", "name": "Big"})).unwrap();
+    s.run("labels.placement", &json!({"layer": "Cities", "class": "Big", "clearance": 12})).unwrap();
+    assert_eq!(clearances(&s), (2.0, Some(12.0)));
+    // A lock holds: the labels it keeps stay where they are.
+    let key = (id, 0, 0, 0);
+    s.map_mut().label_lock = Some(vec![(key, rustgis_map::LockedPlace { place: 0, callout: None })]);
+    s.run("labels.placement", &json!({"layer": "Cities", "class": "Big", "clearance": 6})).unwrap();
+    assert!(s.map().label_lock.is_some(), "a clearance keeps the lock");
+    // Saved, it requires `label-clearance`, and reads back.
+    let saved = serde_json::to_value(&s.project).unwrap();
+    assert_eq!(saved["requires"], json!(["label-clearance"]));
+    let read = Project::from_json(&saved.to_string()).unwrap();
+    let layer = read.maps[0].layers.iter().find(|l| l.id == id).unwrap();
+    assert_eq!(layer.labels.classes[0].clearance, 6.0);
+    // Back to 2 everywhere: nothing to require, and nothing saved.
+    s.run("labels.placement", &json!({"layer": "Cities", "class": "Big", "clearance": 2})).unwrap();
+    let saved = serde_json::to_value(&s.project).unwrap();
+    assert!(saved.get("requires").is_none());
+    assert!(!saved.to_string().contains("clearance"), "a clearance of 2 isn't written");
+    // The fixture (`label_clearance.rgis`) reads back as saved, saying nothing.
+    let mut fixture = Project::from_json(include_str!("../../../schema/fixtures/label_clearance.rgis")).unwrap();
+    assert_eq!(fixture.maps[0].layers[0].labels.default.clearance, 6.5);
+    assert!(fixture.take_read_notices(&crate::project::ALL_PARTS).is_empty());
+    assert_eq!(serde_json::to_value(&fixture).unwrap()["requires"], json!(["label-clearance"]));
+    // A clearance out of range or junk in a file is held, and said once.
+    let mut damaged = serde_json::to_value(&world().project).unwrap();
+    damaged["maps"][0]["layers"][0]["labels"]["clearance"] = json!(999);
+    damaged["maps"][0]["layers"][1]["labels"]["clearance"] = json!("x");
+    let read = Session::new(Project::from_json(&damaged.to_string()).unwrap());
+    assert_eq!(read.map().layers[0].labels.default.clearance, 100.0);
+    assert_eq!(read.map().layers[1].labels.default.clearance, 2.0);
+    let notes: Vec<_> = read.notices.iter().filter(|n| n.text.contains("label clearance")).map(|n| n.text.clone()).collect();
+    assert!(notes.len() == 1 && notes[0].contains("2 label clearance(s)"), "{notes:?}");
+}
+
+/// A clearance other than 2 saved in a task, a model's step or a script, or in a saved style, also
+/// requires `label-clearance`: an older reader would run the step, or apply the style, without
+/// it, saying nothing (#2828). A clearance of 2 or null needs nothing: that is what an older
+/// reader keeps.
+#[test]
+fn saved_label_clearances_are_required_by_name() {
+    let s = world();
+    let with_task = |params: Value| {
+        let mut project = s.project.clone();
+        project.tasks = vec![
+            serde_json::from_value(
+                json!({"name": "Clear", "steps": [{"title": "Clear", "command": "labels.placement", "params": params}]}),
+            )
+            .unwrap(),
+        ];
+        serde_json::to_value(&project).unwrap().get("requires").cloned()
+    };
+    for clearance in [json!(8), json!(0), json!("8"), json!(2.5), json!(500)] {
+        assert_eq!(
+            with_task(json!({"layer": "Cities", "position": "above", "clearance": clearance})),
+            Some(json!(["label-clearance"])),
+            "{clearance}"
+        );
+    }
+    for nothing in [
+        json!({"layer": "Cities", "clearance": 2}),
+        json!({"layer": "Cities", "clearance": null}),
+        json!({"layer": "Cities", "position": "above"}),
+    ] {
+        assert_eq!(with_task(nothing.clone()), None, "{nothing}");
+    }
+    // In a script, too.
+    let script = json!({"script": "labels.placement {\"layer\": \"Cities\", \"clearance\": 9}"});
+    let mut project = s.project.clone();
+    project.tasks = vec![
+        serde_json::from_value(json!({"name": "Script", "steps": [{"title": "Run", "command": "script.run", "params": script}]})).unwrap(),
+    ];
+    assert_eq!(serde_json::to_value(&project).unwrap()["requires"], json!(["label-clearance"]));
+    // A saved style keeps the clearance its layer had.
+    let mut s = world();
+    s.run("labels.placement", &json!({"layer": "Cities", "clearance": 7})).unwrap();
+    s.run("style.new", &json!({"layer": "Cities", "name": "Roomy"})).unwrap();
+    s.run("labels.placement", &json!({"layer": "Cities", "clearance": 2})).unwrap();
+    assert_eq!(serde_json::to_value(&s.project).unwrap()["requires"], json!(["label-clearance"]));
+}
+
 /// A label class takes an offset with its placement and a background with its text symbol; junk
 /// is refused, numbers kept within their ranges, and each change undoes.
 #[test]

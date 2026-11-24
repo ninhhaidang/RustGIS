@@ -81,6 +81,8 @@ struct Class {
     #[serde(default)]
     weight: Option<serde_json::Value>,
     #[serde(default)]
+    clearance: Option<serde_json::Value>,
+    #[serde(default)]
     stretch: Option<serde_json::Value>,
 }
 
@@ -99,6 +101,8 @@ struct Labels {
     show_all: Option<serde_json::Value>,
     #[serde(default)]
     weight: Option<serde_json::Value>,
+    #[serde(default)]
+    clearance: Option<serde_json::Value>,
     #[serde(default)]
     square_to: Option<serde_json::Value>,
     #[serde(default)]
@@ -160,6 +164,12 @@ fn adjusted_line_offset(value: Option<&serde_json::Value>) -> bool {
 /// when it isn't a number); null is 5.
 fn adjusted_weight(value: Option<&serde_json::Value>) -> bool {
     value.is_some_and(|v| !v.is_null() && v.as_f64().is_none_or(|n| n.fract() != 0.0 || !rustgis_map::symbology::LABEL_WEIGHT.contains(&n)))
+}
+
+/// A label clearance (#2828) that isn't a number from 0 to 100 (held to it, or 2 when it isn't a
+/// number); null is 2.
+fn adjusted_clearance(value: Option<&serde_json::Value>) -> bool {
+    value.is_some_and(|v| !v.is_null() && v.as_f64().is_none_or(|n| !rustgis_map::symbology::LABEL_CLEARANCE.contains(&n)))
 }
 
 /// How much of its line a fitted label is spread over (#2265) that isn't a number (read as the
@@ -256,7 +266,7 @@ fn count<'a>(
     let name = crate::project::short_name(name);
     let mut classes = ClassLosses::default();
     let (mut moves, mut callouts, mut offsets, mut flags, mut squares, mut stretches) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
-    let (mut guides, mut weights) = (0usize, 0usize);
+    let (mut guides, mut weights, mut clearances) = (0usize, 0usize, 0usize);
     let mut diagrams = rustgis_map::diagram::DiagramAudit::default();
     for layer in raw {
         diagrams = diagrams.plus(layer.diagram);
@@ -267,6 +277,7 @@ fn count<'a>(
         offsets = offsets.saturating_add(usize::from(adjusted_line_offset(labels.line_offset.as_ref())));
         flags = flags.saturating_add(usize::from(damaged_flag(labels.show_all.as_ref())));
         weights = weights.saturating_add(usize::from(adjusted_weight(labels.weight.as_ref())));
+        clearances = clearances.saturating_add(usize::from(adjusted_clearance(labels.clearance.as_ref())));
         squares = squares.saturating_add(usize::from(adjusted_square_to(labels.square_to.as_ref())));
         guides = guides.saturating_add(usize::from(dropped_guide(labels.guide.as_ref())));
         stretches = stretches.saturating_add(usize::from(adjusted_stretch(labels.stretch.as_ref())));
@@ -276,6 +287,7 @@ fn count<'a>(
             offsets = offsets.saturating_add(usize::from(adjusted_line_offset(class.line_offset.as_ref())));
             flags = flags.saturating_add(usize::from(damaged_flag(class.show_all.as_ref())));
             weights = weights.saturating_add(usize::from(adjusted_weight(class.weight.as_ref())));
+            clearances = clearances.saturating_add(usize::from(adjusted_clearance(class.clearance.as_ref())));
             squares = squares.saturating_add(usize::from(adjusted_square_to(class.square_to.as_ref())));
             guides = guides.saturating_add(usize::from(dropped_guide(class.guide.as_ref())));
             stretches = stretches.saturating_add(usize::from(adjusted_stretch(class.stretch.as_ref())));
@@ -300,6 +312,9 @@ fn count<'a>(
     }
     if weights > 0 {
         messages.push(format!("{name}: {weights} label weight(s) not a whole number from 0 to 10 adjusted while opening {what}"));
+    }
+    if clearances > 0 {
+        messages.push(format!("{name}: {clearances} label clearance(s) not a number from 0 to 100 points adjusted while opening {what}"));
     }
     if squares > 0 {
         messages.push(format!(
