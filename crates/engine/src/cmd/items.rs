@@ -991,7 +991,7 @@ fn package_gp(s: &mut Session) -> Result<Vec<u8>, String> {
     Ok(archive)
 }
 
-fn layer_template(s: &mut Session, p: &Value) -> CmdResult {
+pub(super) fn layer_template(s: &mut Session, p: &Value) -> CmdResult {
     let t = ps(p, "template").ok_or("template is required")?;
     let text = |n: &str| Field::new(n, FieldType::Text);
     let (gt, title, fields) = match t {

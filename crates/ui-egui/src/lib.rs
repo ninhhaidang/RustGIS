@@ -3675,6 +3675,17 @@ impl RustGisApp {
         if id.starts_with("edit.") && params.get("table").is_some_and(|t| !t.is_null()) {
             return None;
         }
+        // Coordinate entry uses only a loaded point layer; a fallback must not record the
+        // incompatible selection as an explicit target that replay would refuse.
+        if id == "edit.addPoint"
+            && !self
+                .session
+                .active_layer
+                .and_then(|id| self.session.map().layer(id))
+                .is_some_and(rustgis_engine::cmd::edit::accepts_coordinate_point)
+        {
+            return None;
+        }
         let spec = self.session.registry.get(id).filter(|c| c.mutates && params.get("layer").is_none_or(Value::is_null)).copied()?;
         if !spec.param_keys().is_some_and(|k| k.contains(&"layer")) {
             return None;
@@ -8427,6 +8438,7 @@ const MAX_STEP_BYTES: usize = 4 << 20;
 /// an optional `layer` that defaults to the active layer goes here, so a recorded step names it;
 /// `record_tests::every_optional_layer_is_classified` fails until it is placed here or there.
 const DEFAULTS_TO_ACTIVE_LAYER: &[&str] = &[
+    "edit.addPoint",
     "select.byAttributes",
     "stac.search",
     "select.rows",

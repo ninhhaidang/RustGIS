@@ -2871,7 +2871,7 @@ fn edit_tab(app: &mut RustGisApp, ui: &mut Ui) {
             _ => (Tool::CreatePoint, "point_tool"),
         };
         let checked = app.session.tool.creates();
-        let r = big(
+        let (r, options) = big_split_menu(
             ui,
             app,
             icon,
@@ -2880,8 +2880,14 @@ fn edit_tab(app: &mut RustGisApp, ui: &mut Ui) {
             "tool.set",
             json!({"tool": tool.code()}),
             checked,
-            false,
+            "Create options",
+            "Create a feature by drawing or by coordinates.",
+            true,
+            |ui, app| {
+                menu_item(ui, app, "goto_xy", "Point by Coordinates…", "ui.dialog", json!({"name":"createPointXY"}));
+            },
         );
+        crate::showme::ring(ui, app, options.rect, "ui.dialog", &json!({"name":"createPointXY"}));
         if r.clicked() {
             app.map.cancel_sketch();
         }

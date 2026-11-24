@@ -15,6 +15,35 @@ fn agent(access: AgentAccess) -> Scope {
     Scope::agent(access, true, "review-boundaries", None, Arc::new(Live))
 }
 
+/// Remembered script approval must bind the coordinate system even at its unchanged origin.
+#[test]
+fn permission_review_coordinate_points_bind_the_resolved_system() {
+    use rustgis_data::raster::Crs;
+    use rustgis_data::{Dataset, GeometryType};
+    for system in ["map", "Reference"] {
+        let mut s = Session::new(crate::Project::default());
+        s.run("edit.enable", &json!({"on":true})).unwrap();
+        s.run("layer.template", &json!({"template":"points", "name":"Pins"})).unwrap();
+        let pins = s.active_layer.unwrap();
+        let reference = s.map_mut().add_dataset(Dataset::new("Reference", GeometryType::Point, vec![]));
+        let call = Call::script(&format!("edit.addPoint {}\nproject.connections {{}}", json!({"layer":"Pins","x":0,"y":0,"crs":system})));
+        let scope = Scope::assistant(2571, Arc::new(Live));
+        let Outcome::NeedsApproval(approved) = s.review(&scope, &call) else { panic!("the file-reading script needs review") };
+        let remembered = approved.remember().unwrap();
+        let Outcome::NeedsApproval(unchanged) = s.review(&scope, &call) else { panic!("unchanged script needs review") };
+        assert!(unchanged.covered_by(&remembered));
+        if system == "map" {
+            s.map_mut().projection = rustgis_map::globe::Projection::Custom("robinson".into());
+        } else {
+            s.map_mut().layer_mut(reference).unwrap().dataset.crs = Some(Crs::WebMercator);
+        }
+        let Outcome::NeedsApproval(changed) = s.review(&scope, &call) else { panic!("changed script needs review") };
+        assert!(!changed.covered_by(&remembered), "coordinate-system changes invalidate approval: {system}");
+        assert!(s.run_remembered(scope, &remembered, &call).is_err());
+        assert!(s.map().layer(pins).unwrap().dataset.features.is_empty());
+    }
+}
+
 #[test]
 fn permission_review_authentication_changes_are_reserved() {
     let s = world();

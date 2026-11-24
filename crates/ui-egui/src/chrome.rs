@@ -826,6 +826,21 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
     if crate::saveprompt::waiting(app) || ctx.memory(|m| m.top_modal_layer()).is_some() || app.ui.shortcut_editor.capturing() {
         return;
     }
+    // The repeat-use form is not modal: another pane or an unfinished sketch keeps Escape.
+    let point_dialog_owns_escape = app.dialogs.open == Some("createPointXY")
+        && match ctx.memory(|m| m.focused()) {
+            Some(id) => ctx.read_response(id).is_some_and(|r| r.layer_id.id == egui::Id::unique(("dialog", "createPointXY"))),
+            None => {
+                app.map.sketch_len() == 0
+                    && !app.session.map().view.first_person
+                    && !crate::boxedit::drawing(app)
+                    && !crate::circleedit::drawing(app)
+            }
+        };
+    if point_dialog_owns_escape && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+        app.dialogs.open = None;
+        return;
+    }
     if app.ui.history_jump.is_some()
         && app.dialogs.open.is_none()
         && !crate::crspicker::list_is_open(ctx)
@@ -1117,6 +1132,7 @@ fn search_action(id: &str) -> Option<SearchAction> {
         "project.coordinateSystem" => Dialog("projectProperties"),
         "map.rename" => Dialog("renameMap"),
         "map.goToXY" => Dialog("goToXY"),
+        "edit.addPoint" => Dialog("createPointXY"),
         "map.exportOrbit" => Dialog("exportOrbit"),
         "map.findPlace" => Dialog("findPlace"),
         "map.camera" | "map.setScale" => Dialog("camera"),

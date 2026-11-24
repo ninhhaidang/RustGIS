@@ -152,6 +152,7 @@ impl Dialogs {
         let name: &'static str = match which {
             "selectByAttributes" => "selectByAttributes",
             "goToXY" => "goToXY",
+            "createPointXY" => "createPointXY",
             "bookmark" => "bookmark",
             "addField" => "addField",
             "calculateField" => "calculateField",
@@ -350,6 +351,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     let title = match which {
         "selectByAttributes" => "Select By Attributes",
         "goToXY" => "By Coordinates",
+        "createPointXY" => "Create Point by Coordinates",
         "bookmark" => "New Bookmark",
         "addField" => "Add Field",
         "calculateField" => "Calculate Field",
@@ -445,6 +447,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
         match which {
             "selectByAttributes" => close = select_by_attributes(app, ui, &t),
+            "createPointXY" => create_point_xy(app, ui),
             "goToXY" => {
                 // UTM and MGRS are the Earth's grids, so another body's map offers degrees alone.
                 // A grid reference, once typed, is where Go goes: the X and Y boxes gray out.
@@ -1155,6 +1158,79 @@ pub fn open_dxf(app: &mut RustGisApp, name: &str, source: DxfSource) -> Result<V
 /// Opens Import DXF for a drawing on disk (a drop, Add Data, the Browser pane, `ui.addFile`).
 pub fn open_dxf_path(app: &mut RustGisApp, path: &str) -> Result<Value, String> {
     open_dxf(app, path, DxfSource::Path(path.to_string()))
+}
+
+/// A repeat-use form: errors retain the entry, successful creation clears it and keeps focus
+/// on X. The current selection is named each frame because this dialog is not modal.
+fn create_point_xy(app: &mut RustGisApp, ui: &mut egui::Ui) {
+    let target = app
+        .session
+        .active_layer
+        .and_then(|id| app.session.map().layer(id))
+        .filter(|l| rustgis_engine::cmd::edit::accepts_coordinate_point(l));
+    let target = target.map(|l| l.name.clone()).unwrap_or_else(|| tl!("New Points layer").into());
+    ui.label(i18n::fmt("Add to: {layer}", &[("layer", &target)]));
+    if app.session.active_layer.and_then(|id| app.session.map().layer(id)).is_some_and(|l| l.dataset.windowed) {
+        ui.label(tl!("The selected layer is read in place. Points will go into a new layer instead."));
+    }
+    if !app.session.map().editing.settings.enabled {
+        ui.label(tl!("Turn editing on to add points."));
+        if ui.button(tl!("Enable Editing")).clicked()
+            && let Err(e) = app.run("edit.enable", json!({"on":true}))
+        {
+            app.dialogs.error = Some(e);
+        }
+    }
+    ui.label(tl!("Coordinates use the system below, independently of the map. A new Points layer is saved in the project."));
+    // Status hints disappear after fallback/Enable Editing; field identities must not shift.
+    let label = ui.label(tl!("X / Longitude"));
+    let x = ui
+        .add(egui::TextEdit::singleline(&mut app.dialogs.a).id(egui::Id::unique(("createPointXY", "x"))).desired_width(f32::INFINITY))
+        .labelled_by(label.id);
+    let label = ui.label(tl!("Y / Latitude"));
+    ui.add(egui::TextEdit::singleline(&mut app.dialogs.b).id(egui::Id::unique(("createPointXY", "y"))).desired_width(f32::INFINITY))
+        .labelled_by(label.id);
+    let label = ui.label(tl!("Coordinate system (blank: longitude/latitude)"));
+    ui.add(
+        egui::TextEdit::singleline(&mut app.dialogs.c)
+            .id(egui::Id::unique(("createPointXY", "crs")))
+            .hint_text("EPSG:3857")
+            .desired_width(f32::INFINITY),
+    )
+    .labelled_by(label.id);
+    let label = ui.label(tl!("Name (optional)"));
+    ui.add(egui::TextEdit::singleline(&mut app.dialogs.text).id(egui::Id::unique(("createPointXY", "name"))).desired_width(f32::INFINITY))
+        .labelled_by(label.id);
+    ui.label(egui::RichText::new(tl!("Name uses a text field named name. Leave it blank if the selected layer has no such field.")).weak());
+    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) && enter_is_the_dialogs(ui);
+    let t = Tokens::get(ui.ctx());
+    let (add, close) = ui
+        .horizontal(|ui| {
+            let add = crate::widgets::dialog_button(ui, tl!("Add Point"), Some(t.accent), vec2(110.0, 28.0)).clicked();
+            let close = crate::widgets::dialog_button(ui, tl!("Close"), None, vec2(110.0, 28.0)).clicked();
+            (add, close)
+        })
+        .inner;
+    if add || enter {
+        let crs = app.dialogs.c.trim();
+        let mut p = json!({"x":app.dialogs.a.trim(), "y":app.dialogs.b.trim(), "name":app.dialogs.text.trim()});
+        if !crs.is_empty() {
+            p["crs"] = json!(crs);
+        }
+        match app.run("edit.addPoint", p) {
+            Ok(_) => {
+                app.dialogs.a.clear();
+                app.dialogs.b.clear();
+                app.dialogs.text.clear();
+                app.dialogs.error = None;
+                x.request_focus();
+            }
+            Err(e) => app.dialogs.error = Some(e),
+        }
+    }
+    if close {
+        app.dialogs.open = None;
+    }
 }
 
 /// The systems Go To XY offers, as (what `map.goToXY` takes as `crs`, its label): degrees; on a
@@ -4891,5 +4967,110 @@ mod tests {
         assert!(h.query_by_label("On the map").is_some(), "the collection is in the imported group");
         assert!(h.query_by_label("Add").is_none(), "grouped features have no individual Add");
         assert!(h.query_by_label("Remove").is_none(), "grouped features are removed in the Layers pane");
+    }
+
+    /// Drive the full app, including the shortcuts that own Escape and the dialog's Enter.
+    #[test]
+    fn coordinate_point_form_repeats_and_retains_invalid_input() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.run("project.new", json!({})).unwrap();
+        app.run("edit.enable", json!({"on":true})).unwrap();
+        app.run("layer.template", json!({"template":"points", "name":"Read in place"})).unwrap();
+        let streamed = app.session.active_layer.unwrap();
+        app.session.map_mut().layer_mut(streamed).unwrap().dataset.windowed = true;
+        app.run("ui.dialog", json!({"name":"createPointXY"})).unwrap();
+        app.dialogs.a = "14.3".into();
+        app.dialogs.b = "-41.2".into();
+        app.dialogs.text = "Survey".into();
+        app.ws.recording = Some(Vec::new());
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 1000.0)).with_max_steps(64).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        h.get_by_role_and_label(Role::Button, "Add Point").click();
+        h.run_steps(4);
+        assert_eq!(h.state().dialogs.open, Some("createPointXY"));
+        assert_eq!(h.state().dialogs.a, "");
+        assert_eq!(h.state().dialogs.b, "");
+        assert_eq!(h.state().dialogs.text, "");
+        let point_layer = h.state().session.active_layer.unwrap();
+        assert_eq!(h.state().session.map().layers.len(), 2);
+        assert_eq!(h.state().session.map().layer(point_layer).unwrap().dataset.features.len(), 1);
+        assert!(
+            h.state().ws.recording.as_ref().unwrap().last().unwrap().params.get("layer").is_none(),
+            "fallback records no incompatible target"
+        );
+        h.event(egui::Event::Text("bad".into()));
+        h.run_steps(3);
+        assert_eq!(h.state().dialogs.a, "bad", "successful fallback keeps typing in X after the streamed-layer hint disappears");
+        h.state_mut().dialogs.b = "0".into();
+        h.key_press(egui::Key::Enter);
+        h.run_steps(4);
+        assert!(h.state().dialogs.error.is_some());
+        assert_eq!(h.state().dialogs.a, "bad");
+        assert_eq!(h.state().session.map().layer(point_layer).unwrap().dataset.features.len(), 1);
+        h.state_mut().dialogs.a = "15".into();
+        h.key_press(egui::Key::Enter);
+        h.run_steps(4);
+        assert!(h.state().dialogs.error.is_none());
+        assert_eq!(h.state().session.map().layers.len(), 2);
+        assert_eq!(h.state().session.map().layer(point_layer).unwrap().dataset.features.len(), 2);
+        assert_eq!(
+            h.state().ws.recording.as_ref().unwrap().last().unwrap().params["layer"],
+            "Points",
+            "later points record their actual target"
+        );
+        h.state_mut().run("tool.set", json!({"tool":"measure"})).unwrap();
+        h.run_steps(3);
+        let at = h.state().map.view_rect.unwrap().0.right_bottom() - vec2(80.0, 80.0);
+        h.event(egui::Event::PointerMoved(at));
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+        }
+        h.run_steps(3);
+        assert_eq!(h.state().map.sketch_len(), 1);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert_eq!(h.state().map.sketch_len(), 0);
+        assert_eq!(h.state().dialogs.open, Some("createPointXY"));
+        let shapes = h.state_mut().session.map_mut().add_dataset(rustgis_engine::data::Dataset::new(
+            "Shapes",
+            rustgis_engine::data::GeometryType::Polygon,
+            vec![],
+        ));
+        h.state_mut().session.active_layer = Some(shapes);
+        for circle in [true, false] {
+            h.state_mut().run("tool.set", json!({"tool":if circle {"circle"} else {"rotatedBox"}})).unwrap();
+            h.run_steps(3);
+            let view = h.state().map.view_rect.unwrap().0;
+            let start = view.right_bottom() - vec2(120.0, 120.0);
+            if circle {
+                assert!(crate::circleedit::drag_start(h.state_mut(), view, start, true));
+                crate::circleedit::drag_to(h.state_mut(), view, start + vec2(40.0, 40.0));
+            } else {
+                assert!(crate::boxedit::drag_start(h.state_mut(), view, start, true));
+                crate::boxedit::drag_to(h.state_mut(), view, start + vec2(40.0, 40.0), false);
+            }
+            h.key_press(egui::Key::Escape);
+            h.run_steps(3);
+            assert!(
+                !crate::circleedit::drawing(h.state()) && !crate::boxedit::drawing(h.state()),
+                "Escape cancels the active shape gesture"
+            );
+            assert_eq!(h.state().dialogs.open, Some("createPointXY"));
+            crate::circleedit::drag_stop(h.state_mut());
+            crate::boxedit::drag_stop(h.state_mut());
+            assert!(h.state().session.map().layer(shapes).unwrap().dataset.features.is_empty());
+        }
+        h.key_press(egui::Key::Escape);
+        h.run_steps(4);
+        assert_eq!(h.state().dialogs.open, None);
     }
 }

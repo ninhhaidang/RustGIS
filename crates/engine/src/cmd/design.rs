@@ -194,21 +194,6 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
         };
         zs.push((*r, z));
     }
-    // Construction belongs to an object, not a reusable numeric id. Each removed or inserted
-    // feature that passes here (cut/paste, split pieces, edits) forgets its construction. Some
-    // row changes don't (GeoPackage and offline-area syncs, archive restore): there a feature
-    // keeps its construction only while its geometry still equals it (see `box_spec`). Undo
-    // keeps its own cache snapshot.
-    for change in &changes {
-        let feature = match (change.before(), change.row) {
-            (Some(before), None) => Some(before.id),
-            (None, Some(row)) => s.map().layer(id).and_then(|l| l.dataset.features.get(row)).map(|f| f.id),
-            _ => None,
-        };
-        if let Some(feature) = feature {
-            crate::construction::forget_feature(s, id, feature);
-        }
-    }
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
     // New features: subtype defaults fill empty fields; elevation goes in `z`.
     if let Some(st) = l.design.subtypes.clone()
@@ -376,6 +361,22 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
     e.added += counts.added;
     e.modified += counts.modified;
     e.deleted += counts.deleted;
+    // All refusals are past: construction metadata changes only for a kept edit.
+    // Construction belongs to an object, not a reusable numeric id. Each removed or inserted
+    // feature that passes here (cut/paste, split pieces, edits) forgets its construction. Some
+    // row changes don't (GeoPackage and offline-area syncs, archive restore): there a feature
+    // keeps its construction only while its geometry still equals it (see `box_spec`). Undo
+    // keeps its own cache snapshot.
+    for change in &changes {
+        let feature = match (change.before(), change.row) {
+            (Some(before), None) => Some(before.id),
+            (None, Some(row)) => s.map().layer(id).and_then(|l| l.dataset.features.get(row)).map(|f| f.id),
+            _ => None,
+        };
+        if let Some(feature) = feature {
+            crate::construction::forget_feature(s, id, feature);
+        }
+    }
     // Said once the edit is kept: a rejected one changed nothing.
     for (rule, field, losses, ty) in cuts {
         let by = crate::notice_text::NoticeText::format("Attribute rule {rule}", [("rule", rule.into())]);
@@ -3136,11 +3137,16 @@ pub(crate) fn new_feature_inputs(input: &super::InputContext<'_>, p: &Json) -> R
         return Ok(inputs);
     }
     let mut inputs = super::Inputs::primary(s, p)?;
-    if let Elevation::Surface(name) = &s.map().editing.settings.elevation {
-        inputs.layers.extend(surface_layer(input, name).map(|l| (s.map().instance_id(), l.id)));
+    include_new_feature_surface(input, &mut inputs);
+    Ok(inputs)
+}
+
+/// Every new feature may sample the configured elevation raster, even in a newly created layer.
+pub(super) fn include_new_feature_surface(input: &super::InputContext<'_>, inputs: &mut super::Inputs) {
+    if let Elevation::Surface(name) = &input.map().editing.settings.elevation {
+        inputs.layers.extend(surface_layer(input, name).map(|l| (input.map().instance_id(), l.id)));
         inputs.state = json!({"surface":name});
     }
-    Ok(inputs)
 }
 
 #[cfg(test)]

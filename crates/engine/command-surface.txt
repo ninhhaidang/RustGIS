@@ -81,6 +81,7 @@ edit.addBox layer? box attributes? template?
 edit.addCircle layer? circle attributes? template?
 edit.addFeature layer? table? geometry attributes? template?
 edit.addField layer? table? name type
+edit.addPoint x y crs? layer? name?
 edit.applyShapeConversion preview confirm
 edit.boxInfo layer? row
 edit.calculateField layer? table? field expression

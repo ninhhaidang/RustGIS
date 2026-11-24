@@ -31,7 +31,8 @@ pub struct ShowMe {
 }
 
 /// Ribbon buttons that open a dialog for a command, rather than running it: the dialog's name.
-const DIALOGS: &[(&str, &str)] = &[("select.byAttributes", "selectByAttributes"), ("map.goToXY", "goToXY")];
+const DIALOGS: &[(&str, &str)] =
+    &[("select.byAttributes", "selectByAttributes"), ("map.goToXY", "goToXY"), ("edit.addPoint", "createPointXY")];
 
 /// Starts showing where a step's command is; returns what to tell the user.
 pub fn start(app: &mut RustGisApp, st: &TaskStep) -> String {

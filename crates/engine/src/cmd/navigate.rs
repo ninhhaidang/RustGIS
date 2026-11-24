@@ -855,7 +855,7 @@ fn degrees_text(v: f64) -> String {
 /// number or text in degrees, minutes and seconds. With it, what the reading assumed, for a
 /// notice: two bare numbers taken in an order, or an MGRS square taken at its center (`moving`
 /// says whether the map goes there, which the notice's wording follows).
-fn typed_place(map: &Map, p: &Value, moving: bool) -> Result<(Coord, Option<crate::notice_text::NoticeText>), String> {
+pub(crate) fn typed_place(map: &Map, p: &Value, moving: bool) -> Result<(Coord, Option<crate::notice_text::NoticeText>), String> {
     let position = match p.get("position") {
         None | Some(Value::Null) => None,
         Some(Value::String(t)) => Some(t.as_str()),

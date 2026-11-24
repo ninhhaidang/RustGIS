@@ -2,6 +2,24 @@
 
 ## Creating features
 
+**Edit › Features › Create ▾ › Point by Coordinates…** creates points from known X/Y coordinates.
+Turn editing on (also offered in the dialog), enter X and Y, optionally a name, and click
+**Add Point** or press ++enter++. Leave the coordinate system blank for longitude/latitude
+in decimal degrees or degrees, minutes and seconds, or enter a system such as `EPSG:3857`
+for numeric eastings and northings. Enter `map` to use the map's current flat projection,
+or a layer's name to use that layer's coordinate system. Otherwise, changing the map's
+display projection does not change the entered coordinates' meaning.
+The dialog stays open and clears X, Y and Name after success; ++esc++ closes it when
+its fields have focus or no other work owns the key. On the map, Escape still cancels a sketch.
+
+Points join the selected loaded point layer. Otherwise, a new **Points** layer is created
+in the project using the existing point-layer template and the project's coordinate system;
+a layer read in place must first be loaded to receive edits. A name uses a
+text field named `name` (ignoring case); new Points layers include it. Leave Name blank if
+an existing layer has no such field. Each addition, including a new layer, is one Undo step.
+The same operation is available through Command Search and `edit.addPoint`, for example:
+`edit.addPoint {"x":14.3,"y":-41.2,"name":"Survey"}`.
+
 **Edit › Create** draws new points, lines and polygons into the layer selected in Layers:
 click once for a point, or click each vertex and double-click to finish a line or polygon
 (++esc++ cancels). **Delete** (++delete++) removes the selected features across the map's layers.
