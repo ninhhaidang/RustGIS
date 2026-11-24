@@ -395,10 +395,10 @@ fn grib2_fields_south_to_north_with_a_bitmap() {
 fn grib2_other_packings_are_left_out_and_said() {
     let a = F2::new(2, 1, vec![1, 2]);
     let mut b = F2::new(2, 1, vec![1, 2]);
-    b.template5 = 3;
+    b.template5 = 42;
     let r = read_bytes(&grib2_message(&[a, b]), "t").unwrap();
     assert_eq!(r.bands.len(), 1);
-    assert!(r.lost.contains(&"1 field left out: GRIB2 complex packing (template 5.3), not read yet".to_string()), "{:?}", r.lost);
+    assert!(r.lost.contains(&"1 field left out: GRIB2 CCSDS (template 5.42), not read yet".to_string()), "{:?}", r.lost);
     // A file with nothing readable is an error naming why.
     let mut c = F2::new(2, 1, vec![1, 2]);
     c.template5 = 40;
@@ -1277,4 +1277,269 @@ fn fields_of_a_message_too_large_to_read_whole_are_said_so() {
     let said = "1 field left out: their message is larger than the memory left lets be read whole, even where one of its fields would fit; split the file with a GRIB tool (wgrib2 or CDO) and add its parts";
     assert!(r.lost.contains(&said.to_string()), "{:?}", r.lost);
     assert!(!r.lost.iter().any(|l| l.contains("the bands read hold the most")), "{:?}", r.lost);
+}
+
+/// A field in complex packing: its groups (reference, width in bits and packed values), and the
+/// differencing's first values and least difference.
+#[derive(Clone)]
+struct Cx {
+    groups: Vec<(u32, u32, Vec<u32>)>,
+    ref_bits: u32,
+    missing: u8,
+    /// First values (as many as the order; none: template 5.2) and the least difference.
+    first: Vec<i64>,
+    least: i64,
+    octets: usize,
+    r: f32,
+    e: i64,
+    d: i64,
+    keep: Option<Vec<bool>>,
+}
+
+impl Cx {
+    fn new(groups: &[(u32, u32, &[u32])]) -> Cx {
+        let groups = groups.iter().map(|(r, w, x)| (*r, *w, x.to_vec())).collect();
+        Cx { groups, ref_bits: 9, missing: 0, first: vec![], least: 0, octets: 2, r: 0.0, e: 0, d: 0, keep: None }
+    }
+
+    fn differenced(groups: &[(u32, u32, &[u32])], first: &[i64], least: i64) -> Cx {
+        Cx { first: first.to_vec(), least, ..Cx::new(groups) }
+    }
+
+    fn count(&self) -> usize {
+        self.groups.iter().map(|g| g.2.len()).sum()
+    }
+
+    /// Sections 5 and 7: widths from 1 less than the least in 5 bits, lengths from 1 by twos in 6
+    /// bits (the last group's apart).
+    fn sections(&self) -> (Vec<u8>, Vec<u8>) {
+        let order = self.first.len();
+        let least_width = self.groups.iter().map(|g| g.1).min().unwrap().saturating_sub(1);
+        let last = self.groups.last().unwrap().2.len();
+        let mut s5 = u(if order > 0 { 49 } else { 47 }, 4);
+        s5.push(5);
+        s5.extend(u(self.count() as u64, 4));
+        s5.extend(u(if order > 0 { 3 } else { 2 }, 2));
+        s5.extend(u(u64::from(self.r.to_bits()), 4));
+        s5.extend(sm(self.e, 2));
+        s5.extend(sm(self.d, 2));
+        s5.extend([self.ref_bits as u8, 0, 1, self.missing]);
+        s5.extend(u(u64::from(9999f32.to_bits()), 4));
+        s5.extend(u(u64::from(9998f32.to_bits()), 4));
+        s5.extend(u(self.groups.len() as u64, 4));
+        s5.extend([least_width as u8, 5]);
+        s5.extend(u(1, 4));
+        s5.push(2);
+        s5.extend(u(last as u64, 4));
+        s5.push(6);
+        if order > 0 {
+            s5.extend([order as u8, self.octets as u8]);
+        }
+        let mut data = Vec::new();
+        for v in self.first.iter().chain((order > 0).then_some(&self.least)) {
+            data.extend(sm(*v, self.octets));
+        }
+        let list = |f: &dyn Fn(&(u32, u32, Vec<u32>)) -> u32, bits: u32| pack(&self.groups.iter().map(f).collect::<Vec<_>>(), bits);
+        data.extend(list(&|g| g.0, self.ref_bits));
+        data.extend(list(&|g| g.1 - least_width, 5));
+        data.extend(list(&|g| (g.2.len() as u32 - 1) / 2, 6));
+        // The groups' values one after another, whatever their widths.
+        let mut bits = Vec::new();
+        for (_, w, x) in &self.groups {
+            bits.extend(x.iter().flat_map(|v| (0..*w).rev().map(move |b| (v >> b) & 1)));
+        }
+        data.extend(pack(&bits, 1));
+        let mut s7 = u(5 + data.len() as u64, 4);
+        s7.push(7);
+        s7.extend(data);
+        (s5, s7)
+    }
+
+    /// A message of this field, one row of its points west to east.
+    fn message(&self) -> Vec<u8> {
+        let (s5, s7) = self.sections();
+        self.message_of(&s5, &s7)
+    }
+
+    fn message_of(&self, s5: &[u8], s7: &[u8]) -> Vec<u8> {
+        let points = self.keep.as_ref().map_or(self.count(), Vec::len);
+        let mut f = F2::new(points, 1, vec![0; points]);
+        // 0.05° apart, so thousands fit on a row.
+        (f.di, f.lon2) = (50_000, f.lon1 + (points as i64 - 1) * 50_000);
+        f.keep = self.keep.clone();
+        let plain = grib2_message(&[f]);
+        let (five, six, seven) = (section_at(&plain, 5), section_at(&plain, 6), section_at(&plain, 7));
+        let s1 = 21;
+        message_of(&[&plain[16 + s1..five], s5, &plain[six..seven], s7].concat())
+    }
+
+    fn values(&self) -> Vec<f32> {
+        let r = read_bytes(&self.message(), "t").unwrap();
+        assert!(r.lost.iter().all(|l| l.contains("sphere")), "{:?}", r.lost);
+        r.bands[0].data.to_vec()
+    }
+}
+
+/// The values, `None` for NaN.
+fn there(v: &[f32]) -> Vec<Option<f32>> {
+    v.iter().map(|v| (!v.is_nan()).then_some(*v)).collect()
+}
+
+/// Fails with the reason a message is left out for.
+fn refused(message: &[u8], why: &str) {
+    let e = read_bytes(message, "t").unwrap_err().to_string();
+    assert!(e.contains(why), "{e}");
+}
+
+#[test]
+fn complex_packing_reads_groups_of_their_own_widths() {
+    // Groups of 1, 5 and 3 values, the second of no bits (its reference), the last 9 bits wide.
+    let mut c = Cx::new(&[(7, 3, &[5]), (300, 0, &[0; 5]), (2, 9, &[0, 511, 100])]);
+    assert_eq!(c.values(), vec![12.0, 300.0, 300.0, 300.0, 300.0, 300.0, 2.0, 513.0, 102.0]);
+    // (R + X × 2^E) / 10^D, as simple packing's.
+    (c.r, c.e, c.d) = (273.5, -1, 1);
+    let v = c.values();
+    assert!(approx(v[0], (273.5 + 6.0) / 10.0) && approx(v[7], (273.5 + 256.5) / 10.0), "{v:?}");
+    // Values f32 rounds are counted, as simple packing's.
+    let r = read_bytes(&c.message(), "t").unwrap();
+    assert!(r.rounded[0] > 0);
+    // A bitmap masks points, and the values are the others'.
+    let mut c = Cx::new(&[(1, 2, &[0, 1, 2])]);
+    c.keep = Some(vec![true, false, true, true, false]);
+    assert_eq!(there(&c.values()), [Some(1.0), None, Some(2.0), Some(3.0), None]);
+}
+
+#[test]
+fn complex_packing_marks_missing_values() {
+    // Primary: every bit set, in a value or in the reference of a group of no bits.
+    let mut c = Cx::new(&[(10, 2, &[0, 3, 2]), (511, 0, &[0; 3]), (510, 0, &[0])]);
+    c.missing = 1;
+    assert_eq!(there(&c.values()), [Some(10.0), None, Some(12.0), None, None, None, Some(510.0)]);
+    // The primary and the secondary (one less). In one bit, every value is one or the other.
+    let mut c = Cx::new(&[(10, 2, &[0, 3, 2, 1, 1]), (510, 0, &[0; 3]), (509, 0, &[0]), (4, 1, &[0, 1])]);
+    c.missing = 2;
+    let want = [Some(10.0), None, None, Some(11.0), Some(11.0), None, None, None, Some(509.0), None, None];
+    assert_eq!(there(&c.values()), want);
+    // Without missing value management, the same bits are values.
+    c.missing = 0;
+    assert_eq!(c.values(), vec![10.0, 13.0, 12.0, 11.0, 11.0, 510.0, 510.0, 510.0, 509.0, 4.0, 5.0]);
+    // None of it is said as a value past the range, nor counted as rounded.
+    c.missing = 1;
+    let r = read_bytes(&c.message(), "t").unwrap();
+    assert!(r.rounded.is_empty() && r.lost.len() == 1, "{:?}", r.lost);
+}
+
+#[test]
+fn spatial_differencing_is_undone() {
+    // 100, 103, 101, 101, 90: differences 3, −2, 0, −11, the least −11.
+    let c = Cx::differenced(&[(0, 4, &[0, 14, 9]), (11, 0, &[0]), (0, 1, &[0])], &[100], -11);
+    assert_eq!(c.values(), vec![100.0, 103.0, 101.0, 101.0, 90.0]);
+    // Twice: 5, 12, 20, 27, 35 differ by 7, 8, 7, 8, which differ by 1, −1, 1.
+    let c = Cx::differenced(&[(0, 2, &[0, 0, 2]), (0, 2, &[0, 2])], &[5, 12], -1);
+    assert_eq!(c.values(), vec![5.0, 12.0, 20.0, 27.0, 35.0]);
+    // The first values are unsigned (the reference value is the least), as GDAL reads them.
+    let c = Cx::differenced(&[(0, 4, &[0, 3])], &[40_000], -1);
+    assert_eq!(c.values(), vec![40_000.0, 40_002.0]);
+    // Missing values aren't differenced: the first value is the first there.
+    let mut c = Cx::differenced(&[(0, 3, &[7, 0, 5, 7, 3]), (511, 0, &[0]), (0, 3, &[1])], &[100], -4);
+    c.missing = 1;
+    assert_eq!(there(&c.values()), [None, Some(100.0), Some(101.0), None, Some(100.0), None, Some(97.0)]);
+    let mut c = Cx::differenced(&[(0, 3, &[0, 7, 0, 5, 7, 3])], &[100, 90], -4);
+    c.missing = 1;
+    assert_eq!(there(&c.values()), [Some(100.0), None, Some(90.0), Some(81.0), None, Some(71.0)]);
+    // Descriptors of no octets are 0.
+    let mut c = Cx::differenced(&[(0, 4, &[0, 3, 5])], &[0], 0);
+    c.octets = 0;
+    assert_eq!(c.values(), vec![0.0, 3.0, 8.0]);
+}
+
+#[test]
+fn a_complex_field_of_no_groups_is_constant() {
+    let c = Cx::new(&[(0, 0, &[0, 0, 0])]);
+    let (mut s5, _) = c.sections();
+    s5[11..15].copy_from_slice(&4.5f32.to_bits().to_be_bytes());
+    // No groups, and nothing else of the template set: NCEP's libraries write one so.
+    s5[19..].fill(0);
+    let r = read_bytes(&c.message_of(&s5, &[0, 0, 0, 5, 7]), "t").unwrap();
+    assert_eq!(r.bands[0].data, vec![4.5, 4.5, 4.5]);
+}
+
+#[test]
+fn complex_packing_this_reader_doesnt_read_is_said() {
+    let c = Cx::differenced(&[(0, 4, &[0, 3, 5])], &[1], 0);
+    for (octet, value, why) in [
+        (22, 0, "group splitting method 0"),
+        (23, 3, "missing value management 3"),
+        (48, 3, "spatial differencing of order 3"),
+        (48, 0, "spatial differencing of order 0"),
+        (49, 5, "descriptors of 5 octets"),
+    ] {
+        let (mut s5, s7) = c.sections();
+        s5[octet - 1] = value;
+        refused(&c.message_of(&s5, &s7), &format!("1 field left out: GRIB2 complex packing with {why} (template 5.3), not read yet"));
+    }
+    // References, widths and lengths past 32 bits, given or added up.
+    for octet in [20, 36, 37, 47] {
+        let (mut s5, mut s7) = c.sections();
+        s5[octet - 1] = 33;
+        s7.extend([0; 16]);
+        s7[3] += 16;
+        refused(&c.message_of(&s5, &s7), "1 field left out: values of 3");
+    }
+}
+
+#[test]
+fn damaged_complex_packing_is_said_as_damaged() {
+    let c = Cx::new(&[(7, 3, &[5]), (300, 0, &[0; 5]), (2, 9, &[0, 511, 100])]);
+    let damaged = |s5: &[u8], s7: &[u8], why: &str| refused(&c.message_of(s5, s7), &format!("1 field left out: damaged ({why})"));
+    let (s5, s7) = c.sections();
+    // A template cut short.
+    let mut short = s5[..46].to_vec();
+    short[3] = 46;
+    damaged(&short, &s7, "a damaged data representation section");
+    // A group's length changed, the last one's, or more groups than values.
+    for (octet, value, why) in [
+        (41, 2, "a field whose groups don't hold its values"),
+        (46, 4, "a field whose groups don't hold its values"),
+        (46, 2, "a field whose groups don't hold its values"),
+        (35, 10, "a field of more groups than values"),
+    ] {
+        let mut bad = s5.clone();
+        bad[octet - 1] = value;
+        damaged(&bad, &s7, why);
+    }
+    // Data that end in the values, or in the groups' lists.
+    for (len, why) in [(s7.len() - 1, "its values"), (9, "its groups"), (5, "its groups")] {
+        let mut bad = s7[..len].to_vec();
+        bad[3] = len as u8;
+        damaged(&s5, &bad, &format!("a data section shorter than {why}"));
+    }
+    // A reference value that isn't a number.
+    let mut bad = s5.clone();
+    bad[11..15].copy_from_slice(&f32::NAN.to_bits().to_be_bytes());
+    damaged(&bad, &s7, "a reference value that isn't a number");
+    // Differences that add up past what a packed value may be: 2^31 more each step, twice over,
+    // passes 2^53 within three thousand values.
+    let x = [0u32; 127];
+    let many: Vec<(u32, u32, &[u32])> = (0..30).map(|_| (0, 0, &x[..])).collect();
+    let mut c = Cx::differenced(&many, &[0, 0], (1 << 31) - 1);
+    c.octets = 4;
+    refused(&c.message(), "1 field left out: damaged (differences that add up past any packed value)");
+}
+
+#[test]
+fn hostile_complex_packing_never_panics() {
+    let mut c = Cx::differenced(&[(0, 3, &[7, 0, 5, 7, 3]), (511, 0, &[0]), (0, 3, &[1])], &[100, 90], -4);
+    c.missing = 2;
+    let file = c.message();
+    for n in 0..file.len() {
+        let _ = read_bytes(&file[..n], "t");
+    }
+    for i in 0..file.len() {
+        for x in [0x00, 0x01, 0x20, 0x7f, 0x80, 0xff] {
+            let mut bad = file.clone();
+            bad[i] = x;
+            let _ = read_bytes(&bad, "t");
+        }
+    }
 }
