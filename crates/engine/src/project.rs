@@ -2325,7 +2325,7 @@ pub(crate) fn picture_notices_by<'a>(
         ),
         (
             unknown_radius,
-            "Image markers in {names} are SVGs with a radius whose size RustGIS can't know (in em or ex, or in % of a size in em, ex or %), and are drawn as circles",
+            "Image markers in {names} are SVGs with a radius whose size RustGIS can't know (in em or ex, or in % of a size in em or ex, or of a nested size in % over 100%), and are drawn as circles",
         ),
         (too_small, "Image markers in {names} are SVGs too small to draw and are drawn as circles"),
         (not_utf8, "Image markers in {names} are SVGs that aren't UTF-8 text and are drawn as circles"),

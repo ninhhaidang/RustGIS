@@ -40,6 +40,9 @@ pub(super) enum Refusal {
     /// It has filters, text, images, animation or links to other files, which aren't drawn (the
     /// module says why).
     Undrawn,
+    /// Matching its style sheets reached the cap given, below [`CSS_STEPS`]: what the run had
+    /// left, not the SVG, stopped it.
+    PastRun,
 }
 
 /// The most elements an SVG may have once its `<use>`s and markers are counted where they repeat:
@@ -59,10 +62,11 @@ const ARC_CUBICS: f64 = 200.0;
 /// each element is tried against each rule, and a selector's descendant (`a b`) against every
 /// element above it, again for each descendant before it, so a few of them deep down come to
 /// millions (`x g g g g g g rect` 40 levels down took 0.5 s). A step is some 11 ns (measured: a
-/// class rule on an element, two steps, 22 ns), so ~11 ms: some 500,000 rules tried on elements,
-/// 200 class rules on 2,500 elements. An attribute's value matched costs a step each 64 bytes too,
-/// and each node walked back past to a sibling one. Icons take thousands of steps.
-const CSS_STEPS: u64 = 1_000_000;
+/// class rule on an element, two steps, 22 ns), so ~45 ms: some 2,000,000 rules tried on
+/// elements, 200 class rules (an exported icon's one class per style) on [`ELEMENTS`]. An
+/// attribute's value matched costs a step each 64 bytes too, and each node walked back past to a
+/// sibling one. Icons take thousands of steps.
+pub(super) const CSS_STEPS: u64 = 4_000_000;
 /// The most XML nodes (elements, text, comments) read before giving up, a bound on reading the
 /// text itself: [`ELEMENTS`] and the text and spaces between them.
 pub(super) const XML_NODES: u32 = 4 * ELEMENTS as u32;
@@ -77,8 +81,11 @@ const NODE: u64 = 100;
 const STOPS_PER_UNIT: u64 = 16;
 
 /// SVG text `text` read into a tree: within [`XML_NODES`], [`ELEMENTS`], [`POINTS`] and
-/// [`CSS_STEPS`], its root an `<svg>`, with no images resolved and no files read.
-pub(super) fn read(text: &str) -> Result<usvg::Tree, Refusal> {
+/// [`CSS_STEPS`], its root an `<svg>`, with no images resolved and no files read. Matching its
+/// style sheets ([`css_steps`]) stops at `cap` too, what the run has left, refused there for the
+/// run ([`Refusal::PastRun`]) when below [`CSS_STEPS`]; `matched` is set to the steps it took,
+/// refused or not, which its length doesn't bound, for the run to be charged them.
+pub(super) fn read(text: &str, cap: u64, matched: &mut u64) -> Result<usvg::Tree, Refusal> {
     let xml = roxmltree::ParsingOptions { allow_dtd: true, nodes_limit: XML_NODES, ..Default::default() };
     let doc = roxmltree::Document::parse_with_options(text, xml).map_err(|e| match e {
         roxmltree::Error::NodesLimitReached => Refusal::TooNested,
@@ -95,8 +102,8 @@ pub(super) fn read(text: &str) -> Result<usvg::Tree, Refusal> {
         return Err(Refusal::UnknownRadius);
     }
     with_sheet(&doc, |sheet| {
-        elements(&doc, sheet)?;
-        if nested_markers(&doc, sheet) { Err(Refusal::TooMuch) } else { Ok(()) }
+        let (_, by_sheet) = elements(&doc, sheet, cap, matched)?;
+        if nested_markers(&doc, &by_sheet) { Err(Refusal::TooMuch) } else { Ok(()) }
     })?;
     let opt = usvg::Options {
         resources_dir: None,
@@ -168,19 +175,20 @@ fn undrawn(n: roxmltree::Node) -> bool {
 /// Whether a marker may be drawn on a shape inside another marker: usvg draws it on each of that
 /// marker's vertices wherever that marker is (its `convert_children` of a marker), which
 /// [`elements`] doesn't count. A shape there takes a marker by inheritance: from itself or what
-/// holds it inside the marker, from the marker and what holds it, from a style sheet (whose reach
-/// isn't read here), or, through a `<use>` in the marker, from anything the copy it makes holds or
-/// that holds it. So any of those naming a marker counts. One marker can only nest itself, a cycle
-/// usvg drops (it follows a `<use>`'s copy too).
-fn nested_markers(doc: &roxmltree::Document, sheet: &simplecss::StyleSheet) -> bool {
+/// holds it inside the marker, from the marker and what holds it, or, through a `<use>` in the
+/// marker, from anything the copy it makes holds or that holds it; each by attribute, in its
+/// `style` or from a style sheet whose selector reaches it (`by_sheet`, from [`elements`]). So any
+/// of those setting a marker counts. A `<use>` in a marker is taken broadly: anything that sets a
+/// marker, wherever it is, counts. One marker can only nest itself, a cycle usvg drops (it follows
+/// a `<use>`'s copy too).
+fn nested_markers(doc: &roxmltree::Document, by_sheet: &std::collections::HashSet<roxmltree::NodeId>) -> bool {
     let markers: Vec<_> = doc.descendants().filter(|n| n.has_tag_name("marker")).collect();
     if markers.len() < 2 {
         return false;
     }
+    let sets = |n: roxmltree::Node| names_marker(n) || by_sheet.contains(&n.id());
     let uses = markers.iter().any(|m| m.descendants().any(|n| n.has_tag_name("use")));
-    sheet_sets_marker(sheet)
-        || markers.iter().any(|m| m.ancestors().any(names_marker) || m.descendants().any(names_marker))
-        || (uses && doc.descendants().any(names_marker))
+    markers.iter().any(|m| m.ancestors().any(sets) || m.descendants().any(sets)) || (uses && doc.descendants().any(sets))
 }
 
 /// Whether element `n` sets a marker on what it draws and holds, by attribute or in its `style`.
@@ -195,11 +203,6 @@ fn names_marker(n: roxmltree::Node) -> bool {
 /// read as usvg reads it; `none` sets none.
 fn sets_marker(name: &str, value: &str) -> bool {
     is_marker(name) && svgtypes::FuncIRI::from_str(value).is_ok()
-}
-
-/// Whether style sheet `sheet` sets a marker, on whatever its selectors reach.
-fn sheet_sets_marker(sheet: &simplecss::StyleSheet) -> bool {
-    sheet.rules.iter().any(|r| r.declarations.iter().any(|d| sets_marker(d.name, d.value)))
 }
 
 /// The ids of the markers a marker property names (`url(#id)`), by attribute, in a `style` or in
@@ -231,17 +234,26 @@ fn is_marker(name: &str) -> bool {
 
 /// The steps matching `sheet`'s rules to element `n` takes, as usvg matches them before reading
 /// it (each rule tried with simplecss's own matcher, each step counted), on top of the `spent`
-/// that matching other elements took; `None` past [`CSS_STEPS`] in all, where it is stopped.
-fn css_steps(n: roxmltree::Node, sheet: &simplecss::StyleSheet, spent: u64) -> Option<u64> {
+/// that matching other elements took, and whether a rule that sets a marker (`marking`, by rule)
+/// matches it (one a later rule may take back counts too: more, never less); `None` past
+/// [`CSS_STEPS`] in all, where it is stopped (`spent` starts short of it by the cap given,
+/// [`elements`]).
+fn css_steps(n: roxmltree::Node, sheet: &simplecss::StyleSheet, marking: &[bool], spent: u64) -> Option<(u64, bool)> {
     let steps = std::cell::Cell::new(spent);
-    for rule in &sheet.rules {
+    let mut marks = false;
+    for (i, rule) in sheet.rules.iter().enumerate() {
+        // Each rule is tried: one `marking` doesn't name is taken to set a marker.
+        // `elements` gives a flag for each rule; a rule without one (only the tests leave some
+        // out) counts as setting a marker, which only ever refuses more.
+        let sets = marking.get(i).copied().unwrap_or(true);
         steps.set(steps.get() + 1);
-        rule.selector.matches(&Stepped(n, &steps));
+        let matched = rule.selector.matches(&Stepped(n, &steps));
         if steps.get() > CSS_STEPS {
             return None;
         }
+        marks |= matched && sets;
     }
-    Some(steps.get() - spent)
+    Some((steps.get() - spent, marks))
 }
 
 /// An element as simplecss matches it, each step it takes counted in the cell; past
@@ -249,7 +261,8 @@ fn css_steps(n: roxmltree::Node, sheet: &simplecss::StyleSheet, spent: u64) -> O
 struct Stepped<'a, 'input>(roxmltree::Node<'a, 'input>, &'a std::cell::Cell<u64>);
 
 impl<'a, 'input> Stepped<'a, 'input> {
-    /// Counts a step: whether it is still within [`CSS_STEPS`].
+    /// Counts a step: whether it is still within [`CSS_STEPS`]. The cell starts at `CSS_STEPS - cap`
+    /// ([`elements`]), so that is whether the steps taken are still within the cap.
     fn step(&self) -> bool {
         self.steps(1)
     }
@@ -335,8 +348,17 @@ fn elsewhere(v: &str) -> bool {
 /// often as the vertices it can sit on. Refused nested past [`DEPTH`] ([`Refusal::TooNested`]);
 /// past [`ELEMENTS`], its shapes' points ([`points_of`]) counted so past [`POINTS`], matched to its
 /// style sheets past [`CSS_STEPS`] ([`css_steps`]) or where a `<use>` repeats itself (usvg drops
-/// those, but counting it is no use) as too much ([`Refusal::TooMuch`]).
-fn elements(doc: &roxmltree::Document, sheet: &simplecss::StyleSheet) -> Result<u64, Refusal> {
+/// those, but counting it is no use) as too much ([`Refusal::TooMuch`]). Returns the count and
+/// the set of the elements a style sheet sets a marker on; matching stops at `cap` as at
+/// [`CSS_STEPS`] ([`read`]), and `matched` is set to the steps it took, refused or not, each
+/// `<use>`'s copy counted again as usvg matches it again.
+fn elements(
+    doc: &roxmltree::Document,
+    sheet: &simplecss::StyleSheet,
+    cap: u64,
+    matched: &mut u64,
+) -> Result<(u64, std::collections::HashSet<roxmltree::NodeId>), Refusal> {
+    let cap = cap.min(CSS_STEPS);
     // The first element of an id, as usvg takes it: counting another would count what isn't drawn.
     let mut ids = std::collections::HashMap::new();
     for n in doc.descendants() {
@@ -349,21 +371,46 @@ fn elements(doc: &roxmltree::Document, sheet: &simplecss::StyleSheet) -> Result<
         seen: std::collections::HashMap::new(),
         viewport: viewport(doc).unwrap_or(f64::from(f32::MAX)),
         sheet,
-        matched: 0,
+        // Read once, not on each element a rule matches: a rule may hold thousands of declarations.
+        marking: sheet.rules.iter().map(|r| r.declarations.iter().any(|d| sets_marker(d.name, d.value))).collect(),
+        // Started as far along as the cap leaves, so that matching stops at it as at the whole.
+        matched: CSS_STEPS - cap,
+        cap,
+        by_sheet: std::collections::HashSet::new(),
         deep: false,
+        run_capped: false,
     };
-    let refused = |c: &Counter| if c.deep { Refusal::TooNested } else { Refusal::TooMuch };
-    let all = counter.count(doc.root_element(), 0).ok_or_else(|| refused(&counter))?;
+    let counted = match count_all(doc, &mut counter) {
+        // Past the elements written out it is too much for itself, which is known for nothing.
+        Err(Refusal::PastRun) if doc.descendants().filter(|n| n.is_element()).count() as u64 > ELEMENTS => Err(Refusal::TooMuch),
+        counted => counted,
+    };
+    *matched = counter.matched.saturating_sub(CSS_STEPS - cap);
+    counted.map(|total| (total, counter.by_sheet))
+}
+
+/// [`elements`]'s count with `counter`, apart from it so that the steps matched are read
+/// whatever comes of the count.
+fn count_all<'a>(doc: &'a roxmltree::Document<'a>, counter: &mut Counter<'a, '_>) -> Result<u64, Refusal> {
+    let refused = |c: &Counter| match (c.deep, c.run_capped) {
+        (true, _) => Refusal::TooNested,
+        (_, true) => Refusal::PastRun,
+        _ => Refusal::TooMuch,
+    };
+    let all = counter.count(doc.root_element(), 0).ok_or_else(|| refused(counter))?;
+    // What usvg takes: each `<use>`'s copy matched again, which the steps of each element once
+    // leave out.
+    counter.matched = counter.matched.max((CSS_STEPS - counter.cap).saturating_add(all.steps));
     // A marker sits on the vertices (`marker-mid`) and both ends of the shapes that set it, by
-    // attribute or style, or that inherit it from what holds them or from the `<use>` that copies
-    // them; a style sheet may set it on any shape. So each marker, its elements and their points,
-    // is counted as if on all of those vertices: none for a marker nothing names.
-    let vertices = if sheet_sets_marker(sheet) { all.points } else { all.marked };
-    let named = named_markers(doc, sheet);
+    // attribute, style or a style sheet's rule that reaches them, or that inherit it from what
+    // holds them or from the `<use>` that copies them. So each marker, its elements and their
+    // points, is counted as if on all of those vertices: none for a marker nothing names.
+    let vertices = all.marked;
+    let named = named_markers(doc, counter.sheet);
     let used = |m: &roxmltree::Node| m.has_tag_name("marker") && m.attribute("id").is_some_and(|id| named.contains(id));
     let (mut markers, mut marked) = (0u64, 0u64);
     for m in doc.descendants().filter(used) {
-        let c = counter.count(m, 0).ok_or_else(|| refused(&counter))?;
+        let c = counter.count(m, 0).ok_or_else(|| refused(counter))?;
         (markers, marked) = (markers.saturating_add(c.elements), marked.saturating_add(c.points));
     }
     let total = all.elements.saturating_add(markers.saturating_mul(vertices));
@@ -377,7 +424,8 @@ struct Counted {
     elements: u64,
     /// Its shapes' points ([`points_of`]).
     points: u64,
-    /// The points of those that set a marker or inherit one from what holds them here.
+    /// The points of those that set a marker (by attribute, style or style sheet) or inherit one
+    /// from what holds them here.
     marked: u64,
     /// The levels under it, `<use>`s counted as levels.
     height: u32,
@@ -395,17 +443,26 @@ struct Counter<'a, 's> {
     viewport: f64,
     /// The style sheets.
     sheet: &'s simplecss::StyleSheet<'s>,
-    /// The steps the matching here has taken so far, each element once ([`css_steps`]).
+    /// Whether each of their rules sets a marker ([`sets_marker`]).
+    marking: Vec<bool>,
+    /// The steps the matching here has taken so far, each element once ([`css_steps`]), from as far
+    /// along as `cap` leaves of [`CSS_STEPS`].
     matched: u64,
+    /// The most steps matching may take here ([`elements`]).
+    cap: u64,
+    /// The elements a style sheet's rule sets a marker on ([`css_steps`]).
+    by_sheet: std::collections::HashSet<roxmltree::NodeId>,
     /// Whether a count stopped for nesting past [`DEPTH`] ([`Refusal::TooNested`]).
     deep: bool,
+    /// Whether matching stopped at `cap`, below [`CSS_STEPS`] ([`Refusal::PastRun`]).
+    run_capped: bool,
 }
 
 impl<'a> Counter<'a, '_> {
-    /// What element `n`, `depth` levels down, comes to; `None` past [`ELEMENTS`], [`DEPTH`] or
-    /// [`CSS_STEPS`], or for a `<use>` that repeats itself. Each element is counted once and its
-    /// count kept, but its levels are checked again wherever it is reached: a `<use>` may reach it
-    /// deeper.
+    /// What element `n`, `depth` levels down, comes to; `None` past [`ELEMENTS`], [`DEPTH`] or the
+    /// steps `cap` leaves ([`elements`]), or for a `<use>` that repeats itself. Each element is
+    /// counted once and its count kept, but its levels are checked again wherever it is reached: a
+    /// `<use>` may reach it deeper.
     fn count(&mut self, n: roxmltree::Node<'a, 'a>, depth: u32) -> Option<Counted> {
         if depth > DEPTH {
             self.deep = true;
@@ -429,8 +486,16 @@ impl<'a> Counter<'a, '_> {
             .has_tag_name("use")
             .then(|| href.and_then(|h| svgtypes::IRI::from_str(h).ok()).and_then(|iri| self.ids.get(iri.0).copied()))
             .flatten();
-        let steps = css_steps(n, self.sheet, self.matched)?;
+        // Stopped past the cap, all of it spent.
+        let Some((steps, sets)) = css_steps(n, self.sheet, &self.marking, self.matched) else {
+            self.matched = CSS_STEPS;
+            self.run_capped = self.cap < CSS_STEPS;
+            return None;
+        };
         self.matched = self.matched.saturating_add(steps);
+        if sets {
+            self.by_sheet.insert(n.id());
+        }
         let mut total = Counted { elements: 1, points: points_of(n, self.viewport), marked: 0, height: 0, steps };
         for under in n.children().filter(|c| c.is_element()).chain(used) {
             let c = self.count(under, depth + 1)?;
@@ -439,12 +504,14 @@ impl<'a> Counter<'a, '_> {
             total.marked = total.marked.saturating_add(c.marked);
             total.height = total.height.max(c.height + 1);
             total.steps = total.steps.saturating_add(c.steps);
-            if total.elements > ELEMENTS || total.steps > CSS_STEPS {
+            if total.elements > ELEMENTS || total.steps > self.cap {
+                // Past the elements it is too much for itself, which is known for nothing.
+                self.run_capped = total.elements <= ELEMENTS && self.cap < CSS_STEPS;
                 return None;
             }
         }
         // What sets a marker sets it on all it draws and holds.
-        if names_marker(n) {
+        if names_marker(n) || sets {
             total.marked = total.points;
         }
         self.seen.insert(n.id(), Some(total));
@@ -454,22 +521,31 @@ impl<'a> Counter<'a, '_> {
 
 /// The largest a viewport of `doc` may be, which a length in % is a part of: its view boxes and the
 /// sizes of its `<svg>`s, `<symbol>`s and `<use>`s, as usvg takes them for one (100 a side
-/// without). The root's size in % is of 100 a side. `None` when one may be any size: the root's in
-/// em or ex, or another's in %, em or ex.
+/// without). An `<svg>` with a view box takes its % from it, whatever its own size (usvg's
+/// `convert_svg`, and `resolve_svg_size` for the root). The root's size in % is of 100 a side;
+/// another's is of the viewport around it, so one of at most 100% is at most as large. `None` when
+/// one may be any size: one in em or ex (but an `<svg>`'s with a view box), or another than the
+/// root's past 100%.
 fn viewport(doc: &roxmltree::Document) -> Option<f64> {
     use svgtypes::LengthUnit::{Em, Ex, Percent};
     let root = doc.root_element();
     let mut largest = 100.0f64;
     for n in doc.descendants().filter(|n| n.is_element()) {
-        if let Some(b) = n.attribute("viewBox").and_then(|v| v.parse::<svgtypes::ViewBox>().ok()) {
+        let view_box = n.attribute("viewBox").and_then(|v| v.parse::<svgtypes::ViewBox>().ok());
+        if let Some(b) = view_box {
             largest = largest.max(b.w.abs()).max(b.h.abs());
         }
-        if matches!(n.tag_name().name(), "svg" | "symbol" | "use") {
+        let sized = match n.tag_name().name() {
+            "svg" => view_box.is_none(),
+            "symbol" | "use" => true,
+            _ => false,
+        };
+        if sized {
             for side in ["width", "height"].iter().filter_map(|&a| n.attribute(a)) {
-                let unknown = side
-                    .trim()
-                    .parse::<svgtypes::Length>()
-                    .is_ok_and(|l| l.number != 0.0 && (matches!(l.unit, Em | Ex) || (l.unit == Percent && n != root)));
+                // One in % of at most 100 comes to at most 100 here, below `largest`.
+                let unknown = side.trim().parse::<svgtypes::Length>().is_ok_and(|l| {
+                    l.number != 0.0 && (matches!(l.unit, Em | Ex) || (l.unit == Percent && n != root && l.number.abs() > 100.0))
+                });
                 if unknown {
                     return None;
                 }
@@ -816,13 +892,20 @@ pub(super) fn draw(tree: &usvg::Tree, (w, h): (u32, u32), t: tiny_skia::Transfor
 mod tests {
     use super::*;
 
+    /// [`super::read`], what its matching took left out.
+    fn read(text: &str) -> Result<usvg::Tree, Refusal> {
+        super::read(text, CSS_STEPS, &mut 0)
+    }
+
     fn svg(body: &str) -> String {
         format!(r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 100 100">{body}</svg>"#)
     }
 
     /// [`elements`] of `body`.
     fn element_count(body: &str) -> Option<u64> {
-        roxmltree::Document::parse(&svg(body)).map(|d| with_sheet(&d, |sheet| elements(&d, sheet).ok())).unwrap()
+        roxmltree::Document::parse(&svg(body))
+            .map(|d| with_sheet(&d, |sheet| elements(&d, sheet, CSS_STEPS, &mut 0).ok().map(|(n, _)| n)))
+            .unwrap()
     }
 
     /// What `body` costs drawn 100 × 100 pixels, a pixel a unit of its view.
@@ -887,8 +970,13 @@ mod tests {
         assert_eq!(none(r#"style="marker: none""#), none(""));
         // On the big path, past the elements.
         assert_eq!(doc(&format!(r#"<marker id="m"><circle r="1"/></marker><path d="{zigzag}" marker-mid="url(#m)"/>"#)), None);
-        // A style sheet that sets a marker may reach any shape: every vertex counts.
+        // A style sheet sets a marker on the shapes its selectors reach, and what they hold: their
+        // vertices count, the others' don't (#2864).
         let sheet = |rule: &str| doc(&format!(r#"<style>{rule}</style><marker id="m"><circle r="1"/></marker><path d="{zigzag}"/>"#));
+        let reached =
+            |rule: &str, on: &str| doc(&format!(r#"<style>{rule}</style><marker id="m"><circle r="1"/></marker>{on}<path d="{zigzag}"/>"#));
+        assert_eq!(reached(".e { marker-end: url(#m) }", &format!(r#"<path class="e" d="{four}"/>"#)), Some(6 + 2 * 6));
+        assert_eq!(reached("g.e { marker-end: url(#m) }", &format!(r#"<g class="e"><path d="{four}"/></g>"#)), Some(7 + 2 * 6));
         assert_eq!(sheet("path { marker-mid: url(#m) }"), None);
         assert_eq!(sheet("path { MARKER : url(#m) }"), None);
         // Read as the reader reads it: past a comment before the colon, after a `*`.
@@ -966,6 +1054,9 @@ mod tests {
             r#"<circle r="50%"/>"#,
             r#"<ellipse rx="40%" ry="1e3%"/>"#,
             r#"<rect width="80" height="80" rx="10%"/>"#,
+            // Of a nested viewport, at most the one around it, or its own view box (#2864).
+            r#"<svg width="50%" height="50%"><circle r="50%"/></svg>"#,
+            r#"<svg width="2em" height="2em" viewBox="0 0 400 400"><circle r="50%"/></svg>"#,
             r#"<rect width="80" height="80" rx="0em" ry="0ex"/>"#,
             r#"<circle r="0%"/>"#,
         ] {
@@ -973,15 +1064,36 @@ mod tests {
             let drawn = drawn.unwrap_or_else(|why| panic!("{body}: {why:?}"));
             assert!(points >= drawn && points < POINTS, "{body}: {points} counted, {drawn} drawn");
         }
-        // A % radius in a viewport whose size isn't known (a nested one in %, a root in em) is
-        // refused for it, as one in em or ex is (#2713).
-        let nested = svg(r#"<svg width="50%" height="50%"><circle r="50%"/></svg>"#);
-        assert_eq!(read(&nested).err(), Some(Refusal::UnknownRadius));
+        // A % radius in a viewport whose size isn't known (a nested one past 100% or in em without
+        // a view box, a root in em without one) is refused for it, as one in em or ex is (#2713).
+        // A view box of no size is no view box, as usvg takes it (svgtypes refuses it).
+        for (open, close) in [
+            (r#"<svg width="150%" height="50%">"#, "</svg>"),
+            (r#"<svg width="2em" height="2em">"#, "</svg>"),
+            (r#"<svg width="2em" height="2em" viewBox="0 0 0 0">"#, "</svg>"),
+            (r#"<symbol id="s" width="2em">"#, r##"</symbol><use href="#s"/>"##),
+        ] {
+            let body = svg(&format!(r#"{open}<circle r="50%"/>{close}"#));
+            assert_eq!(read(&body).err(), Some(Refusal::UnknownRadius), "{body}");
+        }
+        assert_eq!(read(&svg(r#"<use width="2em"/><circle r="50%"/>"#)).err(), Some(Refusal::UnknownRadius));
         let em_root = r#"<svg xmlns="http://www.w3.org/2000/svg" width="2em" height="2em"><rect width="9" height="9" rx="10%"/></svg>"#;
         assert_eq!(read(em_root).err(), Some(Refusal::UnknownRadius));
+        // But a nested size of at most 100% is at most the viewport around it, and an `<svg>` with
+        // a view box takes its % from it whatever its own size, the root's too (#2864).
+        for known in [
+            svg(r#"<circle r="25%"/><svg width="50%" height="50%"><rect width="5" height="5"/></svg>"#),
+            svg(r#"<svg width="100%" height="100%"><circle r="50%"/></svg>"#),
+            svg(r#"<svg width="2em" height="2em" viewBox="0 0 20 20"><circle r="50%"/></svg>"#),
+            em_root.replace(r#"height="2em""#, r#"height="2em" viewBox="0 0 20 20""#),
+        ] {
+            assert!(read(&known).is_ok(), "{known}");
+        }
         // Against a nested viewport of its own size.
         let large = svg(r#"<svg viewBox="0 0 1e30 1e30"><circle r="50%"/></svg>"#);
         assert_eq!(read(&large).err(), Some(Refusal::TooMuch));
+        // A view box makes the % of its own, however large the size it is drawn at (#2864).
+        assert!(read(&svg(r#"<svg width="1e6" height="1e6" viewBox="0 0 10 10"><circle r="50%"/></svg>"#)).is_ok());
         for body in [
             r#"<circle r="1e38"/>"#,
             r#"<path d="M0 0A1e30 0.00002 0 1 1 1e30 1e30" stroke="black"/>"#,
@@ -1055,6 +1167,27 @@ mod tests {
         // With a style sheet that only names a class like a marker, they are read too (#2713).
         let classed = format!(r#"<style>.marker-dot {{ fill: red }}</style>{side}"#);
         assert!(read(&svg(&classed)).is_ok());
+        // A style sheet that sets a marker only on shapes outside the markers nests none (#2864).
+        let edge = format!(
+            r#"<style>.edge {{ marker-end: url(#a) }}</style><marker id="a"><circle r="1"/></marker><marker id="b"><circle r="1"/></marker><path class="edge" d="{zigzag}"/><path d="{zigzag}" marker-end="url(#b)"/>"#
+        );
+        assert!(read(&svg(&edge)).is_ok());
+        // One that reaches a shape inside a marker, the marker itself or what holds it (it is
+        // inherited), or any shape when a marker holds a `<use>`, does (#2864).
+        for nested in [
+            format!(
+                r#"<style>#a {{ marker-mid: url(#b) }}</style><marker id="b"><circle r="1"/></marker><marker id="a"><path d="{zigzag}"/></marker>"#
+            ),
+            format!(
+                r#"<style>.wrap {{ marker-mid: url(#b) }}</style><marker id="b"><circle r="1"/></marker><g class="wrap"><marker id="a"><path d="{zigzag}"/></marker></g>"#
+            ),
+            format!(
+                r##"<style>.p {{ marker-mid: url(#b) }}</style><marker id="b"><circle r="1"/></marker><path id="p" class="p" d="{zigzag}"/><marker id="a"><use href="#p"/></marker>"##
+            ),
+        ] {
+            let body = format!(r#"{nested}<path d="{zigzag}" marker-mid="url(#a)"/>"#);
+            assert_eq!(read(&svg(&body)).err(), Some(Refusal::TooMuch), "{body}");
+        }
         let one =
             format!(r#"<style>path {{ marker-mid: url(#a) }}</style><marker id="a"><path d="M0 0L1 1"/></marker><path d="{zigzag}"/>"#);
         assert!(read(&svg(&one)).is_ok());
@@ -1209,6 +1342,10 @@ mod tests {
         let rects = |n: usize| (0..n).map(|i| format!(r#"<rect class="c{i}" width="1" height="1"/>"#)).collect::<String>();
         let rules = |n: usize| (0..n).map(|i| format!(".c{i} {{ fill: red }}")).collect::<String>();
         assert!(read(&svg(&format!("<style>{}</style>{}", rules(20), rects(2000)))).is_ok());
+        // An exported icon's one class per style: 200 rules on 2,500 elements (#2864).
+        assert!(read(&svg(&format!("<style>{}</style>{}", rules(200), rects(2500)))).is_ok());
+        // 9,998 rects, the svg and the style come to [`ELEMENTS`], two steps a rule each: the cap.
+        assert!(read(&svg(&format!("<style>{}</style>{}", rules(200), rects(9998)))).is_ok());
         assert_eq!(read(&svg(&format!("<style>{}</style>{}", rules(2000), rects(2000)))).err(), Some(Refusal::TooMuch));
         // usvg reads what a `<use>` repeats again for each `<use>`, and matches the rules again: a
         // rect used 1,000 times, under a sheet of 1,000 rules.
@@ -1235,17 +1372,90 @@ mod tests {
         let doc = roxmltree::Document::parse(&text).unwrap();
         with_sheet(&doc, |sheet| {
             let (ids, seen) = (std::collections::HashMap::new(), std::collections::HashMap::new());
-            let mut counter = Counter { ids, seen, viewport: 100.0, sheet, matched: 0, deep: false };
+            let by_sheet = std::collections::HashSet::new();
+            let mut counter = Counter {
+                ids,
+                seen,
+                viewport: 100.0,
+                sheet,
+                marking: vec![false],
+                matched: 0,
+                cap: CSS_STEPS,
+                by_sheet,
+                deep: false,
+                run_capped: false,
+            };
             assert!(counter.count(doc.root_element(), 0).is_none());
             assert!(counter.matched <= CSS_STEPS + 1, "{} steps", counter.matched);
         });
     }
 
-    /// The siblings walked back past, comments included, are steps too (#2713): 100 rules on an
-    /// element after 30,000 comments walk 3,000,000 nodes.
+    /// Whether a rule sets a marker is read once, before matching, not on each element it matches
+    /// (#2864): one rule of 20,000 declarations on 9,000 elements came to 1.8 × 10⁸ declarations
+    /// read, some 800 ms. Matching takes it from `marking` alone, and one `marking` doesn't name
+    /// is taken to set a marker.
+    #[test]
+    fn matching_takes_a_rules_marker_flag_from_marking() {
+        let text = svg(r#"<style>rect { fill: red; marker-mid: url(#m) }</style><rect width="1" height="1"/>"#);
+        let doc = roxmltree::Document::parse(&text).unwrap();
+        let rect = doc.descendants().find(|n| n.has_tag_name("rect")).unwrap();
+        with_sheet(&doc, |sheet| {
+            assert_eq!(css_steps(rect, sheet, &[false], 0).map(|(_, marks)| marks), Some(false));
+            assert_eq!(css_steps(rect, sheet, &[true], 0).map(|(_, marks)| marks), Some(true));
+            assert_eq!(css_steps(rect, sheet, &[], 0).map(|(_, marks)| marks), Some(true));
+        });
+        // `elements` reads it from the rule's declarations.
+        assert_eq!(
+            element_count(
+                r#"<style>rect { fill: red; marker-mid: url(#m) }</style><marker id="m"><circle r="1"/></marker><rect width="1" height="1"/>"#
+            ),
+            Some(5 + 2 * 6)
+        );
+    }
+
+    /// Past [`ELEMENTS`] an SVG is too much for itself, even where its copies' matching also passes
+    /// the run's room: that is known for nothing (#2864).
+    #[test]
+    fn too_many_elements_is_its_own_cause_at_the_runs_end() {
+        // A group of 6,000 elements, matched once (some 12,000 steps), and a `<use>` of it: its copy
+        // passes both the elements and a room of 15,000 steps at once.
+        let rects = r#"<rect class="c"/>"#.repeat(5_999);
+        let text = svg(&format!(r##"<style>.c {{ fill: red }}</style><defs><g id="g">{rects}</g></defs><use href="#g"/>"##));
+        let doc = roxmltree::Document::parse(&text).unwrap();
+        with_sheet(&doc, |sheet| {
+            assert_eq!(elements(&doc, sheet, 15_000, &mut 0).err(), Some(Refusal::TooMuch));
+            // With the copy within the elements, the room is what stops it.
+            let half = text.replacen(&r#"<rect class="c"/>"#.repeat(3_000), "", 1);
+            let doc = roxmltree::Document::parse(&half).unwrap();
+            with_sheet(&doc, |sheet| assert_eq!(elements(&doc, sheet, 8_000, &mut 0).err(), Some(Refusal::PastRun)));
+        });
+        // Past the elements written out it is too much for itself too, wherever matching stops.
+        let many = svg(&format!("<style>.c {{ fill: red }}</style>{}", r#"<rect class="c"/>"#.repeat(10_001)));
+        let doc = roxmltree::Document::parse(&many).unwrap();
+        with_sheet(&doc, |sheet| assert_eq!(elements(&doc, sheet, 1_000, &mut 0).err(), Some(Refusal::TooMuch)));
+    }
+
+    /// usvg matches the rules again on each `<use>`'s copy: those steps are reported too (#2864).
+    #[test]
+    fn the_steps_reported_count_each_copy() {
+        let steps = |target: &str| {
+            let text = svg(&format!(
+                r##"<style>.c {{ fill: red }}</style><defs><rect id="r" class="c"/></defs>{}"##,
+                format!(r##"<use href="#{target}"/>"##).repeat(100)
+            ));
+            let doc = roxmltree::Document::parse(&text).unwrap();
+            let mut matched = 0;
+            with_sheet(&doc, |sheet| elements(&doc, sheet, CSS_STEPS, &mut matched).map(|_| ())).unwrap_or_else(|why| panic!("{why:?}"));
+            matched
+        };
+        assert!(steps("r") >= steps("none") + 200, "{} against {}", steps("r"), steps("none"));
+    }
+
+    /// The siblings walked back past, comments included, are steps too (#2713): 200 rules on an
+    /// element after 30,000 comments walk 6,000,000 nodes.
     #[test]
     fn style_sheet_matching_counts_the_siblings_it_walks() {
-        let rules = "rect:first-child { fill: red } ".repeat(100);
+        let rules = "rect:first-child { fill: red } ".repeat(200);
         let after = |what: &str| element_count(&format!("<style>{rules}</style><g>{}<rect/></g>", what.repeat(30_000)));
         assert_eq!(after(""), Some(4));
         assert_eq!(after("<!---->"), None);
@@ -1257,7 +1467,7 @@ mod tests {
         let rules = (0..200).map(|i| format!(".c{i} {{ fill: red }}")).collect::<String>();
         let class = |bytes: usize| element_count(&format!(r#"<style>{rules}</style><rect class="{}"/>"#, "a".repeat(bytes)));
         assert_eq!(class(10), Some(3));
-        assert_eq!(class(500_000), None);
+        assert_eq!(class(2_000_000), None);
     }
 
     /// A gradient of more than two stops goes through them all at each pixel it covers.
