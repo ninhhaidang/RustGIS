@@ -152,6 +152,7 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("layout-chart-classes", command_uses_chart_classes),
     ("layout-chart-stack", command_uses_chart_stack),
     ("layout-chart-facing", command_uses_chart_facing),
+    ("layout-chart-outline", command_uses_chart_outline),
     ("blank-paper", command_uses_blank_paper),
     ("layout-frame-border", command_uses_frame_border),
     ("layout-text-size", command_uses_text_size),
@@ -468,6 +469,32 @@ fn command_uses_chart_facing(id: &str, params: &Value) -> bool {
         "layout.update" => facing(),
         "layout.import" => imported_layout_uses(params, &["\"mirror\"", "\"max\"", "\"hide_labels\""], charts_facing),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_chart_facing)),
+        _ => false,
+    }
+}
+
+fn charts_outlined(e: &rustgis_map::layout::Element) -> bool {
+    e.kind.chart_uses_outline()
+}
+
+/// A layout command that draws a line round a chart's bars (#2487 part 4b): an object without a
+/// width (the outline's, or the 0.5 points it is first given) or with one above 0. Null, or a
+/// width of 0, draws none, so it needs nothing.
+fn command_uses_chart_outline(id: &str, params: &Value) -> bool {
+    let outlined = || {
+        // The width read as the command reads it, a number or a number in text.
+        params.get("barOutline").filter(|o| o.is_object()).is_some_and(|o| match o.get("width") {
+            None | Some(Value::Null) => true,
+            Some(_) => crate::cmd::f(o, "width").is_some_and(|w| w > 0.0),
+        })
+    };
+    match id {
+        "layout.addElement" => {
+            params.get("kind").and_then(Value::as_str).is_some_and(|k| k.trim().eq_ignore_ascii_case("chart")) && outlined()
+        }
+        "layout.update" => outlined(),
+        "layout.import" => imported_layout_uses(params, &["\"bar_outline\""], charts_outlined),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_chart_outline)),
         _ => false,
     }
 }
@@ -814,6 +841,7 @@ fn layout_capabilities(layouts: &[rustgis_map::layout::Layout]) -> Vec<&'static 
         (elements().any(charts_classes), "layout-chart-classes"),
         (elements().any(charts_stack), "layout-chart-stack"),
         (elements().any(charts_facing), "layout-chart-facing"),
+        (elements().any(charts_outlined), "layout-chart-outline"),
         (elements().any(|e| e.kind.has_custom_border()), "layout-frame-border"),
         (elements().any(|e| e.kind.has_custom_text_size()), "layout-text-size"),
     ]
@@ -1608,6 +1636,63 @@ mod tests {
                 document["tasks"] = value;
                 let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
                 let expected = if required { json!(["layout-chart-facing"]) } else { Value::Null };
+                assert_eq!(saved.get("requires").cloned().unwrap_or(Value::Null), expected, "{id} {params}");
+            }
+        }
+    }
+
+    /// A line round a chart's bars (#2487 part 4b) requires `layout-chart-outline`, in a saved
+    /// layout and in the commands that give it one; none, null or a width of 0 need nothing.
+    #[test]
+    fn chart_outline_capability_follows_saved_layouts_and_commands() {
+        use rustgis_map::layout::ElementKind;
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/layout_chart_outline.rgis")).unwrap();
+        let saved = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(saved["requires"], json!(["layout-chart-outline"]));
+        let mut clean = fixture;
+        for e in &mut clean.layouts[0].elements {
+            if let ElementKind::Chart { bar_outline, .. } = &mut e.kind {
+                *bar_outline = None;
+            }
+        }
+        let base = serde_json::to_value(&clean).unwrap();
+        assert!(base.get("requires").is_none(), "a chart without an outline needs nothing");
+        assert!(!base["layouts"].to_string().contains("\"bar_outline\""), "nor writes it");
+        // One of no width, or below 0 (a hand-edited file), is let go on read: it needs nothing
+        // and isn't written back.
+        for width in [0.0, -1.0] {
+            let mut zero = base.clone();
+            zero["layouts"][0]["elements"][1]["kind"]["Chart"]["bar_outline"] = json!({"color": [0, 0, 0, 255], "width": width});
+            let saved_zero = serde_json::to_value(Project::from_json(&zero.to_string()).unwrap()).unwrap();
+            assert!(saved_zero.get("requires").is_none(), "{width}");
+            assert!(!saved_zero["layouts"].to_string().contains("\"bar_outline\""), "{width}");
+        }
+        let mut document = base.clone();
+        document["tasks"] = json!([{"name": "Task", "steps": [{"title": "Chart", "command": "layout.import", "params": {"text": saved["layouts"][0].to_string()}}]}]);
+        let imported = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+        assert_eq!(imported["requires"], json!(["layout-chart-outline"]));
+        for (id, params, required) in [
+            ("layout.addElement", json!({"kind": "chart", "barOutline": {}}), true),
+            ("layout.addElement", json!({"kind": "chart", "barOutline": {"color": "#000000", "width": 1}}), true),
+            ("layout.addElement", json!({"kind": "chart", "barOutline": {"width": 0}}), false),
+            ("layout.addElement", json!({"kind": "chart", "barOutline": null}), false),
+            ("layout.addElement", json!({"kind": "legend", "barOutline": {}}), false),
+            ("layout.update", json!({"element": 2, "barOutline": {"color": "#C2185B"}}), true),
+            ("layout.update", json!({"element": 2, "barOutline": {"width": 0}}), false),
+            ("layout.update", json!({"element": 2, "barOutline": {"width": "2"}}), true),
+            ("layout.update", json!({"element": 2, "barOutline": {"width": "0"}}), false),
+            ("layout.update", json!({"element": 2, "barOutline": null}), false),
+            ("layout.import", json!({"text": base["layouts"][0].to_string()}), false),
+        ] {
+            let script = format!("{id}= {params}");
+            for value in [
+                json!([{"name": "Task", "steps": [{"title": "Chart", "command": id, "params": params}]}]),
+                json!([{"name": "Script", "steps": [{"title": "Chart", "command": "script.run", "params": {"script": script}}]}]),
+            ] {
+                let mut document = base.clone();
+                document["tasks"] = value;
+                let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+                let expected = if required { json!(["layout-chart-outline"]) } else { Value::Null };
                 assert_eq!(saved.get("requires").cloned().unwrap_or(Value::Null), expected, "{id} {params}");
             }
         }

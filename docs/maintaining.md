@@ -247,6 +247,16 @@ set `"mirror": true`, a `max` above 0 or `"hideLabels": true` require it too (on
 the keys); `false`, `null` and `"auto"` need nothing. A saved `layout.import` whose `text` has
 such a chart requires it as well.
 
+Projects with a layout chart that draws a line round its bars (`bar_outline` with a width above 0
+on a chart element) require `layout-chart-outline`, so an older reader refuses them instead of
+drawing the bars without and saving the chart again without (#2487 part 4b). In a hand-edited
+file, a width past 5 is held to 5 and one below 0 let go on read, both said as values out of
+range; a width of 0 draws none and is let go. Saved
+`layout.addElement` commands for a chart and `layout.update` commands that give a `barOutline`
+object without a width or with one above 0 require it too (only a chart takes the key); `null` and
+a width of 0 need nothing. A saved `layout.import` whose `text` has such a chart requires it as
+well.
+
 Projects with a map frame whose border isn't the default dark grey 0.8 pt line (`border_color`,
 `border_width` on a map frame, a width of 0 drawing none) require `layout-frame-border`, so an
 older reader refuses them instead of drawing the default border and saving the frame again

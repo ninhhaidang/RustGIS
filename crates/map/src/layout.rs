@@ -1211,6 +1211,9 @@ pub enum ElementKind {
         /// Its labels left out, their room given to the bars.
         #[serde(default, skip_serializing_if = "is_false")]
         hide_labels: bool,
+        /// A line round each bar, or each stretch of a stacked one; none by default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bar_outline: Option<ChartOutline>,
     },
     /// A rectangle drawn on the page (a neatline or a backdrop). `width` is the outline's, in
     /// points (0: none).
@@ -1330,6 +1333,36 @@ pub struct ChartLook {
     /// The value at the far end of its bars' room, above 0; none, its bars' own.
     pub max: Option<f64>,
     pub hide_labels: bool,
+    /// The line round each bar, as it is read ([`chart_outline`]); none, no line.
+    pub bar_outline: Option<ChartOutline>,
+}
+
+/// A chart's bar outline (#2487 part 4b): its colour and width in points. A key left out of a
+/// hand-edited file takes the one it is first given ([`CHART_OUTLINE`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChartOutline {
+    #[serde(default = "chart_outline_color")]
+    pub color: Rgba,
+    #[serde(default = "chart_outline_width")]
+    pub width: f64,
+}
+
+fn chart_outline_color() -> Rgba {
+    CHART_OUTLINE.color
+}
+
+fn chart_outline_width() -> f64 {
+    CHART_OUTLINE.width
+}
+
+/// A bar outline's colour and width when first given, and the widest it is drawn.
+pub const CHART_OUTLINE: ChartOutline = ChartOutline { color: Rgba::rgb(0x22, 0x22, 0x22), width: 0.5 };
+pub const MAX_CHART_OUTLINE_WIDTH: f64 = 5.0;
+
+/// A chart's bar outline as it is read: a width above 0 and finite, drawn at most
+/// [`MAX_CHART_OUTLINE_WIDTH`]; else none.
+pub fn chart_outline(o: Option<ChartOutline>) -> Option<ChartOutline> {
+    o.filter(|o| o.width.is_finite() && o.width > 0.0).map(|o| ChartOutline { width: o.width.min(MAX_CHART_OUTLINE_WIDTH), ..o })
 }
 
 impl Default for ChartLook {
@@ -1343,6 +1376,7 @@ impl Default for ChartLook {
             mirror: false,
             max: None,
             hide_labels: false,
+            bar_outline: None,
         }
     }
 }
@@ -1511,11 +1545,11 @@ impl ElementKind {
     }
 
     /// Whether `key` given as null changes an element of this kind, giving it back its default:
-    /// an ink's `color`, a chart's `title` (the title it is given), `barColor` and `max` (its bars'
-    /// own scale), and a legend's or scale bar's `textSize` (#2581).
+    /// an ink's `color`, a chart's `title` (the title it is given), `barColor`, `max` (its bars'
+    /// own scale) and `barOutline` (none), and a legend's or scale bar's `textSize` (#2581).
     pub fn null_resets(&self, key: &str) -> bool {
         (self.takes_ink() && key == "color")
-            || (matches!(self, ElementKind::Chart { .. }) && matches!(key, "title" | "barColor" | "max"))
+            || (matches!(self, ElementKind::Chart { .. }) && matches!(key, "title" | "barColor" | "max" | "barOutline"))
             || (matches!(self, ElementKind::Legend { .. } | ElementKind::ScaleBar { .. }) && key == "textSize")
     }
 
@@ -1868,7 +1902,7 @@ impl ElementKind {
     /// is given, and save it again without them.
     pub fn chart_uses_look_options(&self) -> bool {
         // Only part 2's options: facing another chart is its own capability ([`Self::chart_uses_facing`]).
-        let part_two = |l: ChartLook| ChartLook { mirror: false, max: None, hide_labels: false, ..l };
+        let part_two = |l: ChartLook| ChartLook { mirror: false, max: None, hide_labels: false, bar_outline: None, ..l };
         matches!(self, ElementKind::Chart { title: Some(_), .. }) || self.chart_look().is_some_and(|l| part_two(l) != ChartLook::default())
     }
 
@@ -1901,7 +1935,8 @@ impl ElementKind {
 
     /// How a chart draws its bars; `None` for another kind.
     pub fn chart_look(&self) -> Option<ChartLook> {
-        let ElementKind::Chart { orientation, values, decimals, bar_color, label_align, mirror, max, hide_labels, .. } = self else {
+        let ElementKind::Chart { orientation, values, decimals, bar_color, label_align, mirror, max, hide_labels, bar_outline, .. } = self
+        else {
             return None;
         };
         Some(ChartLook {
@@ -1913,6 +1948,7 @@ impl ElementKind {
             mirror: *mirror,
             max: chart_max(*max),
             hide_labels: *hide_labels,
+            bar_outline: chart_outline(*bar_outline),
         })
     }
 
@@ -1922,6 +1958,12 @@ impl ElementKind {
     /// when the layout is read ([`Layout::clamp`]), so a stored one is always drawn to.
     pub fn chart_uses_facing(&self) -> bool {
         matches!(self, ElementKind::Chart { mirror, max, hide_labels, .. } if *mirror || *hide_labels || max.is_some())
+    }
+
+    /// Whether a chart draws a line round its bars, which a chart had no way to before #2487 part
+    /// 4b: an older reader would draw them without, and save it again without.
+    pub fn chart_uses_outline(&self) -> bool {
+        matches!(self, ElementKind::Chart { bar_outline, .. } if chart_outline(*bar_outline).is_some())
     }
 }
 
@@ -2574,6 +2616,13 @@ impl Layout {
                     *pitch = 0.0;
                 }
             }
+            // A bar outline of width 0 draws none, as the commands take it: letting it go is no
+            // change.
+            if let ElementKind::Chart { bar_outline, .. } = &mut before.kind
+                && bar_outline.is_some_and(|o| o.width == 0.0)
+            {
+                *bar_outline = None;
+            }
             // Ids stay well below u32::MAX so new elements never run out of numbers. A repeated id
             // (only a hand-edited file has one) is renumbered; references to it keep meaning the
             // first element with that id, as they did when the file was written.
@@ -2673,8 +2722,12 @@ impl Layout {
                 }
                 ElementKind::Table { rows, .. } => *rows = (*rows).clamp(1, 500),
                 // A maximum the chart can't draw to (only a hand-edited file has one) gives it its
-                // bars' own scale back, counted with the values out of range (#2487 part 4).
-                ElementKind::Chart { max, .. } => *max = chart_max(*max),
+                // bars' own scale back, counted with the values out of range (#2487 part 4); a bar
+                // outline's width past 5 points is held to them, and one below 0 let go (part 4b).
+                ElementKind::Chart { max, bar_outline, .. } => {
+                    *max = chart_max(*max);
+                    *bar_outline = chart_outline(*bar_outline);
+                }
                 ElementKind::ScaleBar { divisions, text_size, .. } => {
                     *divisions = (*divisions).clamp(1, MAX_SCALE_DIVISIONS);
                     *text_size = layout_text_in_range(*text_size, SCALE_BAR_TEXT_PT);
@@ -4092,6 +4145,49 @@ mod tests {
             let r = l.clamp();
             let ElementKind::Chart { max: m, .. } = &l.elements[1].kind else { panic!("a chart") };
             assert_eq!((*m, r.elements_adjusted), (kept, adjusted), "{max}");
+        }
+    }
+
+    /// A bar outline's keys left out of a hand-edited file take those it is first given, as a
+    /// background's do, rather than leaving the layout unreadable (#2487 part 4b).
+    #[test]
+    fn a_charts_bar_outline_takes_its_defaults_for_keys_left_out() {
+        let read = |outline: serde_json::Value| {
+            let kind: ElementKind = serde_json::from_value(serde_json::json!(
+                {"Chart": {"frame": 1, "layer": "Places", "field": "people", "bar_outline": outline}}
+            ))
+            .unwrap();
+            let ElementKind::Chart { bar_outline, .. } = kind else { panic!("a chart") };
+            bar_outline
+        };
+        let red = Rgba::rgb(0xD0, 0x10, 0x10);
+        assert_eq!(read(serde_json::json!({"width": 2.0})), Some(ChartOutline { width: 2.0, ..CHART_OUTLINE }));
+        assert_eq!(read(serde_json::json!({"color": [208, 16, 16, 255]})), Some(ChartOutline { color: red, ..CHART_OUTLINE }));
+        assert_eq!(read(serde_json::json!({})), Some(CHART_OUTLINE));
+    }
+
+    /// A bar outline's width out of range, which only a hand-edited file holds, is repaired on
+    /// read and counted as a value out of range, so the project says so (#2487 part 4b): past 5
+    /// points it is held to 5, below 0 the outline is let go. A width of 0 draws none, as the
+    /// commands take it, so it is let go without a word; one in range is kept.
+    #[test]
+    fn a_charts_bar_outline_out_of_range_is_repaired_and_counted() {
+        let ink = Rgba::rgb(0x22, 0x22, 0x22);
+        for (width, kept, adjusted) in [(8.0, Some(5.0), 1), (-1.0, None, 1), (0.0, None, 0), (2.0, Some(2.0), 0)] {
+            let mut l: Layout = serde_json::from_value(serde_json::json!({
+                "name": "L", "width": 120, "height": 90, "elements": [
+                    {"id": 1, "name": "Frame", "x": 10, "y": 10, "w": 60, "h": 70,
+                     "kind": {"MapFrame": {"map": "Map", "center": {"x": 0, "y": 0}, "scale": 1000000}}},
+                    {"id": 2, "name": "Chart", "x": 75, "y": 10, "w": 35, "h": 40,
+                     "kind": {"Chart": {"frame": 1, "layer": "Places", "field": "people",
+                                        "bar_outline": {"color": [34, 34, 34, 255], "width": width}}}}
+                ]
+            }))
+            .unwrap();
+            let r = l.clamp();
+            let ElementKind::Chart { bar_outline, .. } = &l.elements[1].kind else { panic!("a chart") };
+            let expected = kept.map(|w| ChartOutline { color: ink, width: w });
+            assert_eq!((*bar_outline, r.elements_adjusted), (expected, adjusted), "{width}");
         }
     }
 

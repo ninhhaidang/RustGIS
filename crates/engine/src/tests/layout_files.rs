@@ -87,7 +87,7 @@ fn saved_file(s: &mut Session, layout: usize, tag: &str) -> (String, Value) {
 }
 
 /// A saved layout file requires what its elements use, as the fixture that holds only that layout
-/// requires: the ten capabilities, two of them at once, and none. Imported into a project without
+/// requires: the eleven capabilities, two of them at once, and none. Imported into a project without
 /// the layout, it is the same layout, and saved again it is the same file.
 #[test]
 fn a_saved_layout_file_requires_what_its_elements_use_and_reads_back_the_same() {
@@ -100,6 +100,7 @@ fn a_saved_layout_file_requires_what_its_elements_use_and_reads_back_the_same() 
         ("classes", include_str!("../../../../schema/fixtures/layout_chart_classes.rgis")),
         ("stack", include_str!("../../../../schema/fixtures/layout_chart_stack.rgis")),
         ("facing", include_str!("../../../../schema/fixtures/layout_chart_facing.rgis")),
+        ("outline", include_str!("../../../../schema/fixtures/layout_chart_outline.rgis")),
         ("border", include_str!("../../../../schema/fixtures/layout_frame_border.rgis")),
         ("legend-text", include_str!("../../../../schema/fixtures/layout_legend_text.rgis")),
         ("scale-grid-text", include_str!("../../../../schema/fixtures/layout_scale_grid_text.rgis")),

@@ -44536,6 +44536,101 @@ fn layout_charts_face_each_other() {
     }
 }
 
+/// A line round a chart's bars (#2487 part 4b): set when the chart is added or updated, each key
+/// not given keeping the outline's (or the one it is first given), a width past 5 points held to
+/// it and said, kept when its layer changes, undone in one step, taken away by null or a width of
+/// 0 (none written then), refused when bad (changing nothing) and for other kinds, and a null
+/// refused on a locked chart like any change.
+#[test]
+fn layout_charts_draw_a_line_round_their_bars() {
+    use rustgis_data::{Dataset, Field, FieldType, GeometryType, Value};
+    use rustgis_map::Rgba;
+    use rustgis_map::layout::{ChartOutline, ElementKind};
+    let mut s = Session::new(sample::world_project());
+    for name in ["Places", "Towns"] {
+        let mut ds =
+            Dataset::new(name, GeometryType::Point, vec![Field::new("name", FieldType::Text), Field::new("people", FieldType::Double)]);
+        ds.push(None, vec![Value::Text("P".into()), Value::Float(10.0)]);
+        s.map_mut().add_dataset(ds);
+    }
+    s.run("layout.new", &json!({"name": "Charts"})).unwrap();
+    let r = s.run("layout.addElement", &json!({"kind": "chart", "layer": "Places", "field": "people", "barOutline": {}})).unwrap();
+    let chart = r["element"].as_u64().unwrap() as u32;
+    let outline = |s: &Session| match s.project.layouts[0].element(chart).map(|e| &e.kind) {
+        Some(ElementKind::Chart { bar_outline, .. }) => *bar_outline,
+        _ => panic!("a chart"),
+    };
+    let dark = Rgba::rgb(0x22, 0x22, 0x22);
+    assert_eq!(outline(&s), Some(ChartOutline { color: dark, width: 0.5 }), "first given in dark grey, half a point");
+    // The keys not given keep the outline's.
+    s.run("layout.update", &json!({"element": chart, "barOutline": {"color": "#C2185B"}})).unwrap();
+    let pink = Rgba::rgb(0xC2, 0x18, 0x5B);
+    assert_eq!(outline(&s), Some(ChartOutline { color: pink, width: 0.5 }));
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": chart, "barOutline": {"width": 2}})).unwrap();
+    assert_eq!(outline(&s), Some(ChartOutline { color: pink, width: 2.0 }));
+    let said = s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>();
+    assert!(!said.iter().any(|t| t.contains("held to")), "a width within the limits is not held: {said:?}");
+    // Past 5 points it is held to them, and said.
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": chart, "barOutline": {"width": 9}})).unwrap();
+    assert_eq!(outline(&s).map(|o| o.width), Some(5.0));
+    let said = s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>();
+    assert!(said.iter().any(|t| t.contains("barOutline width 9 held to 5")), "{said:?}");
+    // Given as text, as forms send numbers, the same.
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": chart, "barOutline": {"width": "8"}})).unwrap();
+    assert_eq!(outline(&s).map(|o| o.width), Some(5.0));
+    let said = s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>();
+    assert!(said.iter().any(|t| t.contains("barOutline width 8 held to 5")), "{said:?}");
+    // On a new layer the chart keeps it.
+    s.run("layout.update", &json!({"element": chart, "layer": "Towns"})).unwrap();
+    assert_eq!(outline(&s), Some(ChartOutline { color: pink, width: 5.0 }));
+    // Null takes it away, in one step undone, and a width of 0 too; none written then.
+    s.run("layout.update", &json!({"element": chart, "barOutline": null})).unwrap();
+    assert_eq!(outline(&s), None);
+    let saved = serde_json::to_string(&s.project.layouts[0].element(chart).unwrap().kind).unwrap();
+    assert!(!saved.contains("\"bar_outline\""), "{saved}");
+    s.run("edit.undo", &serde_json::Value::Null).unwrap();
+    assert_eq!(outline(&s), Some(ChartOutline { color: pink, width: 5.0 }));
+    s.run("layout.update", &json!({"element": chart, "barOutline": {"width": 0}})).unwrap();
+    assert_eq!(outline(&s), None);
+    s.run("layout.update", &json!({"element": chart, "barOutline": {"color": "#000000", "width": 1}})).unwrap();
+    // A locked chart takes no null either: it is a change.
+    s.run("layout.update", &json!({"element": chart, "locked": true})).unwrap();
+    assert!(s.run("layout.update", &json!({"element": chart, "barOutline": null})).is_err());
+    assert!(outline(&s).is_some());
+    s.run("layout.update", &json!({"element": chart, "locked": false})).unwrap();
+    // A bad one is refused, naming it, and nothing changes.
+    let before = outline(&s);
+    for (bad, said) in [
+        (json!(true), "barOutline is an object"),
+        (json!("#000000"), "barOutline is an object"),
+        (json!({"color": "dark"}), "color must be #RRGGBB"),
+        (json!({"width": "thick"}), "width must be a number"),
+    ] {
+        let p = json!({"element": chart, "x": 99, "barOutline": bad});
+        let err = s.run("layout.update", &p).unwrap_err();
+        assert!(err.contains(said), "{bad}: {err}");
+        let add = json!({"kind": "chart", "layer": "Places", "barOutline": bad});
+        assert!(s.run("layout.addElement", &add).is_err(), "{bad}");
+    }
+    assert_eq!(outline(&s), before);
+    assert!(s.project.layouts[0].element(chart).is_some_and(|e| e.x != 99.0));
+    // Only a chart takes it.
+    let rect =
+        s.run("layout.addElement", &json!({"kind": "rectangle", "x": 1, "y": 1, "w": 5, "h": 5})).unwrap()["element"].as_u64().unwrap();
+    assert!(s.run("layout.update", &json!({"element": rect, "barOutline": {}})).unwrap_err().contains("only charts"));
+    let p = json!({"kind": "table", "layer": "Places", "barOutline": {}});
+    assert!(s.run("layout.addElement", &p).unwrap_err().contains("only charts"));
+    // A null asks for none, which another kind has: taken as not given, as every chart key's
+    // null is and as the help says, and nothing changes.
+    let before = s.project.layouts[0].element(rect as u32).cloned();
+    s.run("layout.update", &json!({"element": rect, "barOutline": null})).unwrap();
+    assert_eq!(s.project.layouts[0].element(rect as u32).cloned(), before);
+    s.run("layout.addElement", &json!({"kind": "rectangle", "barOutline": null})).unwrap();
+}
+
 /// A stack field with more values than the key has colours gathers the rest in its Other, and
 /// the chart says how many (#2487 part 3b); one that fits says nothing.
 #[test]

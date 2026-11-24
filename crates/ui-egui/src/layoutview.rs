@@ -2094,6 +2094,7 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         mirror,
                         max,
                         hide_labels,
+                        bar_outline,
                         ..
                     } => {
                         // The feature layers of the frame's map, and the fields of the chart's layer (#2487).
@@ -2299,6 +2300,45 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                                     .labelled_by(input_label.id);
                                 if drag.settled(ui, &r, &mut v) && v != m {
                                     update(app, json!({"max": v}));
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        // A line round each bar (#2487 part 4b): its colour and width once drawn.
+                        let input_label = ui.label(tl!("Bar outline"));
+                        ui.horizontal(|ui| {
+                            let shown = rustgis_engine::map::layout::chart_outline(*bar_outline);
+                            let mut on = shown.is_some();
+                            if ui.checkbox(&mut on, "").labelled_by(input_label.id).changed() {
+                                update(app, json!({"barOutline": if on { json!({}) } else { Value::Null }}));
+                            }
+                            if let Some(o) = shown {
+                                let mut c = crate::theme::c32(o.color);
+                                let resp = crate::widgets::color_button(ui, &mut c);
+                                if resp.changed() {
+                                    crate::widgets::one_step_per_press(app, &resp);
+                                    update(app, json!({"barOutline": {"color": crate::theme::rgba(c).hex()}}));
+                                }
+                                let mut w = o.width;
+                                let drag = Dragged::lend(ui, drag_key("barOutline"), &mut w);
+                                let max = rustgis_engine::map::layout::MAX_CHART_OUTLINE_WIDTH;
+                                let r = ui
+                                    .add(
+                                        egui::DragValue::new(&mut w)
+                                            .update_while_editing(false)
+                                            // From 0, as the commands take it: any saved width
+                                            // shows as it is, and 0 takes the outline off.
+                                            .range(0.0..=max)
+                                            .speed(0.05)
+                                            .max_decimals(2)
+                                            .suffix(" pt"),
+                                    )
+                                    .labelled_by(input_label.id);
+                                // A width typed and left as the box is turned off in the same
+                                // frame is let go: sent after the null, it would bring the outline
+                                // back. `settled` still runs, so the edit is cleared.
+                                if drag.settled(ui, &r, &mut w) && on && (w - o.width).abs() > 1e-6 {
+                                    update(app, json!({"barOutline": {"width": w}}));
                                 }
                             }
                         });
