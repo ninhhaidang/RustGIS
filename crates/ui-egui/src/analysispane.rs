@@ -2107,14 +2107,17 @@ fn script_rows(ui: &Ui) -> f32 {
     ui.text_style_height(&egui::TextStyle::Monospace) * SCRIPT_MIN_ROWS as f32
 }
 
-/// The height the Script pane needs below its box: the buttons, the last run's line, and its
-/// results (their own scroll, at most SCRIPT_OUT_ROWS lines) when there are any.
+/// The height the Script pane needs below its box: the cursor's line and column, the buttons, the
+/// last run's line, and its results (their own scroll, at most SCRIPT_OUT_ROWS lines) when there
+/// are any.
 fn script_below(app: &RustGisApp, ui: &Ui) -> f32 {
     let gap = ui.spacing().item_spacing.y;
     // A row: as tall as a button, whatever its text.
     let last = if app.workflow.script_last.is_none() { 0.0 } else { ui.spacing().interact_size.y + gap };
     let results = if app.workflow.script_out.is_empty() { 0.0 } else { script_out_height(ui) + gap };
-    ui.spacing().interact_size.y + gap * 3.0 + last + results
+    // The row that says where the cursor is (#2831).
+    let cursor = script_cursor_height(ui) + gap;
+    ui.spacing().interact_size.y + gap * 3.0 + cursor + last + results
 }
 
 /// Runs the Script pane's `script`: on the desktop its tools on a thread of their own first, the
@@ -2211,6 +2214,11 @@ fn script_out_height(ui: &Ui) -> f32 {
     (ui.text_style_height(&egui::TextStyle::Small) + ui.spacing().item_spacing.y) * SCRIPT_OUT_ROWS
 }
 
+/// The height of the row that says where the Script box's cursor is: a line of small text.
+fn script_cursor_height(ui: &Ui) -> f32 {
+    ui.text_style_height(&egui::TextStyle::Small)
+}
+
 /// The Script pane's content: commands typed one per line, run in order, coloured as they're typed
 /// (#653). `fit`: the box grows down to the buttons (the pane's own layout); else it keeps its
 /// first lines, in a pane that scrolls as a whole.
@@ -2285,6 +2293,22 @@ fn script(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, fit: bool) {
     } else {
         crate::scriptcomplete::braces(ui, before, &out.inner, &mut app.workflow.script);
     }
+    // Where the box's cursor is (#2831), focused or not, on the right of a row of its own: the
+    // row of buttons has no room for it in a narrow pane. The row is there before the box has a
+    // cursor too, so nothing below moves when it gets one. Read from the box's state as it is
+    // now, not from `out`: a suggestion accepted from the list moves the cursor after the box, and
+    // `out.cursor_range` is None while the box isn't focused.
+    let size = vec2(ui.available_width(), script_cursor_height(ui));
+    ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // The row keeps only what's drawn in it: its height, with no label in it yet.
+        ui.set_min_height(size.y);
+        let cursor = egui::widgets::text_edit::TextEditState::load(ui.ctx(), box_id).and_then(|s| s.cursor.char_range());
+        if let Some(range) = cursor {
+            let (line, col) = line_col(&app.workflow.script, range.primary.index.0);
+            let at = crate::i18n::fmt("Ln {line}, Col {col}", &[("line", &line.to_string()), ("col", &col.to_string())]);
+            ui.label(egui::RichText::new(at).small().weak()).on_hover_text(tl!("The cursor's line and column"));
+        }
+    });
     ui.horizontal(|ui| {
         // As egui reads the keys: ⌘ on a Mac, the browser's too (from its user agent).
         let mac = ui.ctx().os().is_mac();
@@ -2374,6 +2398,20 @@ fn stopped_at(app: &RustGisApp) -> Option<StoppedAt> {
 fn stopped_index(script: &str, line: usize, column: Option<usize>) -> usize {
     let before: usize = script.split_inclusive('\n').take(line.saturating_sub(1)).map(|l| l.chars().count()).sum();
     before + column.map_or(0, |c| c.saturating_sub(1))
+}
+
+/// The line and column (1-based, in characters) of the box's cursor `index` in `script`: the
+/// script's lines, a line that wraps being one, as a run's error names them ([`stopped_index`]
+/// the other way). An index past the end, left from a text since replaced, counts to the end. The
+/// `\r` of a Windows line end, which a script loaded from a file keeps, has no column of its own.
+/// Counted each frame, up to the cursor: less than the colours' cache, which hashes the whole
+/// script each frame.
+fn line_col(script: &str, index: usize) -> (usize, usize) {
+    script.chars().take(index).fold((1, 1), |(line, col), c| match c {
+        '\n' => (line + 1, 1),
+        '\r' => (line, col),
+        _ => (line, col + 1),
+    })
 }
 
 /// Where the last run stopped, marked in the box (#2815): its line's rows tinted red across the
@@ -3113,6 +3151,80 @@ mod tests {
         h.get_by_label(&e).click();
         h.run();
         assert_eq!(cursor(&h), before);
+    }
+
+    /// The line and column of a cursor index (#2831): the script's lines, as a run's error names
+    /// them, and columns from 1 in characters, as its column; where [`stopped_index`] puts it.
+    #[test]
+    fn line_col_counts_the_scripts_lines_and_characters() {
+        let script = "map.zoomFull\n# café ☕\n\nlayer.rename {}";
+        assert_eq!(line_col(script, 0), (1, 1), "the first character");
+        assert_eq!(line_col(script, 12), (1, 13), "the end of the first line, before its newline");
+        assert_eq!(line_col(script, 13), (2, 1), "just after a newline");
+        // Characters, not bytes: `é` and `☕` take two and three bytes.
+        assert_eq!(line_col(script, 13 + 8), (2, 9), "the end of a line of characters past ASCII");
+        assert_eq!(line_col(script, 13 + 9), (3, 1), "an empty line");
+        assert_eq!(line_col(script, 13 + 10 + 15), (4, 16), "the end of the script");
+        assert_eq!(line_col(script, 1000), (4, 16), "an index past the end, left from another text");
+        assert_eq!(line_col("", 0), (1, 1), "an empty script");
+        // A script loaded from a file with Windows line ends keeps their `\r`: no column of its own.
+        let crlf = "map.zoomFull\r\nno.such {}";
+        assert_eq!(line_col(crlf, 12), (1, 13), "before the `\\r`");
+        assert_eq!(line_col(crlf, 13), (1, 13), "after the `\\r`, still the end of the line");
+        assert_eq!(line_col(crlf, 14), (2, 1), "after its newline");
+        for (line, column) in [(1, None), (2, Some(3)), (4, Some(14))] {
+            assert_eq!(line_col(script, stopped_index(script, line, column)), (line, column.unwrap_or(1)));
+        }
+    }
+
+    /// The Script box says, on the right of a row of its own between it and its buttons (clear of
+    /// them in a narrow pane), the line and column of its cursor (#2831): as it moves, as text is
+    /// typed, of the caret's end of a selection, of a line that wraps, and still while the box
+    /// isn't focused; nothing before it has a cursor.
+    #[test]
+    fn the_script_box_says_where_its_cursor_is() {
+        use egui::text::{CCursor, CCursorRange};
+        let mut app = RustGisApp::with_sample();
+        // The second line wraps in the box: a long JSON line.
+        let long = format!("layer.rename {{\"layer\": \"Cities\", \"name\": \"{}\"}}", "x".repeat(300));
+        app.workflow.script = format!("map.zoomFull\n{long}");
+        // As narrow as the pane opens beside the map: the row of buttons fills it.
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(vec2(300.0, 800.0))
+            .build_ui_state(|ui, app: &mut RustGisApp| script_pane(app, ui, &Tokens::light()), app);
+        h.run();
+        assert!(h.query_by_label_contains("Ln ").is_none(), "no cursor yet");
+        let no_cursor = h.get_by_label("Clear").rect();
+        let box_id = egui::Id::unique("script_text");
+        let set = |h: &mut egui_kittest::Harness<'_, RustGisApp>, range: CCursorRange| {
+            let mut state = egui::widgets::text_edit::TextEditState::load(&h.ctx, box_id).unwrap_or_default();
+            state.cursor.set_char_range(Some(range));
+            state.store(&h.ctx, box_id);
+            h.run();
+        };
+        // On the wrapped line, past its first row: one line, its column from the line's start.
+        set(&mut h, CCursorRange::one(CCursor::new(13 + 250)));
+        assert!(h.query_by_label("Ln 2, Col 251").is_some(), "on a wrapped line");
+        let label = h.get_by_label("Ln 2, Col 251").rect();
+        let clear = h.get_by_label("Clear").rect();
+        assert!(!label.intersects(clear) && label.bottom() <= clear.top(), "above the buttons, clear of them: {label:?} {clear:?}");
+        assert_eq!(clear, no_cursor, "the buttons stay where they were before the box had a cursor");
+        // Not focused, it still says where the cursor is.
+        assert!(!h.ctx.memory(|m| m.has_focus(box_id)));
+        set(&mut h, CCursorRange::one(CCursor::new(3)));
+        assert!(h.query_by_label("Ln 1, Col 4").is_some(), "unfocused");
+        // Focused: an arrow key, then a character typed, each in the frame it happens.
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        h.key_press(egui::Key::ArrowRight);
+        h.run();
+        assert!(h.query_by_label("Ln 1, Col 5").is_some(), "moved");
+        h.event(egui::Event::Text("x".into()));
+        h.run();
+        assert!(h.query_by_label("Ln 1, Col 6").is_some(), "typed");
+        // A selection made backwards, from line 2 up to line 1: where its caret is, not its end.
+        set(&mut h, CCursorRange { primary: CCursor::new(1), secondary: CCursor::new(14 + 4), h_pos: None });
+        assert!(h.query_by_label("Ln 1, Col 2").is_some(), "a selection's caret");
     }
 
     /// Details… opens the last run in a window of its own, each line folded: a result the pane cuts
