@@ -170,3 +170,24 @@ fn the_whole_plane_holds_a_shape_with_no_place() {
     assert!(reproject.place(empty.clone(), &none).is_some_and(|f| f.inside), "no box");
     assert!(reproject.place(empty, &small).is_some_and(|f| !f.inside), "a box of somewhere");
 }
+
+/// A source read by its rows (MySQL, SQL Server) keeps a geometry with no place in
+/// longitude/latitude as the table holds it (#2032 C2f-4b): within a whole read, outside any
+/// extent. One with a coordinate that isn't a number is left out for the reader to count.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_row_with_no_place_in_longitude_latitude_is_kept_outside_any_extent() {
+    let mut notes = Vec::new();
+    let r = Reproject::from_crs(utm31(), &mut notes);
+    let (lonlat, _) = around_paris();
+    let far = Geometry::Line(vec![vec![Coord::new(451_500.0, 5_411_500.0), Coord::new(1e9, 5_411_500.0)]]);
+    let kept = r.read(far.clone()).unwrap();
+    assert_eq!(kept.geometry, far);
+    assert_eq!(kept.lonlat, None);
+    assert!(Reproject::within(kept.lonlat.as_ref(), None), "a whole read");
+    assert!(!Reproject::within(kept.lonlat.as_ref(), Some(&lonlat)), "a read of a box");
+    let paris = r.read(Geometry::Point(Coord::new(451_500.0, 5_411_500.0))).unwrap();
+    assert!(Reproject::within(paris.lonlat.as_ref(), Some(&lonlat)));
+    assert!(r.read(Geometry::Point(Coord::new(f64::NAN, 5_411_500.0))).is_none());
+    assert!(notes.is_empty(), "{notes:?}");
+}

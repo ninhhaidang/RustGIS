@@ -4,8 +4,9 @@
 //! RustGIS talks to the server itself (the pure-Rust `mysql` client, TLS through rustls), so
 //! nothing else needs installing. Extent queries use the column's spatial index
 //! (`MBRIntersects`); geometry comes as WKB, longitude first (MySQL's geographic coordinate
-//! systems are latitude first unless asked), and RustGIS converts it to longitude/latitude
-//! itself, since MariaDB has no `ST_Transform`. A capped read returns an evenly spread sample,
+//! systems are latitude first unless asked), kept in the table's own system; RustGIS converts it
+//! to longitude/latitude itself where that is needed (a view's box), since MariaDB has no
+//! `ST_Transform`. A capped read returns an evenly spread sample,
 //! numbered on the server (window functions: MySQL 8 or MariaDB 10.2 and later), so only the rows
 //! kept cross the network. The session is read only, and a server asking for a local file
 //! (`LOAD DATA LOCAL INFILE`) is refused.
@@ -901,7 +902,8 @@ impl MysqlSource {
             .into_iter()
             .filter_map(|f| f.geometry)
             .filter_map(|g| self.reproject.read(g))
-            .fold(Extent::EMPTY, |e, p| e.union(&p.lonlat))
+            .filter_map(|p| p.lonlat)
+            .fold(Extent::EMPTY, |e, l| e.union(&l))
     }
 
     /// The `WHERE` condition: a geometry, of the family read, and in `window` (a polygon's text
@@ -935,10 +937,10 @@ impl MysqlSource {
     }
 
     /// A row read as a feature: the id, the geometry (as the table holds it, in its own system)
-    /// and the fields, in the order of the select, with the geometry's box in longitude/latitude.
-    /// `None` without an id or a geometry RustGIS reads and places. A value of a date field that isn't a date
-    /// RustGIS holds is null, counted in `unread` ([`Batch::unread_dates`]).
-    fn row_feature(&self, r: &mysql::Row, unread: &mut Vec<usize>) -> Option<(Feature, Extent)> {
+    /// and the fields, in the order of the select, with the geometry's box in longitude/latitude
+    /// (`None` for one with no place there, [`Reproject::read`]). `None` without an id or a
+    /// geometry RustGIS reads. A value of a date field that isn't a date RustGIS holds is null, counted in `unread` ([`Batch::unread_dates`]).
+    fn row_feature(&self, r: &mysql::Row, unread: &mut Vec<usize>) -> Option<(Feature, Option<Extent>)> {
         let id = id_of(at(r, 0))?;
         let geometry = match at(r, 1) {
             mysql::Value::Bytes(b) => wkb::decode(b),
@@ -1087,7 +1089,7 @@ impl MysqlSource {
             };
             // The index matched the request's box in the table's coordinates, which holds more
             // than the request when they are projected: placed in longitude/latitude to compare.
-            if req.extent.is_some_and(|e| !lonlat.intersects(&e)) {
+            if !Reproject::within(lonlat.as_ref(), req.extent.as_ref()) {
                 continue;
             }
             super::add_unread_dates(&mut out.unread_dates, &unread);

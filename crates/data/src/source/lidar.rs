@@ -5,15 +5,21 @@
 
 use super::{Batch, FeatureSource, Request, SourceInfo};
 use crate::Result;
+use crate::raster::Crs;
 use crate::{Dataset, Feature, Geometry};
-use rustgis_geom::Extent;
+use rustgis_geom::{Coord, Extent};
 use std::path::Path;
 
 pub struct LidarSource {
     info: SourceInfo,
     features: Vec<Feature>,
     skipped: usize,
-    crs_incomplete: bool,
+    /// The system the points are held in, as the file holds them ([`FeatureSource::coord_crs`]).
+    crs: Crs,
+    /// Each point's place in longitude/latitude, in the order of `features`, for a read of a box
+    /// there to test (NaN for one with none, which no box holds); `None` when the points are held
+    /// in longitude/latitude.
+    places: Option<Vec<Coord>>,
 }
 
 impl LidarSource {
@@ -29,9 +35,18 @@ impl LidarSource {
     }
 
     /// Keeps the file count separate from its retained display sample.
-    fn from_read((ds, report, count): (Dataset, crate::ReadReport, u64)) -> Result<LidarSource> {
-        let Dataset { name, geometry_type, fields, features, crs_incomplete, .. } = ds;
-        let extent = features.iter().filter_map(|f| f.geometry.as_ref()).fold(Extent::EMPTY, |e, g| e.union(&g.extent()));
+    fn from_read(cloud: crate::lidar::Cloud) -> Result<LidarSource> {
+        let crate::lidar::Cloud { ds, report, count, places } = cloud;
+        let crs = ds.coord_crs();
+        let Dataset { name, geometry_type, fields, features, .. } = ds;
+        // The extent in longitude/latitude, from the places that have one there.
+        let extent = match &places {
+            Some(places) => places.iter().filter(|c| c.is_finite()).fold(Extent::EMPTY, |mut e, c| {
+                e.expand(*c);
+                e
+            }),
+            None => features.iter().filter_map(|f| f.geometry.as_ref()).fold(Extent::EMPTY, |e, g| e.union(&g.extent())),
+        };
         // The reader's messages start with the layer's name, which the source's notes add.
         let prefix = format!("{name}: ");
         let notes = report.messages.into_iter().map(|m| m.map_text(|t| t.strip_prefix(&prefix).map(str::to_string).unwrap_or(t))).collect();
@@ -42,12 +57,12 @@ impl LidarSource {
             fields,
             extent,
             count: Some(count),
-            crs: "EPSG:4326".into(),
+            crs: crs.definition_text(),
             indexed: false,
             notes,
             zm_dropped: false,
         };
-        Ok(LidarSource { info, features: features.into_vec(), skipped: report.skipped, crs_incomplete })
+        Ok(LidarSource { info, features: features.into_vec(), skipped: report.skipped, crs, places })
     }
 }
 
@@ -56,27 +71,46 @@ impl FeatureSource for LidarSource {
         &self.info
     }
 
-    /// Conversion failures were already disclosed at open, rather than omitted by sampling.
+    /// The file's own system, which its points are held in.
+    fn coord_crs(&self) -> Crs {
+        self.crs
+    }
+
+    /// A box in the file's own system is tested against the points as they are.
+    fn reads_own_box(&self) -> bool {
+        true
+    }
+
+    /// Points that couldn't be read were already disclosed at open, rather than omitted by
+    /// sampling.
     fn skipped_at_open(&self) -> usize {
         self.skipped
     }
 
-    /// A projection repair must re-read the original file after a transform discarded points.
-    fn lost_to_crs(&self) -> bool {
-        self.crs_incomplete
+    /// The notes at open count the points kept with no place in longitude/latitude.
+    fn says_unplaced_at_open(&self) -> bool {
+        true
     }
 
-    /// Answers from retained points; a sample never constitutes a complete source read.
+    /// Answers from retained points; a sample never constitutes a complete source read. A box in
+    /// the file's own system ([`Request::own`]) is tested against the points as they are, else
+    /// the extent against their places in longitude/latitude, which a point with none is outside
+    /// of.
     fn read(&self, req: &Request) -> Result<Batch> {
-        let inside = |f: &&Feature| match (req.extent, &f.geometry) {
+        let own = req.own.filter(|(crs, _)| self.places.is_some() && *crs == self.crs).map(|(_, e)| e);
+        let within = |c: Coord, e: &Extent| c.x >= e.min_x && c.x <= e.max_x && c.y >= e.min_y && c.y <= e.max_y;
+        let inside = |(i, f): &(usize, &Feature)| match (own.as_ref().or(req.extent.as_ref()), &f.geometry) {
             (None, _) => true,
-            (Some(e), Some(Geometry::Point(c))) => c.x >= e.min_x && c.x <= e.max_x && c.y >= e.min_y && c.y <= e.max_y,
-            (Some(e), Some(g)) => e.intersects(&g.extent()),
             (Some(_), None) => false,
+            (Some(e), Some(g)) => match (&self.places, own.is_some(), g) {
+                (Some(places), false, _) => places.get(*i).is_some_and(|c| within(*c, e)),
+                (_, _, Geometry::Point(c)) => within(*c, e),
+                (_, _, g) => e.intersects(&g.extent()),
+            },
         };
         // One pass over the points (references, not copies), then every n-th match past the
         // limit, so the view stays covered evenly.
-        let hits: Vec<&Feature> = self.features.iter().filter(inside).collect();
+        let hits: Vec<&Feature> = self.features.iter().enumerate().filter(inside).map(|(_, f)| f).collect();
         // A window can only contain points retained in the display sample. Even when every
         // retained point matches, an oversized or damaged source has not been read whole.
         // Known conversion skips are accounted for separately in the whole read's report.

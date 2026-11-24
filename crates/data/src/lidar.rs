@@ -6,7 +6,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use crate::raster::Crs;
 use crate::{DataError, Dataset, Feature, Field, FieldType, Geometry, GeometryType, ReadReport, Result, Value};
-use rustgis_geom::Coord;
+use rustgis_geom::{Coord, Extent};
 
 /// Most points read whole; larger files are sampled only for display.
 pub const MAX_POINTS: usize = if cfg!(target_arch = "wasm32") { 500_000 } else { 2_000_000 };
@@ -232,11 +232,12 @@ fn point(h: &Header, rec: &[u8]) -> Option<Point> {
     Some(Point { x, y, z, intensity, class, ret, rgb })
 }
 
-/// Reads a LAS or LAZ file in longitude/latitude when the file says its coordinate system
-/// (or `crs` gives it). Refuses files over [`MAX_POINTS`] or missing records; coordinate
-/// conversion failures remain counted skips.
+/// Reads a LAS or LAZ file, its points kept as the file holds them, held in the coordinate system
+/// it says (or `crs` gives) when RustGIS converts it ([`Dataset::held_in`]). Points with no place
+/// in longitude/latitude are kept too, and said. Refuses files over [`MAX_POINTS`] or missing
+/// records; points with a coordinate that isn't a number are counted skips.
 pub fn read<R: Read + Seek + Send + Sync>(r: R, name: &str, crs: Option<Crs>) -> Result<(Dataset, ReadReport)> {
-    let (ds, report, count) = read_points(r, name, crs, false)?;
+    let Cloud { ds, report, count, .. } = read_points(r, name, crs, false)?;
     let read = (ds.features.len() as u64).saturating_add(report.skipped as u64);
     if read < count {
         return Err(DataError::Format(format!(
@@ -246,13 +247,24 @@ pub fn read<R: Read + Seek + Send + Sync>(r: R, name: &str, crs: Option<Crs>) ->
     Ok((ds, report))
 }
 
+/// A cloud [`read_points`] read.
+pub(crate) struct Cloud {
+    pub(crate) ds: Dataset,
+    pub(crate) report: ReadReport,
+    /// The header's point count.
+    pub(crate) count: u64,
+    /// For a display sample of points held in a system other than longitude/latitude: each
+    /// point's place there, in the order of the features (NaN for one with none).
+    pub(crate) places: Option<Vec<Coord>>,
+}
+
 /// Reads a display sample, retaining the header's original point count for whole-read checks.
-pub(crate) fn read_sample<R: Read + Seek + Send + Sync>(r: R, name: &str) -> Result<(Dataset, ReadReport, u64)> {
+pub(crate) fn read_sample<R: Read + Seek + Send + Sync>(r: R, name: &str) -> Result<Cloud> {
     read_points(r, name, None, true)
 }
 
 /// Shared decoder; only a display read may sample an oversized cloud.
-fn read_points<R: Read + Seek + Send + Sync>(mut r: R, name: &str, crs: Option<Crs>, sample: bool) -> Result<(Dataset, ReadReport, u64)> {
+fn read_points<R: Read + Seek + Send + Sync>(mut r: R, name: &str, crs: Option<Crs>, sample: bool) -> Result<Cloud> {
     let mut head = vec![0u8; 375];
     r.seek(SeekFrom::Start(0))?;
     let got = read_up_to(&mut r, &mut head)?;
@@ -323,7 +335,7 @@ fn read_points<R: Read + Seek + Send + Sync>(mut r: R, name: &str, crs: Option<C
     let mut ds = Dataset::new(name, GeometryType::Point, fields);
     let total = h.count;
     if total == 0 {
-        return Ok((ds, report, total));
+        return Ok(Cloud { ds, report, count: total, places: None });
     }
     // A LAZ file is decompressed point by point: past MAX_DECOMPRESSED only its first points are
     // read (and sampled), with a notice.
@@ -383,24 +395,28 @@ fn read_points<R: Read + Seek + Send + Sync>(mut r: R, name: &str, crs: Option<C
     // colours never pass 255 (over every point read) is taken as 8-bit. A 16-bit file that dark
     // throughout can't be told apart, and shows dark either way.
     let wide = brightest > 255;
-    let mut lost = 0usize;
+    // Kept as the file holds them, held in its system when RustGIS converts it (#2032 C2f-4b).
+    // Each point is converted once to be checked: one with no place in longitude/latitude is
+    // kept too and counted, and a sample keeps the places for its reads to test.
+    let (mut not_numbers, mut unplaced, mut beyond) = (0usize, 0usize, 0usize);
+    let mut places = (sample && transform.is_some()).then(|| Vec::with_capacity(points.len()));
     for (id, p) in points.into_iter().enumerate() {
         let c = Coord::new(p.x, p.y);
         if !c.is_finite() {
-            lost += 1;
+            not_numbers += 1;
             continue;
         }
-        let c = match &transform {
-            Some(t) => match t.to_lonlat(c) {
-                Some(c) => c,
-                None => {
-                    lost += 1;
-                    ds.crs_incomplete = true;
-                    continue;
-                }
-            },
-            None => c,
-        };
+        if let Some(t) = &transform {
+            let place = t.to_lonlat(c).filter(|l| l.is_finite());
+            match place {
+                None => unplaced += 1,
+                Some(l) if Extent::new(l.x, l.y, l.x, l.y).beyond_lonlat() => beyond += 1,
+                Some(_) => {}
+            }
+            if let Some(places) = &mut places {
+                places.push(place.unwrap_or(Coord::new(f64::NAN, f64::NAN)));
+            }
+        }
         let mut attrs =
             vec![Value::Float(p.z), Value::Int(i64::from(p.intensity)), Value::Int(i64::from(p.class)), Value::Int(i64::from(p.ret))];
         if has_rgb {
@@ -411,11 +427,25 @@ fn read_points<R: Read + Seek + Send + Sync>(mut r: R, name: &str, crs: Option<C
         }
         ds.features.push(Feature { id: id as u64, geometry: Some(Geometry::Point(c)), attrs });
     }
-    if lost > 0 {
-        report.skipped += lost;
-        report.messages.push(format!("{name}: {lost} points couldn't be converted to longitude/latitude"));
+    if not_numbers > 0 {
+        report.skipped += not_numbers;
+        let n = if not_numbers == 1 {
+            "one point has a coordinate that isn't a number (NaN or infinite) and was left out".to_string()
+        } else {
+            format!("{not_numbers} points have a coordinate that isn't a number (NaN or infinite) and were left out")
+        };
+        report.messages.push(format!("{name}: {n}"));
     }
-    Ok((ds, report, total))
+    if let (Some(c), Some(_)) = (crs, &transform) {
+        ds.crs = Some(c);
+        ds.held_in = c;
+        let kept = ds.features.len();
+        // A sample counts the points it shows, which the notice above says are a sample.
+        let what = if stride > 1 { "points shown" } else { "points" };
+        let notes = crate::io::kept_unplaced_note(what, unplaced, unplaced == kept, c).into_iter();
+        report.messages.extend(notes.chain(crate::io::beyond_lonlat_note(what, beyond, c)).map(|m| format!("{name}: {m}")));
+    }
+    Ok(Cloud { ds, report, count: total, places })
 }
 
 fn read_up_to<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<usize> {
@@ -586,7 +616,11 @@ mod tests {
         // UTM 32N metres, with a WKT record.
         let wkt = r#"PROJCS["WGS 84 / UTM zone 32N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",9],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1],AUTHORITY["EPSG","32632"]]"#;
         let (ds, _) = read_bytes(&las(2, 0, &[(500000.0, 5_000_000.0, 1.0, 1)], Some(wkt)), "t", None).unwrap();
-        let Some(Geometry::Point(c)) = ds.features[0].geometry else { panic!() };
+        // Kept as the file holds it, held in its system, and placed at 9°E through it.
+        assert_eq!(ds.held_in, Crs::Epsg(32632));
+        assert_eq!(ds.crs, Some(Crs::Epsg(32632)));
+        assert_eq!(ds.features[0].geometry, Some(Geometry::Point(Coord::new(500000.0, 5_000_000.0))));
+        let Geometry::Point(c) = ds.geometry_to_lonlat(ds.features[0].geometry.as_ref().unwrap()).unwrap().into_owned() else { panic!() };
         assert!((c.x - 9.0).abs() < 1e-6 && (c.y - 45.1535).abs() < 0.001, "{c:?}");
         // Projected coordinates with no system: kept, and said.
         let (ds, report) = read_bytes(&las(2, 0, &[(500000.0, 5_000_000.0, 1.0, 1)], None), "t", None).unwrap();
@@ -594,7 +628,8 @@ mod tests {
         assert!(report.messages.iter().any(|m| m.contains("doesn't say its coordinate system")));
         let (ds, report) = read_bytes(&las(2, 0, &[(500000.0, 5_000_000.0, 1.0, 1)], None), "t", Some(Crs::Epsg(32632))).unwrap();
         assert!(report.messages.is_empty());
-        assert!(matches!(ds.features[0].geometry, Some(Geometry::Point(c)) if (c.x - 9.0).abs() < 1e-6));
+        assert_eq!(ds.held_in, Crs::Epsg(32632));
+        assert!(matches!(ds.features[0].geometry, Some(Geometry::Point(c)) if c.x == 500000.0));
     }
 
     /// What reading a WKT record finds is said: UTM zone 17N on NAD 27 bound to WGS 84 by an NTv2
@@ -605,7 +640,8 @@ mod tests {
         let bound = crate::raster::wkt::tests::BOUND_BY_A_GRID;
         let (ds, report) = read_bytes(&las(2, 0, &[(500000.0, 4_800_000.0, 1.0, 1)], Some(bound)), "t", None).unwrap();
         // On UTM zone 17N's central meridian, 81°W.
-        assert!(matches!(ds.features[0].geometry, Some(Geometry::Point(c)) if (c.x + 81.0).abs() < 1e-3), "{:?}", ds.features[0].geometry);
+        let lonlat = ds.geometry_to_lonlat(ds.features[0].geometry.as_ref().unwrap()).unwrap().into_owned();
+        assert!(matches!(lonlat, Geometry::Point(c) if (c.x + 81.0).abs() < 1e-3), "{lonlat:?}");
         let said = "t: the coordinate system: the file's NTv2 transformation to WGS 84 (conus) isn't applied, so positions may be off by as much as that shift";
         assert_eq!(report.messages, [said]);
         let utm32 = r#"PROJCS["WGS 84 / UTM zone 32N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",9],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1],AUTHORITY["EPSG","32632"]]"#;
@@ -652,9 +688,10 @@ mod tests {
         assert!(crate::io::read_owned("oversized.las", bytes).is_err());
     }
 
-    /// Conversion losses are disclosed skips, while missing records still prevent a whole read.
+    /// A point with a coordinate that isn't a number is a disclosed skip, read whole or through
+    /// the source, while missing records still prevent a whole read.
     #[test]
-    fn source_materializes_with_counted_conversion_losses() {
+    fn source_materializes_with_counted_losses() {
         let mut bytes = las(2, 0, &[(0.0, 0.0, 3.0, 2), (1.0, 0.0, 4.0, 2)], Some("EPSG:32632"));
         // A finite scale overflows only the second point's X during coordinate decoding.
         bytes[131..139].copy_from_slice(&f64::MAX.to_le_bytes());
@@ -662,33 +699,75 @@ mod tests {
         assert_eq!(direct.features.len(), 1);
         assert!(!direct.crs_incomplete);
         assert_eq!(report.skipped, 1);
+        assert_eq!(report.messages, ["lossy: one point has a coordinate that isn't a number (NaN or infinite) and was left out"]);
         let src = crate::source::open_bytes("lossy.las", bytes.clone(), None).unwrap();
         assert_eq!(src.info().count, Some(2));
         let (ds, report) = crate::source::materialize(src.as_ref()).unwrap();
         assert_eq!(ds.features, direct.features);
         assert!(!ds.crs_incomplete);
         assert_eq!(report.skipped, 1);
-        assert_eq!(report.messages.len(), 1);
-        assert!(report.messages[0].contains("1 points couldn't be converted"));
+        assert_eq!(report.messages.len(), 1, "{:?}", report.messages);
+        // The sample's places stay in step with its points past the one left out.
+        let around = Extent::new(4.0, -1.0, 5.0, 1.0);
+        let batch = src.read(&crate::source::Request { extent: Some(around), limit: 10, own: None }).unwrap();
+        assert_eq!(batch.features.iter().map(|f| f.id).collect::<Vec<_>>(), [0]);
         bytes.truncate(bytes.len() - usize::from(RECORD_LEN[0]));
         assert!(crate::io::read_bytes("truncated.las", &bytes).is_err());
         let truncated = crate::source::open_bytes("truncated.las", bytes, None).unwrap();
         assert!(crate::source::materialize(truncated.as_ref()).is_err());
     }
 
-    /// Projection repairs must re-read the original cloud if a transform already lost points.
+    /// A point with no place in longitude/latitude is kept as the file holds it and said once,
+    /// read whole or through the source (#2032 C2f-4b); nothing is lost, so Define Projection
+    /// may give the cloud another system.
     #[test]
-    fn transform_losses_block_projection_redefinition() {
+    fn a_point_with_no_place_is_kept_and_said() {
         let bytes = las(2, 0, &[(500_000.0, 5_000_000.0, 3.0, 2), (20_000_000.0, 0.0, 4.0, 2)], Some("EPSG:32632"));
-        let direct = crate::io::read_bytes("transform.las", &bytes).unwrap();
-        let src = crate::source::open_bytes("transform.las", bytes, None).unwrap();
+        let direct = crate::io::read_bytes("far.las", &bytes).unwrap();
+        let src = crate::source::open_bytes("far.las", bytes, None).unwrap();
         let materialized = crate::source::materialize(src.as_ref()).unwrap();
+        let said = "one of the points has a place in EPSG:32632 that can't be given in longitude/latitude: it is kept as the file holds it, but doesn't draw";
         for (ds, report) in [direct, materialized] {
-            assert_eq!(ds.features.len(), 1);
-            assert_eq!(report.skipped, 1);
-            assert!(crate::io::define_projection(&ds, Crs::LonLat).is_err());
-            assert!(ds.crs_incomplete);
+            assert_eq!(ds.features.len(), 2);
+            assert_eq!(ds.held_in, Crs::Epsg(32632));
+            assert_eq!(report.skipped, 0);
+            assert!(!ds.crs_incomplete);
+            assert_eq!(report.messages.iter().filter(|m| m.ends_with(said)).count(), 1, "{:?}", report.messages);
+            assert!(crate::io::define_projection(&ds, Crs::WebMercator).is_ok());
         }
+    }
+
+    /// The source reads a box in longitude/latitude by the points' places there, which a point
+    /// with none is outside of, and a box in the file's own system by the points as they are.
+    #[test]
+    fn a_point_with_no_place_is_outside_a_box_in_longitude_latitude() {
+        let bytes = las(2, 0, &[(500_000.0, 5_000_000.0, 3.0, 2), (20_000_000.0, 0.0, 4.0, 2)], Some("EPSG:32632"));
+        let src = crate::source::open_bytes("far.las", bytes, None).unwrap();
+        let ids = |req: &crate::source::Request| src.read(req).unwrap().features.iter().map(|f| f.id).collect::<Vec<_>>();
+        assert_eq!(ids(&crate::source::Request::all()), [0, 1]);
+        let around = Extent::new(8.0, 44.0, 10.0, 46.0);
+        assert_eq!(ids(&crate::source::Request { extent: Some(around), limit: 10, own: None }), [0]);
+        let world = Extent::new(-180.0, -90.0, 180.0, 90.0);
+        assert_eq!(ids(&crate::source::Request { extent: Some(world), limit: 10, own: None }), [0]);
+        let east = Extent::new(19_000_000.0, -1.0, 21_000_000.0, 1.0);
+        let own = crate::source::Request { extent: Some(world), limit: 10, own: Some((Crs::Epsg(32632), east)) };
+        assert_eq!(ids(&own), [1]);
+        // The extent is the place that has one.
+        let e = src.info().extent;
+        assert!((e.min_x - 9.0).abs() < 1e-6 && (e.max_y - 45.1535).abs() < 0.001, "{e:?}");
+    }
+
+    /// A cloud none of whose points has a place in the system it says is said so, and Define
+    /// Projection can give it the one they are in.
+    #[test]
+    fn a_cloud_with_no_place_can_be_given_its_system() {
+        let bytes = las(2, 0, &[(20_000_000.0, 0.0, 3.0, 2), (19_000_000.0, 100.0, 4.0, 2)], Some("EPSG:32632"));
+        let (ds, report) = crate::io::read_bytes("mercator.las", &bytes).unwrap();
+        assert_eq!(ds.features.len(), 2);
+        assert_eq!(report.skipped, 0);
+        assert!(report.messages.iter().any(|m| m.contains("none of the points has a place")), "{:?}", report.messages);
+        let fixed = crate::io::define_projection(&ds, Crs::WebMercator).unwrap();
+        assert!(matches!(fixed.features[0].geometry, Some(Geometry::Point(c)) if c == Coord::new(20_000_000.0, 0.0)));
     }
 
     #[test]

@@ -1034,23 +1034,31 @@ impl Reproject {
 
     /// A geometry as the source holds it, kept in its own coordinates ([`Reproject::crs`]), with
     /// its box in longitude/latitude for a request's extent to test, for a source read by its
-    /// rows (MySQL, SQL Server); `None` when a coordinate can't be converted to
-    /// longitude/latitude, as such a feature is left out there (the others keep it:
-    /// [`Reproject::place`]). Each coordinate is converted to be checked,
-    /// none is kept converted.
+    /// rows (MySQL, SQL Server). A geometry with a place that can't be given in
+    /// longitude/latitude is kept as well, with no box (#2032 C2f-4b): within a read with no
+    /// extent (a whole read) and outside any extent, as [`Reproject::place`] keeps it. For a
+    /// source in another system than longitude/latitude, `None` for one with a coordinate that
+    /// isn't a number, which the reader leaves out and counts. Each coordinate is converted to be
+    /// checked, none is kept converted.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn read(&self, g: Geometry) -> Option<Placed> {
         let Some(t) = &self.t else {
-            let lonlat = g.extent();
+            let lonlat = Some(g.extent());
             return Some(Placed { geometry: g, lonlat });
         };
-        let mut ok = true;
-        let mut lonlat = Extent::EMPTY;
-        g.for_each_coord(|c| match t.to_lonlat(c).filter(|l| l.is_finite()) {
-            Some(l) => lonlat.expand(l),
-            None => ok = false,
-        });
-        ok.then_some(Placed { geometry: g, lonlat })
+        if !g.is_finite() {
+            return None;
+        }
+        let lonlat = crate::io::places_lonlat_extent(&g, t);
+        Some(Placed { geometry: g, lonlat })
+    }
+
+    /// Whether a geometry read with its box ([`Placed::lonlat`]) is within a request's extent: a
+    /// read with no extent holds every one, one with no place in longitude/latitude none with an
+    /// extent.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn within(lonlat: Option<&Extent>, extent: Option<&Extent>) -> bool {
+        extent.is_none_or(|e| lonlat.is_some_and(|l| l.intersects(e)))
     }
 
     /// A geometry as the file holds it, kept in the source's own coordinates, and whether it is
@@ -1442,11 +1450,11 @@ pub(crate) fn in_request(g: &Geometry, req: &Request) -> bool {
 }
 
 /// A geometry a source read, in its own coordinates, and its box in longitude/latitude
-/// ([`Reproject::read`]).
+/// ([`Reproject::read`]): `None` when a place of it can't be given there.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct Placed {
     pub(crate) geometry: Geometry,
-    pub(crate) lonlat: Extent,
+    pub(crate) lonlat: Option<Extent>,
 }
 
 /// A geometry a source read for a request, in its own coordinates, and whether it is within the

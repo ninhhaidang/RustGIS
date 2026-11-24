@@ -964,7 +964,8 @@ impl SqlServerSource {
             .into_iter()
             .filter_map(|f| f.geometry)
             .filter_map(|g| self.reproject.read(g))
-            .fold(Extent::EMPTY, |e, p| e.union(&p.lonlat))
+            .filter_map(|p| p.lonlat)
+            .fold(Extent::EMPTY, |e, l| e.union(&l))
     }
 
     fn filter(&self, window: Option<&str>) -> String {
@@ -986,10 +987,10 @@ impl SqlServerSource {
     }
 
     /// A row read as a feature: the id, the geometry (as the table holds it, in its own system)
-    /// and the fields, in the order of the select, with the geometry's box in longitude/latitude.
-    /// `None` without an id or a geometry RustGIS reads and places. A value of a date field that
-    /// isn't a date RustGIS holds is null, counted in `unread` ([`Batch::unread_dates`]).
-    fn row_feature(&self, r: &Row, unread: &mut Vec<usize>) -> Option<(Feature, Extent)> {
+    /// and the fields, in the order of the select, with the geometry's box in longitude/latitude
+    /// (`None` for one with no place there, [`Reproject::read`]). `None` without an id or a
+    /// geometry RustGIS reads. A value of a date field that isn't a date RustGIS holds is null, counted in `unread` ([`Batch::unread_dates`]).
+    fn row_feature(&self, r: &Row, unread: &mut Vec<usize>) -> Option<(Feature, Option<Extent>)> {
         let id = id_of(at(r, 0))?;
         let super::Placed { geometry, lonlat } = self.reproject.read(wkb::decode(bytes_of(at(r, 1))?)?)?;
         let attrs = self.info.fields.iter().enumerate().map(|(k, f)| attr_of(f.ty, at(r, k + 2), unread, k)).collect();
@@ -1050,7 +1051,7 @@ impl SqlServerSource {
                 continue;
             };
             // Kept as the table holds it, placed in longitude/latitude to compare with the view.
-            if req.extent.is_none_or(|e| lonlat.intersects(&e)) {
+            if Reproject::within(lonlat.as_ref(), req.extent.as_ref()) {
                 super::add_unread_dates(&mut out.unread_dates, &unread);
                 out.features.push(f);
             }
