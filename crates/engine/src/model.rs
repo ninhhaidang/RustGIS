@@ -843,9 +843,7 @@ fn run_into(s: &mut Session, g: &ModelGraph, report: &mut RunReport) -> Result<V
         s.active_layer = s.map().layers.first().map(|l| l.id);
     }
     // Queued bytes alone are request-only; completed tools still need the model's undo step.
-    if tool_completed && file_pending {
-        s.request_only = false;
-    }
+    s.request_only = file_pending && !tool_completed;
     Ok(ran)
 }
 

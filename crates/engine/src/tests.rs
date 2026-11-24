@@ -24501,6 +24501,90 @@ fn a_pending_answer_is_no_undo_step() {
     assert_eq!(s.take_url_requests().len(), 1);
 }
 
+/// A command's "changed nothing" flag is its own: a nested command that only left a request (not
+/// mutating, so nothing takes the flag) or set it and failed (the caller handles the error) must
+/// not make the command that ran it skip its undo step (#2637).
+#[test]
+fn a_nested_commands_request_flag_is_not_the_enclosing_commands() {
+    let mut s = Session::new(Project::default());
+    s.map_mut().name = "Before".into();
+    let undo = s.undo.len();
+    let url = json!({"url": "https://x.org/a.geojson"});
+    let r = s.guarded("Outer", true, |s| {
+        s.guarded("Quiet request", false, |s| s.request_url(&url))?;
+        s.map_mut().name = "After".into();
+        Ok(Value::Null)
+    });
+    assert!(r.is_ok());
+    assert_eq!(s.undo.len(), undo + 1, "the outer edit takes its step");
+    assert!(s.undo());
+    assert_eq!(s.map().name, "Before");
+    // Set and then failed (`layer.addUrl` for a download added to another map), and the outer
+    // command went on.
+    let undo = s.undo.len();
+    let r = s.guarded("Outer", true, |s| {
+        let failed = s.guarded("Failed request", true, |s| {
+            s.request_only = true;
+            Err("no".to_string())
+        });
+        assert!(failed.is_err());
+        s.map_mut().name = "After".into();
+        Ok(Value::Null)
+    });
+    assert!(r.is_ok());
+    assert_eq!(s.undo.len(), undo + 1, "a failed nested request doesn't hide the outer edit");
+    // The command's own claim still stands after a nested run.
+    let undo = s.undo.len();
+    let r = s.guarded("Outer", true, |s| {
+        s.guarded("Quiet", false, |_| Ok(Value::Null))?;
+        s.request_only = true;
+        Ok(Value::Null)
+    });
+    assert!(r.is_ok());
+    assert_eq!(s.undo.len(), undo, "a command that left only a request takes no step");
+}
+
+/// A nested command that sets the flag and then panics: the panic becomes its error, the flag goes
+/// with it, and the enclosing command that goes on keeps its undo step (#2637).
+#[test]
+fn a_nested_panic_leaves_the_enclosing_commands_request_flag_alone() {
+    let mut s = Session::new(Project::default());
+    s.map_mut().name = "Before".into();
+    let undo = s.undo.len();
+    let r = s.guarded("Outer", true, |s| {
+        let panicked = s.guarded("Panics", true, |s| {
+            s.request_only = true;
+            panic!("nested command panicked");
+        });
+        assert!(panicked.is_err());
+        s.map_mut().name = "After".into();
+        Ok(Value::Null)
+    });
+    assert!(r.is_ok());
+    assert_eq!(s.undo.len(), undo + 1, "the outer edit keeps its step");
+    assert!(s.undo());
+    assert_eq!(s.map().name, "Before");
+}
+
+/// A script whose lines leave a request (`layer.addUrl` held for the app, no network) and then edit
+/// is one undo step; one that only left the request has none (#2637).
+#[test]
+fn a_script_that_leaves_a_request_and_then_edits_is_one_undo_step() {
+    let mut s = Session::new(Project::default());
+    s.leave_downloads = true;
+    let undo = s.undo.len();
+    let ask = r#"layer.addUrl {"url": "https://x.org/a.geojson"}"#;
+    s.run("script.run", &json!({"script": ask})).unwrap();
+    assert_eq!(s.take_url_requests().len(), 1);
+    assert_eq!(s.undo.len(), undo, "a request alone is no step");
+    let maps = s.project.maps.len();
+    s.run("script.run", &json!({"script": format!("{ask}\nmap.new {{\"name\": \"B\"}}")})).unwrap();
+    assert_eq!(s.take_url_requests().len(), 1);
+    assert_eq!(s.undo.len(), undo + 1, "the edit after the request takes the script's step");
+    assert!(s.undo());
+    assert_eq!(s.project.maps.len(), maps);
+}
+
 /// A command that left a request for the front end and then failed takes the request back with
 /// its other changes: nothing is downloaded for a command that reported failure.
 #[test]
@@ -48824,6 +48908,19 @@ fn geolibre_download_finishes_in_its_original_map_and_position() {
         assert!(s.project.saved_text(None).is_ok());
     }
     assert_eq!(s.project.maps[target].layer(id).unwrap().dataset.features.len(), 1);
+}
+
+/// The import calls `request_import_url` itself, which sets the flag in the import's own scope: it
+/// edited the project, so it keeps its undo step (#2637).
+#[test]
+fn geolibre_import_that_leaves_a_download_is_one_undo_step() {
+    let mut s = world();
+    s.leave_downloads = true;
+    let undo = s.undo.len();
+    let text = json!({"version":"0.2.0","name":"Remote","mapView":{},"basemapStyleUrl":"","layers":[{"id":"g","name":"Remote","type":"geojson","source":{"url":"https://example.org/a.geojson"}}]}).to_string();
+    s.run("project.importGeolibre", &json!({"text": text})).unwrap();
+    assert_eq!(s.take_url_requests().len(), 1);
+    assert_eq!(s.undo.len(), undo + 1, "the import takes its step");
 }
 
 #[test]

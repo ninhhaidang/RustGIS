@@ -165,6 +165,8 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
     s.wait_in_place_reads();
     order.reverse();
     s.map_mut().layers.sort_by_key(|l| order.iter().position(|id| *id == l.id).unwrap_or(usize::MAX));
+    // Its own direct `request_import_url` calls (a remote layer left for the app) set the flag, but
+    // this import edited the project: it keeps its undo step.
     s.request_only = false;
     s.map_mut().camera = project.camera;
     s.map_mut().bookmarks = project.bookmarks;

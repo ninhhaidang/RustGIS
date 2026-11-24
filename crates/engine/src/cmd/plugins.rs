@@ -944,8 +944,13 @@ impl Session {
                 bridge.s.quiet_failure = true;
                 return Err(String::new());
             }
-            // Nor is a command that only left downloads for the front end: they add their
-            // layers, each its own undo step, when they land.
+            // Nor is a command that only left downloads for the front end: they add their layers, each
+            // its own undo step, when they land. Any other plugin command that may edit keeps its step
+            // even if it changed nothing, as a built-in command that mutates does unless it says it
+            // changed nothing, which a plugin's answer can't (`a_pending_answer_is_no_undo_step`); two
+            // tests pin it (`plugin_settings_are_kept_per_plugin_across_sessions_updates_and_toggles`,
+            // `shape_conversion_plugin_handled_rejection_is_atomic_and_has_no_inner_undo`). A script or
+            // task takes none when no line edited (see #2622).
             let steps = bridge.s.shared_steps;
             bridge.s.request_only = res.is_ok() && (state_command || steps.requested) && !steps.edited;
             res
@@ -1096,6 +1101,7 @@ impl Host for Between<'_> {
                     let res = s.guarded(leak(&plugin.manifest.name), mutates, |s| {
                         let (res, changed, requested) = bridge(s);
                         // Only left downloads for the app (they add their layers when they land): no step.
+                        // The same rule as a plugin command's (see `run_plugin`).
                         s.request_only = res.is_ok() && requested && !changed;
                         // The answer goes to the program, which says what it makes of a refusal.
                         s.quiet_failure = res.is_err();

@@ -1099,6 +1099,8 @@ pub struct Session {
     /// Set by [`Session::request_url`] for [`Session::guarded`]: the command running changed
     /// nothing, it only left a request (a plugin's own answer can't claim that). Also set by a move
     /// that left everything where it was (`layout.arrange`, `layer.move`): no step to undo.
+    /// Each command has its own: [`Session::guarded`] clears it on entry and puts the enclosing
+    /// command's back on exit.
     request_only: bool,
     /// What the commands run as steps of the transaction running now did ([`Session::shared_step`]):
     /// the one account scripts, tasks and plugins decide their undo step from.
@@ -2371,7 +2373,8 @@ impl Session {
         self.restorable += u32::from(mutates);
         // Edit counts roll back with the project when a command fails part way.
         let counts = mutates.then(|| self.edit_counts.clone());
-        self.request_only = false;
+        // Its flag is its own: the enclosing command's comes back after it, whatever it left.
+        let outer_request_only = std::mem::take(&mut self.request_only);
         // Its steps' account is its own: an enclosing command's comes back after it.
         let outer_steps = std::mem::take(&mut self.shared_steps);
         self.quiet_failure = false;
@@ -2528,6 +2531,7 @@ impl Session {
             }
             _ => {}
         }
+        self.request_only = outer_request_only;
         if res.is_err() {
             self.restore_url_request_checkpoint(requests);
             (self.plugin_retries, self.url_waits) = retry_state;
