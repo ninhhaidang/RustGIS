@@ -171,6 +171,10 @@ pub struct TileLayer {
     /// can be saved, should projects keep it.
     #[serde(skip)]
     pub feature_info: Option<rustgis_data::ogc::FeatureInfo>,
+    /// `feature_info` was learned from a document read from the internet: the request it makes is
+    /// asked only there, whatever the addresses' records say later. For the session only, as it is.
+    #[serde(skip)]
+    pub feature_info_public: bool,
     /// Its legend pictures (a WMS or WMTS layer's, from its service's default style, or given to
     /// `map.addTiles`): the Layers pane shows the one for the map's scale under it, as ArcGIS
     /// Pro's Contents pane does. Web addresses only, at most [`MAX_LEGENDS`](rustgis_data::ogc::MAX_LEGENDS).
@@ -413,6 +417,7 @@ impl TileLayer {
             time_hidden: false,
             error: None,
             feature_info: None,
+            feature_info_public: false,
             legends: Vec::new(),
             connection: String::new(),
             anonymous: false,
@@ -707,6 +712,7 @@ impl TileLayer {
             time_hidden: _,
             error: _,
             feature_info: _,
+            feature_info_public: _,
             legends,
             connection: _,
             anonymous: _,

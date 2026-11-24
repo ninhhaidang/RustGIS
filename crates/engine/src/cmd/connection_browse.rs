@@ -34,6 +34,9 @@ enum Level {
     Service {
         url: String,
         kind: Option<String>,
+        /// How far it may reach: the connection's own address is the user's choice; one a
+        /// catalogue's record links to reaches no further than where that catalogue was read.
+        reach: address::Reach,
     },
     Catalogue,
     StacRoot {
@@ -73,8 +76,10 @@ fn level(c: &Connection, node: &str, observed: Option<&address::Origin>) -> Resu
                 }
                 Level::Database
             }
-            "service" => Level::Service { url: c.address.clone(), kind: None },
-            "wms" | "wmts" | "wfs" | "wcs" | "ogcapi" | "arcgis" => Level::Service { url: c.address.clone(), kind: Some(c.kind.clone()) },
+            "service" => Level::Service { url: c.address.clone(), kind: None, reach: address::Reach::Local },
+            "wms" | "wmts" | "wfs" | "wcs" | "ogcapi" | "arcgis" => {
+                Level::Service { url: c.address.clone(), kind: Some(c.kind.clone()), reach: address::Reach::Local }
+            }
             "csw" => Level::Catalogue,
             "stac" => Level::StacRoot { api: stac::api(Some(&c.address))? },
             "s3" => Level::S3Root,
@@ -86,9 +91,13 @@ fn level(c: &Connection, node: &str, observed: Option<&address::Origin>) -> Resu
             return Err(not_a_node());
         }
         let (t, url) = rest.split_once(':').filter(|(t, _)| SERVICE_TYPES.contains(t)).ok_or_else(not_a_node)?;
-        // Judged as a document of the connection would be: a link may not lead into the local network.
-        address::check(url, Some(&c.address))?;
-        return Ok(Level::Service { url: url.to_string(), kind: (t != "auto").then(|| t.to_string()) });
+        // Judged by where the document listing it was read (a catalogue's records or a service's
+        // listing, recorded when they were browsed), not by how the connection's address is
+        // spelled. A node not recorded (one this session's browsing didn't list, or past the
+        // session's record) is still judged by the connection's address, as before.
+        let origin = observed.cloned().unwrap_or_else(|| address::Origin::named(&c.address));
+        origin.check(url)?;
+        return Ok(Level::Service { url: url.to_string(), kind: (t != "auto").then(|| t.to_string()), reach: origin.reach() });
     }
     // A schema's or a geodatabase dataset's name, as `schemas` and `geodatabase_tree` encode it.
     let named = |encoded: &str| {
@@ -169,7 +178,7 @@ fn s3_login(s: &mut Session, c: &Connection, level: &Level) -> Result<Option<s3:
 fn fetch_url(s: &Session, c: &Connection, level: &Level, conn: Option<&s3::Connection>) -> Result<Option<String>, String> {
     Ok(match level {
         Level::Database | Level::DatabaseSchema { .. } | Level::DatabaseDataset { .. } => None,
-        Level::Service { url, kind } => Some(rustgis_data::ogc::capabilities_url(url, kind.as_deref())),
+        Level::Service { url, kind, .. } => Some(rustgis_data::ogc::capabilities_url(url, kind.as_deref())),
         Level::Catalogue => Some(super::super::service::records_request(s, &json!({"url": c.address}))?),
         Level::StacRoot { api } => Some(if stac::catalog::is_static(api) { api.clone() } else { stac::collections_url(api) }),
         Level::StacCollection { api, id } => {
@@ -242,6 +251,7 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
     let level = level(&c, node, observed.as_ref())?;
     let ceiling = match &level {
         Level::StacCatalog { origin, .. } | Level::StacItem { origin, .. } => origin.reach(),
+        Level::Service { reach, .. } => *reach,
         _ => address::Reach::Local,
     };
     let conn = s3_login(s, &c, &level)?;
@@ -267,7 +277,17 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
         Level::Database => database_schemas(s, &c, &mut out)?,
         Level::DatabaseSchema { schema } => database_schema(s, &c, schema, &mut out)?,
         Level::DatabaseDataset { dataset } => database_dataset(s, &c, dataset, &mut out)?,
-        Level::Service { url, kind } => service(s, p, &mut out, &c, url, kind.as_deref())?,
+        Level::Service { url, kind, reach } => {
+            // A listing the app read is judged by where its fetch connected; one a caller supplies
+            // says nothing trustworthy about where it was read, so it is taken as read from the
+            // internet. One read here: its documents' records say.
+            let read = match (ps(p, "answer"), &s.browse_response) {
+                (None, _) => *reach,
+                (Some(_), Some((id, supplied, origin))) if *id == c.id && supplied == node => (*reach).min(origin.reach()),
+                (Some(_), _) => address::Reach::Public,
+            };
+            service(s, p, &mut out, &c, url, kind.as_deref(), read)?
+        }
         Level::S3Root if url.is_none() => {
             buckets(c.options.get("buckets").map(String::as_str).unwrap_or("").split(',').map(str::to_string))
         }
@@ -287,8 +307,8 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
                 }
             };
             let bytes = text.as_bytes();
-            let found = match &level {
-                Level::Catalogue => catalogue(s, &c, &text, &mut out)?,
+            let mut found = match &level {
+                Level::Catalogue => catalogue(s, &c, &text, &origin, node.is_empty(), &mut out)?,
                 Level::StacRoot { api } if stac::catalog::is_static(api) => catalogs(s, bytes, &origin)?,
                 Level::StacRoot { .. } => collections(bytes)?,
                 Level::StacCatalog { .. } => catalogs(s, bytes, &origin)?,
@@ -301,8 +321,10 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
                 }
                 Level::Database | Level::DatabaseSchema { .. } | Level::DatabaseDataset { .. } | Level::Service { .. } => Found::default(),
             };
-            if matches!(&level, Level::StacCatalog { .. }) || matches!(&level, Level::StacRoot { api } if stac::catalog::is_static(api)) {
-                remember_node_origins(s, &c, &found.children, &origin, node.is_empty())?;
+            let catalog =
+                matches!(&level, Level::StacCatalog { .. }) || matches!(&level, Level::StacRoot { api } if stac::catalog::is_static(api));
+            if catalog && !remember_or_say(s, &c, &found.children, &origin, node.is_empty()) {
+                found.children.clear();
             }
             found
         }
@@ -392,11 +414,22 @@ fn remember_node_origins(s: &mut Session, c: &Connection, children: &[Value], or
             }
         }
     }
-    let added = keys.iter().filter(|key| !s.browse_origins.1.contains_key(*key)).count();
-    if s.browse_origins.1.len().saturating_add(added) > 16_384 {
+    // A node a listing read from the internet named stays held there, though a listing read
+    // locally names it again: the narrower record is kept. Records already there are narrowed
+    // first, whatever room is left, as narrowing adds none.
+    let (known, mut new): (Vec<_>, Vec<_>) = keys.into_iter().partition(|key| s.browse_origins.1.contains_key(key));
+    // A node named twice (records often link the same service) takes one place.
+    let mut unique = std::collections::HashSet::new();
+    new.retain(|key| unique.insert(key.clone()));
+    for key in known {
+        if !s.browse_origins.1.get(&key).is_some_and(|recorded| recorded.reach() < origin.reach()) {
+            s.browse_origins.1.insert(key, origin.clone());
+        }
+    }
+    if s.browse_origins.1.len().saturating_add(new.len()) > 16_384 {
         return Err("too many catalog nodes are open in this session; reopen the project to browse more".into());
     }
-    for key in keys {
+    for key in new {
         s.browse_origins.1.insert(key, origin.clone());
     }
     Ok(())
@@ -605,7 +638,18 @@ fn schema_tables(tables: &[Value], schema: &str, address: &str) -> Found {
 }
 
 /// A service's layers (capabilities read here, or the app's `answer` and `documents`).
-fn service(s: &mut Session, p: &Value, out: &mut Value, c: &Connection, url: &str, kind: Option<&str>) -> Result<Found, String> {
+/// A service's layers, and the folders and services it lists as nodes, each recorded with the
+/// reach the listing was read at (`reach`, narrowed by its document's record), so opening one
+/// judges it by that.
+fn service(
+    s: &mut Session,
+    p: &Value,
+    out: &mut Value,
+    c: &Connection,
+    url: &str,
+    kind: Option<&str>,
+    reach: address::Reach,
+) -> Result<Found, String> {
     let mut q = json!({"url": crate::service_logins::request(s, Some(&c.id), url)?, "connection": c.id});
     if let Some(k) = kind {
         q["type"] = json!(k);
@@ -675,15 +719,100 @@ fn service(s: &mut Session, p: &Value, out: &mut Value, c: &Connection, url: &st
     let listed = children.len();
     let children: Vec<Value> = children.into_iter().filter(|c| !c.is_null()).collect();
     let left_out = children.len() < listed;
+    // The folders and services listed keep where their listing was read.
+    let read_at = |l: &Value| {
+        let source = l.get("source_url").and_then(Value::as_str).unwrap_or("");
+        if crate::render::rustgis_tiles::cache::ceiling_for(source) == address::Reach::Public { address::Reach::Public } else { reach }
+    };
+    let mut reach_of = std::collections::HashMap::new();
+    for l in r.get("layers").and_then(Value::as_array).into_iter().flatten().take(MAX_CHILDREN + 1) {
+        if l.get("offer").and_then(|o| o.get("type")).and_then(Value::as_str) == Some("service") {
+            let at = read_at(l);
+            reach_of
+                .entry(format!("service:arcgis:{}", text(&l["offer"], "url")))
+                .and_modify(|r: &mut address::Reach| *r = (*r).min(at))
+                .or_insert(at);
+        }
+    }
+    // The list is cut to what is shown first, so only the nodes shown are recorded, and none past
+    // its end comes up unrecorded when those the full record refuses are left out.
     let mut found = Found::new(children);
     found.truncated |= left_out;
+    let services: Vec<(String, address::Reach)> = found
+        .children
+        .iter()
+        .filter_map(|child| child["node"].as_str())
+        .filter_map(|node| reach_of.get(node).map(|r| (node.to_string(), *r)))
+        .collect();
+    remember_services(s, c, url, &services, &mut found.children)?;
     Ok(found)
 }
 
-/// A catalogue's records, each with the services and files it links to.
-fn catalogue(s: &mut Session, c: &Connection, text: &str, out: &mut Value) -> Result<Found, String> {
+/// Records the services a listing names, each at the reach its document was read at. With the
+/// session's record full, says so once: those named by a document read from the internet are left
+/// out of `children`, the rest judged by their connection's address.
+fn remember_services(
+    s: &mut Session,
+    c: &Connection,
+    url: &str,
+    services: &[(String, address::Reach)],
+    children: &mut Vec<Value>,
+) -> Result<(), String> {
+    let (mut unrecorded, mut left, mut judged) = (None, 0, false);
+    for at in [address::Reach::Public, address::Reach::Local] {
+        let nodes: Vec<Value> = services.iter().filter(|(_, r)| *r == at).map(|(node, _)| json!({"node": node})).collect();
+        if nodes.is_empty() {
+            continue;
+        }
+        let origin = address::Origin::with_observed_reach(url, at)?;
+        if let Err(e) = remember_node_origins(s, c, &nodes, &origin, false) {
+            if at == address::Reach::Public {
+                children.retain(|child| !nodes.iter().any(|n| n["node"] == child["node"]));
+                left += nodes.len();
+            } else {
+                judged = true;
+            }
+            unrecorded.get_or_insert(e);
+        }
+    }
+    if let Some(e) = unrecorded {
+        s.notify(unrecorded_notice(&e, left, judged), false);
+    }
+    Ok(())
+}
+
+/// What a listing whose nodes the full record couldn't take says: how many entries are left out
+/// (`left`), and whether the rest are judged by their connection's address (`judged`).
+fn unrecorded_notice(e: &str, left: usize, judged: bool) -> String {
+    let entries = match left {
+        1 => "1 entry".to_string(),
+        n => format!("{n} entries"),
+    };
+    match (left > 0, judged) {
+        (true, true) => format!("{e}: {entries} this listing names are left out; the rest are judged by its connection's address"),
+        (true, false) => format!("{e}: {entries} this listing names are left out"),
+        _ => format!("{e}; what this listing names is judged by its connection's address"),
+    }
+}
+
+/// [`remember_node_origins`], saying when the session's record is full instead of failing the
+/// listing. Nodes a listing read on the local network names are then judged by their connection's
+/// address, as before; those a listing read from the internet names can't be held there without
+/// the record, so the caller leaves them out (`false`).
+fn remember_or_say(s: &mut Session, c: &Connection, children: &[Value], origin: &address::Origin, root: bool) -> bool {
+    let Err(e) = remember_node_origins(s, c, children, origin, root) else { return true };
+    let public = origin.reach() == address::Reach::Public;
+    s.notify(unrecorded_notice(&e, if public { children.len() } else { 0 }, !public), false);
+    !public
+}
+
+/// A catalogue's records, each with the services and files it links to, read at `origin`: what
+/// they link to reaches no further than that, the services when they are opened ([`level`]) and
+/// the files when they are added (`fromDocument`).
+fn catalogue(s: &mut Session, c: &Connection, text: &str, origin: &address::Origin, root: bool, out: &mut Value) -> Result<Found, String> {
     let url = crate::service_logins::request(s, Some(&c.id), &c.address)?;
-    let r = super::super::service::catalog_search(s, &json!({"url": url, "connection": c.id, "text": text}))?;
+    let params = json!({"url": url, "connection": c.id, "text": text});
+    let r = super::super::service::catalog_search_read(s, &params, Some(origin.reach()))?;
     if let Some(n) = r.get("notes") {
         out["notes"] = n.clone();
     }
@@ -719,11 +848,15 @@ fn catalogue(s: &mut Session, c: &Connection, text: &str, out: &mut Value) -> Re
                             let last = url.split(['?', '#']).next().unwrap_or("").trim_end_matches('/').rsplit('/').next().unwrap_or("");
                             let shown: String = if name.is_empty() { last } else { name.as_str() }.chars().take(200).collect();
                             let named: String = title.chars().take(200).collect();
+                            let mut params = json!({"url": url, "name": named});
+                            if l.get("fromDocument").and_then(Value::as_bool) == Some(true) {
+                                params["fromDocument"] = json!(true);
+                            }
                             Some(json!({
                                 "key": url,
                                 "name": shown,
                                 "what": "download",
-                                "add": {"command": "layer.addUrl", "params": {"url": url, "name": named}},
+                                "add": {"command": "layer.addUrl", "params": params},
                             }))
                         }
                         _ => None,
@@ -737,6 +870,24 @@ fn catalogue(s: &mut Session, c: &Connection, text: &str, out: &mut Value) -> Re
     let mut found = Found::new(children);
     found.matched = r.get("matched").and_then(Value::as_u64);
     found.truncated |= dropped || r.get("next").is_some_and(|n| !n.is_null());
+    // The services the records link to, opened later, keep where the records were read.
+    // The services the records name (nodes): the downloads carry their reach in their parameters.
+    let services: Vec<Value> = found
+        .children
+        .iter()
+        .filter_map(|r| r.get("children"))
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter(|link| link.get("node").is_some())
+        .cloned()
+        .collect();
+    if !remember_or_say(s, c, &services, origin, root) {
+        for record in &mut found.children {
+            if let Some(links) = record.get_mut("children").and_then(Value::as_array_mut) {
+                links.retain(|link| link.get("node").is_none());
+            }
+        }
+    }
     Ok(found)
 }
 
@@ -1069,6 +1220,259 @@ mod tests {
             }
         }
     }
+    /// A catalogue connection's records are judged by where its answer was read, and what they link
+    /// to keeps that: a catalogue at a public-looking name read on the local network keeps a
+    /// service on a private address and opens it as the user's own; one read from the internet
+    /// leaves that out, opens the service it keeps only from the internet, and has its files added
+    /// the same way (`fromDocument`).
+    #[test]
+    fn a_catalogue_connections_links_keep_where_its_answer_was_read() {
+        use crate::render::rustgis_tiles::address::Origin;
+        for (n, peer) in [(1, "10.0.0.5"), (2, "93.184.216.34")] {
+            let public = n == 2;
+            let mut session = crate::Session::new(crate::Project::default());
+            let address = format!("https://csw-{n}.corp-looks-public.example/csw");
+            let saved = session.run("connection.new", &json!({"kind":"csw","address":address})).unwrap();
+            let connection = session.connections.connections.iter().find(|c| c.id == saved["id"].as_str().unwrap()).unwrap().clone();
+            let (local, web, file) = (
+                format!("http://10.0.{n}.4/wms"),
+                format!("https://csw-wms-{n}.example/wms"),
+                format!("https://csw-files-{n}.example/a.geojson"),
+            );
+            let text = format!(
+                r#"<csw:GetRecordsResponse xmlns:csw="http://www.opengis.net/cat/csw/2.0.2" xmlns:dc="http://purl.org/dc/elements/1.1/"><csw:SearchResults numberOfRecordsMatched="1"><csw:Record><dc:identifier>a</dc:identifier><dc:title>Roads</dc:title><dc:URI protocol="OGC:WMS">{local}</dc:URI><dc:URI protocol="OGC:WMS">{web}</dc:URI><dc:URI protocol="WWW:DOWNLOAD">{file}</dc:URI></csw:Record></csw:SearchResults></csw:GetRecordsResponse>"#
+            );
+            let origin = Origin::connected(&connection.address, peer.parse().unwrap()).unwrap();
+            let mut out = json!({});
+            let found = super::catalogue(&mut session, &connection, &text, &origin, true, &mut out).unwrap();
+            let links = found.children[0]["children"].as_array().cloned().unwrap_or_default();
+            let nodes: Vec<_> = links.iter().filter_map(|l| l["node"].as_str().map(str::to_string)).collect();
+            let want = if public {
+                vec![format!("service:wms:{web}")]
+            } else {
+                vec![format!("service:wms:{local}"), format!("service:wms:{web}")]
+            };
+            assert_eq!(nodes, want, "{links:?}");
+            for node in &nodes {
+                let probe = super::browse(&mut session, &json!({"id":connection.id,"node":node,"probe":true})).unwrap();
+                assert_eq!(probe.get("fromDocument").and_then(Value::as_bool).unwrap_or(false), public, "{node}: {probe}");
+            }
+            let download = links.iter().find(|l| l["what"] == "download").unwrap();
+            assert_eq!(download["add"]["params"].get("fromDocument").and_then(Value::as_bool).unwrap_or(false), public, "{download}");
+        }
+    }
+
+    /// A catalogue connection's answer the engine itself read on the local network (the Assistant's
+    /// browse, which fetches it) keeps its private links: it is judged by where the fetch
+    /// connected, not taken as an untrusted caller's text. And with the session's record of nodes
+    /// full, a page still lists its records and says what it couldn't record.
+    #[test]
+    fn a_catalogue_the_engine_read_keeps_its_links_and_a_full_record_still_lists_it() {
+        use crate::policy::{Effects, Revocation, Scope};
+        use crate::render::rustgis_tiles::address::Origin;
+        struct Live;
+        impl Revocation for Live {
+            fn allows(&self, _: Effects) -> bool {
+                true
+            }
+        }
+        let mut session = crate::Session::new(crate::Project::default());
+        let address = "https://csw-19.corp-looks-public.example/csw";
+        let saved = session.run("connection.new", &json!({"kind":"csw","address":address})).unwrap();
+        let connection = session.connections.connections.iter().find(|c| c.id == saved["id"].as_str().unwrap()).unwrap().clone();
+        let text = r#"<csw:GetRecordsResponse xmlns:csw="http://www.opengis.net/cat/csw/2.0.2" xmlns:dc="http://purl.org/dc/elements/1.1/"><csw:SearchResults numberOfRecordsMatched="1"><csw:Record><dc:identifier>a</dc:identifier><dc:title>Roads</dc:title><dc:URI protocol="OGC:WMS">http://10.0.19.4/wms</dc:URI></csw:Record></csw:SearchResults></csw:GetRecordsResponse>"#;
+        let origin = Origin::connected(&connection.address, "10.0.0.5".parse().unwrap()).unwrap();
+        let found = session
+            .with_scope(Scope::assistant(4_201_305, std::sync::Arc::new(Live)), |s| {
+                super::catalogue(s, &connection, text, &origin, true, &mut json!({}))
+            })
+            .unwrap()
+            .unwrap();
+        let nodes: Vec<_> = found.children[0]["children"].as_array().unwrap().iter().filter_map(|l| l["node"].as_str()).collect();
+        assert_eq!(nodes, ["service:wms:http://10.0.19.4/wms"]);
+        // The session's record of nodes full: the page is listed, and what wasn't recorded said.
+        session.browse_origins = (
+            session.opened,
+            (0..16_384).map(|i| (format!("full-{i}"), String::new(), String::new())).map(|k| (k, origin.clone())).collect(),
+        );
+        let mark = session.notice_mark();
+        let found = super::catalogue(&mut session, &connection, text, &origin, false, &mut json!({})).unwrap();
+        assert_eq!(found.children.len(), 1);
+        // Read on the local network, its services are judged by the connection's address, as
+        // before; read from the internet, they can't be held there without the record, so they
+        // are left out.
+        assert_eq!(found.children[0]["children"].as_array().map(Vec::len), Some(1));
+        let told: Vec<_> = session.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert!(told.iter().any(|t| t.contains("judged by its connection's address")), "{told:?}");
+        let public = Origin::connected(&connection.address, "93.184.216.34".parse().unwrap()).unwrap();
+        let web = text.replace(
+            r#"<dc:URI protocol="OGC:WMS">http://10.0.19.4/wms</dc:URI>"#,
+            r#"<dc:URI protocol="OGC:WMS">https://csw-19-wms.example/wms</dc:URI><dc:URI protocol="WWW:DOWNLOAD">https://csw-19-files.example/a.geojson</dc:URI>"#,
+        );
+        let mark = session.notice_mark();
+        let found = super::catalogue(&mut session, &connection, &web, &public, false, &mut json!({})).unwrap();
+        assert_eq!(found.children.len(), 1, "the record is still listed");
+        let kept: Vec<_> = found.children[0]["children"].as_array().unwrap().iter().map(|l| l["what"].clone()).collect();
+        assert_eq!(kept, [json!("download")], "its service is left out, its download kept");
+        let told: Vec<_> = session.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert!(told.iter().any(|t| t.contains("1 entry this listing names are left out")), "{told:?}");
+    }
+
+    /// The folders a service lists keep where its listing was read: a directory a catalogue read
+    /// on the local network listed, at a private address, has its folder opened there, though the
+    /// catalogue's own name looks public.
+    #[test]
+    fn the_folders_a_service_lists_keep_where_it_was_read() {
+        use crate::render::rustgis_tiles::address::Origin;
+        let mut session = crate::Session::new(crate::Project::default());
+        let address = "https://csw-20.corp-looks-public.example/csw";
+        let saved = session.run("connection.new", &json!({"kind":"csw","address":address})).unwrap();
+        let connection = session.connections.connections.iter().find(|c| c.id == saved["id"].as_str().unwrap()).unwrap().clone();
+        let directory = "http://10.0.20.5/arcgis/rest/services";
+        let node = format!("service:arcgis:{directory}");
+        let local = Origin::connected(&connection.address, "10.0.0.5".parse().unwrap()).unwrap();
+        super::remember_node_origins(&mut session, &connection, &[json!({"node": node})], &local, false).unwrap();
+        let listing = json!({"currentVersion": 11.1, "folders": ["Hydro"], "services": []}).to_string();
+        // As the app hands it over: read by its fetch, which connected on the local network.
+        let requested = super::browse(&mut session, &json!({"id": connection.id, "node": node, "probe": true})).unwrap()["fetch"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let read = Origin::connected(&requested, "10.0.20.5".parse().unwrap()).unwrap();
+        let opened = session.opened;
+        let out =
+            session.browse_from_origin(&json!({"id": connection.id, "node": node, "answer": listing}), &requested, opened, read).unwrap();
+        let folder = out["children"].as_array().unwrap().iter().find_map(|c| c["node"].as_str().map(str::to_string)).unwrap();
+        assert!(folder.starts_with("service:arcgis:http://10.0.20.5/"), "{folder}");
+        let probe = super::browse(&mut session, &json!({"id": connection.id, "node": folder, "probe": true}));
+        assert!(probe.is_ok(), "{probe:?}");
+        // A listing supplied by the Assistant says nothing trustworthy about where it was read: it
+        // is taken as read from the internet, so the folder it lists, at a public-looking name, is
+        // held to the internet when it is opened.
+        struct Live;
+        impl crate::policy::Revocation for Live {
+            fn allows(&self, _: crate::policy::Effects) -> bool {
+                true
+            }
+        }
+        let directory = "https://dir-20.corp-looks-public.example/arcgis/rest/services";
+        let node = format!("service:arcgis:{directory}");
+        super::remember_node_origins(&mut session, &connection, &[json!({"node": node})], &local, false).unwrap();
+        let scope = crate::policy::Scope::assistant(4_201_306, std::sync::Arc::new(Live));
+        let params = json!({"id": connection.id, "node": node, "answer": listing});
+        let out = session.with_scope(scope, |s| super::browse(s, &params)).unwrap().unwrap();
+        let folder = out["children"].as_array().unwrap().iter().find_map(|c| c["node"].as_str().map(str::to_string)).unwrap();
+        let probe = super::browse(&mut session, &json!({"id": connection.id, "node": folder, "probe": true})).unwrap();
+        assert_eq!(probe["fromDocument"], true, "{probe}");
+        // And a private folder it lists is left out.
+        let private = "service:arcgis:http://10.0.20.5/arcgis/rest/services";
+        let params = json!({"id": connection.id, "node": private, "answer": listing});
+        let scope = crate::policy::Scope::assistant(4_201_307, std::sync::Arc::new(Live));
+        let out = session.with_scope(scope, |s| super::browse(s, &params)).unwrap().unwrap();
+        assert!(out["children"].as_array().unwrap().iter().all(|c| c.get("node").is_none()), "{out}");
+    }
+
+    /// A node a listing read from the internet recorded stays held there when a listing read on
+    /// the local network names it again: the narrower record is kept.
+    #[test]
+    fn a_node_keeps_its_narrower_record() {
+        use crate::render::rustgis_tiles::address::{Origin, Reach};
+        let mut session = crate::Session::new(crate::Project::default());
+        let saved = session.run("connection.new", &json!({"kind":"csw","address":"https://csw-21.corp-looks-public.example/csw"})).unwrap();
+        let connection = session.connections.connections.iter().find(|c| c.id == saved["id"].as_str().unwrap()).unwrap().clone();
+        let node = json!({"node": "service:wms:https://csw-21-wms.example/wms"});
+        let public = Origin::connected(&connection.address, "93.184.216.34".parse().unwrap()).unwrap();
+        let local = Origin::connected(&connection.address, "10.0.0.5".parse().unwrap()).unwrap();
+        super::remember_node_origins(&mut session, &connection, std::slice::from_ref(&node), &public, false).unwrap();
+        super::remember_node_origins(&mut session, &connection, std::slice::from_ref(&node), &local, false).unwrap();
+        let held = super::node_origin(&session, &connection, node["node"].as_str().unwrap()).map(|o| o.reach());
+        assert_eq!(held, Some(Reach::Public));
+        // With the record full, a listing read from the internet still narrows the node records it
+        // names that are already there (it adds no entries); only its new ones can't be recorded.
+        let other = json!({"node": "service:wms:https://csw-21-other.example/wms"});
+        super::remember_node_origins(&mut session, &connection, std::slice::from_ref(&other), &local, false).unwrap();
+        let filler = (0..16_384).map(|i| ((format!("full-{i}"), String::new(), String::new()), local.clone()));
+        session.browse_origins.1.extend(filler);
+        let new = json!({"node": "service:wms:https://csw-21-new.example/wms"});
+        assert!(super::remember_node_origins(&mut session, &connection, &[other.clone(), new], &public, false).is_err());
+        let narrowed = super::node_origin(&session, &connection, other["node"].as_str().unwrap()).map(|o| o.reach());
+        assert_eq!(narrowed, Some(Reach::Public));
+        // A listing naming services read at both reaches says the full record once: those read
+        // from the internet left out, the rest kept.
+        let services = [
+            ("service:arcgis:https://csw-21-web.example/arcgis/rest/services".to_string(), Reach::Public),
+            ("service:arcgis:http://10.0.21.5/arcgis/rest/services".to_string(), Reach::Local),
+        ];
+        let mut children: Vec<Value> = services.iter().map(|(n, _)| json!({"node": n})).collect();
+        let mark = session.notice_mark();
+        super::remember_services(&mut session, &connection, "https://csw-21.corp-looks-public.example/csw", &services, &mut children)
+            .unwrap();
+        let said: Vec<&str> = session.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("1 entry") && said[0].contains("the rest are judged"), "{said:?}");
+        assert_eq!(children, [json!({"node": services[1].0})]);
+    }
+
+    /// A node a listing names twice takes one place in the record, so a page that fits isn't
+    /// refused as too many.
+    #[test]
+    fn a_node_named_twice_takes_one_place_in_the_record() {
+        use crate::render::rustgis_tiles::address::Origin;
+        let mut session = crate::Session::new(crate::Project::default());
+        let saved = session.run("connection.new", &json!({"kind":"csw","address":"https://csw-23.corp-looks-public.example/csw"})).unwrap();
+        let connection = session.connections.connections.iter().find(|c| c.id == saved["id"].as_str().unwrap()).unwrap().clone();
+        let local = Origin::connected(&connection.address, "10.0.0.5".parse().unwrap()).unwrap();
+        let first = json!({"node": "service:wms:https://csw-23-first.example/wms"});
+        super::remember_node_origins(&mut session, &connection, &[first], &local, false).unwrap();
+        let room = 16_384 - session.browse_origins.1.len() - 1;
+        session.browse_origins.1.extend((0..room).map(|i| ((format!("full-{i}"), String::new(), String::new()), local.clone())));
+        let node = json!({"node": "service:wms:https://csw-23-wms.example/wms"});
+        let twice = super::remember_node_origins(&mut session, &connection, &[node.clone(), node], &local, false);
+        assert!(twice.is_ok(), "{twice:?}");
+        assert_eq!(session.browse_origins.1.len(), 16_384);
+    }
+
+    /// A directory listing more services than are shown records only those shown.
+    #[test]
+    fn only_the_services_a_listing_shows_are_recorded() {
+        use crate::render::rustgis_tiles::address::Origin;
+        let mut session = crate::Session::new(crate::Project::default());
+        let address = "https://csw-22.corp-looks-public.example/csw";
+        let saved = session.run("connection.new", &json!({"kind":"csw","address":address})).unwrap();
+        let connection = session.connections.connections.iter().find(|c| c.id == saved["id"].as_str().unwrap()).unwrap().clone();
+        let node = "service:arcgis:http://10.0.22.5/arcgis/rest/services".to_string();
+        let local = Origin::connected(&connection.address, "10.0.0.5".parse().unwrap()).unwrap();
+        super::remember_node_origins(&mut session, &connection, &[json!({"node": node})], &local, false).unwrap();
+        let folders: Vec<String> = (0..super::MAX_CHILDREN + 100).map(|i| format!("F{i}")).collect();
+        let listing = json!({"currentVersion": 11.1, "folders": folders, "services": []}).to_string();
+        let requested = super::browse(&mut session, &json!({"id": connection.id, "node": node, "probe": true})).unwrap()["fetch"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let read = Origin::connected(&requested, "10.0.22.5".parse().unwrap()).unwrap();
+        let before = session.browse_origins.1.len();
+        let opened = session.opened;
+        let out =
+            session.browse_from_origin(&json!({"id": connection.id, "node": node, "answer": listing}), &requested, opened, read).unwrap();
+        let shown = out["children"].as_array().unwrap().iter().filter(|c| c.get("node").is_some()).count();
+        assert!(shown > 0 && shown <= super::MAX_CHILDREN + 1, "{shown}");
+        assert_eq!(session.browse_origins.1.len() - before, shown);
+        // With the record full, a listing read from the internet has every node it shows left
+        // out, and none past the shown end takes their place unrecorded.
+        let node = "service:arcgis:https://dir-22.corp-looks-public.example/arcgis/rest/services".to_string();
+        super::remember_node_origins(&mut session, &connection, &[json!({"node": node})], &local, false).unwrap();
+        let requested = super::browse(&mut session, &json!({"id": connection.id, "node": node, "probe": true})).unwrap()["fetch"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        session.browse_origins.1.extend((0..16_384).map(|i| ((format!("full-{i}"), String::new(), String::new()), local.clone())));
+        let read = Origin::connected(&requested, "93.184.216.34".parse().unwrap()).unwrap();
+        let out =
+            session.browse_from_origin(&json!({"id": connection.id, "node": node, "answer": listing}), &requested, opened, read).unwrap();
+        let nodes: Vec<&Value> = out["children"].as_array().unwrap().iter().filter(|c| c.get("node").is_some()).collect();
+        assert!(nodes.is_empty(), "{nodes:?}");
+    }
+
     #[test]
     fn admitted_intranet_nodes_keep_their_origin_and_cannot_be_granted_by_json() {
         use crate::render::rustgis_tiles::address::Origin;

@@ -4,12 +4,13 @@
 //! `boundaries.add`, so the layers are added like any command's.
 
 use egui::vec2;
-use rustgis_engine::render::rustgis_tiles::{boundaries, cache, overpass};
+use rustgis_engine::render::rustgis_tiles::{address::Reach, boundaries, cache, overpass};
 use serde_json::{Value, json};
 
 use crate::{RustGisApp, Slot};
 
-type Answer = Slot<Result<Vec<u8>, String>>;
+/// An answer, with the reach it was read at.
+type Answer = Slot<Result<(Vec<u8>, Reach), String>>;
 
 /// What is being fetched, with the parameters its answer is added with.
 enum Asked {
@@ -56,11 +57,10 @@ impl Default for State {
     }
 }
 
-fn fetch(url: &str) -> Answer {
-    let slot: Answer = Slot::default();
-    let land = slot.clone();
-    cache::download(url, Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)));
-    slot
+/// Fetches `url` off the frame within `ceiling`: the reach of the answer that named it
+/// (`Reach::Local` for a service the user or RustGIS names).
+fn fetch(url: &str, ceiling: Reach) -> Answer {
+    crate::fetch_within(url, cache::MAX_DOWNLOAD, None, ceiling)
 }
 
 /// Lands the answers.
@@ -71,6 +71,8 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
         return;
     };
     let Some((asked, _)) = app.ui.portals.waiting.take() else { return };
+    let reach = r.as_ref().map_or(Reach::Public, |(_, reach)| *reach);
+    let r = r.map(|(bytes, _)| bytes);
     app.ui.portals.error = None;
     app.ui.portals.info = None;
     let text = |b: Vec<u8>| String::from_utf8(b).map_err(|_| "the answer isn't UTF-8 text".to_string());
@@ -100,7 +102,8 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
         }
         Asked::Meta(mut p) => r.and_then(|b| boundaries::parse_meta(&b)).map(|m| {
             p["name"] = json!(format!("{} {}", m.name, m.level));
-            app.ui.portals.waiting = Some((Asked::Boundary(p), fetch(&m.geojson)));
+            // The description names where the boundaries are: they are read no further than it was.
+            app.ui.portals.waiting = Some((Asked::Boundary(p), fetch(&m.geojson, reach)));
         }),
         Asked::Boundary(mut p) => r.and_then(text).and_then(|t| {
             p["text"] = json!(t);
@@ -174,7 +177,7 @@ pub fn osm(app: &mut RustGisApp, ui: &mut egui::Ui) {
         match url {
             Ok(url) => {
                 app.ui.portals.error = None;
-                app.ui.portals.waiting = Some((Asked::Osm(p), fetch(&url)));
+                app.ui.portals.waiting = Some((Asked::Osm(p), fetch(&url, Reach::Local)));
             }
             Err(e) => app.ui.portals.error = Some(e),
         }
@@ -189,7 +192,7 @@ pub fn boundaries(app: &mut RustGisApp, ui: &mut egui::Ui) {
     // The country list, asked for once.
     if !app.ui.portals.countries_asked && !busy {
         app.ui.portals.countries_asked = true;
-        app.ui.portals.waiting = Some((Asked::Countries, fetch(&boundaries::countries_url())));
+        app.ui.portals.waiting = Some((Asked::Countries, fetch(&boundaries::countries_url(), Reach::Local)));
     }
     if let Some(e) = &app.ui.portals.countries_error {
         ui.label(egui::RichText::new(e).small().weak());
@@ -245,10 +248,49 @@ pub fn boundaries(app: &mut RustGisApp, ui: &mut egui::Ui) {
             Ok((c, l)) => {
                 let url = boundaries::meta_url(&c, &l);
                 app.ui.portals.error = None;
-                app.ui.portals.waiting = Some((Asked::Meta(json!({"country": c, "level": l})), fetch(&url)));
+                app.ui.portals.waiting = Some((Asked::Meta(json!({"country": c, "level": l})), fetch(&url, Reach::Local)));
             }
             Err(e) => app.ui.portals.error = Some(e),
         }
     }
     status(app, ui);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustgis_engine::render::rustgis_tiles::address::Origin;
+
+    /// The boundaries geoBoundaries' description names are read within the reach the description
+    /// was read at: only from the internet when it came from there; from a description read on the
+    /// local network (a mirror at its name), from a private address too.
+    #[test]
+    fn boundaries_are_read_within_the_reach_of_their_description() {
+        for (n, observed) in [(1, Reach::Public), (2, Reach::Local)] {
+            let _turn = crate::fetching::turn();
+            let geojson = if observed == Reach::Public {
+                format!("https://boundaries-{n}.example/che.geojson")
+            } else {
+                format!("http://10.0.{n}.2/che.geojson")
+            };
+            let meta =
+                json!({"boundaryISO": "CHE", "boundaryName": "Switzerland", "boundaryType": "ADM1", "gjDownloadURL": geojson}).to_string();
+            let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let log = asked.clone();
+            cache::set_fetcher_with_origin(move |url, ceiling, done, _| {
+                let clean = cache::split_download_limit(&url).0.to_string();
+                log.lock().unwrap().push((clean.clone(), ceiling));
+                let origin = Origin::with_observed_reach(&clean, observed.min(ceiling)).unwrap();
+                let body =
+                    if clean.ends_with(".geojson") { r#"{"type":"FeatureCollection","features":[]}"#.to_string() } else { meta.clone() };
+                done(Ok(cache::Fetched { bytes: body.into_bytes(), origin }));
+            });
+            let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+            let url = boundaries::meta_url("CHE", "ADM1");
+            app.ui.portals.waiting = Some((Asked::Meta(json!({"country": "CHE", "level": "ADM1"})), fetch(&url, Reach::Local)));
+            poll(&mut app, &egui::Context::default());
+            let asked = asked.lock().unwrap().clone();
+            assert_eq!(asked, [(url, Reach::Local), (geojson.clone(), observed)], "observed {observed:?}");
+        }
+    }
 }

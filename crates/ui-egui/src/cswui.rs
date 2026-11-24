@@ -4,6 +4,7 @@
 //! off the frame; `catalog.search` reads the answers.
 
 use egui::vec2;
+use rustgis_engine::render::rustgis_tiles::{address::Reach, cache};
 use serde_json::{Value, json};
 
 use crate::{RustGisApp, Slot};
@@ -80,7 +81,12 @@ pub fn search(app: &mut RustGisApp, start: u64) {
                 st.next = None;
                 st.asked = asked;
             }
-            st.waiting = Some((p, crate::fetch_into(&request)));
+            // A catalogue held to the internet is searched only there; an answer read from the
+            // internet is recorded, so `catalog.search` holds the links it lists there.
+            if p.get("url").and_then(Value::as_str).is_some_and(|url| cache::ceiling_for(url) == Reach::Public) {
+                cache::restrict_to_public(&request);
+            }
+            st.waiting = Some((p, crate::fetch_document_into(&request)));
         }
         Err(e) => app.ui.csw.error = Some(e),
     }
@@ -210,7 +216,8 @@ fn records(app: &mut RustGisApp, ui: &mut egui::Ui) {
                     let what: String = what.chars().take(28).collect();
                     let text = if what.is_empty() { tl!(*label).to_string() } else { format!("{} · {what}", tl!(*label)) };
                     if ui.small_button(text).on_hover_text(url).clicked() {
-                        follow = Some((kind.to_string(), url.to_string(), title.to_string()));
+                        let public = l.get("fromDocument").and_then(Value::as_bool) == Some(true);
+                        follow = Some((kind.to_string(), url.to_string(), title.to_string(), public));
                     }
                 }
                 if !any {
@@ -230,10 +237,11 @@ fn records(app: &mut RustGisApp, ui: &mut egui::Ui) {
     if let Some(b) = zoom {
         let _ = app.run("map.zoomToExtent", json!({"extent": b}));
     }
-    if let Some((kind, url, title)) = follow {
+    if let Some((kind, url, title, public)) = follow {
         app.dialogs.error = None;
+        // A link from a catalogue read from the internet leads only there (`fromDocument`).
         let r = if kind == "download" {
-            app.run("ui.addUrl", json!({"url": url, "name": title})).map(|_| ())
+            app.run("ui.addUrl", json!({"url": url, "name": title, "fromDocument": public})).map(|_| ())
         } else {
             // A service: connected to in this dialog, its type picked (the catalogue's results
             // stay for Catalogue).
@@ -245,7 +253,7 @@ fn records(app: &mut RustGisApp, ui: &mut egui::Ui) {
                 "ogcapi" => "ogcapi",
                 _ => "arcgis",
             };
-            app.run("ui.addService", json!({"url": url, "type": app.dialogs.mode})).map(|_| ())
+            app.run("ui.addService", json!({"url": url, "type": app.dialogs.mode, "fromDocument": public})).map(|_| ())
         };
         if let Err(e) = r {
             app.ui.csw.error = Some(e);
@@ -255,6 +263,82 @@ fn records(app: &mut RustGisApp, ui: &mut egui::Ui) {
         match crate::connectionui::keep(app, json!({"kind": "csw", "address": url})) {
             Ok(id) => app.dialogs.connection = Some(id),
             Err(e) => app.ui.csw.error = Some(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustgis_engine::render::rustgis_tiles::{
+        address::{Origin, Reach},
+        cache,
+    };
+
+    /// A catalogue's answer read from the internet holds the services its records link to there:
+    /// clicking a record's service reads its capabilities only from the internet. Read on the local
+    /// network, at a public-looking name, its records keep a service on a private address, and
+    /// clicking it reads that service as the user's own.
+    #[test]
+    fn a_catalogues_services_are_read_within_the_reach_of_its_answer() {
+        use egui_kittest::kittest::Queryable;
+        for (n, observed) in [(1, Reach::Public), (2, Reach::Local)] {
+            let _turn = crate::fetching::turn();
+            let csw = format!("https://csw-{n}.corp-looks-public.example/csw");
+            let service =
+                if observed == Reach::Public { format!("https://csw-service-{n}.example/wms") } else { format!("http://10.0.{n}.4/wms") };
+            let answer = format!(
+                r#"<csw:GetRecordsResponse xmlns:csw="http://www.opengis.net/cat/csw/2.0.2" xmlns:dc="http://purl.org/dc/elements/1.1/"><csw:SearchResults numberOfRecordsMatched="1"><csw:Record><dc:identifier>a</dc:identifier><dc:title>Roads</dc:title><dc:URI protocol="OGC:WMS">{service}</dc:URI></csw:Record></csw:SearchResults></csw:GetRecordsResponse>"#
+            );
+            let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let log = asked.clone();
+            cache::set_fetcher_with_origin(move |url, ceiling, done, _| {
+                let clean = cache::split_download_limit(&url).0.to_string();
+                log.lock().unwrap().push((clean.clone(), ceiling));
+                let origin = Origin::with_observed_reach(&clean, observed.min(ceiling)).unwrap();
+                done(Ok(cache::Fetched { bytes: answer.clone().into_bytes(), origin }));
+            });
+            let app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+            let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_max_steps(16).build_ui_state(
+                |ui, app: &mut RustGisApp| {
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    app.ui(ui);
+                },
+                app,
+            );
+            h.state_mut().run("ui.addService", json!({"url": csw, "type": "csw"})).unwrap();
+            h.run_steps(3);
+            assert_eq!(h.state().ui.csw.records.len(), 1, "{:?}", h.state().ui.csw.error);
+            h.get_by_label("WMS · wms").click();
+            h.run_steps(2);
+            let caps = rustgis_engine::data::ogc::capabilities_url(&service, Some("wms"));
+            let asked = asked.lock().unwrap().clone();
+            assert!(asked.contains(&(caps.clone(), observed)), "the service, its catalogue read {observed:?}: {asked:?}");
+            assert_eq!(cache::ceiling_for(&caps), observed);
+        }
+    }
+
+    /// A catalogue a document read from the internet named (`fromDocument`) is searched only there.
+    #[test]
+    fn a_catalogue_a_document_named_is_searched_only_on_the_internet() {
+        for public in [true, false] {
+            let _turn = crate::fetching::turn();
+            let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let log = asked.clone();
+            cache::set_fetcher_with_origin(move |url, ceiling, done, _| {
+                log.lock().unwrap().push(ceiling);
+                let origin = Origin::with_observed_reach(cache::split_download_limit(&url).0, ceiling).unwrap();
+                done(Ok(cache::Fetched {
+                    bytes: b"<csw:GetRecordsResponse xmlns:csw=\"http://www.opengis.net/cat/csw/2.0.2\"/>".to_vec(),
+                    origin,
+                }));
+            });
+            let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+            let csw = format!("https://csw-named-{public}.example/csw");
+            app.run("ui.addService", json!({"url": csw, "type": "csw", "fromDocument": public})).unwrap();
+            let want = if public { Reach::Public } else { Reach::Local };
+            assert_eq!(asked.lock().unwrap().clone(), [want]);
         }
     }
 }

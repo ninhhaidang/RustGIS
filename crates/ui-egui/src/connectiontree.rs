@@ -10,7 +10,10 @@ use std::sync::Arc;
 use egui::collapsing_header::CollapsingState;
 use egui::{Label, RichText, Sense, Ui};
 use rustgis_engine::connections::{Connection, DATABASE_KINDS};
-use rustgis_engine::render::rustgis_tiles::{address::Origin, cache, stac};
+use rustgis_engine::render::rustgis_tiles::{
+    address::{Origin, Reach},
+    cache, stac,
+};
 use rustgis_engine::sources::Source;
 use serde_json::{Value, json};
 
@@ -212,6 +215,12 @@ fn listing(v: &Value, first: Option<String>, documents: Vec<Value>) -> Listing {
 /// An answer arrived: asks again with it (and what came before). A service's discovery may need
 /// further documents, which are fetched in turn.
 fn advance(app: &mut RustGisApp, id: &str, mut f: Fetch, fetched: cache::Fetched) -> Entry {
+    // A document read from the internet is recorded so, as Add From Service's fetch records it:
+    // the service's discovery, which reads the answer by its address, then holds what it links to
+    // and the layers it lists there.
+    if fetched.origin.reach() == Reach::Public {
+        cache::restrict_to_public(&f.pending);
+    }
     let Ok(text) = crate::service_text(fetched.bytes) else {
         return Entry::Failed(tl!("The answer isn't UTF-8 text").to_string());
     };
@@ -1195,6 +1204,48 @@ mod tests {
         assert!(rustgis_engine::render::rustgis_tiles::logins::apply(&address).unwrap().is_none());
     }
 
+    /// A service connection's documents are recorded where they were read: one at a public-looking
+    /// name read from the internet has its link into the local network refused, naming it; read on
+    /// the local network, the link is followed.
+    #[test]
+    fn a_service_connections_documents_hold_their_links_where_they_were_read() {
+        for (n, observed) in [(1, Reach::Public), (2, Reach::Local)] {
+            let _turn = crate::fetching::turn();
+            let linked = format!("http://10.0.{n}.5/collections");
+            let landing = json!({"links":[{"rel":"data","type":"application/json","href":linked}]}).to_string();
+            let collections = json!({"collections":[]}).to_string();
+            let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let log = asked.clone();
+            cache::set_fetcher_with_origin(move |url, ceiling, done, _| {
+                let clean = cache::split_download_limit(&url).0.to_string();
+                log.lock().unwrap().push((clean.clone(), ceiling));
+                let body = if clean.contains("10.0.") { &collections } else { &landing };
+                let origin = Origin::with_observed_reach(&clean, observed.min(ceiling)).unwrap();
+                done(Ok(cache::Fetched { bytes: body.clone().into_bytes(), origin }));
+            });
+            let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+            let address = format!("https://tree-{n}.corp-looks-public.example/ogc");
+            let saved = app.run("connection.new", json!({"kind": "ogcapi", "address": address})).unwrap();
+            let c = app.session.connections.connections.iter().find(|c| c.id == saved["id"].as_str().unwrap()).unwrap().clone();
+            start(&mut app, &c, "");
+            for _ in 0..3 {
+                poll(&mut app, &egui::Context::default());
+            }
+            let asked = asked.lock().unwrap().clone();
+            let entry = app.ui.connection_tree.entries.get(&(c.id.clone(), String::new()));
+            if observed == Reach::Local {
+                assert!(asked.iter().any(|(u, r)| u.starts_with(&linked) && *r == Reach::Local), "{asked:?}");
+                assert!(matches!(entry, Some(Entry::Ready(_))), "the level was read");
+            } else {
+                assert!(!asked.iter().any(|(u, _)| u.starts_with(&linked)), "the link is not fetched: {asked:?}");
+                assert!(
+                    matches!(entry, Some(Entry::Failed(e)) if e.contains(&linked) && e.contains("local network")),
+                    "the refusal is said"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_tileset_step_names_its_layer_and_a_refused_one_is_not_recorded() {
         let _turn = crate::fetching::turn();
@@ -1202,6 +1253,9 @@ mod tests {
         let api = "https://x.org/collections";
         let tiled = r#"{"collections": [{"id": "relief", "links": [{"rel": "tilesets-map", "href": "https://x.org/relief/map/tiles"}]}]}"#;
         let opened = h.state().session.opened;
+        // The service's document was read from the internet (the dialog's fetch records it): a
+        // template into the local network is refused.
+        cache::restrict_to_public(api);
         let step = |fallback: &str, origin: Option<&str>| {
             let slot = Slot::default();
             *slot.lock().unwrap() = Some(Err("unreachable".to_string()));

@@ -5,13 +5,14 @@
 //! this computer (`earthdata.login` with `remember`). Requests go off the frame through the tile
 //! cache's downloads, and the remembered token is read off the frame too.
 
-use rustgis_engine::render::rustgis_tiles::cache;
 use rustgis_engine::render::rustgis_tiles::earthdata::{self, Collection, Granule};
+use rustgis_engine::render::rustgis_tiles::{address::Reach, cache};
 use serde_json::{Value, json};
 
 use crate::{RustGisApp, Slot};
 
-type Answer = Slot<Result<Vec<u8>, String>>;
+/// An answer, with the reach it was read at.
+type Answer = Slot<Result<(Vec<u8>, Reach), String>>;
 
 /// Granules asked for a page.
 const PAGE: usize = 25;
@@ -49,6 +50,9 @@ pub struct State {
     pub start: String,
     pub end: String,
     pub granules: Vec<Granule>,
+    /// Where the granules listed were read (the narrowest of their pages): their files and
+    /// pictures are fetched within it.
+    granules_reach: Reach,
     searched: bool,
     page: usize,
     more: bool,
@@ -94,6 +98,7 @@ impl Default for State {
             restoring: false,
             was_remembered: false,
             thumbs: Default::default(),
+            granules_reach: Reach::Public,
             waiting: None,
             error: None,
             info: None,
@@ -101,11 +106,9 @@ impl Default for State {
     }
 }
 
+/// Fetches a search RustGIS names off the frame, landing with the reach it was read at.
 fn fetch(url: &str) -> Answer {
-    let slot: Answer = Slot::default();
-    let land = slot.clone();
-    cache::download(url, Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)));
-    slot
+    crate::fetch_within(url, cache::MAX_DOWNLOAD, None, Reach::Local)
 }
 
 /// Lands the preview pictures fetched, as small textures.
@@ -118,7 +121,7 @@ fn poll_thumbs(app: &mut RustGisApp, ctx: &egui::Context) {
             continue;
         };
         // Browse images are up to 1000 px: kept at a card's size.
-        *thumb = match r.and_then(|b| image::load_from_memory(&b).map_err(|e| e.to_string())) {
+        *thumb = match r.and_then(|(b, _)| image::load_from_memory(&b).map_err(|e| e.to_string())) {
             Ok(img) => {
                 let small = img.thumbnail(160, 160).to_rgba8();
                 let size = [small.width() as usize, small.height() as usize];
@@ -142,6 +145,8 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
         return;
     };
     let Some((asked, _)) = app.ui.earthaccess.waiting.take() else { return };
+    let reach = r.as_ref().map_or(Reach::Public, |(_, reach)| *reach);
+    let r = r.map(|(bytes, _)| bytes);
     let done = match asked {
         Asked::Collections { more, page } => r.and_then(|b| earthdata::parse_collections(&b)).map(|found| {
             let st = &mut app.ui.earthaccess;
@@ -167,7 +172,10 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
             st.searched = true;
             if !more {
                 st.granules.clear();
+                st.granules_reach = reach;
             }
+            // The granules' links came in this answer: they reach no further than it was read.
+            st.granules_reach = st.granules_reach.min(reach);
             st.granules.extend(found);
             draw_footprints(app)
         }),
@@ -630,9 +638,7 @@ fn granules(app: &mut RustGisApp, ui: &mut egui::Ui, t: &crate::theme::Tokens, w
         if st.thumbs.len() >= MAX_THUMBS {
             break;
         }
-        let slot: Answer = Slot::default();
-        let land = slot.clone();
-        cache::download_limited(&u, MAX_THUMB_BYTES, Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)));
+        let slot = crate::fetch_within(&u, MAX_THUMB_BYTES, None, st.granules_reach);
         st.thumbs.insert(u, Thumb::Loading(slot));
     }
     if let Some(b) = zoom {
@@ -646,7 +652,9 @@ fn granules(app: &mut RustGisApp, ui: &mut egui::Ui, t: &crate::theme::Tokens, w
                 Some(tl!("Add an Earthdata Login token (Earthdata Login, above) to put NASA GeoTIFFs on the map.").to_string());
             return;
         }
-        match app.run("ui.addUrl", json!({"url": url, "name": name, "zoom": true})) {
+        // A link CMR's answer gave, read from the internet, leads only there (`fromDocument`).
+        let public = app.ui.earthaccess.granules_reach == Reach::Public;
+        match app.run("ui.addUrl", json!({"url": url, "name": name, "zoom": true, "fromDocument": public})) {
             Ok(_) => app.ui.earthaccess.added.push(url),
             Err(e) => app.ui.earthaccess.error = Some(e),
         }
@@ -684,6 +692,55 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the remembered token read
         }
         earthdata::set_secret_store(None);
+    }
+
+    /// A granule's GeoTIFF that CMR's answer, read from the internet, links to is added only from
+    /// there; from an answer read on the local network (a mirror at CMR's name), one on a private
+    /// address is added as the user's own would be.
+    #[test]
+    fn granules_are_added_within_the_reach_of_the_answer_listing_them() {
+        use egui_kittest::kittest::Queryable;
+        use rustgis_engine::render::rustgis_tiles::address::Origin;
+        for (n, observed) in [(1, Reach::Public), (2, Reach::Local)] {
+            let _turn = crate::fetching::turn();
+            let tif = if observed == Reach::Public {
+                format!("https://granules-{n}.example/a.B04.tif")
+            } else {
+                format!("http://10.0.{n}.6/a.B04.tif")
+            };
+            let answer = json!({"feed":{"entry":[{"id":"G1","title":"Scene","links":[{"rel":"http://esipfed.org/ns/fedsearch/1.1/data#","href":tif}]}]}}).to_string();
+            let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let log = asked.clone();
+            cache::set_fetcher_with_origin(move |url, ceiling, done, _| {
+                let clean = cache::split_download_limit(&url).0.to_string();
+                log.lock().unwrap().push((clean.clone(), ceiling));
+                let origin = Origin::with_observed_reach(&clean, observed.min(ceiling)).unwrap();
+                let body = if clean.contains(".tif") { b"not a tiff".to_vec() } else { answer.clone().into_bytes() };
+                done(Ok(cache::Fetched { bytes: body, origin }));
+            });
+            let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+            app.ui.earthaccess.collection = Some(Collection { id: "C1-TEST".into(), short_name: "TEST".into(), ..Collection::default() });
+            search_granules(&mut app, false);
+            let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(900.0, 900.0)).with_max_steps(16).build_ui_state(
+                |ui, app: &mut RustGisApp| {
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    pane(app, ui);
+                },
+                app,
+            );
+            h.run_steps(2);
+            assert_eq!(h.state().ui.earthaccess.granules.len(), 1, "{:?}", h.state().ui.earthaccess.error);
+            assert_eq!(h.state().ui.earthaccess.granules_reach, observed);
+            h.get_by_label("Add").click();
+            h.run_steps(2);
+            let asked = asked.lock().unwrap().clone();
+            assert_eq!(asked.first().map(|(_, c)| *c), Some(Reach::Local), "CMR, which RustGIS names: {asked:?}");
+            assert!(
+                asked.iter().any(|(u, c)| u.starts_with(&tif) && *c == observed),
+                "the GeoTIFF, its answer read {observed:?}: {asked:?}"
+            );
+        }
     }
 
     #[test]

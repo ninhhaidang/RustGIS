@@ -41,7 +41,7 @@ pub fn commands() -> Vec<C> {
             r#"{"url": "a WCS address", "type"?: "wcs", "layer": "the coverage's name", "text"?: "the capabilities document, when already fetched", "documents"?: "additional fetched documents, as service.layers", "source_url"?: "the listed coverage's source_url", "describe"?: "its DescribeCoverage answer, when already fetched", "bbox"?: [west, south, east, north] | "view" (the default) | "full", "connection"?: "the saved web-service connection id whose login the request uses", "anonymous"?: boolean (never use a saved login for the coverage or its description)} → the GetCoverage address of a GeoTIFF (layer.addUrl adds it), its area in longitude/latitude, and "coverageCrs": the coverage's own system when it is asked in it (as layer.addUrl takes it, for an answer that doesn't say its system)"#,
         ),
         C::new("catalog.search", "Search Catalogue", "Home › Add", catalog_search).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).view().params(
-            r#"{"url": "a catalogue's CSW address", "query"?: "words anywhere in the records", "bbox"?: [west, south, east, north] | "view" (none by default), "start"?: "the first record's position (a page's next)", "text"?: "the GetRecords answer, when already fetched", "connection"?: "as service.layers"} → records with their service and download links (service.add or layer.addUrl add them)"#,
+            r#"{"url": "a catalogue's CSW address", "query"?: "words anywhere in the records", "bbox"?: [west, south, east, north] | "view" (none by default), "start"?: "the first record's position (a page's next)", "text"?: "the GetRecords answer, when already fetched", "connection"?: "as service.layers"} → records with their service and download links (service.add or layer.addUrl add them; a link with "fromDocument": true came from a catalogue read from the internet: give layer.addUrl that too)"#,
         ),
     ];
     commands.extend(group::commands());
@@ -289,15 +289,24 @@ fn read_documents_with(
     loop {
         rustgis_data::progress::check().map_err(|e| e.to_string())?;
         let crossed_origin = histories.get(&parent).copied().unwrap_or(false) || crosses_origin(&parent, &address);
-        // The service's own address is the user's choice; a linked one inherits its document's
-        // reach (a document not recorded, which can't happen, reaches only the internet).
+        // The service's own address is the user's choice, unless a document read from the
+        // internet named it (a catalogue's record: [`cache::ceiling_for`] holds it there); a linked
+        // one inherits its document's reach (a document not recorded, which can't happen, reaches
+        // only the internet). Either is judged by that reach, never by how the document's address
+        // is spelled: a public-looking name may connect on the local network, and its local links
+        // are then the service's own.
         let inherited = if seen.is_empty() {
-            Reach::Local
+            cache::ceiling_for(original)
         } else {
             reaches.get(crate::render::rustgis_tiles::logins::inner(&parent)).copied().unwrap_or(Reach::Public)
         };
         let ceiling = inherited.min(cache::ceiling_for(&address));
-        let rejected = match crate::render::rustgis_tiles::address::check(&address, Some(&parent)) {
+        // A document the app supplies was recorded by its fetch if it came from the internet; one
+        // supplied by anything else (the Assistant, MCP, a plugin) says nothing trustworthy about
+        // where it was read, so what it names is taken as named on the internet. Its address
+        // itself stays the caller's own choice.
+        let read_within = if seen.is_empty() && supplied.is_some() && !s.policy_user() { ceiling.min(Reach::Public) } else { ceiling };
+        let rejected = match crate::render::rustgis_tiles::address::check_reach(&address, ceiling) {
             Ok(()) => false,
             Err(_) if dataset_document => true,
             Err(e) => return result.failed(s, e, dataset.as_ref()),
@@ -309,7 +318,8 @@ fn read_documents_with(
         if seen.len() >= MAX_SERVICE_DOCUMENTS {
             return result.failed(s, "the service discovery exceeds 32 documents".into(), dataset.as_ref());
         }
-        let mut parse = |bytes: &[u8]| {
+        // `reach`: where the document was read, which the addresses it names are judged by.
+        let mut parse = |bytes: &[u8], reach: Reach| {
             if dataset_document {
                 dataset_bytes = dataset_bytes.saturating_add(bytes.len());
                 if dataset_bytes > MAX_DATASET_BYTES {
@@ -318,7 +328,7 @@ fn read_documents_with(
                 dataset
                     .as_mut()
                     .ok_or_else(|| "missing dataset discovery plan".to_string())?
-                    .read(bytes, |template, from| crate::render::rustgis_tiles::address::check(template, Some(from)).is_ok())
+                    .read(bytes, |template, _| crate::render::rustgis_tiles::address::check_reach(template, reach).is_ok())
             } else {
                 rustgis_data::ogc::parse(&address, bytes)
             }
@@ -346,14 +356,14 @@ fn read_documents_with(
                 result.dataset_notes(dataset.as_ref());
                 return Ok(result);
             };
-            parse(text.as_bytes())
+            parse(text.as_bytes(), read_within)
         } else if left {
             let Some(read) = s.left_document(&address).map_err(|e| crate::sources::message_with_address(original, &e))? else {
                 result.next = Some(address);
                 result.dataset_notes(dataset.as_ref());
                 return Ok(result);
             };
-            read.and_then(|bytes| parse(&bytes))
+            read.and_then(|bytes| parse(&bytes, ceiling))
         } else {
             fetch(&address, ceiling)
                 .map(|fetched| {
@@ -363,19 +373,19 @@ fn read_documents_with(
                     if observed == Some(Reach::Public) {
                         cache::restrict_to_public(&address);
                     }
-                    fetched.bytes
+                    (fetched.bytes, fetched.origin.reach())
                 })
                 .map_err(|e| crate::sources::message_with_address(original, &e))
-                .and_then(|bytes| parse(&bytes))
+                .and_then(|(bytes, reach)| parse(&bytes, reach))
         };
         // Natively, where the fetch connected; otherwise what the app's fetch was held to.
-        let reach = observed.unwrap_or(ceiling);
+        let reach = observed.unwrap_or(read_within);
         let parsed = parsed.map_err(|e| crate::sources::message_with_address(&address, &e));
         let mut service = match parsed {
             Ok(s) => {
                 let before = s.layers.len();
                 result.incomplete |= s.incomplete;
-                let vetted = vet(s, &address);
+                let vetted = vet(s, reach, dataset_document, &reaches);
                 result.excluded_layers |= vetted.layers.len() != before;
                 vetted
             }
@@ -386,7 +396,7 @@ fn read_documents_with(
             let hint =
                 explicit_map.filter(|(_, source)| source.is_none_or(|source| same_address(source, &address))).map(|(tiles, _)| tiles);
             let explicit = if let Some(template) = hint {
-                let template = match checked_template(&address, template) {
+                let template = match checked_template(reach, template) {
                     Ok(template) => template,
                     Err(error) => {
                         result.service.withheld_addresses = result.service.withheld_addresses.saturating_add(service.withheld_addresses);
@@ -484,8 +494,14 @@ fn fetch_document(url: &str, ceiling: Reach) -> Result<cache::Fetched, String> {
 
 /// Leaves out the layers whose addresses a document on the web may not send RustGIS to: the
 /// capabilities are hostile input, and their endpoints and links must not reach into the local
-/// network (unless the service itself is there) or a forbidden address.
-fn vet(mut svc: Service, caps: &str) -> Service {
+/// network (unless the service itself is there) or a forbidden address. `reach` is where the
+/// capabilities were read, as their fetch observed it: a service at a public-looking name that
+/// connected on the local network keeps its local layers.
+///
+/// In a dataset document (`completing`), a stylesheet read earlier in the same discovery (a
+/// TileJSON completing it names it again) is judged by the reach it was itself read at (`read`, by
+/// address without a login), not by the completing document's.
+fn vet(mut svc: Service, reach: Reach, completing: bool, read: &std::collections::HashMap<String, Reach>) -> Service {
     let before = svc.layers.len();
     svc.layers.retain(|l| {
         let u = match &l.offer {
@@ -493,7 +509,11 @@ fn vet(mut svc: Service, caps: &str) -> Service {
             Offer::Features { url } | Offer::Style { url } | Offer::Service { url } => url,
             Offer::Coverage(Coverage { endpoint, .. }) => endpoint,
         };
-        crate::render::rustgis_tiles::address::check(u, Some(caps)).is_ok()
+        let reach = match &l.offer {
+            Offer::Style { url } if completing => read.get(crate::render::rustgis_tiles::logins::inner(url)).copied().unwrap_or(reach),
+            _ => reach,
+        };
+        crate::render::rustgis_tiles::address::check_reach(u, reach).is_ok()
     });
     let dropped = before - svc.layers.len();
     if dropped > 0 {
@@ -787,13 +807,13 @@ fn download_layer_with(
 }
 
 /// A tile template given for a service's layer: a web address with `{z}`, `{x}` and `{y}`, that
-/// the service's document may point to.
-fn checked_template(service: &str, t: &str) -> Result<String, String> {
+/// a document read within `reach` (as its fetch observed it) may point to.
+fn checked_template(reach: Reach, t: &str) -> Result<String, String> {
     let t = t.trim();
     if !(t.contains("{z}") && t.contains("{x}") && t.contains("{y}")) || t.len() > 2000 {
         return Err(crate::sources::message_with_address(t, "not a tile template"));
     }
-    crate::render::rustgis_tiles::address::check(t, Some(service))?;
+    crate::render::rustgis_tiles::address::check_reach(t, reach)?;
     // The resolver already chose the destination's login, including its absence after a
     // foreign hop. The original service is only the address-policy context here.
     Ok(t.to_string())
@@ -822,15 +842,12 @@ fn crosses_origin(from: &str, to: &str) -> bool {
 /// read from the internet), as their fetches observed it.
 #[cfg(not(target_arch = "wasm32"))]
 fn advertised_template(source: &str, list: &str, vector: bool, withheld: &mut u32, public: bool) -> AdvertisedTemplate {
-    let mut reach = if public { Reach::Public } else { Reach::Local };
-    let mut out = advertised_template_with(source, list, vector, withheld, |doc| {
+    let reach = if public { Reach::Public } else { Reach::Local };
+    advertised_template_with(source, list, vector, withheld, reach, |doc, reach| {
         let fetched = cache::download_blocking_with_origin_within(doc, cache::MAX_DOWNLOAD, cache::BLOCKING_TIMEOUT, &[], reach)
             .map_err(cache::large_file_hint)?;
-        reach = reach.min(fetched.origin.reach());
-        Ok(fetched.bytes)
-    });
-    out.public = reach == Reach::Public;
-    out
+        Ok((fetched.bytes, fetched.origin.reach()))
+    })
 }
 
 /// Resolves at most two advertised documents while retaining every foreign hop, even on failure.
@@ -840,38 +857,50 @@ fn advertised_template_with(
     list: &str,
     vector: bool,
     withheld: &mut u32,
-    mut read: impl FnMut(&str) -> Result<Vec<u8>, String>,
+    reach: Reach,
+    mut read: impl FnMut(&str, Reach) -> Result<(Vec<u8>, Reach), String>,
 ) -> AdvertisedTemplate {
-    let read = |doc: &str| Ok::<_, std::convert::Infallible>(read(doc).map_err(|e| crate::sources::message_with_address(doc, &e)));
-    match walk_template(source, list, vector, withheld, read) {
+    let read =
+        |doc: &str, reach| Ok::<_, std::convert::Infallible>(read(doc, reach).map_err(|e| crate::sources::message_with_address(doc, &e)));
+    match walk_template(source, list, vector, withheld, reach, read) {
         Ok(out) => out,
         Err(never) => match never {},
     }
 }
 
 /// The walk [`advertised_template_with`] and [`left_template`] share: at most two documents from
-/// `list`, each read by `read` (its body, or why it couldn't be read; `Err` stops the walk), keeping
-/// every foreign hop and counting the addresses whose query was withheld. A fallback to the
-/// standard tile address comes back as the notice to give, in `fallback`.
+/// `list`, each read by `read` within the reach of the document before it (the service's, `reach`,
+/// first), giving its body and the reach it was read at, or why it couldn't be read (`Err` stops
+/// the walk), keeping every foreign hop and counting the addresses whose query was withheld. Each
+/// address a document names is judged by where that document was read, never by how its address
+/// is spelled, and `public` says the walk ended at the internet. A fallback to the standard tile
+/// address comes back as the notice to give, in `fallback`.
 fn walk_template<B: AsRef<[u8]>, E>(
     source: &str,
     list: &str,
     vector: bool,
     withheld: &mut u32,
-    mut read: impl FnMut(&str) -> Result<Result<B, String>, E>,
+    reach: Reach,
+    mut read: impl FnMut(&str, Reach) -> Result<Result<(B, Reach), String>, E>,
 ) -> Result<AdvertisedTemplate, E> {
     use rustgis_data::ogc::{TilesStep, resolve_tiles};
-    let mut out = AdvertisedTemplate { template: None, crossed_origin: crosses_origin(source, list), fallback: None, public: false };
+    let mut out =
+        AdvertisedTemplate { template: None, crossed_origin: crosses_origin(source, list), fallback: None, public: reach == Reach::Public };
+    let mut reach = reach;
     let mut doc = list.to_string();
     for _ in 0..2 {
         let shown = crate::sources::address_in_message(&doc);
-        if let Err(e) = crate::render::rustgis_tiles::address::check(&doc, Some(list)) {
+        if let Err(e) = crate::render::rustgis_tiles::address::check_reach(&doc, reach.min(cache::ceiling_for(&doc))) {
             let e = crate::sources::message_with_address(&doc, &e);
             out.fallback = Some(format!("{shown}: this tile set document was refused, so the standard tile address is used: {e}"));
             return Ok(out);
         }
-        let body = match read(&doc)? {
-            Ok(body) => body,
+        let body = match read(&doc, reach.min(cache::ceiling_for(&doc)))? {
+            Ok((body, read_at)) => {
+                reach = reach.min(read_at);
+                out.public = reach == Reach::Public;
+                body
+            }
             Err(e) => {
                 out.fallback = Some(format!("{shown}: its tile sets couldn't be read, so the standard tile address is used: {e}"));
                 return Ok(out);
@@ -885,7 +914,7 @@ fn walk_template<B: AsRef<[u8]>, E>(
         match resolved.step {
             TilesStep::Template(t) => {
                 out.crossed_origin |= crosses_origin(&doc, &t);
-                match checked_template(list, &t) {
+                match checked_template(reach, &t) {
                     Ok(t) => out.template = Some(t),
                     // (Its error names the template, which may carry keys.)
                     Err(e) => {
@@ -938,18 +967,16 @@ fn left_template(
     withheld: &mut u32,
     public: bool,
 ) -> Result<LeftTemplate, String> {
-    let mut public = public;
-    let walked = walk_template(source, list, vector, withheld, |doc: &str| {
-        if public {
+    let reach = if public { Reach::Public } else { Reach::Local };
+    let walked = walk_template(source, list, vector, withheld, reach, |doc: &str, within| {
+        if within == Reach::Public {
             cache::restrict_to_public(doc);
         }
         match s.left_document(doc) {
             Err(e) => Err(LeftStop::Failed(e)),
             Ok(None) => Err(LeftStop::Waiting(doc.to_string())),
-            Ok(Some(read)) => {
-                public |= read.is_ok() && cache::ceiling_for(doc) == Reach::Public;
-                Ok(read)
-            }
+            // The app's read records one from the internet ([`cache::ceiling_for`]).
+            Ok(Some(read)) => Ok(read.map(|bytes| (bytes, cache::ceiling_for(doc)))),
         }
     });
     match walked {
@@ -957,7 +984,6 @@ fn left_template(
             if let Some(text) = out.fallback.take() {
                 s.notify(text, false);
             }
-            out.public = public;
             Ok(LeftTemplate::Read(out))
         }
         Err(LeftStop::Waiting(doc)) => Ok(LeftTemplate::Waiting(doc)),
@@ -1387,10 +1413,15 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
     let advertised = match (&layer.tilesets, ps(p, "tiles")) {
         // The app read it, and recorded a template from a document on the internet as such.
         (Some(list), Some(t)) => AdvertisedTemplate {
-            template: Some(checked_template(source, t)?),
+            // Judged by where the app read its documents (recorded from the internet, or not).
+            template: Some(checked_template(
+                (if public { Reach::Public } else { Reach::Local }).min(cache::ceiling_for(list)).min(cache::ceiling_for(t)),
+                t,
+            )?),
             crossed_origin: crosses_origin(source, list) || crosses_origin(list, t),
             fallback: None,
-            public: cache::ceiling_for(t) == Reach::Public,
+            // Held to the internet when the template or the list naming it was read from there.
+            public: cache::ceiling_for(t) == Reach::Public || cache::ceiling_for(list) == Reach::Public,
         },
         (Some(list), None) if leaving => {
             match left_template(s, source, list, matches!(layer.offer, Offer::VectorTiles { .. }), withheld, public)? {
@@ -1473,6 +1504,8 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
             let added = r["index"].as_u64().and_then(|i| usize::try_from(i).ok());
             if let Some(t) = added.and_then(|i| s.map_mut().tiles.get_mut(i)) {
                 t.feature_info = layer.feature_info.clone();
+                // Learned from a document read from the internet: asked only there.
+                t.feature_info_public = public;
                 if t.anonymous
                     && let Some(info) = &mut t.feature_info
                 {
@@ -1849,15 +1882,32 @@ pub(crate) fn coverage_check(name: &str, bytes: &[u8]) -> Result<(), String> {
 /// `catalog.search`: a page of a catalogue's (CSW) records matching words and an area, with the
 /// links RustGIS can follow (those pointing where a document on the web may not send it left out).
 pub(super) fn catalog_search(s: &mut Session, p: &Value) -> CmdResult {
+    catalog_search_read(s, p, None)
+}
+
+/// [`catalog_search`], with the supplied answer read at `read` when the engine itself fetched it
+/// (a connection's browse, which knows where its fetch connected) rather than a caller.
+pub(super) fn catalog_search_read(s: &mut Session, p: &Value, read: Option<Reach>) -> CmdResult {
     let bound = crate::service_logins::request_params(s, p)?;
     let p = bound.as_ref();
     let url = url_of(p)?;
     let request = records_request(s, p)?;
-    let page = match ps(p, "text") {
-        Some(text) => {
-            rustgis_data::ogc::parse_records(&request, text.as_bytes()).map_err(|e| crate::sources::message_with_address(url, &e))?
-        }
-        None => fetch_records(url, &request)?,
+    // Where the answer was read: natively, where the fetch connected; otherwise what the app's
+    // fetch recorded of it ([`cache::ceiling_for`]). The catalogue's own address is the user's
+    // choice, unless a document read from the internet named it.
+    let within = cache::ceiling_for(url).min(cache::ceiling_for(&request));
+    // An answer supplied by anything but the app says nothing trustworthy about where it was read.
+    let within = match read {
+        Some(read) => within.min(read),
+        None if ps(p, "text").is_some() && !s.policy_user() => within.min(Reach::Public),
+        None => within,
+    };
+    let (page, reach) = match ps(p, "text") {
+        Some(text) => (
+            rustgis_data::ogc::parse_records(&request, text.as_bytes()).map_err(|e| crate::sources::message_with_address(url, &e))?,
+            within,
+        ),
+        None => fetch_records(url, &request, within)?,
     };
     let mut dropped = 0usize;
     let records: Vec<Value> = page
@@ -1867,12 +1917,21 @@ pub(super) fn catalog_search(s: &mut Session, p: &Value) -> CmdResult {
             let links: Vec<Value> = r
                 .links
                 .iter()
+                // Judged by where the answer was read, not by how the catalogue's address is
+                // spelled: a public-looking name may connect on the local network.
                 .filter(|l| {
-                    let ok = crate::render::rustgis_tiles::address::check(&l.url, Some(&request)).is_ok();
+                    let ok = crate::render::rustgis_tiles::address::check_reach(&l.url, reach).is_ok();
                     dropped += usize::from(!ok);
                     ok
                 })
-                .map(|l| json!({"url": crate::render::rustgis_tiles::logins::inherit(&request, &l.url), "kind": l.kind, "name": l.name, "protocol": l.protocol}))
+                .map(|l| {
+                    let mut link = json!({"url": crate::render::rustgis_tiles::logins::inherit(&request, &l.url), "kind": l.kind, "name": l.name, "protocol": l.protocol});
+                    // Read from the internet, the link leads only there: whoever follows it passes this on.
+                    if reach == Reach::Public {
+                        link["fromDocument"] = json!(true);
+                    }
+                    link
+                })
                 .collect();
             json!({"id": r.id, "title": r.title, "abstract": r.summary, "bbox": r.bbox, "links": links})
         })
@@ -1888,15 +1947,18 @@ pub(super) fn catalog_search(s: &mut Session, p: &Value) -> CmdResult {
     Ok(out)
 }
 
+/// Reads a page of records within `ceiling`, with the reach the fetch connected at.
 #[cfg(not(target_arch = "wasm32"))]
-fn fetch_records(url: &str, request: &str) -> Result<rustgis_data::ogc::RecordPage, String> {
-    let bytes =
-        crate::render::rustgis_tiles::cache::download_blocking(request).map_err(|e| crate::sources::message_with_address(url, &e))?;
-    rustgis_data::ogc::parse_records(request, &bytes).map_err(|e| crate::sources::message_with_address(url, &e))
+fn fetch_records(url: &str, request: &str, ceiling: Reach) -> Result<(rustgis_data::ogc::RecordPage, Reach), String> {
+    let fetched = cache::download_blocking_with_origin_within(request, cache::MAX_DOWNLOAD, cache::BLOCKING_TIMEOUT, &[], ceiling)
+        .map_err(cache::large_file_hint)
+        .map_err(|e| crate::sources::message_with_address(url, &e))?;
+    let page = rustgis_data::ogc::parse_records(request, &fetched.bytes).map_err(|e| crate::sources::message_with_address(url, &e))?;
+    Ok((page, fetched.origin.reach()))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn fetch_records(url: &str, _: &str) -> Result<rustgis_data::ogc::RecordPage, String> {
+fn fetch_records(url: &str, _: &str, _: Reach) -> Result<(rustgis_data::ogc::RecordPage, Reach), String> {
     Err(crate::sources::message_with_address(url, "in the web app, use Home › Add › Add Data › From Service › Search Catalogue"))
 }
 
@@ -1921,13 +1983,14 @@ mod tests {
         // A document asked for past the first, where none should be: it names nothing, said.
         let nothing_more = |_: &str| json!({});
         // What the list leads to, read in turn: the template it ends with, and what was said.
-        let read = |first: Value, then: &dyn Fn(&str) -> Value| {
+        // (`public`: the service's document was read from the internet.)
+        let read = |first: Value, then: &dyn Fn(&str) -> Value, public: bool| {
             let mut s = Session::new(crate::sample::world_project());
             s.call_requests = Some(Vec::new());
             land(&mut s, list, first);
             let mark = s.notice_mark();
             for _ in 0..3 {
-                match left_template(&mut s, source, list, false, &mut 0, false).unwrap() {
+                match left_template(&mut s, source, list, false, &mut 0, public).unwrap() {
                     LeftTemplate::Read(out) => {
                         let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
                         return (out.template, said);
@@ -1937,15 +2000,15 @@ mod tests {
             }
             panic!("it never read a template");
         };
-        let (t, said) = read(tilesets("https://x.org/t/1"), &|doc| tilesets(&format!("{doc}/more")));
+        let (t, said) = read(tilesets("https://x.org/t/1"), &|doc| tilesets(&format!("{doc}/more")), false);
         assert!(t.is_none() && said.len() == 1 && said[0].contains("past two documents"), "{said:?}");
-        let (t, said) = read(template("https://x.org/paint/{tileMatrix}.png?token=hunter2"), &nothing_more);
+        let (t, said) = read(template("https://x.org/paint/{tileMatrix}.png?token=hunter2"), &nothing_more, false);
         assert!(t.is_none() && said.len() == 1 && said[0].contains("tile template was refused"), "{said:?}");
         assert!(!said[0].contains("hunter2"), "{said:?}");
-        // A document on the web pointing into the local network.
-        let (t, said) = read(tilesets("http://127.0.0.1/t/1"), &nothing_more);
+        // A document read from the internet pointing into the local network.
+        let (t, said) = read(tilesets("http://127.0.0.1/t/1"), &nothing_more, true);
         assert!(t.is_none() && said.len() == 1 && said[0].contains("document was refused"), "{said:?}");
-        let (t, said) = read(template("https://x.org/paint/{tileMatrix}/{tileCol}/{tileRow}.png"), &nothing_more);
+        let (t, said) = read(template("https://x.org/paint/{tileMatrix}/{tileCol}/{tileRow}.png"), &nothing_more, false);
         assert_eq!(t.as_deref(), Some("https://x.org/paint/{z}/{x}/{y}.png"));
         assert!(said.is_empty(), "{said:?}");
     }
@@ -2034,22 +2097,30 @@ mod tests {
     fn advertised_template_fallbacks_are_said() {
         let list = "https://tiles-fallback.example.invalid/tiles?f=json";
         let mut withheld = 0;
-        let none = advertised_template_with(list, list, false, &mut withheld, |_| Ok(b"{}".to_vec()));
+        let none = advertised_template_with(list, list, false, &mut withheld, Reach::Local, |_, _| Ok((b"{}".to_vec(), Reach::Local)));
         assert!(none.template.is_none());
         assert!(none.fallback.as_ref().is_some_and(|n| n.contains("names no tiles")), "{:?}", none.fallback);
-        let refused = advertised_template_with(list, "file:///etc/tiles", false, &mut withheld, |_| Ok(b"{}".to_vec()));
+        let refused = advertised_template_with(list, "file:///etc/tiles", false, &mut withheld, Reach::Local, |_, _| {
+            Ok((b"{}".to_vec(), Reach::Local))
+        });
         assert!(refused.fallback.as_ref().is_some_and(|n| n.contains("was refused")), "{:?}", refused.fallback);
         let next = json!({"tilesets":[{"tileMatrixSetId":"WebMercatorQuad","links":[{"rel":"self","href":"https://tiles-fallback.example.invalid/next"}]}]});
-        let far = advertised_template_with(list, list, false, &mut withheld, |_| Ok(serde_json::to_vec(&next).unwrap_or_default()));
+        let far = advertised_template_with(list, list, false, &mut withheld, Reach::Local, |_, _| {
+            Ok((serde_json::to_vec(&next).unwrap_or_default(), Reach::Local))
+        });
         assert!(far.fallback.as_ref().is_some_and(|n| n.contains("past two documents")), "{:?}", far.fallback);
         // The address named in the notice says its secret query went; one without a query says nothing.
         let keyed = "https://tiles-fallback.example.invalid/tiles?key=hunter2";
-        let far = advertised_template_with(keyed, keyed, false, &mut withheld, |_| Ok(serde_json::to_vec(&next).unwrap_or_default()));
+        let far = advertised_template_with(keyed, keyed, false, &mut withheld, Reach::Local, |_, _| {
+            Ok((serde_json::to_vec(&next).unwrap_or_default(), Reach::Local))
+        });
         let said = far.fallback.unwrap_or_default();
         assert!(said.starts_with("https://tiles-fallback.example.invalid/tiles[query omitted]: its tile sets lead on past"), "{said}");
         assert!(!said.contains("hunter2"), "{said}");
         let bare = "https://tiles-fallback.example.invalid/tiles";
-        let far = advertised_template_with(bare, bare, false, &mut withheld, |_| Ok(serde_json::to_vec(&next).unwrap_or_default()));
+        let far = advertised_template_with(bare, bare, false, &mut withheld, Reach::Local, |_, _| {
+            Ok((serde_json::to_vec(&next).unwrap_or_default(), Reach::Local))
+        });
         let said = far.fallback.unwrap_or_default();
         assert!(
             said.starts_with("https://tiles-fallback.example.invalid/tiles: its tile sets lead on past") && !said.contains("omitted]"),
@@ -2080,20 +2151,23 @@ mod tests {
             let template = format!("{a}/paint/{{z}}/{{x}}/{{y}}.png");
             let mut reads = Vec::new();
             let mut withheld = 0;
-            let resolved = advertised_template_with(&source, &list, false, &mut withheld, |url| {
+            let resolved = advertised_template_with(&source, &list, false, &mut withheld, Reach::Local, |url, _| {
                 let first = reads.is_empty();
                 let header = tiles::logins::apply(url).unwrap().and_then(|a| a.header);
                 assert_eq!(header.is_some(), first && list_origin == a);
                 reads.push(tiles::logins::inner(url).to_string());
                 if first {
-                    Ok(serde_json::to_vec(
-                        &json!({"tilesets":[{"tileMatrixSetId":"WebMercatorQuad","links":[{"rel":"self","href":next}]}]}),
-                    )
-                    .unwrap())
+                    Ok((
+                        serde_json::to_vec(
+                            &json!({"tilesets":[{"tileMatrixSetId":"WebMercatorQuad","links":[{"rel":"self","href":next}]}]}),
+                        )
+                        .unwrap(),
+                        Reach::Local,
+                    ))
                 } else if fail {
                     Err("fixture tileset unavailable".into())
                 } else {
-                    Ok(serde_json::to_vec(&json!({"links":[{"rel":"item","type":"image/png","href":format!("{a}/paint/{{tileMatrix}}/{{tileCol}}/{{tileRow}}.png")}]})).unwrap())
+                    Ok((serde_json::to_vec(&json!({"links":[{"rel":"item","type":"image/png","href":format!("{a}/paint/{{tileMatrix}}/{{tileCol}}/{{tileRow}}.png")}]})).unwrap(), Reach::Local))
                 }
             });
             assert_eq!(reads, [format!("{list_origin}/tiles?f=json"), format!("{next}?f=json")]);
@@ -2214,6 +2288,291 @@ mod tests {
             assert_eq!(asked[1], (linked.clone(), observed), "observed {observed:?}");
             assert_eq!(found.service.layers.len(), 1);
             assert_eq!(found.sources.iter().map(|source| source.public).collect::<Vec<_>>(), [observed == Reach::Public]);
+        }
+    }
+
+    /// A service at a public-looking name that connected on the local network keeps its local links
+    /// and layers: the document its landing links to and the features layer that document lists,
+    /// both on a private address, are judged by where the landing was read, not by how its name is
+    /// spelled. Read from the internet, the same link is refused, naming the address and why.
+    #[test]
+    fn a_service_on_the_local_network_keeps_its_local_links_whatever_its_name() {
+        use crate::render::rustgis_tiles::address::Origin;
+        for (n, observed) in [(1, Reach::Local), (2, Reach::Public)] {
+            let linked = format!("http://10.0.{n}.5/collections");
+            let landing = json!({"links":[{"rel":"data","type":"application/json","href":linked}]});
+            let items = format!("{linked}/parcels/items");
+            let collections = json!({"collections":[{"id":"parcels","title":"Parcels","links":[{"rel":"items","type":"application/geo+json","href":items}]}]});
+            let mut asked = Vec::new();
+            let mut s = Session::new(crate::Project::default());
+            let p = json!({"url": format!("https://gis-{n}.corp-looks-public.example/ogc"), "type": "ogcapi"});
+            let found = read_documents_with(&mut s, &p, false, None, &mut |url, ceiling| {
+                asked.push((url.to_string(), ceiling));
+                let body = if asked.len() == 1 { &landing } else { &collections };
+                let origin = Origin::with_observed_reach(url, observed.min(ceiling))?;
+                Ok(cache::Fetched { bytes: serde_json::to_vec(body).unwrap_or_default(), origin })
+            });
+            if observed == Reach::Local {
+                let found = found.unwrap();
+                assert_eq!(asked.get(1), Some(&(linked.clone(), Reach::Local)), "{asked:?}");
+                assert!(!found.excluded_layers, "{:?}", found.service.notes);
+                let offers: Vec<_> = found.service.layers.iter().map(|l| l.offer.clone()).collect();
+                assert!(matches!(offers.as_slice(), [Offer::Features { url }] if url.starts_with(&items)), "{offers:?}");
+            } else {
+                let e = found.err().unwrap_or_default();
+                assert!(e.contains(&linked) && e.contains("local network"), "{e}");
+                assert_eq!(asked.len(), 1, "the link is not fetched: {asked:?}");
+            }
+        }
+    }
+
+    /// A document the app supplies without a record of an internet read was read where the app's
+    /// fetch connected, so its local links are followed; one supplied by the Assistant (or MCP, or a
+    /// plugin) says nothing trustworthy about where it was read and is taken as read from the
+    /// internet: its link into the local network is refused, naming it and why.
+    #[test]
+    fn a_document_supplied_by_anything_but_the_app_is_taken_as_read_from_the_internet() {
+        use crate::policy::{Effects, Revocation, Scope};
+        struct Live;
+        impl Revocation for Live {
+            fn allows(&self, _: Effects) -> bool {
+                true
+            }
+        }
+        for (n, app) in [(13, true), (14, false)] {
+            let linked = format!("http://10.0.{n}.5/collections");
+            let landing = json!({"links":[{"rel":"data","type":"application/json","href":linked}]}).to_string();
+            let p = json!({"url": format!("https://gis-{n}.corp-looks-public.example/ogc"), "type": "ogcapi", "text": landing});
+            let mut s = Session::new(crate::Project::default());
+            let mut never = |_: &str, _: Reach| -> Result<cache::Fetched, String> { Err("nothing is fetched".into()) };
+            let found = if app {
+                read_documents_with(&mut s, &p, false, None, &mut never)
+            } else {
+                s.with_scope(Scope::assistant(4_201_301, std::sync::Arc::new(Live)), |s| {
+                    read_documents_with(s, &p, false, None, &mut never)
+                })
+                .unwrap()
+            };
+            if app {
+                let next = found.unwrap().next.unwrap_or_default();
+                assert!(next.starts_with(&linked), "the app's document leads on: {next}");
+            } else {
+                let e = found.err().unwrap_or_default();
+                assert!(e.contains(&linked) && e.contains("local network"), "{e}");
+            }
+            // A catalogue's answer the same way: its link into the local network is kept for the
+            // app, left out for the Assistant.
+            let record = format!(
+                r#"<csw:GetRecordsResponse xmlns:csw="http://www.opengis.net/cat/csw/2.0.2" xmlns:dc="http://purl.org/dc/elements/1.1/"><csw:SearchResults numberOfRecordsMatched="1"><csw:Record><dc:identifier>a</dc:identifier><dc:title>A</dc:title><dc:URI protocol="OGC:WMS">http://10.0.{n}.4/wms</dc:URI></csw:Record></csw:SearchResults></csw:GetRecordsResponse>"#
+            );
+            let p = json!({"url": format!("https://csw-{n}.corp-looks-public.example/csw"), "text": record});
+            let out = if app {
+                catalog_search(&mut s, &p).unwrap()
+            } else {
+                s.with_scope(Scope::assistant(4_201_302, std::sync::Arc::new(Live)), |s| catalog_search(s, &p)).unwrap().unwrap()
+            };
+            let links = out["records"][0]["links"].as_array().map_or(0, Vec::len);
+            assert_eq!(links, usize::from(app), "{out}");
+        }
+    }
+
+    /// The Assistant's own service address on the local network stays its choice: a document it
+    /// supplies for that address has what it names taken as named on the internet, but the address
+    /// itself isn't refused.
+    #[test]
+    fn a_callers_own_local_address_stays_its_choice_with_a_supplied_document() {
+        use crate::policy::{Effects, Revocation, Scope};
+        struct Live;
+        impl Revocation for Live {
+            fn allows(&self, _: Effects) -> bool {
+                true
+            }
+        }
+        let own = "http://10.0.15.5/collections";
+        let items = "https://public-items-15.example/collections/parcels/items";
+        let collections = json!({"collections":[{"id":"parcels","title":"Parcels","links":[{"rel":"items","type":"application/geo+json","href":items}]}]});
+        let p = json!({"url": own, "type": "ogcapi", "text": collections.to_string()});
+        let mut s = Session::new(crate::Project::default());
+        let mut never = |_: &str, _: Reach| -> Result<cache::Fetched, String> { Err("nothing is fetched".into()) };
+        let found = s
+            .with_scope(Scope::assistant(4_201_304, std::sync::Arc::new(Live)), |s| read_documents_with(s, &p, false, None, &mut never))
+            .unwrap();
+        let found = found.unwrap();
+        assert_eq!(found.service.layers.len(), 1);
+        assert_eq!(found.sources.iter().map(|source| source.public).collect::<Vec<_>>(), [true], "what it names is held to the internet");
+    }
+
+    /// In a dataset document, a stylesheet read earlier (a TileJSON completing it names it again)
+    /// is judged by where it was itself read: one read on the local network is kept under a
+    /// TileJSON read from the internet. Outside completion, a style is judged by its document.
+    #[test]
+    fn a_completed_stylesheet_is_judged_by_where_it_was_read() {
+        let style = "http://10.0.16.5/style.json";
+        let service = || Service {
+            layers: vec![rustgis_data::ogc::ServiceLayer {
+                name: "s".into(),
+                title: "S".into(),
+                offer: Offer::Style { url: style.into() },
+                bbox: None,
+                tilesets: None,
+                time: None,
+                feature_info: None,
+                legends: Vec::new(),
+                zooms: None,
+            }],
+            ..Service::default()
+        };
+        let read = std::collections::HashMap::from([(style.to_string(), Reach::Local)]);
+        assert_eq!(vet(service(), Reach::Public, true, &read).layers.len(), 1, "completing: the stylesheet's own reach");
+        assert_eq!(vet(service(), Reach::Public, false, &read).layers.len(), 0, "an ordinary document: its own reach");
+    }
+
+    /// A template the app read and gives `service.add` is held to the internet when the tile list
+    /// naming it was read from there, whatever the template's own record.
+    #[test]
+    fn a_given_template_is_held_where_its_list_was_read() {
+        for (n, recorded) in [(17, true), (18, false)] {
+            let list = format!("https://tiles-list-{n}.example/relief/map/tiles");
+            let tiled = json!({"collections": [{"id": "relief", "links": [{"rel": "tilesets-map", "href": list}]}]}).to_string();
+            let template = format!("https://tiles-paint-{n}.example/relief/{{z}}/{{y}}/{{x}}.png");
+            let mut s = Session::new(crate::Project::default());
+            let api = format!("https://tiles-api-{n}.example/collections");
+            // The list as the app reads it (the layer's `tilesets`), recorded by its fetch.
+            let listed = s.run("service.layers", &json!({"url": api, "text": tiled})).unwrap();
+            let read = listed["layers"].as_array().and_then(|l| l.iter().find_map(|l| l["tilesets"].as_str())).unwrap().to_string();
+            assert!(read.starts_with(&list), "{read}");
+            if recorded {
+                cache::restrict_to_public(&read);
+            }
+            s.run("service.add", &json!({"url": api, "layer": "relief (map tiles)", "text": tiled, "tiles": template})).unwrap();
+            assert_eq!(cache::ceiling_for(&template) == Reach::Public, recorded, "{template}");
+        }
+    }
+
+    /// The layers a service's document lists are judged by where the document was read: a
+    /// collections document at a public-looking name read on the local network keeps a features
+    /// layer on a private address; read from the internet, the layer is left out, as said.
+    #[test]
+    fn a_documents_layers_are_judged_by_where_it_was_read() {
+        use crate::render::rustgis_tiles::address::Origin;
+        for (n, observed) in [(11, Reach::Local), (12, Reach::Public)] {
+            let items = format!("http://10.0.{n}.5/collections/parcels/items");
+            let collections = json!({"collections":[{"id":"parcels","title":"Parcels","links":[{"rel":"items","type":"application/geo+json","href":items}]}]});
+            let mut s = Session::new(crate::Project::default());
+            let p = json!({"url": format!("https://gis-{n}.corp-looks-public.example/collections"), "type": "ogcapi"});
+            let found = read_documents_with(&mut s, &p, false, None, &mut |url, ceiling| {
+                let origin = Origin::with_observed_reach(url, observed.min(ceiling))?;
+                Ok(cache::Fetched { bytes: serde_json::to_vec(&collections).unwrap_or_default(), origin })
+            })
+            .unwrap();
+            assert_eq!(found.service.layers.len(), usize::from(observed == Reach::Local), "{:?}", found.service.notes);
+            assert_eq!(found.excluded_layers, observed == Reach::Public);
+            if observed == Reach::Public {
+                assert!(found.service.notes.iter().any(|n| n.contains("won't fetch")), "{:?}", found.service.notes);
+            }
+        }
+    }
+
+    /// A tile set walk judges the tile set it is led to and the template it ends at by where the
+    /// document naming them was read: from a list at a public-looking name read on the local
+    /// network, a tile set and a template on a private address are used; from the same list read
+    /// from the internet, the tile set is refused and the standard tile address used, as said.
+    #[test]
+    fn a_tile_set_walk_judges_what_each_document_names_by_where_it_was_read() {
+        for (n, observed) in [(3, Reach::Local), (4, Reach::Public)] {
+            let list = format!("https://tiles-{n}.corp-looks-public.example/tiles?f=json");
+            let tileset = format!("http://10.0.{n}.7/tileset");
+            let first = json!({"tilesets":[{"tileMatrixSetId":"WebMercatorQuad","links":[{"rel":"self","href":tileset}]}]});
+            let second = json!({"links":[{"rel":"item","type":"image/png","href":format!("http://10.0.{n}.7/map/{{tileMatrix}}/{{tileRow}}/{{tileCol}}.png")}]});
+            let mut asked = Vec::new();
+            let mut withheld = 0;
+            let out = advertised_template_with(&list, &list, false, &mut withheld, Reach::Local, |doc, ceiling| {
+                asked.push((doc.to_string(), ceiling));
+                let body = if asked.len() == 1 { &first } else { &second };
+                Ok((serde_json::to_vec(body).unwrap_or_default(), observed.min(ceiling)))
+            });
+            if observed == Reach::Local {
+                assert_eq!(asked.get(1).map(|(_, c)| *c), Some(Reach::Local), "{asked:?}");
+                assert!(out.template.as_deref().is_some_and(|t| t.starts_with(&format!("http://10.0.{n}.7/map/"))), "{:?}", out.fallback);
+                assert!(!out.public);
+            } else {
+                assert_eq!(asked.len(), 1, "{asked:?}");
+                assert!(out.template.is_none());
+                let said = out.fallback.unwrap_or_default();
+                assert!(said.contains("was refused") && said.contains("local network"), "{said}");
+                assert!(out.public, "the standard address in its place comes from there too");
+            }
+        }
+    }
+
+    /// The tile template a dataset document names is judged by where that document was read: a
+    /// map tile list at a public-looking name read on the local network keeps a template on a
+    /// private address; read from the internet, the template is left out.
+    #[test]
+    fn a_dataset_template_is_judged_by_where_its_document_was_read() {
+        use crate::render::rustgis_tiles::address::Origin;
+        for (n, observed) in [(5, Reach::Local), (6, Reach::Public)] {
+            let map = format!("https://map-{n}.corp-looks-public.example/tiles?f=json");
+            let metadata = format!("https://map-{n}.corp-looks-public.example/metadata?f=json");
+            let landing = json!({"links":[{"rel":"tilesets-map","href":map}]});
+            let map_list = json!({"tilesets":[{"tileMatrixSetId":"WebMercatorQuad","dataType":"map","links":[
+                {"rel":"self","type":"application/json","href":metadata}]}]});
+            let map_metadata = json!({"tileMatrixSetId":"WebMercatorQuad","links":[
+                {"rel":"item","type":"image/png","href":format!("http://10.0.{n}.9/map/{{tileMatrix}}/{{tileRow}}/{{tileCol}}.png")}]});
+            let mut s = Session::new(crate::Project::default());
+            let p = json!({"url": format!("https://dataset-{n}.corp-looks-public.example/ogc"), "type": "ogcapi"});
+            let found = read_documents_with(&mut s, &p, false, None, &mut |url, ceiling| {
+                let body = match url {
+                    u if u == map => &map_list,
+                    u if u == metadata => &map_metadata,
+                    _ => &landing,
+                };
+                let origin = Origin::with_observed_reach(url, observed.min(ceiling))?;
+                Ok(cache::Fetched { bytes: serde_json::to_vec(body).unwrap_or_default(), origin })
+            })
+            .unwrap();
+            let templates: Vec<_> = found
+                .service
+                .layers
+                .iter()
+                .filter_map(|l| match &l.offer {
+                    Offer::Tiles { template } => Some(template.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(templates.len(), usize::from(observed == Reach::Local), "{templates:?} {:?}", found.service.notes);
+            assert!(templates.iter().all(|t| t.starts_with(&format!("http://10.0.{n}.9/"))), "{templates:?}");
+        }
+    }
+
+    /// A catalogue's links are judged by where its answer was read: one at a public-looking name
+    /// read on the local network keeps a link on a private address; one read from the internet
+    /// (the app's record of its answer) leaves it out, says so, and marks the links it keeps
+    /// `fromDocument`, which the app passes on when it follows them.
+    #[test]
+    fn a_catalogues_links_are_judged_by_where_its_answer_was_read() {
+        for (n, public) in [(7, false), (8, true)] {
+            let url = format!("https://csw-{n}.corp-looks-public.example/csw");
+            let answer = format!(
+                r#"<csw:GetRecordsResponse xmlns:csw="http://www.opengis.net/cat/csw/2.0.2" xmlns:dc="http://purl.org/dc/elements/1.1/"><csw:SearchResults numberOfRecordsMatched="1"><csw:Record><dc:identifier>a</dc:identifier><dc:title>A</dc:title><dc:URI protocol="OGC:WMS">http://10.0.{n}.4/wms</dc:URI><dc:URI protocol="OGC:WMS">https://wms-{n}.example/wms</dc:URI></csw:Record></csw:SearchResults></csw:GetRecordsResponse>"#
+            );
+            let mut s = Session::new(crate::Project::default());
+            let p = json!({"url": url, "text": answer});
+            if public {
+                cache::restrict_to_public(&records_request(&s, &p).unwrap());
+            }
+            let out = catalog_search(&mut s, &p).unwrap();
+            let links = out["records"][0]["links"].as_array().cloned().unwrap_or_default();
+            let urls: Vec<_> = links.iter().filter_map(|l| l["url"].as_str()).collect();
+            if public {
+                assert_eq!(urls, [format!("https://wms-{n}.example/wms")], "{out}");
+                assert!(out["notes"][0].as_str().is_some_and(|n| n.starts_with("1 links")), "{out}");
+                assert!(links.iter().all(|l| l["fromDocument"] == true), "{out}");
+            } else {
+                assert_eq!(urls, [format!("http://10.0.{n}.4/wms"), format!("https://wms-{n}.example/wms")], "{out}");
+                assert!(out.get("notes").is_none(), "{out}");
+                assert!(links.iter().all(|l| l.get("fromDocument").is_none()), "{out}");
+            }
         }
     }
 

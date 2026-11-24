@@ -25411,15 +25411,66 @@ fn identify_asks_wms_layers() {
     added.run("map.goToXY", &json!({"lon": 8.5, "lat": 47.4, "scale": 10000})).unwrap();
     let v = added.run("identify", &json!({"lon": 8.5, "lat": 47.4, "mode": "visible"})).unwrap();
     assert_eq!(v["featureInfo"][0]["tileLayer"], "Mine", "{v}");
-    // A service on the web whose GetFeatureInfo points into the local network isn't asked.
-    let local = WMS.replace("https://maps.example.com/info?", "http://192.168.1.5/info?");
+    // A service read from the internet (the app's record of its capabilities) whose
+    // GetFeatureInfo points into the local network isn't asked, and says so; the same service
+    // read on the local network, at the same public-looking kind of name, is asked there. Each
+    // case its own names: the record is process-wide.
+    for (host, web) in [("maps-web.example.com", true), ("maps-intranet.example.com", false)] {
+        let local = WMS.replace("https://maps.example.com/info?", "http://192.168.1.5/info?").replace("maps.example.com", host);
+        let url = format!("https://{host}/wms");
+        if web {
+            crate::render::rustgis_tiles::cache::restrict_to_public(&rustgis_data::ogc::capabilities_url(&url, None));
+        }
+        let mut s = Session::new(Project::default());
+        s.run("service.add", &json!({"url": url, "layer": "roads", "text": local})).unwrap();
+        s.run("map.goToXY", &json!({"lon": 8.5, "lat": 47.4, "scale": 10000})).unwrap();
+        let before = s.notice_mark();
+        let v = s.run("identify", &json!({"lon": 8.5, "lat": 47.4, "mode": "visible"})).unwrap();
+        let told: Vec<_> = s.notices_since(before).iter().map(|n| n.text.clone()).collect();
+        let r = s.run("identify.featureInfo", &json!({"layer": "Roads", "lon": 8.5, "lat": 47.4, "request": true}));
+        if web {
+            assert!(v.is_null(), "{v}");
+            assert!(
+                told.len() == 1
+                    && told[0].starts_with("Roads wasn't asked what is here: http://192.168.1.5/info")
+                    && told[0].contains("local network"),
+                "{told:?}"
+            );
+            let e = r.unwrap_err();
+            assert!(e.starts_with("Roads: http://192.168.1.5/info") && e.contains("local network"), "{e}");
+        } else {
+            assert!(v["featureInfo"][0]["url"].as_str().is_some_and(|u| u.starts_with("http://192.168.1.5/info?")), "{v}");
+            assert!(v["featureInfo"][0].get("public").is_none(), "{v}");
+            assert!(told.is_empty(), "{told:?}");
+            assert!(r.unwrap()["url"].as_str().is_some_and(|u| u.starts_with("http://192.168.1.5/info?")));
+        }
+    }
+}
+
+/// A WMS layer whose request reaches past it is said whichever layer identify reports: under
+/// Topmost, a feature found over it is reported and the refusal said too.
+#[test]
+fn a_refused_wms_layer_is_said_under_topmost_too() {
+    let host = "maps-topmost-web.example.com";
+    let caps = format!(
+        r#"<WMS_Capabilities version="1.3.0" xmlns="http://www.opengis.net/wms" xmlns:xlink="http://www.w3.org/1999/xlink">
+<Service><Title>Test WMS</Title></Service>
+<Capability><Request><GetMap><Format>image/png</Format><DCPType><HTTP><Get><OnlineResource xlink:href="https://{host}/wms?"/></Get></HTTP></DCPType></GetMap>
+<GetFeatureInfo><Format>application/geo+json</Format><DCPType><HTTP><Get><OnlineResource xlink:href="http://192.168.21.5/info?"/></Get></HTTP></DCPType></GetFeatureInfo></Request>
+<Layer queryable="1"><Title>Root</Title><CRS>EPSG:3857</CRS><Layer><Name>roads</Name><Title>Roads</Title></Layer></Layer></Capability></WMS_Capabilities>"#
+    );
+    let url = format!("https://{host}/wms");
+    crate::render::rustgis_tiles::cache::restrict_to_public(&rustgis_data::ogc::capabilities_url(&url, None));
     let mut s = Session::new(Project::default());
-    s.run("service.add", &json!({"url": url, "layer": "roads", "text": local})).unwrap();
+    s.run("service.add", &json!({"url": url, "layer": "roads", "text": caps})).unwrap();
+    let points = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"Here"},"geometry":{"type":"Point","coordinates":[8.5,47.4]}}]}"#;
+    s.run("layer.addDataText", &json!({"fileName": "here.geojson", "text": points})).unwrap();
     s.run("map.goToXY", &json!({"lon": 8.5, "lat": 47.4, "scale": 10000})).unwrap();
-    let v = s.run("identify", &json!({"lon": 8.5, "lat": 47.4, "mode": "visible"})).unwrap();
-    assert!(v.is_null(), "{v}");
-    let r = s.run("identify.featureInfo", &json!({"layer": "Roads", "lon": 8.5, "lat": 47.4, "request": true})).unwrap();
-    assert_eq!(r, json!({"results": []}));
+    let mark = s.notice_mark();
+    let v = s.run("identify", &json!({"lon": 8.5, "lat": 47.4, "mode": "topmost", "tolerancePx": 8})).unwrap();
+    assert_eq!(v["attributes"]["name"], "Here", "{v}");
+    let told: Vec<_> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(told.iter().any(|t| t.starts_with("Roads wasn't asked what is here: http://192.168.21.5/info")), "{told:?}");
 }
 
 /// A tile layer picked in Layers (`map.selectTiles`, view state like `layer.select`) is the one
@@ -25619,12 +25670,15 @@ fn services_list_and_add_layers() {
     let r = s.run("service.add", &json!({"url": api, "layer": "lakes", "text": collections})).unwrap();
     assert_eq!(r["features"], 1);
     assert!(s.map().layer_by_name("Lakes").is_some());
-    // A document on the web can't send RustGIS into the local network.
+    // A document read from the internet (the app's record of it) can't send RustGIS into the
+    // local network; its own address on its own record, as the record is process-wide.
     let inward = WMS.replace("https://maps.example.com/wms?", "http://127.0.0.1:8080/wms?");
-    let v = s.run("service.layers", &json!({"url": url, "text": inward})).unwrap();
+    let web = "https://maps-web-inward.example.com/wms";
+    crate::render::rustgis_tiles::cache::restrict_to_public(&rustgis_data::ogc::capabilities_url(web, None));
+    let v = s.run("service.layers", &json!({"url": web, "text": inward})).unwrap();
     assert_eq!(v["count"], 0);
     assert!(v["notes"].as_array().unwrap().iter().any(|n| n.as_str().is_some_and(|n| n.contains("won't fetch"))), "{v}");
-    assert!(s.run("service.add", &json!({"url": url, "layer": "roads", "text": inward})).is_err());
+    assert!(s.run("service.add", &json!({"url": web, "layer": "roads", "text": inward})).is_err());
     // A service's answer with latitude first (it misses the collection's extent, and fits it
     // turned round) is turned round, and a page of a larger collection is pointed out.
     const LAT_FIRST: &[u8] = br#"{"type": "FeatureCollection", "numberMatched": 9, "numberReturned": 1, "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [50, 10]}}], "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::4326"}}}"#;
@@ -25647,8 +25701,12 @@ fn services_list_and_add_layers() {
         )
         .unwrap();
     assert!(s.map().tiles.iter().any(|t| t.url == "https://x.org/relief/map/tiles/smerc/{z}/{y}/{x}.png"), "{r}");
+    // (Its document read from the internet, the app's record of it, on its own name as the record
+    // is process-wide: a template into the local network is refused.)
+    let web = "https://x-web-templates.example/collections";
+    crate::render::rustgis_tiles::cache::restrict_to_public(web);
     for bad in ["https://x.org/relief.png", "http://169.254.169.254/{z}/{x}/{y}", "http://127.0.0.1/{z}/{x}/{y}"] {
-        assert!(s.run("service.add", &json!({"url": api, "layer": "relief (map tiles)", "text": tiled, "tiles": bad})).is_err(), "{bad}");
+        assert!(s.run("service.add", &json!({"url": web, "layer": "relief (map tiles)", "text": tiled, "tiles": bad})).is_err(), "{bad}");
     }
 }
 
@@ -26692,11 +26750,15 @@ fn wcs_coverages_and_catalogue_records() {
         <csw:SearchResults numberOfRecordsMatched="3" nextRecord="2"><csw:Record><dc:title>Forests</dc:title>
           <dc:URI protocol="OGC:WMS">https://geo.example.org/wms</dc:URI><dc:URI protocol="OGC:WFS">http://192.168.1.2/wfs</dc:URI>
         </csw:Record></csw:SearchResults></csw:GetRecordsResponse>"#;
-    let v = s.run("catalog.search", &json!({"url": "https://cat.example.org/csw", "query": "forest", "text": records})).unwrap();
+    // Its answer read from the internet (the app's record of it): a link into the local network
+    // is left out, and the one kept is marked as from a document read from there.
+    let p = json!({"url": "https://cat-web.example.org/csw", "query": "forest", "text": records});
+    crate::render::rustgis_tiles::cache::restrict_to_public(&crate::cmd::service::records_request(&s, &p).unwrap());
+    let v = s.run("catalog.search", &p).unwrap();
     assert_eq!((v["matched"].as_u64(), v["count"].as_u64(), v["next"].as_u64()), (Some(3), Some(1), Some(2)), "{v}");
     assert_eq!(
         v["records"][0]["links"],
-        json!([{"url": "https://geo.example.org/wms", "kind": "wms", "name": null, "protocol": "OGC:WMS"}])
+        json!([{"url": "https://geo.example.org/wms", "kind": "wms", "name": null, "protocol": "OGC:WMS", "fromDocument": true}])
     );
     assert!(v["notes"][0].as_str().is_some_and(|n| n.contains("1 links")), "{v}");
     assert!(v["request"].as_str().is_some_and(|r| r.contains("AnyText%20LIKE%20%27%25forest%25%27")), "{v}");
@@ -39925,7 +39987,10 @@ fn ogc_landing_keeps_map_tiles_and_collection_provenance() {
 fn ogc_landing_discovery_is_bounded_and_checks_addresses() {
     let mut session = Session::new(Project::default());
     let link = |url: &str| json!({"links":[{"rel":"data","type":"application/json","href":url}]}).to_string();
-    let root = "https://example.org/ogc/root";
+    // The root read from the internet (the app's record of it): it may not link into the local
+    // network. Its own address on its own record, as the record is process-wide.
+    let root = "https://landing-web.example.org/ogc/root";
+    crate::render::rustgis_tiles::cache::restrict_to_public(root);
     for target in ["http://127.0.0.1/catalog", "http://169.254.169.254/catalog", "file:///etc/passwd"] {
         let result = session.run("service.layers", &json!({"url":root,"text":link(target)}));
         assert!(result.is_err(), "{target}");

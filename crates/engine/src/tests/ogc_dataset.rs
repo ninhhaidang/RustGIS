@@ -383,8 +383,11 @@ fn ogc_dataset_styles_use_advertised_projection_and_native_web_parity() {
 
 #[test]
 fn ogc_dataset_styles_require_templates_allowed_from_the_tileset_document() {
+    // The first read from the internet (the app's record of its root), on its own name as the
+    // record is process-wide; the last on the local network.
+    crate::render::rustgis_tiles::cache::restrict_to_public("https://maps-web-templates.example.org/dataset");
     for (origin, template, allowed) in [
-        ("https://maps.example.org", "http://127.0.0.1/{z}/{y}/{x}.pbf", false),
+        ("https://maps-web-templates.example.org", "http://127.0.0.1/{z}/{y}/{x}.pbf", false),
         ("https://maps.example.org", "https://tiles.example.org/{z}/{y}/{x}.pbf", true),
         ("http://127.0.0.1", "http://127.0.0.1/{z}/{y}/{x}.pbf", true),
     ] {
@@ -645,14 +648,17 @@ fn ogc_dataset_style_discovery_is_bounded_and_checks_source_addresses() {
     assert_eq!(listing["count"], 16, "{listing}");
     assert!(listing["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("16-style discovery limit")));
     assert_eq!(server.requests().len(), 19);
-    let root = "https://maps.example.org/dataset";
+    // The root read from the internet (the app's record of it), on its own name as the record is
+    // process-wide.
+    let root = "https://maps-web-styles.example.org/dataset";
+    crate::render::rustgis_tiles::cache::restrict_to_public(root);
     let mut docs = documents();
     docs[2].1["styles"].as_array_mut().unwrap().truncate(1);
     docs[3].1["sources"]["basemap"] = json!({"type":"vector","url":"http://127.0.0.1/private"});
     let params = json!({"url":root,"type":"ogcapi","text":docs[0].1.to_string(),"documents":[
-        {"url":"https://maps.example.org/tiles?f=json","text":docs[1].1.to_string()},
-        {"url":"https://maps.example.org/styles?f=json","text":docs[2].1.to_string()},
-        {"url":"https://maps.example.org/good?f=mapbox","text":docs[3].1.to_string()}
+        {"url":"https://maps-web-styles.example.org/tiles?f=json","text":docs[1].1.to_string()},
+        {"url":"https://maps-web-styles.example.org/styles?f=json","text":docs[2].1.to_string()},
+        {"url":"https://maps-web-styles.example.org/good?f=mapbox","text":docs[3].1.to_string()}
     ]});
     let mut params = params;
     params["documents"][1]["text"] = json!(
@@ -662,7 +668,7 @@ fn ogc_dataset_style_discovery_is_bounded_and_checks_source_addresses() {
         ]})
         .to_string()
     );
-    params["documents"].as_array_mut().unwrap().push(json!({"url":"https://maps.example.org/public","text":good.to_string()}));
+    params["documents"].as_array_mut().unwrap().push(json!({"url":"https://maps-web-styles.example.org/public","text":good.to_string()}));
     let listing = session.run("service.layers", &params).unwrap();
     assert_eq!(listing["count"], 1, "{listing}");
     assert_eq!(listing["layers"][0]["name"], "public");

@@ -20,7 +20,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 pub enum Reach {
     /// The internet.
     Public,
-    /// This computer or the local network (loopback, private and unique-local addresses).
+    /// This computer or the local network (loopback, private, unique-local and site-local
+    /// addresses).
     Local,
     /// Never fetched: link-local and unspecified addresses, cloud metadata hosts.
     Forbidden,
@@ -152,10 +153,15 @@ pub fn ip_reach(ip: IpAddr) -> Reach {
                 [0x2002, hi, lo, ..] => return v4_reach(Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo))),
                 _ => {}
             }
+            // Teredo (`2001:0::/32`, RFC 4380) embeds an IPv4 address too, but obfuscated (the
+            // client's is XORed) and only reached through a relay, never routed to directly, so it
+            // keeps the public arm.
             let seg0 = v6.segments().first().copied().unwrap_or(0);
             if v6.is_unspecified() || (seg0 & 0xffc0) == 0xfe80 {
                 Reach::Forbidden
-            } else if v6 == Ipv6Addr::LOCALHOST || (seg0 & 0xfe00) == 0xfc00 {
+            } else if v6 == Ipv6Addr::LOCALHOST || (seg0 & 0xfe00) == 0xfc00 || (seg0 & 0xffc0) == 0xfec0 {
+                // Unique-local `fc00::/7` and the deprecated site-local `fec0::/10` (RFC 3879),
+                // which older networks still route inside a site.
                 Reach::Local
             } else {
                 Reach::Public
@@ -295,6 +301,19 @@ pub fn check_reach(url: &str, ceiling: Reach) -> Result<(), String> {
     }
 }
 
+/// Whether a fetch's error is a refusal for where its address reaches ([`check_reach`], or where
+/// the address resolved when it was fetched), not a failure of the service.
+pub fn is_refusal(error: &str) -> bool {
+    [
+        "can't point into the local network",
+        "that address is never fetched",
+        "that peer address is never fetched",
+        "resolves to this computer or the local network",
+    ]
+    .iter()
+    .any(|m| error.contains(m))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +435,37 @@ mod tests {
             assert_eq!(reach(url), Reach::Local, "{url}");
             assert!(check(url, None).is_ok(), "{url}");
         }
+    }
+
+    /// Every refusal for where an address reaches is told from a service's failure.
+    #[test]
+    fn refusals_are_told_from_other_failures() {
+        let refused = [
+            check_reach("http://10.0.40.1/a.png", Reach::Public).unwrap_err(),
+            check_reach("http://169.254.169.254/latest", Reach::Local).unwrap_err(),
+            Origin::connected("https://refused-peer.example/a.png", "169.254.169.254".parse().unwrap()).unwrap_err(),
+        ];
+        for e in &refused {
+            assert!(is_refusal(e), "{e}");
+        }
+        assert!(!is_refusal("HTTP 404"));
+    }
+
+    /// Site-local addresses (`fec0::/10`, deprecated but still routed inside some sites) are
+    /// local: a document on the web can't point at them, and a peer there is observed local.
+    /// Teredo addresses stay public: what they embed is obfuscated and reached through a relay.
+    #[test]
+    fn site_local_addresses_are_local_and_teredo_stays_public() {
+        for ip in ["fec0::1", "fefe:1::2", "feff:ffff::1"] {
+            let url = format!("http://[{ip}]/tiles");
+            assert_eq!(reach(&url), Reach::Local, "{url}");
+            assert!(check(&url, None).is_ok(), "{url}");
+            assert!(check(&url, Some("https://public.example/style.json")).is_err(), "{url}");
+            assert_eq!(Origin::connected("https://looks-public.example/", ip.parse().unwrap()).unwrap().reach, Reach::Local, "{ip}");
+        }
+        // Link-local, just below, stays forbidden.
+        assert_eq!(reach("http://[febf::1]/"), Reach::Forbidden);
+        assert_eq!(reach("http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/"), Reach::Public);
     }
 
     #[test]
