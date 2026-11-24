@@ -16,6 +16,8 @@ pub mod dted;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_revision;
 #[cfg(not(target_arch = "wasm32"))]
+pub use file_revision::FileRevision;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod gdal;
 pub mod geotiff;
 pub mod grib;

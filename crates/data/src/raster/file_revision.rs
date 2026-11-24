@@ -4,7 +4,7 @@
 use std::{fs::Metadata, path::Path};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct FileRevision {
+pub struct FileRevision {
     len: u64,
     modified: std::time::SystemTime,
     #[cfg(unix)]
@@ -16,7 +16,7 @@ pub(super) struct FileRevision {
 impl FileRevision {
     /// The path a revision was read from is not part of it: the callers check the path they hold,
     /// so a changed working directory never looks like a changed file.
-    pub(super) fn capture(metadata: &Metadata) -> std::io::Result<Self> {
+    pub fn capture(metadata: &Metadata) -> std::io::Result<Self> {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
         #[cfg(windows)]
@@ -41,7 +41,21 @@ impl FileRevision {
     }
 }
 
+impl FileRevision {
+    /// The revision of the file at `path` as it is now, or `None` when its metadata can't be read.
+    pub fn of(path: &Path) -> Option<Self> {
+        std::fs::metadata(path).ok().and_then(|m| Self::capture(&m).ok())
+    }
+}
+
 impl super::Raster {
+    /// Records `revision` as that of the file its pixels came from: for pixels another reader
+    /// assembled from the file (a GeoTIFF on this computer read in place), checked against it as
+    /// they were read, so the checks that pair later reads of the file with them can be made.
+    pub fn set_source_revision(&mut self, revision: FileRevision) {
+        self.source_file = Some(Ok(revision));
+    }
+
     fn original_revision(&self) -> std::result::Result<&FileRevision, String> {
         match &self.source_file {
             Some(Ok(original)) => Ok(original),

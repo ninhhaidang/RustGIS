@@ -421,13 +421,20 @@ fn names_said(names: &[String]) -> String {
 }
 
 /// What a raster layer read in place holds for its statistics and tools, when it holds an
-/// overview of the image the map draws.
-pub(crate) fn in_place_overview(d: &rustgis_data::raster::Raster) -> Option<String> {
+/// overview of the image the map draws. A file on this computer (`tools_read_file`) is read again
+/// by each geoprocessing tool, at the finest level it can hold ([`crate::cmd::gp`]).
+pub(crate) fn in_place_overview(d: &rustgis_data::raster::Raster, tools_read_file: bool) -> Option<String> {
     let (fw, fh) = d.overview?;
-    Some(format!(
-        "read in place: the map draws its {fw} × {fh} pixels as it needs them, while statistics, histograms and raster tools read a {} × {} overview",
-        d.width, d.height
-    ))
+    let (w, h) = (d.width, d.height);
+    Some(if tools_read_file {
+        format!(
+            "read in place: the map draws its {fw} × {fh} pixels as it needs them, and geoprocessing tools read the file (built-in ones at the finest level they can hold, GeoLibre ones whole), while statistics, histograms, plugin tools and other raster commands read a {w} × {h} overview"
+        )
+    } else {
+        format!(
+            "read in place: the map draws its {fw} × {fh} pixels as it needs them, while statistics, histograms and raster tools read a {w} × {h} overview"
+        )
+    })
 }
 
 pub struct Registry {
@@ -1420,6 +1427,9 @@ impl Session {
         // cloud-optimised GeoTIFFs' overviews for raster layers read in place.
         render::rustgis_tiles::remote::install();
         map::raster::set_in_place_reader(render::rustgis_tiles::cog::raster::overview);
+        // A large tiled GeoTIFF on this computer is read in place too, on the desktop (#2761).
+        #[cfg(not(target_arch = "wasm32"))]
+        map::raster::set_tiled_probe(crate::cmd::raster::tiled_in_place);
         rustgis_data::diagnostics::set_clock(|| {
             web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
         });
@@ -2846,10 +2856,10 @@ impl Session {
                 if !dropped_here.is_empty() {
                     dropped.push((l.name.clone(), dropped_here));
                 }
-                let in_place = rl.in_place;
+                let (in_place, tiled) = (rl.reads_in_place(), rl.tiled);
                 lost.extend(rl.lost_unsaid().into_iter().map(|what| (l.name.clone(), what)));
                 let Some(d) = rl.pixels_unsaid() else { continue };
-                if let Some(what) = in_place.then(|| in_place_overview(&d)).flatten() {
+                if let Some(what) = in_place.then(|| in_place_overview(&d, tiled)).flatten() {
                     held.push((l.name.clone(), what));
                 }
             }
@@ -2991,7 +3001,7 @@ impl Session {
             .filter_map(|l| {
                 let name = l.name.clone();
                 let rl = l.raster.as_mut()?;
-                rl.in_place.then_some((name, rl))
+                rl.reads_in_place().then_some((name, rl))
             })
             .collect();
         let mut layers: Vec<&mut rustgis_map::raster::RasterLayer> = named.iter_mut().map(|(_, rl)| &mut **rl).collect();

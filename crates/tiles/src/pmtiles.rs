@@ -196,16 +196,25 @@ pub fn is_local(archive: &str) -> bool {
 /// Whether a local archive may be read: an absolute path to a `.pmtiles` file (checked again
 /// here, whatever route the address came by).
 pub fn check_local(archive: &str) -> Result<(), String> {
+    check_local_path(archive, "a PMTiles file", &["pmtiles"])
+}
+
+/// Whether a local file may be read by range: an absolute path on this computer (not a network
+/// share) whose extension is one of `extensions` (lowercase, without the dot). `kind` names the
+/// file in the refusal.
+pub(crate) fn check_local_path(archive: &str, kind: &str, extensions: &[&str]) -> Result<(), String> {
     let p = archive.strip_prefix("file://").unwrap_or(archive);
     let drive = p.as_bytes().get(1) == Some(&b':') && p.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
     // A path on this computer: not a network share (\\server\share, or file://server/…), which a
     // project could use to make Windows connect to another machine.
     let share = p.starts_with("\\\\") || p.starts_with("//") || (archive.starts_with("file://") && !p.starts_with('/'));
     if share || !(p.starts_with('/') || drive) || p.chars().any(char::is_control) || p.len() > 4096 {
-        return Err(format!("'{p}': a PMTiles file is given by its full path on this computer"));
+        return Err(format!("'{p}': {kind} is given by its full path on this computer"));
     }
-    if !p.to_ascii_lowercase().ends_with(".pmtiles") {
-        return Err(format!("'{p}' isn't a .pmtiles file"));
+    let lower = p.to_ascii_lowercase();
+    if !extensions.iter().any(|e| lower.rsplit_once('.').is_some_and(|(_, ext)| ext == *e)) {
+        let named: Vec<String> = extensions.iter().map(|e| format!(".{e}")).collect();
+        return Err(format!("'{p}' isn't a {} file", named.join(" or ")));
     }
     Ok(())
 }

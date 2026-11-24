@@ -192,6 +192,11 @@ pub struct Info {
     stretch_failed: Mutex<HashMap<(Vec<usize>, bool), Instant>>,
     /// The file's alpha band, shown with any look.
     alpha: Option<usize>,
+    /// A GeoTIFF on this computer: the revision of the file its header was read from, taken
+    /// before it was read. The header is kept only while the file is that revision, and what is
+    /// read with it is checked against it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) revision: OnceLock<rustgis_data::raster::FileRevision>,
 }
 
 impl Info {
@@ -256,7 +261,9 @@ enum TileState {
     /// Decoded: its bands, how many samples they hold, and when it was last used (see
     /// [`Tiles::clock`]).
     Ready(Bands, usize, u64, crate::address::Reach),
-    Loading(Vec<Box<dyn FnOnce(Result<Bands, String>) + Send>>, crate::address::Reach),
+    /// Being read: who waits for it, the reach it is read under, and the header (`Info`, by its
+    /// address, alive while the read is) it is decoded with.
+    Loading(Vec<Box<dyn FnOnce(Result<Bands, String>) + Send>>, crate::address::Reach, usize),
 }
 
 #[derive(Default)]
@@ -339,6 +346,15 @@ pub(crate) fn forget_file(url: &str) {
     forget_file_in(&mut tiles().lock().unwrap_or_else(|e| e.into_inner()), url);
 }
 
+/// Forgets what was read of a GeoTIFF on this computer ([`is_local_file`]), so its header and
+/// tiles are read again from the file as it is now: it is added or reloaded after it may have
+/// been written again. Nothing for a web address, whose reads follow the tile cache's.
+pub fn forget_local_file(url: &str) {
+    if is_local_file(url) {
+        forget_file(url);
+    }
+}
+
 /// Forgets a file's tiles kept (not those loading) from `t`.
 fn forget_file_in(t: &mut Tiles, url: &str) {
     let mut freed = 0;
@@ -358,6 +374,9 @@ pub fn info(url: &str) -> Result<Option<Arc<Info>>, String> {
     crate::cache::check_still(&crate::cache::current_still())?;
     crate::logins::check(url).map_err(str::to_string)?;
     let url = split(url).0;
+    // A local file written again since its header was read is read again (as with `with_info`).
+    #[cfg(not(target_arch = "wasm32"))]
+    forget_if_rewritten(url);
     {
         let i = infos().lock().unwrap_or_else(|e| e.into_inner());
         match i.get(url) {
@@ -405,6 +424,25 @@ pub fn landed_count() -> u64 {
     LANDED.load(Ordering::Relaxed)
 }
 
+/// Forgets what was read of a GeoTIFF on this computer whose header was read from another
+/// revision of the file than it is now: a file written again while it is open is read again, not
+/// drawn from its old header and tiles.
+#[cfg(not(target_arch = "wasm32"))]
+fn forget_if_rewritten(url: &str) {
+    if !is_local_file(url) {
+        return;
+    }
+    let kept = match infos().lock().unwrap_or_else(|e| e.into_inner()).get(url) {
+        Some(State::Ready(info, _)) => info.revision.get().cloned(),
+        _ => return,
+    };
+    if let Some(kept) = kept
+        && Some(kept) != rustgis_data::raster::FileRevision::of(std::path::Path::new(url))
+    {
+        forget_file(url);
+    }
+}
+
 /// Shares parsed headers and loading waiters, retaining retry delays only for resource failures.
 fn with_info(url: &str, then: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>) {
     with_info_at(url, crate::cache::ceiling_for(url), then);
@@ -422,6 +460,8 @@ fn with_info_at(url: &str, ceiling: crate::address::Reach, then: Box<dyn FnOnce(
         then(Err(e.to_string()));
         return;
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    forget_if_rewritten(url);
     {
         let mut i = infos().lock().unwrap_or_else(|e| e.into_inner());
         match i.get_mut(url) {
@@ -496,7 +536,8 @@ fn with_info_at(url: &str, ceiling: crate::address::Reach, then: Box<dyn FnOnce(
     );
 }
 
-/// Reads `len` bytes at `at` of the file at `url`.
+/// Reads `len` bytes at `at` of the file at `url`: by range from its web address, or from the
+/// file on this computer that a local path names ([`is_local_file`]).
 fn read(url: &str, at: u64, len: u64, ceiling: crate::address::Reach, done: Done) {
     if len == 0 {
         done(Ok(Vec::new()));
@@ -507,7 +548,39 @@ fn read(url: &str, at: u64, len: u64, ceiling: crate::address::Reach, done: Done
         return;
     }
     let end = at.saturating_add(len) - 1;
+    if is_local_file(url) {
+        if let Err(e) = local_read_allowed(url, ceiling) {
+            done(Err(e));
+            return;
+        }
+        // Read on the fetch workers, as a web address's ranges are, never on the frame; not kept
+        // in the tile cache, as the file is at hand.
+        crate::cache::fetch_local(format!("{url}{RANGE}{at}-{end}"), done);
+        return;
+    }
     crate::cache::fetch_counted_with_ceiling(format!("{url}{RANGE}{at}-{end}"), ceiling, done);
+}
+
+/// Whether `url` names a GeoTIFF on this computer, by its full path: the desktop reads a large
+/// local tiled GeoTIFF in place, as it reads a web address's (#2761).
+pub fn is_local_file(url: &str) -> bool {
+    // A plain path, as a layer's file is given: a `file:` address isn't read in place.
+    !url.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("file:"))
+        && crate::pmtiles::is_local(url)
+        && crate::pmtiles::check_local_path(url, "a GeoTIFF read in place", &["tif", "tiff"]).is_ok()
+}
+
+/// Whether a local GeoTIFF may be read in place: a full path to a `.tif` or `.tiff` file, asked
+/// for where this computer may be reached (never by a document limited to public addresses), and
+/// not in the browser, which has no files to read by path.
+fn local_read_allowed(url: &str, ceiling: crate::address::Reach) -> Result<(), String> {
+    if cfg!(target_arch = "wasm32") {
+        return Err(message_with_address(url, "the web app reads GeoTIFFs in place from web addresses only"));
+    }
+    if ceiling != crate::address::Reach::Local {
+        return Err(message_with_address(url, "a file on this computer can't be read from here"));
+    }
+    crate::pmtiles::check_local_path(url, "a GeoTIFF read in place", &["tif", "tiff"])
 }
 
 /// Reads a file's header (then its stretch): the start, then whatever more the IFDs need.
@@ -519,6 +592,25 @@ fn read(url: &str, at: u64, len: u64, ceiling: crate::address::Reach, done: Done
 /// would send its whole answer); a GeoTIFF mislabelled so on a server that answers ranges is still
 /// read. Without an answer, the first [`HEAD`] bytes are read as for any other file.
 fn load(url: String, ceiling: crate::address::Reach, done: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>) {
+    // A file on this computer: its header read from the file, as any other part of it is.
+    if is_local_file(&url) {
+        if let Err(e) = local_read_allowed(&url, ceiling) {
+            done(Err(e));
+            return;
+        }
+        // The revision the header is read at, taken before it is read, kept with the header.
+        #[cfg(not(target_arch = "wasm32"))]
+        let done: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send> = {
+            let revision = rustgis_data::raster::FileRevision::of(std::path::Path::new(&url));
+            Box::new(move |r: Result<Arc<Info>, String>| {
+                if let (Ok(info), Some(revision)) = (&r, revision) {
+                    let _ = info.revision.set(revision);
+                }
+                done(r);
+            })
+        };
+        return read_header(url, HEAD, ceiling, done);
+    }
     if let Err(e) = crate::address::check_reach(&url, ceiling) {
         done(Err(e));
         return;
@@ -705,6 +797,8 @@ fn stats(
         stretching: Mutex::new(HashMap::new()),
         stretch_failed: Mutex::new(HashMap::new()),
         alpha,
+        #[cfg(not(target_arch = "wasm32"))]
+        revision: OnceLock::new(),
     });
     // 8-bit colour images are shown as they are; others between the coarsest overview's
     // percentiles (a palette image's own look needs none: its table colours its values, see
@@ -1134,13 +1228,18 @@ fn get_tile_at(
     let per_band = (l.tile_width as usize) * (l.tile_height as usize);
     let samples = per_band * nb;
     let started_reach = ceiling.min(info.reach).min(crate::cache::ceiling_for(&url));
+    // The header this read decodes with. A local file's read in flight is joined only by a
+    // reader with the same header: one holding the header of a file written again since waits for
+    // it to land, then reads the tile again (#2814), so no old tile reaches its overview.
+    let header = Arc::as_ptr(&info) as usize;
+    let joins = |reach: crate::address::Reach, from: usize| reach == started_reach && (from == header || !is_local_file(&url));
     // A tile the file leaves out (GDAL's sparse files: no bytes) is empty: kept as any other, so
     // a window over it is whole at once rather than asking for it at every draw.
     if len == 0 {
         let key = (url.clone(), level, idx);
         let mut t = tiles().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(TileState::Loading(waiting, reach)) = t.map.get_mut(&key) {
-            if *reach == started_reach {
+        if let Some(TileState::Loading(waiting, reach, from)) = t.map.get_mut(&key) {
+            if joins(*reach, *from) {
                 waiting.push(then);
             } else {
                 waiting.push(crate::cache::caller_retry(Box::new(move |_| get_tile_at(info, url, level, idx, started_reach, then))));
@@ -1151,7 +1250,13 @@ fn get_tile_at(
             Some(b) => b,
             None => {
                 let b: Bands = Arc::new(vec![vec![f32::NAN; per_band]; nb].into());
-                t.keep(key, b.clone(), samples, started_reach);
+                // Kept only under the file's current header, as a decoded tile is (a local file
+                // written again since is read again).
+                let current = !is_local_file(&url)
+                    || matches!(infos().lock().unwrap_or_else(|e| e.into_inner()).get(&url), Some(State::Ready(i, _)) if Arc::ptr_eq(i, &info));
+                if current {
+                    t.keep(key, b.clone(), samples, started_reach);
+                }
                 b
             }
         };
@@ -1178,10 +1283,10 @@ fn get_tile_at(
                     t.samples = t.samples.saturating_sub(n);
                     t.order.remove(&used);
                 }
-                t.map.insert(key.clone(), TileState::Loading(vec![then], started_reach));
+                t.map.insert(key.clone(), TileState::Loading(vec![then], started_reach, header));
             }
-            Some(TileState::Loading(w, reach)) => {
-                if *reach == started_reach {
+            Some(TileState::Loading(w, reach, from)) => {
+                if joins(*reach, *from) {
                     w.push(then);
                 } else {
                     w.push(crate::cache::caller_retry(Box::new(move |_| get_tile_at(info, url, level, idx, started_reach, then))));
@@ -1189,7 +1294,7 @@ fn get_tile_at(
                 return;
             }
             None => {
-                t.map.insert(key.clone(), TileState::Loading(vec![then], started_reach));
+                t.map.insert(key.clone(), TileState::Loading(vec![then], started_reach, header));
             }
         }
     }
@@ -1207,17 +1312,24 @@ fn get_tile_at(
             let mut r = r;
             let waiting = {
                 let mut t = tiles().lock().unwrap_or_else(|e| e.into_inner());
+                // A local file's tile decoded with a header since forgotten (the file written
+                // again while it was read) is handed on, not kept: the next draw reads it with the
+                // new one. Looked at under the tiles' lock: a header is forgotten before its tiles
+                // are, under this lock, so a tile kept here goes with them.
+                let superseded = is_local_file(&key.0)
+                    && !matches!(infos().lock().unwrap_or_else(|e| e.into_inner()).get(&key.0), Some(State::Ready(i, _)) if Arc::ptr_eq(i, &info));
                 if started_reach > crate::cache::ceiling_for(&key.0) {
                     r = Err(REACH_CHANGED.into());
                 }
                 let old = match &r {
+                    Ok(_) if superseded => t.map.remove(&key),
                     // Over the budget: the tiles used longest ago make room.
                     Ok(b) => t.keep(key, b.clone(), samples, started_reach),
                     // A failed tile is read again by the next map tile that needs it.
                     Err(_) => t.map.remove(&key),
                 };
                 match old {
-                    Some(TileState::Loading(w, _)) => w,
+                    Some(TileState::Loading(w, ..)) => w,
                     _ => Vec::new(),
                 }
             };
@@ -1890,6 +2002,8 @@ mod tests {
             stretching: Mutex::default(),
             stretch_failed: Mutex::default(),
             alpha: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            revision: OnceLock::new(),
         });
         let own = super::Look::default();
         assert_eq!(info.palette(&own).map(<[[u8; 4]]>::len), Some(256));
@@ -1982,6 +2096,8 @@ mod tests {
             stretching: Mutex::default(),
             stretch_failed: Mutex::default(),
             alpha: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            revision: OnceLock::new(),
         });
         let asked = Arc::new(AtomicUsize::new(0));
         let a = asked.clone();
@@ -2494,6 +2610,8 @@ mod tests {
                 stretching: Mutex::default(),
                 stretch_failed: Mutex::default(),
                 alpha: None,
+                #[cfg(not(target_arch = "wasm32"))]
+                revision: OnceLock::new(),
             });
             let url = format!("https://sparse-pending.example/{reader:?}.tif");
             let key = (url.clone(), 0, 0);
@@ -2502,10 +2620,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .map
-                .insert(key.clone(), TileState::Loading(vec![Box::new(move |r| old_tx.send(r).unwrap())], Reach::Local));
+                .insert(key.clone(), TileState::Loading(vec![Box::new(move |r| old_tx.send(r).unwrap())], Reach::Local, 0));
             let (new_tx, new_rx) = std::sync::mpsc::channel();
             get_tile(info, url.clone(), 0, 0, Box::new(move |r| new_tx.send(r).unwrap()));
-            let Some(TileState::Loading(waiting, _)) = tiles().lock().unwrap().map.remove(&key) else {
+            let Some(TileState::Loading(waiting, ..)) = tiles().lock().unwrap().map.remove(&key) else {
                 panic!("the old loader must remain")
             };
             assert_eq!(waiting.len(), 2);
@@ -2602,5 +2720,70 @@ mod tests {
             }
             forget_file(&url);
         }
+    }
+
+    /// A GeoTIFF on this computer is read in place from its file, by its full path (#2761): its
+    /// header and overview, as a web address's are by range. Refused for a document that may reach
+    /// only public addresses; a path that isn't a full one to a `.tif` or `.tiff` isn't taken for
+    /// one, nor is a web address.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_local_geotiff_is_read_in_place_from_its_file() {
+        let _turn = crate::cache::turn();
+        let dir = std::env::temp_dir().join(format!("rustgis-cog-local-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("local.tif");
+        std::fs::write(&path, cog::example(512, 128)).unwrap();
+        let url = path.display().to_string();
+        assert!(is_local_file(&url));
+        let info = info_blocking(&url).unwrap();
+        let sizes: Vec<u32> = info.layout.levels.iter().map(|l| l.width).collect();
+        assert_eq!(sizes, vec![512, 256, 128]);
+        let overview = raster::overview_blocking(&url).unwrap();
+        assert_eq!((overview.width, overview.overview), (512, None), "small enough to hold its full image as the overview");
+        assert!(overview.rounded.is_empty(), "bytes round nothing");
+        // Int32 values past 16,777,216: the odd ones `f32` rounds are counted, as the whole-file
+        // reader counts them.
+        let wide = dir.join("wide.tif");
+        // 200 pixels a side in tiles of 128: the edge tiles' padding isn't counted.
+        std::fs::write(&wide, cog::example_with(&cog::Example { size: 200, tile: 128, wide: true, ..cog::Example::default() })).unwrap();
+        let read = raster::overview_blocking(&wide.display().to_string()).unwrap();
+        assert_eq!(read.rounded, vec![200 * 200 / 2]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        load(url.clone(), crate::address::Reach::Public, Box::new(move |r| tx.send(r.err()).unwrap()));
+        let refused = rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap_or_default();
+        assert!(refused.contains("a file on this computer can't be read from here"), "{refused}");
+        for not in ["local.tif", "./local.tif", "//server/share/local.tif", "https://example.com/local.tif", "file:///tmp/local.tif"] {
+            assert!(!is_local_file(not), "{not}");
+        }
+        assert!(!is_local_file(&dir.join("local.png").display().to_string()));
+        // Written again while open (another image, another file): its header is read again, not
+        // the one kept.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, cog::example(256, 128)).unwrap();
+        let info = info_blocking(&url).unwrap();
+        let sizes: Vec<u32> = info.layout.levels.iter().map(|l| l.width).collect();
+        assert_eq!(sizes, vec![256, 128]);
+        // A read of a tile still in flight from before the rewrite (another header) isn't joined:
+        // given the old read's stale tile, the new reader reads the tile again from the file.
+        let key = (url.clone(), 0usize, 0u32);
+        let (old_tx, old_rx) = std::sync::mpsc::channel();
+        tiles()
+            .lock()
+            .unwrap()
+            .map
+            .insert(key.clone(), TileState::Loading(vec![Box::new(move |r| old_tx.send(r).unwrap())], crate::address::Reach::Local, 0));
+        let (new_tx, new_rx) = std::sync::mpsc::channel();
+        get_tile(info.clone(), url.clone(), 0, 0, Box::new(move |r| new_tx.send(r).unwrap()));
+        let Some(TileState::Loading(waiting, ..)) = tiles().lock().unwrap().map.remove(&key) else { panic!("the old read must remain") };
+        let stale: Bands = Arc::new(vec![vec![999.0; 128 * 128]].into());
+        for then in waiting {
+            then(Ok(stale.clone()));
+        }
+        assert_eq!(old_rx.recv().unwrap().unwrap().bands[0][0], 999.0);
+        let fresh = new_rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        assert_eq!(fresh.bands[0][1], 1.0, "pixel (1, 0) of the file, not the stale tile");
+        forget_local_file(&url);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

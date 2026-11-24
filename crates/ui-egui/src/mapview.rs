@@ -1760,7 +1760,7 @@ fn casts_shadows(m: &rustgis_engine::map::Map) -> bool {
 /// Whether the map has raster layers read in place: the part in view arrives a tile at a time,
 /// through the tile cache, and the map is drawn again as it does.
 fn reads_in_place(m: &rustgis_engine::map::Map) -> bool {
-    m.layers.iter().any(|l| l.raster.as_ref().is_some_and(|r| r.in_place))
+    m.layers.iter().any(|l| l.raster.as_ref().is_some_and(|r| r.reads_in_place()))
 }
 
 /// What a turned or tilted view the GPU declined is held at (`gpu_turn_declined`): the map's

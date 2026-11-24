@@ -91,7 +91,7 @@ pub fn export(layer: &RasterLayer, min_zoom: u8, max_zoom: u8, opacity: f32) -> 
                 let place = raster::Place::Flat(&Flat::Mercator, "EPSG:3857");
                 let stats = stats.as_deref().map(Vec::as_slice);
                 let mut image = Pixmap::new(TILE_SIZE, TILE_SIZE).ok_or("couldn't allocate a raster tile")?;
-                match layer.path.as_deref().filter(|_| layer.in_place) {
+                match layer.path.as_deref().filter(|_| layer.reads_in_place()) {
                     // Read in place: at the tile's level, once its parts have arrived (natively;
                     // the browser draws what has).
                     Some(address) => {

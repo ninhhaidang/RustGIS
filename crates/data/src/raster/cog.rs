@@ -243,6 +243,8 @@ pub struct Layout {
     /// a colour table too short for its pixels. One line each, for a window to say (AGENTS.md,
     /// Never silent); drawing in place shows the file grey without them, as before.
     pub lost: Vec<String>,
+    /// Who holds the rights to the picture (its Copyright tag), as [`super::Raster::copyright`].
+    pub copyright: Option<String>,
 }
 
 impl Layout {
@@ -393,6 +395,25 @@ fn read_layout(r: Sparse) -> Result<Parse> {
     };
     // Another body's system is said, as when the file is read whole.
     let mut lost: Vec<String> = super::planetary::note_of(geo.0).into_iter().collect();
+    // A datum assumed, and the file's copyright, as when it is read whole.
+    if geo.3 {
+        lost.push(super::geotiff::NO_EPSG_GEOGRAPHIC.to_string());
+    }
+    // Its bytes asked for when not read yet, as the other tags' are.
+    let copyright = match tag(&mut dec, Tag::Copyright)? {
+        Ok(None) => None,
+        Ok(Some(v)) => match v.into_string() {
+            Ok(c) => Some(c.trim().to_string()),
+            Err(e) => {
+                lost.push(format!("its Copyright tag: it isn't ASCII text ({e}), so it is left out"));
+                None
+            }
+        },
+        Err(e) => {
+            lost.push(format!("its Copyright tag: it can't be read ({e}), so it is left out"));
+            None
+        }
+    };
     let palette = match color {
         ColorHint::Gray if palette_image => match tag(&mut dec, Tag::ColorMap)? {
             Ok(None) => {
@@ -623,6 +644,7 @@ fn read_layout(r: Sparse) -> Result<Parse> {
         palette,
         described,
         lost,
+        copyright,
     })))
 }
 
@@ -794,6 +816,8 @@ pub struct Example {
     /// Overviews half the size before them rounded down (500 of 1001), as terrio 0.8 writes
     /// them; GDAL rounds up (501).
     pub rounded_down: bool,
+    /// Geographic without an EPSG code (no GeographicTypeGeoKey): read as WGS 84, said.
+    pub no_epsg: bool,
 }
 
 impl Default for Example {
@@ -818,6 +842,7 @@ impl Default for Example {
             no_overviews: false,
             wavelengths: false,
             rounded_down: false,
+            no_epsg: false,
         }
     }
 }
@@ -950,7 +975,11 @@ pub fn example_with(e: &Example) -> Vec<u8> {
                 t.push((33550, V::D(vec![px, px, 0.0])));
                 t.push((33922, V::D(vec![0.0, 0.0, 0.0, 10.0, 46.0, 0.0])));
             }
-            t.push((34735, V::S(vec![1, 1, 0, 2, 1024, 0, 1, 2, 2048, 0, 1, 4326])));
+            if e.no_epsg {
+                t.push((34735, V::S(vec![1, 1, 0, 1, 1024, 0, 1, 2])));
+            } else {
+                t.push((34735, V::S(vec![1, 1, 0, 2, 1024, 0, 1, 2, 2048, 0, 1, 4326])));
+            }
             if e.classes {
                 let xml = if e.lossy {
                     r#"<GDALMetadata><Item name="CLASS_3">Forest Formation</Item><Item name="CLASS_70000">Far</Item></GDALMetadata>"#
@@ -1108,6 +1137,49 @@ pub(crate) mod tests {
         assert!(take_tiles(&mut allowance, MAX_TILES).is_ok() && take_tiles(&mut allowance, MAX_TILES).is_ok());
         // All the levels together past the budget: refused.
         assert!(take_tiles(&mut allowance, 1).is_err());
+    }
+
+    /// What reading the file whole says of its header, reading it in place says too: a datum
+    /// assumed for a geographic file without an EPSG code; a clean file says nothing and has no
+    /// copyright, and one written with a copyright keeps it.
+    #[test]
+    fn a_layout_says_an_assumed_datum_and_keeps_the_copyright() {
+        let layout_of = |file: Vec<u8>| match layout(&Sparse::default().with(0, file)) {
+            Ok(Parse::Done(l)) => l,
+            _ => panic!("not a COG"),
+        };
+        let clean = layout_of(example(64, 32));
+        assert!(clean.lost.is_empty() && clean.copyright.is_none(), "{:?}", clean.lost);
+        let assumed = layout_of(example_with(&Example { size: 64, tile: 32, no_epsg: true, ..Example::default() }));
+        assert_eq!(assumed.lost, vec![super::super::geotiff::NO_EPSG_GEOGRAPHIC.to_string()]);
+        let mut r = crate::raster::Raster::new(
+            "credited",
+            64,
+            64,
+            vec![vec![1.0; 64 * 64]],
+            crate::raster::GeoTransform { origin_x: 10.0, origin_y: 46.0, pixel_width: 0.01, pixel_height: -0.01 },
+            crate::raster::Crs::LonLat,
+            None,
+            crate::raster::ColorHint::Gray,
+            "UInt8",
+        )
+        .unwrap();
+        r.copyright = Some("Example Survey".into());
+        let file = super::super::cogwrite::write(&r, 0).unwrap();
+        let credited = layout_of(file.clone());
+        assert_eq!(credited.copyright.as_deref(), Some("Example Survey"));
+        // Everything but the tag's own bytes held: the layout asks for them rather than say the
+        // copyright is lost, and reads it once they are in.
+        let at = file.windows(14).position(|w| w == b"Example Survey").unwrap();
+        let held = Sparse::default().with(0, file[..at].to_vec()).with((at + 14) as u64, file[at + 14..].to_vec());
+        match layout(&held).unwrap() {
+            Parse::Need(a, b) => assert!(a <= at as u64 && b > at as u64, "asks for {a}..{b}, the tag at {at}"),
+            _ => panic!("the copyright's bytes weren't asked for"),
+        }
+        match layout(&held.with(at as u64, file[at..at + 14].to_vec())).unwrap() {
+            Parse::Done(l) => assert_eq!((l.copyright.as_deref(), l.lost.len()), (Some("Example Survey"), 0)),
+            _ => panic!("not read once its bytes are in"),
+        }
     }
 
     #[test]

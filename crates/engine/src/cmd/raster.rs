@@ -402,7 +402,7 @@ pub(super) fn read_notices(s: &mut Session, name: &str, layer: &mut RasterLayer)
     let lost = layer.lost_unsaid();
     let pixels = layer.pixels_unsaid();
     if let Some(r) = pixels.as_deref()
-        && let Some((fw, fh)) = r.overview.filter(|_| !layer.in_place)
+        && let Some((fw, fh)) = r.overview.filter(|_| !layer.reads_in_place())
     {
         s.notify(format!("{name}: showing a {} × {} overview of the {fw} × {fh} raster", r.width, r.height), false);
     }
@@ -410,12 +410,24 @@ pub(super) fn read_notices(s: &mut Session, name: &str, layer: &mut RasterLayer)
         s.notify(format!("{name}: {loss}"), false);
     }
     if let Some(r) = pixels.as_deref() {
-        if let Some(held) = layer.in_place.then(|| crate::in_place_overview(r)).flatten() {
+        if let Some(held) = layer.reads_in_place().then(|| crate::in_place_overview(r, layer.tiled)).flatten() {
             s.notify(format!("{name}: {held}"), false);
         }
         if let Some(count) = rounded_count(r) {
             let held = "pixels are held as 32-bit floats, exact for whole numbers up to 16,777,216 and to about 7 significant digits";
-            s.notify(format!("{name}: {count} rounded as the file was read: {held}, so an export writes the rounded values"), false);
+            // Read in place, the count is of the overview held; the finer levels the map and an
+            // export draw round their own values too, not counted.
+            if layer.reads_in_place() {
+                s.notify(
+                    format!(
+                        "{name}: {count} rounded in its {} × {} overview as it was read: {held}, so the map and an export, which read finer levels too, show rounded values there and in more places",
+                        r.width, r.height
+                    ),
+                    false,
+                );
+            } else {
+                s.notify(format!("{name}: {count} rounded as the file was read: {held}, so an export writes the rounded values"), false);
+            }
         }
     }
 }
@@ -567,7 +579,7 @@ pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, String)>) {
 /// Opens a raster file by path; `ignored` is said with what reading it lost (options given that
 /// don't apply to it).
 pub fn add_path(s: &mut Session, path: &str, name: Option<&str>, page: Option<&str>, scan: bool, ignored: Option<String>) -> CmdResult {
-    let mut r = match super::reads::take(s, &read_key(path, page, scan)) {
+    let (mut r, tiled) = match super::reads::take::<RasterRead>(s, &read_key(path, page, scan)) {
         Some(r) => r,
         None => read_raster_as(path, page, scan),
     }?;
@@ -580,7 +592,7 @@ pub fn add_path(s: &mut Session, path: &str, name: Option<&str>, page: Option<&s
     // gives plain paths on Windows rather than `\\?\` ones).
     let full = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
     // A scan is laid over the view as it is added, and that placement makes it reopen as one.
-    let mut rl = RasterLayer::from_path(r, full);
+    let mut rl = if tiled { RasterLayer::tiled_file(r, full) } else { RasterLayer::from_path(r, full) };
     // A PDF's page, kept so the project opens the same page again.
     rl.subdataset = page.map(str::to_string);
     add_raster(s, &name, rl)
@@ -637,12 +649,84 @@ pub fn read_download_shared_page(name: &str, bytes: std::sync::Arc<Vec<u8>>, pag
     raster::read_shared_page(name, bytes, page, place).map_err(|e| format!("{name}: {e}"))
 }
 
-/// The raster at `path` (a PDF's `page`), read whole; for a `scan`, as the file holds it, without
-/// the world file beside it (#2075).
-pub(crate) fn read_raster_as(path: &str, page: Option<&str>, scan: bool) -> Result<Raster, String> {
+/// The raster at `path` (a PDF's `page`), read whole, or for a large tiled GeoTIFF on this
+/// computer its overview, read in place ([`tiled_in_place`]); for a `scan`, as the file holds it,
+/// without the world file beside it (#2075).
+pub(crate) fn read_raster_as(path: &str, page: Option<&str>, scan: bool) -> RasterRead {
+    // A large tiled GeoTIFF: its overview, the part in view read as the map draws. Read whole
+    // as before when its overview can't be read after all.
+    #[cfg(not(target_arch = "wasm32"))]
+    if !scan && page.is_none() {
+        let full = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
+        if tiled_in_place(&full)
+            && let Ok(mut r) = crate::render::rustgis_tiles::cog::raster::overview_blocking(&full)
+        {
+            r.name = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("raster").to_string();
+            return Ok((r, true));
+        }
+    }
     let p = Path::new(path);
     let read = if scan { raster::read_path_unplaced(p, page, None) } else { raster::read_path_with(p, page, None) };
-    read.map_err(|e| format!("{path}: {e}"))
+    read.map(|r| (r, false)).map_err(|e| format!("{path}: {e}"))
+}
+
+/// The most samples a raster file is held whole with: [`raster::max_samples`], or under test what
+/// [`HELD_WHOLE`] sets on this thread, as no small fixture reaches the real limit.
+#[cfg(not(target_arch = "wasm32"))]
+fn held_whole() -> usize {
+    #[cfg(test)]
+    if let Some(max) = HELD_WHOLE.with(std::cell::Cell::get) {
+        return max;
+    }
+    raster::max_samples()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// [`held_whole`]'s limit on this thread, under test.
+    pub(crate) static HELD_WHOLE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// A raster file read for [`add_path`]: its pixels, and whether they are the overview of a large
+/// tiled GeoTIFF read in place ([`tiled_in_place`]).
+pub(crate) type RasterRead = Result<(Raster, bool), String>;
+
+/// Whether the GeoTIFF at `path` (a full path on this computer) is read in place rather than
+/// held, as a cloud-optimised GeoTIFF's web address is (#2761): the map then reads the part in
+/// view at the level the view needs, where holding it means one overview at every zoom. It is
+/// when the file is tiled with overviews, too large to hold whole ([`raster::max_samples`]), and
+/// reading it in place loses nothing reading it whole keeps: its header reports no loss (a
+/// transparency mask, metadata that can't be read) and no `.aux.xml` or world file is beside it.
+/// Reads the file's header (a few reads of the file, on the fetch workers), or takes the one kept
+/// while the file hasn't changed since; forgotten when it isn't read in place. The wait for the
+/// header, and [`read_raster_as`]'s for the overview, don't look at Cancel: a local file answers
+/// in milliseconds, and a hung one (an unreachable mount) is given up after two minutes.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn tiled_in_place(path: &str) -> bool {
+    use crate::render::rustgis_tiles::cog;
+    use crate::render::rustgis_tiles::{address::Reach, cache};
+    // A `#` would be taken for a look's start by the in-place reader. A document that may reach
+    // only public addresses reads no file in place, and nothing of it is looked at here.
+    if !cog::is_local_file(path) || path.contains('#') || cache::ceiling_for(path) != Reach::Local {
+        return false;
+    }
+    let p = Path::new(path);
+    if !p.is_file() || raster::pam::read(p).is_some() || raster::world::beside(p).is_some() {
+        return false;
+    }
+    // A header kept for the file is read again only when the file has changed since (see
+    // `cog::with_info`), so its tiles stay while it hasn't.
+    let tiled = cog::info_blocking(path).is_ok_and(|info| {
+        let l = &info.layout;
+        let full = l.levels.first().map_or(0, |f| u64::from(f.width) * u64::from(f.height));
+        let samples = full.saturating_mul(l.bands.max(1) as u64);
+        let lossless = l.lost.is_empty() && l.described.as_ref().is_none_or(|d| d.lost.is_empty());
+        samples > held_whole() as u64 && lossless && cog::raster::overview_level(&info).is_some()
+    });
+    if !tiled {
+        cog::forget_local_file(path);
+    }
+    tiled
 }
 
 /// The key [`add_path`]'s read of `path` (a PDF's `page`) is taken by (see [`super::reads`]): a

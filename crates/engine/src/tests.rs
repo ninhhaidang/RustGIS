@@ -79,6 +79,9 @@ mod service_logins;
 #[path = "tests/scopes_and_redaction.rs"]
 mod scopes_and_redaction;
 
+#[path = "tests/tiled_files.rs"]
+mod tiled_files;
+
 #[path = "tests/elevation_tiles.rs"]
 mod elevation_tiles;
 

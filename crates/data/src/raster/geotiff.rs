@@ -315,11 +315,12 @@ fn geo_tags_with_keys<R: Read + Seek>(dec: &mut Decoder<R>, keys: &[u16]) -> Res
 /// A cloud-optimised GeoTIFF's coordinate system, georeferencing and no-data value, from its first
 /// image (as [`read`] finds them); `None` for a rotated or skewed image, or one with no GeoTIFF
 /// tags (a scan), which is read whole.
-pub(crate) fn cog_geo<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<Option<(Crs, GeoTransform, Option<Exact>)>> {
+pub(crate) fn cog_geo<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<Option<(Crs, GeoTransform, Option<Exact>, bool)>> {
     let geo = geo_tags(dec)?;
     if geo.affine.is_some() || !geo.referenced {
         return Ok(None);
     }
+    let assumed = geo.crs.is_none() && geo.geographic_model;
     let crs = match geo.crs {
         Some(c) => c,
         None if geo.geographic_model => Crs::LonLat,
@@ -333,7 +334,22 @@ pub(crate) fn cog_geo<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<Option<(Cr
             }
         },
     };
-    Ok(Some((crs, geo.transform, geo.nodata_exact)))
+    Ok(Some((crs, geo.transform, geo.nodata_exact, assumed)))
+}
+
+/// What reading a geographic GeoTIFF without an EPSG code assumes, said whether it is read whole or
+/// in place.
+pub(crate) const NO_EPSG_GEOGRAPHIC: &str =
+    "its geographic coordinate system has no EPSG code, so its datum isn't read; its coordinates are read as longitude/latitude on WGS 84";
+
+/// The file's Copyright tag, trimmed, or why it is left out (`Err`); `Ok(None)` without one.
+pub(crate) fn copyright_tag<R: Read + Seek>(dec: &mut Decoder<R>) -> std::result::Result<Option<String>, String> {
+    match dec.find_tag(Tag::Copyright).map(|v| v.map(|v| v.into_string())) {
+        Ok(None) => Ok(None),
+        Ok(Some(Ok(c))) => Ok(Some(c.trim().to_string())),
+        Ok(Some(Err(e))) => Err(format!("its Copyright tag: it isn't ASCII text ({e}), so it is left out")),
+        Err(e) => Err(format!("its Copyright tag: it can't be read ({e}), so it is left out")),
+    }
 }
 
 #[cfg(test)]
@@ -1535,11 +1551,9 @@ pub(super) fn read_limited_with_nodata(
     // Who holds the rights to the picture, kept as it reads so an export of it says so too (the
     // writers make it the ASCII a tag holds, and the exports say what that changed); one that
     // doesn't read as text is left out, and said.
-    let (copyright, copyright_lost) = match dec.find_tag(Tag::Copyright).map(|v| v.map(|v| v.into_string())) {
-        Ok(None) => (None, None),
-        Ok(Some(Ok(c))) => (Some(c.trim().to_string()), None),
-        Ok(Some(Err(e))) => (None, Some(format!("its Copyright tag: it isn't ASCII text ({e}), so it is left out"))),
-        Err(e) => (None, Some(format!("its Copyright tag: it can't be read ({e}), so it is left out"))),
+    let (copyright, copyright_lost) = match copyright_tag(&mut dec) {
+        Ok(c) => (c, None),
+        Err(e) => (None, Some(e)),
     };
     let spp = samples(&mut dec);
     let full_alpha = extra_alpha(&mut dec);
@@ -1853,11 +1867,7 @@ pub(super) fn read_limited_with_nodata(
                         "its own coordinate system can't be read ({})",
                         e.strip_prefix("GeoTIFF: ").unwrap_or(e)
                     )),
-                    None if geo.geographic_model => {
-                        "its geographic coordinate system has no EPSG code, so its datum isn't read; its coordinates are \
-                         read as longitude/latitude on WGS 84"
-                            .to_string()
-                    }
+                    None if geo.geographic_model => NO_EPSG_GEOGRAPHIC.to_string(),
                     None => super::assumed_wgs84_note("it doesn't say its coordinate system"),
                 });
                 Crs::LonLat

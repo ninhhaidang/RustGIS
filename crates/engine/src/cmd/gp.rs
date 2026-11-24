@@ -395,7 +395,7 @@ pub fn external_start(s: &mut Session, tool: &str, params: &Value) -> Result<Ext
             return Err(format!("no GeoLibre tool '{tool}'"));
         }
         let params = params.clone();
-        let job = preparing(&continuation, || pin.prepare_suite(&map_inputs(s, Some(spec), &params)?, &params))?;
+        let job = preparing(&continuation, || pin.prepare_suite(&map_inputs(s, Some(spec), &params, Tiled::ByPath)?, &params))?;
         s.next_pending = s.next_pending.wrapping_add(1);
         let id = s.next_pending;
         let run = ExternalRun {
@@ -534,14 +534,19 @@ pub fn plugin_start(s: &mut Session, tool: &str, params: &Value) -> Result<Plugi
     let spec = pin.spec();
     let plugin = pin.plugin().ok_or_else(|| format!("no plugin tool '{tool}'"))?;
     let (_, tid) = rustgis_plugins::split_id(spec.id).ok_or("invalid plugin tool id")?;
-    let (job, full_ids) = preparing(&continuation, || {
-        let inputs = map_inputs(s, Some(spec), resolved)?;
+    let (job, full_ids, said) = preparing(&continuation, || {
+        let inputs = map_inputs(s, Some(spec), resolved, Tiled::Overview)?;
         let job = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             rustgis_plugins::tools::prepare_pinned(plugin.plugin(), tid, &inputs, resolved)
         }))
         .unwrap_or_else(|_| Err(format!("{} failed unexpectedly", spec.name)))?;
-        Ok((job, full_ids(&inputs.loaded)))
+        Ok((job, full_ids(&inputs.loaded), inputs.messages.clone()))
     })?;
+    // What reading its inputs approximated (a raster's overview read for a file read in place),
+    // said now: the run's result is the plugin's own.
+    if !said.is_empty() {
+        s.notify(format!("{}: {}", spec.name, said.join("; ")), false);
+    }
     let read = read_layers(s, spec, resolved);
     s.next_pending = s.next_pending.wrapping_add(1);
     let id = s.next_pending;
@@ -710,7 +715,7 @@ impl ToolRun {
         // A bug in reading the inputs, like one in a tool, must not take the app down.
         let mut done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::render::rustgis_tiles::cache::with_still(still, || {
-                let inputs = match inputs_of(snap, Some(spec), &params) {
+                let inputs = match inputs_of(snap, Some(spec), &params, tiled_for(&pin)) {
                     Ok(inputs) => inputs,
                     // A Cancel while the inputs are read names the tool, as one while it runs does.
                     Err(_) if control.is_cancelled() => {
@@ -1325,6 +1330,11 @@ struct MapInputs<'a> {
     /// Import warnings from local file inputs, kept in the tool result and history.
     messages: Vec<String>,
     losses: Vec<LossMessage>,
+    /// Raster layers read in place from a file on this computer, read again from it for the run
+    /// ([`tiled_inputs`]), by lowercase name.
+    rasters: std::collections::HashMap<String, std::sync::Arc<rustgis_data::raster::Raster>>,
+    /// [`MapInputs::rasters`] counted as held while the run holds them (kept only to be dropped).
+    _held: Vec<std::sync::Arc<rustgis_data::memory::Holding>>,
     /// The flat map's projection (its name, the projection and its unit in metres), built the
     /// first time a tool asks for it (Tissot's indicatrix does), once for the run; `None` on the
     /// globe.
@@ -1427,14 +1437,50 @@ impl MapInputs<'_> {
     }
 }
 
-fn map_inputs<'a>(s: &'a Session, spec: Option<&rustgis_analysis::ToolSpec>, params: &Value) -> Result<MapInputs<'a>, String> {
-    inputs_of(Snapshot::of(s), spec, params)
+/// How a tool's inputs read a raster layer read in place from a file on this computer
+/// ([`rustgis_map::raster::RasterLayer::tiled`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tiled {
+    /// From the file, at the finest level the run can hold ([`tiled_inputs`]): a built-in tool's
+    /// run, on its own thread or where the caller waits.
+    File,
+    /// The overview the layer holds, said: a plugin's run, whose inputs are read on the app's
+    /// thread.
+    Overview,
+    /// By its path: a suite tool stages the file itself.
+    ByPath,
+}
+
+/// How a run of `pin` reads a raster read in place from a file ([`Tiled`]): a plugin reads the
+/// overview the layer holds, a suite tool stages the file by its path, a built-in tool reads it.
+fn tiled_for(pin: &crate::policy::ToolPin) -> Tiled {
+    #[cfg(feature = "geolibre")]
+    if pin.resolved().source() == Some(rustgis_geolibre::SOURCE) {
+        return Tiled::ByPath;
+    }
+    if pin.plugin().is_some() { Tiled::Overview } else { Tiled::File }
+}
+
+/// [`inputs_of`] from the session as it is; `tiled` as there.
+fn map_inputs<'a>(
+    s: &'a Session,
+    spec: Option<&rustgis_analysis::ToolSpec>,
+    params: &Value,
+    tiled: Tiled,
+) -> Result<MapInputs<'a>, String> {
+    inputs_of(Snapshot::of(s), spec, params, tiled)
 }
 
 /// A tool's inputs from what it read of the session: the streamed layers and files it names read
 /// whole, and the rows of each layer it runs on. It reads, so a background run does this on its
-/// thread.
-fn inputs_of<'a>(snap: Snapshot<'a>, spec: Option<&rustgis_analysis::ToolSpec>, params: &Value) -> Result<MapInputs<'a>, String> {
+/// thread. `tiled` says how the raster layers it reads that are read in place from a file on this
+/// computer are read ([`Tiled`]).
+fn inputs_of<'a>(
+    snap: Snapshot<'a>,
+    spec: Option<&rustgis_analysis::ToolSpec>,
+    params: &Value,
+    tiled: Tiled,
+) -> Result<MapInputs<'a>, String> {
     let (full, said) = streamed_inputs(&snap.map, spec, params)?;
     let (mut messages, mut losses) = (Vec::new(), Vec::new());
     for m in said {
@@ -1466,6 +1512,15 @@ fn inputs_of<'a>(snap: Snapshot<'a>, spec: Option<&rustgis_analysis::ToolSpec>, 
     let mut rows = env_inputs(&snap.map, &full, &snap.env, params)?;
     narrow_to_queries(&snap.map, spec, params, &full, &mut rows, &mut messages)?;
     let unread = if work == Crs::LonLat { std::collections::HashSet::new() } else { attributes_only(spec, params) };
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut held = Vec::new();
+    #[cfg(not(target_arch = "wasm32"))]
+    let rasters = tiled_inputs(&snap.map, spec, params, tiled, &mut messages, &mut held)?;
+    #[cfg(target_arch = "wasm32")]
+    let (rasters, held) = {
+        let _ = tiled;
+        (std::collections::HashMap::new(), Vec::new())
+    };
     Ok(MapInputs {
         snap,
         rows,
@@ -1475,9 +1530,245 @@ fn inputs_of<'a>(snap: Snapshot<'a>, spec: Option<&rustgis_analysis::ToolSpec>, 
         unread,
         messages,
         losses,
+        rasters,
+        _held: held,
         flat: std::cell::OnceCell::new(),
         view: std::cell::OnceCell::new(),
     })
+}
+
+/// The raster layers `spec`'s parameters name that are read in place from a file on this
+/// computer ([`rustgis_map::raster::RasterLayer::tiled`]), each read again from the file for the
+/// run, by lowercase name: such a layer holds only the small overview the map draws from zoomed
+/// out, and a tool reads the finest level of the file it can hold, the full image when it fits
+/// (#2761). Read on the run's thread; one read from an overview is said. The GeoTIFF reader looks
+/// at Cancel between its chunks through the progress probe, which a run from [`tool_start`]
+/// installs before reading its inputs; a run made where the caller waits stops there only when
+/// the caller installed one, else after the read.
+/// Read only for [`Tiled::File`]: for [`Tiled::Overview`] each such layer's held overview is said,
+/// and for [`Tiled::ByPath`] nothing is read or said, but a file no longer there is refused.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn tiled_inputs(
+    map: &rustgis_map::Map,
+    spec: Option<&rustgis_analysis::ToolSpec>,
+    params: &Value,
+    tiled: Tiled,
+    messages: &mut Vec<String>,
+    held: &mut Vec<std::sync::Arc<rustgis_data::memory::Holding>>,
+) -> Result<std::collections::HashMap<String, std::sync::Arc<rustgis_data::raster::Raster>>, String> {
+    use rustgis_analysis::ParamKind;
+    let mut read = std::collections::HashMap::new();
+    // Raster to PMTiles draws its input as the map does, in place at each zoom's level, and
+    // reads no pixels through the run's inputs.
+    let Some(spec) = spec.filter(|t| t.id != "rasterToPmtiles") else { return Ok(read) };
+    let mut seen = std::collections::HashSet::new();
+    let (mut overviews, mut held_overviews, mut rounded) = (Vec::new(), Vec::new(), Vec::new());
+    for parameter in spec.params {
+        let value = params.get(parameter.name).unwrap_or(&Value::Null);
+        let names: Vec<&str> = match parameter.kind {
+            // A name, or (as a suite tool may take it) an array of names.
+            ParamKind::RasterLayer => match value {
+                Value::Array(v) => v.iter().filter_map(Value::as_str).collect(),
+                v => v.as_str().into_iter().collect(),
+            },
+            ParamKind::RasterLayers => rustgis_analysis::layer_list(value).unwrap_or_default(),
+            // A suite tool stages any input layer or path a parameter names, not what it writes.
+            ParamKind::Layer
+            | ParamKind::PolygonLayer
+            | ParamKind::PointLayer
+            | ParamKind::VectorLayer
+            | ParamKind::VectorLayers
+            | ParamKind::Path
+                if tiled == Tiled::ByPath =>
+            {
+                match value {
+                    Value::String(t) => t.split(';').map(str::trim).collect(),
+                    Value::Array(v) => v.iter().filter_map(Value::as_str).collect(),
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        };
+        for name in names {
+            let Some(l) = map.layer_by_name(name) else { continue };
+            let key = l.name.to_ascii_lowercase();
+            let Some(path) = l.raster.as_ref().filter(|rl| rl.tiled).and_then(|rl| rl.path.as_deref()) else { continue };
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            // A suite tool stages the file by its path: one no longer there would have it stage
+            // the overview the layer holds instead, so it is refused.
+            if tiled == Tiled::ByPath {
+                if !std::path::Path::new(path).is_file() {
+                    return Err(format!("{}: its file {path} is no longer there: Reload Data or Repair Data Source first", l.name));
+                }
+                continue;
+            }
+            if tiled == Tiled::Overview {
+                if let Some(held) = l.raster.as_ref().and_then(|rl| rl.data.as_ref())
+                    && let Some((fw, fh)) = held.overview
+                {
+                    held_overviews
+                        .push(format!("{} at the {} × {} overview of the {fw} × {fh} raster it holds", l.name, held.width, held.height));
+                }
+                continue;
+            }
+            // A batch's read is used again only while the file is the revision it was read at.
+            let revision = file_revisions(std::path::Path::new(path));
+            let kept = BATCH_READS.with(|b| b.borrow().as_ref().and_then(|reads| reads.get(path).cloned()));
+            let (r, count) = match kept.filter(|(.., at)| revision.is_some() && *at == revision) {
+                Some((r, count, _)) => (r, count),
+                None => {
+                    #[cfg(test)]
+                    TILED_READS.with(|n| n.set(n.get() + 1));
+                    // The last file a batch read alone: let go before another is read, so a batch
+                    // over several files holds one, and doesn't hold it uncounted while the next
+                    // is planned.
+                    BATCH_READS.with(|b| {
+                        if let Some(reads) = b.borrow_mut().as_mut() {
+                            reads.clear();
+                        }
+                    });
+                    let _turn = tiled_turn().map_err(|e| format!("{}: {e}", l.name))?;
+                    let r = std::sync::Arc::new(
+                        rustgis_data::raster::read_path_with(std::path::Path::new(path), None, None)
+                            .map_err(|e| format!("{}: {e}", l.name))?,
+                    );
+                    // Counted as held from before the next run's turn, for as long as anything
+                    // (this run, the batch) holds it.
+                    let bytes: usize = r.bands.iter().map(|b| b.data.len().saturating_mul(4)).sum();
+                    let count = std::sync::Arc::new(rustgis_data::memory::Holding::of(bytes as u64));
+                    BATCH_READS.with(|b| {
+                        if let Some(reads) = b.borrow_mut().as_mut() {
+                            reads.insert(path.to_string(), (r.clone(), count.clone(), revision.clone()));
+                        }
+                    });
+                    (r, count)
+                }
+            };
+            held.push(count);
+            let n: u64 = r.rounded.iter().sum();
+            if n > 0 {
+                rounded.push(format!("{} {n}", l.name));
+            }
+            if let Some((fw, fh)) = r.overview {
+                overviews.push(format!("{} at its {} × {} overview of the {fw} × {fh} raster", l.name, r.width, r.height));
+            }
+            read.insert(key, r);
+        }
+    }
+    // Said once for the run, every raster named.
+    if !held_overviews.is_empty() {
+        messages.push(format!(
+            "read as the layer holds it, as plugin tools don't read a raster read in place from its file: {}",
+            held_overviews.join("; ")
+        ));
+    }
+    if !rounded.is_empty() {
+        messages.push(format!(
+            "values rounded to 32-bit floats as the file was read for the run, the tool's results built on them: {}",
+            rounded.join("; ")
+        ));
+    }
+    if !overviews.is_empty() {
+        messages.push(format!("read at the finest level each can hold: {}", overviews.join("; ")));
+    }
+    Ok(read)
+}
+
+/// A raster file read in place for a run, its count in [`rustgis_data::memory::held`], which lasts
+/// as long as anything holds it, and the revision of the file taken before it was read (a batch
+/// uses it again only while the file is still that revision).
+#[cfg(not(target_arch = "wasm32"))]
+type CountedRead = (
+    std::sync::Arc<rustgis_data::raster::Raster>,
+    std::sync::Arc<rustgis_data::memory::Holding>,
+    Option<[Option<rustgis_data::raster::FileRevision>; 3]>,
+);
+
+/// The revisions of a raster file and of the sidecars its whole-file read applies (its
+/// `.aux.xml`, a world file): a batch's read of it is used again only while none has changed, or
+/// been added or removed. `None` when the file's own can't be read.
+#[cfg(not(target_arch = "wasm32"))]
+fn file_revisions(path: &std::path::Path) -> Option<[Option<rustgis_data::raster::FileRevision>; 3]> {
+    use rustgis_data::raster::{FileRevision, world};
+    let own = FileRevision::of(path)?;
+    let mut aux = path.as_os_str().to_owned();
+    aux.push(".aux.xml");
+    let world = world::beside(path).and_then(|(p, _)| FileRevision::of(&p));
+    Some([Some(own), FileRevision::of(std::path::Path::new(&aux)), world])
+}
+
+/// Taken by each read of a raster file read in place for a run ([`tiled_inputs`]): such reads
+/// run one at a time across runs, so each plans its size with the ones before it held.
+#[cfg(not(target_arch = "wasm32"))]
+static TILED_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`TILED_TURN`], waited for while another run reads, looking at the run's Cancel every 50 ms
+/// (through the progress probe it installed).
+#[cfg(not(target_arch = "wasm32"))]
+fn tiled_turn() -> rustgis_data::Result<std::sync::MutexGuard<'static, ()>> {
+    loop {
+        match TILED_TURN.try_lock() {
+            Ok(turn) => return Ok(turn),
+            Err(std::sync::TryLockError::Poisoned(e)) => return Ok(e.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                rustgis_data::progress::check()?;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// The raster file read in place that a batch's items last read ([`tiled_inputs`]), by path,
+    /// kept while the batch runs on this thread ([`BatchReads`]): items reading the same file read
+    /// it once, not once an item, and a batch over several files holds one at a time. `None`
+    /// outside a batch, where nothing is kept past the run.
+    static BATCH_READS: std::cell::RefCell<Option<std::collections::HashMap<String, CountedRead>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    /// How many raster files read in place [`tiled_inputs`] has read from their file on this
+    /// thread, under test.
+    pub(crate) static TILED_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether a batch's reads are kept on this thread now ([`BATCH_READS`]), under test.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn batch_reads_kept() -> bool {
+    BATCH_READS.with(|b| b.borrow().is_some())
+}
+
+/// Keeps [`BATCH_READS`] while it lives: the outermost batch on this thread starts it and lets
+/// it go, so a file it read is held only as long as the batch runs.
+#[cfg(not(target_arch = "wasm32"))]
+struct BatchReads(bool);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BatchReads {
+    fn start() -> BatchReads {
+        BatchReads(BATCH_READS.with(|b| {
+            let mut b = b.borrow_mut();
+            let outer = b.is_none();
+            if outer {
+                *b = Some(std::collections::HashMap::new());
+            }
+            outer
+        }))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for BatchReads {
+    fn drop(&mut self) {
+        if self.0 {
+            BATCH_READS.with(|b| *b.borrow_mut() = None);
+        }
+    }
 }
 
 /// Narrows the rows a tool reads of each layer to the features its definition query keeps, as the
@@ -2110,9 +2401,11 @@ impl Inputs for MapInputs<'_> {
         *self.view.get_or_init(|| view_extent(&self.snap))
     }
     fn raster(&self, layer: &str) -> Option<RasterInput<'_>> {
-        let rl = self.snap.map.layer_by_name(layer)?.raster.as_ref()?;
+        let l = self.snap.map.layer_by_name(layer)?;
+        let rl = l.raster.as_ref()?;
+        let read = self.rasters.get(&l.name.to_ascii_lowercase()).map(std::sync::Arc::as_ref);
         Some(RasterInput {
-            raster: rl.data.as_deref()?,
+            raster: read.or(rl.data.as_deref())?,
             path: rl.path.as_deref(),
             embedded: rl.embedded.as_deref().map(|b| (rl.file_name.as_deref().unwrap_or("raster.tif"), b.as_slice())),
         })
@@ -2158,6 +2451,9 @@ fn batch(s: &mut Session, p: &Value) -> CmdResult {
 
 /// Runs a geoprocessing tool in batch across multiple layers or files with cancellation and progress reporting.
 pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> CmdResult {
+    // A raster file read in place is read once for the batch, not once an item.
+    #[cfg(not(target_arch = "wasm32"))]
+    let _reads = BatchReads::start();
     let tool_name = ps(p, "tool").ok_or("tool is required")?;
     let tool_id = tool_id(tool_name).ok_or_else(|| format!("no tool '{tool_name}'"))?;
     let spec = rustgis_analysis::tool(tool_id).ok_or_else(|| format!("no tool '{tool_name}'"))?;
@@ -3222,7 +3518,13 @@ pub(crate) fn execute(
             }
             #[cfg(not(target_arch = "wasm32"))]
             let read = recording.then(|| Snapshot::owned(s));
-            let inputs = match map_inputs(s, Some(spec), params) {
+            // Reading the inputs stops on Cancel too, as a run the app starts on a thread does.
+            #[cfg(not(target_arch = "wasm32"))]
+            let _probe = rustgis_analysis::control::install_progress(Some(control.clone()));
+            // A built-in tool run here (the command line, a script on its own thread) reads a
+            // raster file read in place, as one the app starts on a thread does.
+            let tiled = tiled_for(pin);
+            let inputs = match map_inputs(s, Some(spec), params, tiled) {
                 Ok(inputs) => inputs,
                 // A batch item that can't read its input is kept in the history as a failed run.
                 Err(e) if opts.record.is_some() => return apply_with(s, run_of(t0), kept(), Err(e), now_ms().saturating_sub(t0), opts),

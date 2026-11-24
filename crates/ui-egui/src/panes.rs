@@ -2144,7 +2144,7 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
                     ("renderer", tl_raw!(rl.style.renderer.label())),
                 ],
             ),
-            None if rl.error.is_none() && rl.in_place => tl!("Reading in place…").to_string(),
+            None if rl.error.is_none() && rl.reads_in_place() => tl!("Reading in place…").to_string(),
             None => crate::i18n::fmt(
                 "The raster's data couldn't be read: {error}",
                 &[("error", rl.error.as_deref().or(rl.path.as_deref()).unwrap_or(""))],
@@ -7159,7 +7159,7 @@ fn raster_details(ui: &mut Ui, rl: &rustgis_engine::map::RasterLayer, t: &Tokens
     let Some(d) = &rl.data else {
         // Read in place, its overview is on its way until it lands, or fails (said why).
         match &rl.error {
-            None if rl.in_place => {
+            None if rl.reads_in_place() => {
                 ui.label(egui::RichText::new(tl!("Reading in place…")).color(t.text_dim));
             }
             error => {
@@ -7177,7 +7177,7 @@ fn raster_details(ui: &mut Ui, rl: &rustgis_engine::map::RasterLayer, t: &Tokens
     let e = d.extent();
     let unit = if d.crs.is_geographic() { "°" } else { " m" };
     // Read in place, the map draws the full image: its size and cell size, not the overview's.
-    let full = d.overview.filter(|_| rl.in_place);
+    let full = d.overview.filter(|_| rl.reads_in_place());
     let (w, h) = full.unwrap_or((d.width, d.height));
     let (cx, cy) = d.cell_size();
     let (cx, cy) = (cx * f64::from(d.width) / f64::from(w.max(1)), cy * f64::from(d.height) / f64::from(h.max(1)));
@@ -7199,7 +7199,7 @@ fn raster_details(ui: &mut Ui, rl: &rustgis_engine::map::RasterLayer, t: &Tokens
     ];
     match d.overview {
         // Read in place: the overview is what the layer holds.
-        Some(_) if rl.in_place => {
+        Some(_) if rl.reads_in_place() => {
             rows.insert(
                 1,
                 (
@@ -7212,7 +7212,7 @@ fn raster_details(ui: &mut Ui, rl: &rustgis_engine::map::RasterLayer, t: &Tokens
             );
         }
         Some((fw, fh)) => rows.insert(1, ("Full size", format!("{fw} × {fh}"))),
-        None if rl.in_place => rows.insert(1, ("Read", tl!("In place").to_string())),
+        None if rl.reads_in_place() => rows.insert(1, ("Read", tl!("In place").to_string())),
         None => {}
     }
     let value_w = (ui.available_width() - 140.0).max(80.0);
@@ -7293,7 +7293,7 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
     let Some(rl) = l.raster.clone() else { return };
     let Some(d) = rl.data.clone() else {
         // Read in place, its overview is on its way until it lands, or fails (as Details says).
-        if rl.error.is_none() && rl.in_place {
+        if rl.error.is_none() && rl.reads_in_place() {
             ui.label(egui::RichText::new(tl!("Reading in place…")).color(t.text_dim));
         } else {
             ui.label(egui::RichText::new(tl!("The raster's data couldn't be read.")).color(t.red));

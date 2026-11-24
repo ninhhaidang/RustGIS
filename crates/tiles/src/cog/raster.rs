@@ -95,6 +95,10 @@ fn read_overview(info: Arc<Info>, url: String, done: Box<dyn FnOnce(Result<Raste
     };
     let (w, h) = (l.width, l.height);
     let i = info.clone();
+    // A file on this computer: the revision its header was read at, which it must still be once
+    // its tiles are in.
+    #[cfg(not(target_arch = "wasm32"))]
+    let before = super::is_local_file(&url).then(|| info.revision.get().cloned());
     fetch_all(
         info,
         url.clone(),
@@ -116,6 +120,32 @@ fn read_overview(info: Arc<Info>, url: String, done: Box<dyn FnOnce(Result<Raste
                     i.layout.data_type,
                 )
                 .map_err(|e| format!("{url}: {e}"))?;
+                // The values `f32` rounded as the overview's tiles were decoded, by band, as the
+                // whole-file reader counts them for the overview it reads: said when the layer is
+                // added.
+                // Only a tile's pixels inside the image count: an edge tile's padding isn't held.
+                let (tw, th, across) = (l.tile_width.max(1), l.tile_height.max(1), l.across().max(1));
+                let rounded: Vec<u64> = bands
+                    .iter()
+                    .map(|&b| {
+                        let mut n = 0u64;
+                        for tile in 0..l.tiles() {
+                            let Some((c, at)) = i.layout.chunk(l, tile, b) else { continue };
+                            let Some(t) = got.get(c as usize).filter(|t| t.rounded.get(at).is_some()) else { continue };
+                            let (x0, y0) = ((tile % across).saturating_mul(tw), (tile / across).saturating_mul(th));
+                            let (cols, rows) = (tw.min(w.saturating_sub(x0)), th.min(h.saturating_sub(y0)));
+                            for y in 0..rows {
+                                for x in 0..cols {
+                                    n += u64::from(t.rounded_at(at, (y * tw + x) as usize));
+                                }
+                            }
+                        }
+                        n
+                    })
+                    .collect();
+                if rounded.iter().any(|n| *n > 0) {
+                    r.rounded = rounded;
+                }
                 if let Some(full) = i.layout.levels.first().filter(|_| level > 0) {
                     r.overview = Some((full.width, full.height));
                 }
@@ -125,10 +155,23 @@ fn read_overview(info: Arc<Info>, url: String, done: Box<dyn FnOnce(Result<Raste
                     r.color = ColorHint::Palette(table.clone());
                 }
                 r.lost = i.layout.lost.clone();
+                r.copyright.clone_from(&i.layout.copyright);
                 if let Some(described) = &i.layout.described {
                     r.apply_pam(described, rustgis_data::raster::pam::GDAL_METADATA);
                 }
                 r.source = Some(url.clone());
+                // A file on this computer: the revision its overview came from, which a read of
+                // the file's own grid is checked against.
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(before) = before {
+                    let Some(revision) =
+                        before.filter(|b| Some(b) == rustgis_data::raster::FileRevision::of(std::path::Path::new(&url)).as_ref())
+                    else {
+                        return Err(format!("{url}: the file changed while its overview was read: read it again"));
+                    };
+                    // The revision checked, recorded as is (not the file's again).
+                    r.set_source_revision(revision);
+                }
                 Ok(r)
             }))
         }),
@@ -138,7 +181,7 @@ fn read_overview(info: Arc<Info>, url: String, done: Box<dyn FnOnce(Result<Raste
 /// A file's name, from its address (without its query).
 fn file_name(url: &str) -> String {
     let path = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/');
-    path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("raster").to_string()
+    path.rsplit(['/', '\\']).next().filter(|n| !n.is_empty()).unwrap_or("raster").to_string()
 }
 
 /// The chunks a window of a level needs, of the bands given (each band of a tile its own chunk
@@ -507,6 +550,8 @@ mod tests {
             stretching: Mutex::default(),
             stretch_failed: Mutex::default(),
             alpha: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            revision: std::sync::OnceLock::new(),
         }
     }
 

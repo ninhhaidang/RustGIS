@@ -5177,7 +5177,7 @@ fn render_frame(
                     water: lake_light.as_deref(),
                 };
                 // Read in place: the part in view, at the level the view needs.
-                let address = rl.path.as_deref().filter(|_| rl.in_place);
+                let address = rl.path.as_deref().filter(|_| rl.reads_in_place());
                 let mut draw_it = |pm: &mut Pixmap, opacity: f32| match address {
                     // Drawn from less than the view needs (a coarser level, tiles that couldn't be
                     // read): shown, and said with the tile errors.
