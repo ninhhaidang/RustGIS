@@ -268,14 +268,8 @@ impl GivenRows {
     /// package says it went out from home ([`GIVEN`]) under the identity `project` carries, and this
     /// device doesn't keep them already.
     pub(crate) fn in_package(dir: &Path, project: &Project) -> Option<GivenRows> {
-        #[derive(Deserialize)]
-        struct Marker {
-            package: String,
-        }
         let package = project.field_origin.as_ref().map(|o| o.package.as_str()).filter(|p| !p.is_empty())?;
-        let marker = std::fs::read(dir.join(GIVEN)).ok().filter(|b| b.len() <= 4096)?;
-        let marker: Marker = serde_json::from_slice(&marker).ok()?;
-        let given = (marker.package == package).then(|| GivenRows::of(project, package))?;
+        let given = marks(dir, package).then(|| GivenRows::of(project, package))?;
         (!given.kept()).then_some(given)
     }
 
@@ -319,6 +313,28 @@ fn is_spent(package: &str) -> bool {
 /// What a keep says when its package has gone back already.
 const ALREADY_SENT: &str =
     "The field package had already gone back, so the rows it gave weren't kept on this device: make a new field package for more edits";
+
+/// Whether `dir`, a package unpacked, went out from home as package `package`: its [`GIVEN`] names
+/// it.
+pub(crate) fn marks(dir: &Path, package: &str) -> bool {
+    marked(dir, package).unwrap_or(false)
+}
+
+/// [`marks`], telling a marker that isn't there (`Ok(false)`, a return or another kind of folder)
+/// from one that is there but can't be read (`Err`, a damaged package).
+pub(crate) fn marked(dir: &Path, package: &str) -> Result<bool, String> {
+    #[derive(Deserialize)]
+    struct Marker {
+        package: String,
+    }
+    let file = dir.join(GIVEN);
+    if package.is_empty() || matches!(std::fs::symlink_metadata(&file), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+        return Ok(false);
+    }
+    let bytes = crate::project::read_file(&file, 4096)?;
+    let marker: Marker = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+    Ok(marker.package == package)
+}
 
 /// What a package going out from home holds under [`GIVEN`].
 pub(crate) fn given_entry(package: &str) -> Result<Vec<u8>, String> {
@@ -922,19 +938,27 @@ pub(crate) fn photos_named(
     edited: &rustgis_map::Map,
     home: Option<&rustgis_map::Map>,
     changes: &Changes,
-    field: impl Fn(&rustgis_map::Layer) -> Option<usize>,
+    fields: impl Fn(&rustgis_map::Layer) -> Vec<usize>,
     entries: impl Fn(&str) -> Vec<String>,
 ) -> HashSet<String> {
     let mut named = HashSet::new();
     for lc in &changes.layers {
         let Some(l) = edited.layers.iter().find(|l| l.id == lc.layer && !l.is_raster()) else { continue };
-        let Some(fi) = field(l) else { continue };
-        let Some(name) = l.dataset.fields.get(fi).map(|f| f.name.as_str()) else { continue };
+        // Every photos field of the layer (a layer can have both a `photos` and a `photo`).
+        let fis = fields(l);
+        let names: Vec<&str> = fis.iter().filter_map(|fi| l.dataset.fields.get(*fi).map(|f| f.name.as_str())).collect();
+        if names.is_empty() {
+            continue;
+        }
         // A layer home no longer has takes none of the changes, nor their photos.
         let Some(home_layer) = home.and_then(|m| m.layers.iter().find(|h| h.id == lc.layer && !h.is_raster())) else { continue };
         // An edit to a feature home no longer has is dropped, its photo with it.
-        let mut photo_edits: HashSet<u64> =
-            lc.edited.iter().filter(|g| g.values.iter().any(|(n, _)| n.eq_ignore_ascii_case(name))).map(|g| g.id).collect();
+        let mut photo_edits: HashSet<u64> = lc
+            .edited
+            .iter()
+            .filter(|g| g.values.iter().any(|(n, _)| names.iter().any(|name| n.eq_ignore_ascii_case(name))))
+            .map(|g| g.id)
+            .collect();
         let at_home: HashSet<u64> = if photo_edits.is_empty() {
             HashSet::new()
         } else {
@@ -943,8 +967,10 @@ pub(crate) fn photos_named(
         photo_edits.retain(|id| at_home.contains(id));
         let ids: HashSet<u64> = lc.added.iter().copied().chain(photo_edits).collect();
         for row in l.dataset.features.rows().filter(|r| ids.contains(&r.id())) {
-            if let Value::Text(text) = row.value(fi) {
-                named.extend(entries(text));
+            for fi in &fis {
+                if let Value::Text(text) = row.value(*fi) {
+                    named.extend(entries(text));
+                }
             }
         }
     }

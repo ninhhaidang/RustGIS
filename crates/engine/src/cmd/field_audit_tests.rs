@@ -602,15 +602,16 @@ fn a_feature_with_a_photo_deleted_in_the_field_is_deleted_at_home() {
     home.run("offline.sync", &json!({"name": "Day"})).unwrap();
     let (_, out) = package(&mut home, &Value::Null).unwrap();
     home.run("map.activate", &json!({"name": home.project.offline_areas[0].map.clone()})).unwrap();
-    assert!(rustgis_data::zip::read(&out).unwrap().iter().all(|(n, _)| !n.starts_with("photos/")));
+    // The photo goes with its feature, and the phone names it where it was unpacked: the
+    // deletion's old value still matches home's, which names it where it is at home.
+    assert!(rustgis_data::zip::read(&out).unwrap().iter().any(|(n, b)| n == "photos/home-00001.jpg" && b == b"home photo"));
     let mut a = phone(&temp, &out, "a");
-    assert!(!temp.0.join("a").join("photos").exists(), "no photos folder, so project_in rewrote nothing");
     let cities = layer(&a, "Cities");
     let r = a.map().layer(cities).unwrap().dataset.features.iter().position(|f| f.id == id).unwrap();
-    assert_eq!(
-        a.map().layer(cities).unwrap().dataset.value(r, a.map().layer(cities).unwrap().dataset.field_index("photos").unwrap()).to_string(),
-        photo.display().to_string()
-    );
+    let unpacked =
+        a.map().layer(cities).unwrap().dataset.value(r, a.map().layer(cities).unwrap().dataset.field_index("photos").unwrap()).to_string();
+    assert_ne!(unpacked, photo.display().to_string());
+    assert_eq!(std::fs::read(&unpacked).unwrap(), b"home photo");
     a.run("select.rows", &json!({"layer": cities, "rows": [r]})).unwrap();
     a.run("edit.delete", &Value::Null).unwrap();
     let (done, said) = bring_back(&temp, &mut a, &mut home, "a");
@@ -802,7 +803,7 @@ fn a_field_removed_at_home_is_not_added_back_by_a_later_return() {
 }
 
 /// A photo the field didn't change, which home no longer has where it named it, isn't stored
-/// at home with nothing naming it: it is left out, and said.
+/// at home with nothing naming it: the package brought it from home, so it isn't carried back.
 #[test]
 fn a_photo_the_field_didnt_change_is_not_stored_unnamed() {
     let temp = Temp::new("unchanged-photo");
@@ -813,21 +814,20 @@ fn a_photo_the_field_didnt_change_is_not_stored_unnamed() {
     std::fs::write(&photo, b"photo bytes").unwrap();
     home.run("edit.setValue", &json!({"layer": hc, "row": 0, "field": "photos", "value": photo.display().to_string()})).unwrap();
     let (_, out) = package(&mut home, &json!({"name": "All", "extent": [-180.0, -90.0, 180.0, 90.0]})).unwrap();
-    // The phone sees the file where home named it (a shared folder), so the photo goes back.
+    // The photo went out with the package; coming back it is named where home has it, and
+    // not carried: home has it.
     let mut a = phone(&temp, &out, "a");
     let cities = layer(&a, "Cities");
     let name = text_field(&a, cities);
     add_point(&mut a, cities, &name, "Captured", [10.0, 5.0]);
     let (_, back) = package(&mut a, &Value::Null).unwrap();
-    assert!(rustgis_data::zip::read(&back).unwrap().iter().any(|(n, _)| n == "photos/shared.jpg"));
+    assert!(rustgis_data::zip::read(&back).unwrap().iter().all(|(n, _)| !n.starts_with("photos/")));
     std::fs::remove_file(&photo).unwrap();
     let path = temp.0.join("back.rgisfield");
     std::fs::write(&path, &back).unwrap();
-    let mark = home.notice_mark();
     let done = home.run("offline.bringBack", &json!({"path": path})).unwrap();
-    assert_eq!(done["photos"].as_u64(), Some(0), "{done}");
+    assert_eq!((done["photos"].as_u64(), done["updated"].as_u64()), (Some(0), Some(0)), "{done}");
     assert!(!temp.0.join("All photos").join("shared.jpg").exists());
-    assert!(home.notices_since(mark).iter().any(|n| n.text.contains("no change it brings back names")));
 }
 
 /// Sending a return spends its package: once the file is written, the rows it gave are removed

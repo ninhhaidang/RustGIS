@@ -157,8 +157,11 @@ field package carries the archives its map draws from. Tile layers from the web 
 A field package (`.rgisfield`) carries a map to the phone and its edits back.
 
 1. **On the computer**, with the map in view, **Data › Offline › Package for the Field** makes
-   the package: a project of that map, the features in view, and the MBTiles and PMTiles
-   archives its tile layers use. The package records the area it was made from in your project,
+   the package: a project of that map, the features in view, the MBTiles and PMTiles archives its
+   tile layers use, and the photos its loaded layers' features name (pictures named by their full
+   path, while they fit the package; the notice counts any left out). A layer read in place keeps
+   its photos at home: the notice counts them for a layer copied for reference, and names a layer
+   left out whole. The package records the area it was made from in your project,
    so save the project after packaging. A layer read in place from a supported local file is
    copied within the area while it fits the package budget. The copy is for reference, and
    Bring Back skips edits to it. The sender gets a notice about anything left behind, including
@@ -223,8 +226,17 @@ project until dismissed, and Undo of the Bring Back takes them away with it. Fro
 command line or Python, `offline.conflicts` lists them with the project's `state`, and `offline.dismissConflicts` dismisses
 them by index with that state, refusing a list read before the project changed.
 
-Only the photos of features the phone added, or whose photos it changed, come back: a photo of a
-feature whose photos it left alone is left out, and the summary says how many.
+A photo the package took from the computer isn't sent back: the feature names the file it was taken
+from again, and nothing is copied. A return opened on another device and sent again from there does
+carry it; Bring Back then keeps the computer's file where it still holds the same photo.
+
+Of the photos taken in the field, a return with its list of changes brings back only those of features
+the phone added, or whose photos it changed. A photo of a feature whose photos it left alone is left
+out, and the summary says how many.
+
+A return that goes back as a whole map brings back every photo it carries, except a photo that only
+layers copied for reference or added in the field name: those layers' edits stay in the field, and so
+do their photos.
 
 Bring Back refuses a package while the area's offline map is open with edits not synced yet, as
 renewing the area would replace them: **Sync** the area first. Syncing moves the area on, so a

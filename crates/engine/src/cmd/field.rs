@@ -201,7 +201,7 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut rustgis_data::loss::Not
         }
     };
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut budget = MOST_UNPACKED as u64 / 2;
+    let mut budget = most_unpacked() / 2;
     // Each local archive goes in beside the project, its layer reading it from there.
     let (mut online, mut unread, mut uploaded) = (Vec::new(), Vec::new(), Vec::new());
     let mut taken = std::collections::HashSet::new();
@@ -265,23 +265,69 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut rustgis_data::loss::Not
     if !unread.is_empty() {
         archive_error(s, format!("{} tile archive(s) couldn't be put in the field package: {}", unread.len(), unread.join(", ")));
     }
-    // Coming back, the photos taken in the field go with their features.
+    // The photos the features name go with them: going out, those named here, the features
+    // naming them as before (the phone points them at the unpacked files); coming back, those
+    // taken in the field (and those that came from home, under their paths there).
+    let photos = if coming_back {
+        // Room for the package's own entries, as going out.
+        let most_entries = usize::from(u16::MAX).saturating_sub(entries.len() + 16);
+        take_photos(&mut map, &mut budget, s.project.field_origin.as_ref().map_or("", |o| o.package.as_str()), most_entries)?
+    } else {
+        // Room for the package's own entries (its project, README, notes, marker and index).
+        let most_entries = usize::from(u16::MAX).saturating_sub(entries.len() + 16);
+        collect_photos(&map, &mut budget, most_entries)?
+    };
+    // Coming back, a photo too large for the package was always an error; going out, it stays
+    // home with the others left out.
+    let mut unread = photos.unread;
     if coming_back {
-        let photos = take_photos(&mut map, &mut budget);
-        if !photos.unread.is_empty() {
-            let unread = &photos.unread;
-            archive_error(s, format!("{} photo(s) couldn't be put in the field package: {}", unread.len(), unread.join(", ")));
-        }
-        if !photos.not_pictures.is_empty() {
-            let named = &photos.not_pictures;
+        unread.extend(photos.too_large.iter().map(|path| format!("{path} (too large for the field package)")));
+    }
+    if !unread.is_empty() {
+        archive_error(s, format!("{} photo(s) couldn't be put in the field package: {}", unread.len(), some_of(&unread)));
+    }
+    if !photos.not_pictures.is_empty() {
+        let named = &photos.not_pictures;
+        losses.push(format!(
+            "{} file(s) a photos field names weren't put in the field package: only pictures go ({}): {}",
+            named.len(),
+            PICTURES.join(", "),
+            some_of(named)
+        ));
+    }
+    // Coming back, photos home has are named where they are there; any other photo not on this
+    // device goes back as its name alone.
+    if coming_back && !photos.missing.is_empty() {
+        let named = &photos.missing;
+        losses.push(format!(
+            "{} photo(s) a photos field names aren't on this device, so the field package names them without them: {}",
+            named.len(),
+            some_of(named)
+        ));
+    }
+    if !coming_back {
+        if !photos.missing.is_empty() {
+            let named = &photos.missing;
             losses.push(format!(
-                "{} file(s) a photos field names weren't put in the field package: only pictures go ({}): {}",
+                "{} photo(s) a photos field names aren't files on this computer by their full path, so they stayed out of the field package: {}",
                 named.len(),
-                PICTURES.join(", "),
-                named.join(", ")
+                some_of(named)
             ));
         }
-        entries.extend(photos.entries);
+        if !photos.too_large.is_empty() {
+            let named = &photos.too_large;
+            losses.push(format!(
+                "{} photo(s) didn't fit in the field package (its size, index or entry limit), so they stayed home: {}",
+                named.len(),
+                some_of(named)
+            ));
+        }
+    }
+    losses.extend(photos.notes.iter().cloned());
+    // Photos sent out are optional: dropped below if the map needs their room.
+    let carried = if coming_back { 0 } else { photos.entries.iter().filter(|(n, _)| n != INDEX).count() };
+    entries.extend(photos.entries);
+    if coming_back {
         // What the phone changed in the rows it was given, which Bring Back applies.
         let package = s.project.field_origin.as_ref().map(|o| o.package.clone()).unwrap_or_default();
         match s.project.field_origin.as_ref().filter(|_| package.is_empty()) {
@@ -293,7 +339,8 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut rustgis_data::loss::Not
         }
         if !package.is_empty() {
             match super::field_changes::list(s.map(), &package) {
-                Ok(Some(changes)) => {
+                Ok(Some(mut changes)) => {
+                    photos_named_at_home(&mut changes)?;
                     if !changes.gone.is_empty() {
                         losses.push(format!(
                             "{} layer(s) the field package gave were removed from its map, so none of their features change at home: {}",
@@ -387,6 +434,22 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut rustgis_data::loss::Not
             .extent;
         let available = project_room(companion_bytes(&entries));
         copied = copy_streams(&mut map, extent, stream_budget(available), &mut losses)?;
+        // Their photos stay home: a reference copy's edits and photos don't come back. Counted by
+        // their separators, without looking at the disk: a count for the notice.
+        let mut named = 0usize;
+        for (l, fi) in map.layers.iter().filter(|l| copied.contains(&l.id)).flat_map(|l| photos_fields(l).map(move |fi| (l, fi))) {
+            for value in l.dataset.features.column(fi) {
+                progress::check().map_err(|e| e.to_string())?;
+                if let rustgis_data::Value::Text(t) = value {
+                    named += t.split(';').filter(|p| !p.trim().is_empty()).count();
+                }
+            }
+        }
+        if named > 0 {
+            losses.push(format!(
+                "{named} photo reference(s) of layer(s) copied for reference stayed home: those copies' photos don't go in the field package"
+            ));
+        }
     }
     // Going out, the highest id each layer has: features added in the field are given ids above it,
     // and so are those added here, in the area's map or its offline map, while the package is out.
@@ -452,8 +515,9 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut rustgis_data::loss::Not
         "{area}: a RustGIS field package.\nOpen it with RustGIS on a phone or a computer (Open Project). Its basemaps are in {BASEMAPS}/.\n"
     );
     entries.push(("README.txt".into(), readme.into_bytes()));
-    let companions = companion_bytes(&entries);
-    let too_large = || "the field package would be too large: leave a tile archive or some data out".to_string();
+    // With room for the marker a package going out ends with.
+    let mut companions = companion_bytes(&entries) + if coming_back { 0 } else { MARKER_ROOM };
+    let too_large = || "the field package would be too large: leave a tile archive, photos or some data out".to_string();
     if !copied.is_empty() {
         let map = project.maps.first().ok_or("the field package holds no map")?;
         let names: Vec<_> = copied.iter().filter_map(|id| map.layer(*id)).map(|l| l.name.as_str()).collect();
@@ -467,6 +531,21 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut rustgis_data::loss::Not
     progress::check().map_err(|e| e.to_string())?;
     let (mut text, mut report) =
         crate::durable::output(&mut project, None, |p| crate::project::json_within(p, project_room(companions + manifest.len() as u64)))?;
+    // The map comes first: photos it needs the room of stay home (the features still name them
+    // where they are here), and that is said.
+    if text.is_none() && carried > 0 {
+        entries.retain(|(n, _)| !n.starts_with(&format!("{PHOTOS}/")));
+        companions = companion_bytes(&entries) + MARKER_ROOM;
+        // Before the note the fallback below takes back, if it runs.
+        // The note of the layers copied for reference is the last one when there are any (pushed
+        // just before the manifest); the fallback below takes it back first.
+        let at = losses.len() - usize::from(!copied.is_empty());
+        losses.insert(at, format!("{carried} photo(s) stayed home: the map needed the field package's room for them"));
+        manifest = manifest_bytes(&archive_errors, &losses)?;
+        (text, report) = crate::durable::output(&mut project, None, |p| {
+            crate::project::json_within(p, project_room(companions + manifest.len() as u64))
+        })?;
+    }
     if text.is_none() && !copied.is_empty() {
         // Row storage and encoded JSON measure different things. The package's hard limit
         // also includes loaded layers and basemaps, so retry once without the streamed copies.
@@ -627,7 +706,16 @@ fn companion_bytes(entries: &[(String, Vec<u8>)]) -> u64 {
 
 /// The project JSON must fit its own limit and the space left in the unpacked ZIP.
 fn project_room(companions: u64) -> u64 {
-    crate::project::max_bytes().min((MOST_UNPACKED as u64).saturating_sub(companions))
+    crate::project::max_bytes().min(most_unpacked().saturating_sub(companions))
+}
+
+/// [`MOST_UNPACKED`], or a smaller limit a test sets ([`tests::with_unpacked`]).
+fn most_unpacked() -> u64 {
+    #[cfg(test)]
+    if let Some(most) = tests::UNPACKED.with(std::cell::Cell::get) {
+        return most;
+    }
+    MOST_UNPACKED as u64
 }
 
 /// Retain one map's worth of clipped streamed rows within a shared budget. Leave some of the
@@ -800,40 +888,87 @@ fn manifest_bytes(errors: &[String], losses: &rustgis_data::loss::Notes) -> Resu
     }
 }
 
-/// A layer's photos field, by its place: its text field named `photos` or `photo`, whatever the
-/// case (as the touch interface names it).
-fn photos_field(layer: &rustgis_map::Layer) -> Option<usize> {
-    layer.dataset.fields.iter().position(|f| {
-        f.ty == rustgis_data::FieldType::Text && (f.name.eq_ignore_ascii_case("photos") || f.name.eq_ignore_ascii_case("photo"))
+/// Each of a layer's photos fields, by place: its text fields named `photos` or `photo`, whatever
+/// the case (as the touch interface names them); a layer can have both.
+fn photos_fields(layer: &rustgis_map::Layer) -> impl Iterator<Item = usize> + '_ {
+    layer.dataset.fields.iter().enumerate().filter_map(|(i, f)| {
+        (f.ty == rustgis_data::FieldType::Text && (f.name.eq_ignore_ascii_case("photos") || f.name.eq_ignore_ascii_case("photo")))
+            .then_some(i)
     })
 }
 
 /// Rewrites each photos field of `map` with `rewrite` (one path in, the path to name instead out).
-fn rewrite_photos(map: &mut rustgis_map::Map, mut rewrite: impl FnMut(&str) -> String) {
+fn rewrite_photos(map: &mut rustgis_map::Map, rewrite: impl FnMut(&str) -> String) {
+    let _ = rewrite_photos_until(map, rewrite, || Ok(()));
+}
+
+/// [`rewrite_photos`], asking `go_on` before each row and stopping with its error: Cancel, for
+/// a pass whose reading of a row can look at the disk.
+fn rewrite_photos_until(
+    map: &mut rustgis_map::Map,
+    mut rewrite: impl FnMut(&str) -> String,
+    mut go_on: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     for l in map.layers.iter_mut().filter(|l| !l.is_raster()) {
-        let Some(fi) = photos_field(l) else { continue };
+        let fields: Vec<usize> = photos_fields(l).collect();
         let features = &mut l.dataset.features;
-        for row in 0..features.len() {
-            let rustgis_data::Value::Text(held) = features.value(row, fi) else { continue };
-            // Only the paths rewritten change: the rest of the text stays as it was written, so
-            // a feature isn't seen as edited for its spacing.
-            let (mut out, mut last) = (String::new(), 0);
-            for r in photo_paths(held) {
-                let (Some(before), Some(path)) = (held.get(last..r.start), held.get(r.clone())) else { continue };
-                let new = rewrite(path);
-                if new != path {
-                    out.push_str(before);
-                    out.push_str(&new);
-                    last = r.end;
+        for fi in fields {
+            for row in 0..features.len() {
+                go_on()?;
+                let rustgis_data::Value::Text(held) = features.value(row, fi) else { continue };
+                if let Some(out) = rewrite_paths(held, &mut rewrite) {
+                    let _ = features.set_value(row, fi, rustgis_data::Value::Text(out));
                 }
             }
-            if last == 0 {
-                continue;
-            }
-            out.push_str(held.get(last..).unwrap_or_default());
-            let _ = features.set_value(row, fi, rustgis_data::Value::Text(out));
         }
     }
+    Ok(())
+}
+
+/// A photos field's text `held` with each path rewritten by `rewrite`, or `None` when none
+/// changes. Only the paths rewritten change: the rest of the text stays as it was written, so a
+/// feature isn't seen as edited for its spacing.
+fn rewrite_paths(held: &str, rewrite: &mut impl FnMut(&str) -> String) -> Option<String> {
+    let (mut out, mut last) = (String::new(), 0);
+    for r in photo_paths(held) {
+        let (Some(before), Some(path)) = (held.get(last..r.start), held.get(r.clone())) else { continue };
+        let new = rewrite(path);
+        if new != path {
+            out.push_str(before);
+            out.push_str(&new);
+            last = r.end;
+        }
+    }
+    if last == 0 {
+        return None;
+    }
+    out.push_str(held.get(last..).unwrap_or_default());
+    Some(out)
+}
+
+/// Names each photo a package brought from home by its path at home again in the old values of
+/// `changes`: the field held it at the path it was unpacked to, and Bring Back checks each old
+/// value against home's.
+fn photos_named_at_home(changes: &mut super::field_changes::Changes) -> Result<(), String> {
+    let mut unpacked = Unpacked::new();
+    let package = changes.package.clone();
+    let mut at_home = |path: &str| home_path(&mut unpacked, &package, path);
+    for layer in &mut changes.layers {
+        for given in layer.edited.iter_mut().chain(layer.deleted.iter_mut()) {
+            // Reading a value's paths can look at the disk: Cancel is looked at for each row.
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+            for (field, value) in &mut given.values {
+                if !(field.eq_ignore_ascii_case("photos") || field.eq_ignore_ascii_case("photo")) {
+                    continue;
+                }
+                let rustgis_data::Value::Text(held) = value else { continue };
+                if let Some(out) = rewrite_paths(held, &mut at_home) {
+                    *value = rustgis_data::Value::Text(out);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The most pieces of a photos field (split at `;`) tried as one path with `;` in it.
@@ -875,91 +1010,347 @@ fn photo_paths(held: &str) -> Vec<std::ops::Range<usize>> {
     out
 }
 
-/// The photo files `map`'s features name that are on this device, as package entries under
-/// `photos/` (within `budget`), each feature then naming its photos there; and the photos named
-/// that couldn't be read. Only picture files ([`PICTURES`]) named by an absolute path go in, each
-/// under a plain name ([`plain_name`]): a photos field is free text, and could name any file. A
-/// photo named that isn't on this device (one named at home) is left as it is named.
-fn take_photos(map: &mut rustgis_map::Map, budget: &mut u64) -> Photos {
-    let (mut entries, mut unread, mut not_pictures) = (Vec::new(), Vec::new(), Vec::new());
-    // Each photo's entry and the path it was named by, for the way back.
-    let mut index = String::new();
-    let mut placed: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut taken = std::collections::HashSet::new();
-    // The files already said (not pictures, or unread): each said once, however many name it.
-    let mut said = std::collections::HashSet::new();
-    rewrite_photos(map, |path| {
-        if let Some(entry) = placed.get(path) {
-            return entry.clone();
-        }
-        if said.contains(path) {
-            return path.to_string();
-        }
-        let file = Path::new(path);
-        // A picture only: a photos field is free text, and could name any file on the device.
-        let picture = file.extension().is_some_and(|e| PICTURES.iter().any(|p| e.eq_ignore_ascii_case(p)));
-        if !file.is_absolute() {
-            return path.to_string();
-        }
-        // Not on this device (a photo named at home): left as named. One there that can't be
-        // looked at is said, as one that can't be read is.
-        match std::fs::metadata(file) {
-            Ok(m) if m.is_file() => {}
-            Ok(_) => return path.to_string(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return path.to_string(),
-            Err(e) => {
-                said.insert(path.to_string());
-                unread.push(format!("{path} ({e})"));
-                return path.to_string();
+/// The photos `map`'s features name that a package going out carries: each picture named by its
+/// full path on this computer, under `photos/` (within `budget`), with [`INDEX`] giving the path
+/// each was named by, which the phone points the features at the unpacked file by
+/// ([`project_in`]). The features aren't changed here, so the rows the map shares with the
+/// offline area aren't copied. A name a feature already gives under `photos/` isn't used for
+/// another. What stays out is listed by kind. Cancel is checked before each photo is looked at.
+fn collect_photos(map: &rustgis_map::Map, budget: &mut u64, most_entries: usize) -> Result<Photos, String> {
+    let mut found = Photos::default();
+    // Every path named, once, in order; and the names already given under `photos/`, kept.
+    // The names are borrowed from the map's rows, not copied.
+    let (mut named, mut seen, mut taken): (Vec<&str>, std::collections::HashSet<&str>, std::collections::HashSet<String>) =
+        (Vec::new(), std::collections::HashSet::new(), std::collections::HashSet::new());
+    // A streamed layer's photos are left to its copy for reference, which counts them as staying
+    // home (or leaves the layer out): the rows it holds now aren't what the package will hold.
+    for (l, fi) in map.layers.iter().filter(|l| !l.is_raster() && !l.is_streamed()).flat_map(|l| photos_fields(l).map(move |fi| (l, fi))) {
+        for value in l.dataset.features.column(fi) {
+            // Reading a field's paths can look at the disk (a path with a `;` in it).
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+            let rustgis_data::Value::Text(held) = value else { continue };
+            for r in photo_paths(held) {
+                let Some(path) = held.get(r) else { continue };
+                if let Some(name) = path.strip_prefix(&format!("{PHOTOS}/")) {
+                    taken.insert(name.to_ascii_lowercase());
+                }
+                if seen.insert(path) {
+                    named.push(path);
+                }
             }
         }
-        if !picture {
-            said.insert(path.to_string());
-            not_pictures.push(path.to_string());
-            return path.to_string();
+    }
+    let (mut index, mut number) = (String::new(), 0u32);
+    // Each photo looked at is a step: its file is read.
+    rustgis_data::progress::begin(named.len());
+    for path in named {
+        rustgis_data::progress::step(1).map_err(|e| e.to_string())?;
+        let file = Path::new(&path);
+        if !file.is_absolute() {
+            found.missing.push(path.to_string());
+            continue;
+        }
+        // The index holds one path a line, its fields split by tabs; a photos field splits its
+        // paths at `;`, which the phone can't tell from one path once the file isn't there.
+        if path.contains(['\t', '\n', '\r', ';']) {
+            found.unread.push(format!("{path} (its name holds a tab, a line break or a ;)"));
+            continue;
+        }
+        let size = match std::fs::metadata(file) {
+            Ok(m) if m.is_file() => m.len(),
+            Ok(_) => {
+                found.missing.push(path.to_string());
+                continue;
+            }
+            // The browser has no files to look at by path: not here either.
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::Unsupported) => {
+                found.missing.push(path.to_string());
+                continue;
+            }
+            Err(e) => {
+                found.unread.push(format!("{path} ({e})"));
+                continue;
+            }
+        };
+        if !file.extension().is_some_and(|e| PICTURES.iter().any(|p| e.eq_ignore_ascii_case(p))) {
+            found.not_pictures.push(path.to_string());
+            continue;
+        }
+        // A short name of plain letters and digits, numbered: two names a system takes for one
+        // (by case or by how an accent is written) or one too long for it can't come of it. The
+        // index keeps the path it was named by.
+        let ext = file.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let mut name = String::new();
+        while name.is_empty() || taken.contains(&name) {
+            number += 1;
+            name = format!("home-{number:05}.{ext}");
+        }
+        let entry = format!("{PHOTOS}/{name}");
+        let line = format!("{entry}\t{path}\n");
+        // Past the budget, past what the phone reads of the index, or past the entries a package
+        // holds: it stays home.
+        if size > *budget || (index.len() + line.len()) as u64 > MAX_INDEX || found.entries.len() >= most_entries {
+            found.too_large.push(path.to_string());
+            continue;
         }
         match crate::project::read_file(file, *budget) {
             Ok(bytes) => {
                 *budget = budget.saturating_sub(bytes.len() as u64);
-                let stem = file.file_name().map(|n| plain_name(&n.to_string_lossy())).unwrap_or_else(|| "photo.jpg".into());
-                let mut name = stem.clone();
-                for n in 2.. {
-                    if taken.insert(name.to_ascii_lowercase()) {
-                        break;
-                    }
-                    name = format!("{n}-{stem}");
-                }
-                let entry = format!("{PHOTOS}/{name}");
-                index.push_str(&format!("{entry}\t{path}\n"));
-                entries.push((entry.clone(), bytes));
-                placed.insert(path.to_string(), entry.clone());
-                entry
+                taken.insert(name);
+                index.push_str(&line);
+                found.entries.push((entry, bytes));
             }
-            Err(e) => {
-                said.insert(path.to_string());
-                unread.push(format!("{path} ({e})"));
-                path.to_string()
-            }
+            Err(e) => found.unread.push(format!("{path} ({e})")),
         }
-    });
-    if !index.is_empty() {
-        entries.push((INDEX.to_string(), index.into_bytes()));
     }
-    Photos { entries, unread, not_pictures }
+    if !index.is_empty() {
+        found.entries.push((INDEX.to_string(), index.into_bytes()));
+    }
+    Ok(found)
 }
 
-/// What [`take_photos`] found: the package's photo entries (with [`INDEX`]), the photos that
-/// couldn't be read, and the files named that aren't pictures.
+/// Coming back, the photo files `map`'s features name that are on this device, as package entries under
+/// `photos/` (within `budget`), each feature then naming its photos there, with [`INDEX`] giving
+/// the path each was named by. Only picture files ([`PICTURES`]) named by an absolute path go in,
+/// each under a plain name ([`plain_name`]): a photos field is free text, and could name any file.
+/// A photo that isn't on this device (one named at home) is left as it is named, and listed in
+/// [`Photos::missing`]. A photo a package from home brought is named by
+/// its path at home again, from the [`INDEX`] unpacked beside it ([`home_path`]), and isn't
+/// carried: home has it, so it takes none of the package's room, and a feature whose photos the
+/// field left alone names them as home does. Each row is a counted step, Cancel looked at before
+/// it.
+fn take_photos(map: &mut rustgis_map::Map, budget: &mut u64, package: &str, most_entries: usize) -> Result<Photos, String> {
+    let mut found = Photos::default();
+    // Each photo's entry and the path it was named by, for the way back.
+    let mut index = String::new();
+    let mut placed: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // The names features already give under `photos/` are kept: no photo carried takes one.
+    let mut taken = std::collections::HashSet::new();
+    for (l, fi) in map.layers.iter().filter(|l| !l.is_raster()).flat_map(|l| photos_fields(l).map(move |fi| (l, fi))) {
+        for value in l.dataset.features.column(fi) {
+            let rustgis_data::Value::Text(held) = value else { continue };
+            for name in held.split(';').filter_map(|p| p.trim().strip_prefix(&format!("{PHOTOS}/"))) {
+                taken.insert(name.to_ascii_lowercase());
+            }
+        }
+    }
+    // The next number to try for each name: photos sharing one don't each count up from 2.
+    let mut next: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    // The files already said (missing, not pictures, too large, or unread): each said once,
+    // however many name it.
+    let mut said = std::collections::HashSet::new();
+    // The index unpacked with each folder of photos a package brought: entry → path at home.
+    let mut unpacked = Unpacked::new();
+    // Each row is a counted step, and Cancel is looked at before it: reading a row's paths can
+    // look at the disk.
+    let rows: usize = map.layers.iter().filter(|l| !l.is_raster()).map(|l| photos_fields(l).count() * l.dataset.features.len()).sum();
+    rustgis_data::progress::begin(rows);
+    let go_on = || rustgis_data::progress::step(1).map_err(|e| e.to_string());
+    rewrite_photos_until(
+        map,
+        |path| {
+            if let Some(entry) = placed.get(path) {
+                return entry.clone();
+            }
+            if said.contains(path) {
+                return path.to_string();
+            }
+            // Brought from home in this package: named where it is at home, and not carried back.
+            let at_home = home_path(&mut unpacked, package, path);
+            if at_home != path {
+                placed.insert(path.to_string(), at_home.clone());
+                return at_home;
+            }
+            let file = Path::new(path);
+            // A picture only: a photos field is free text, and could name any file on the device.
+            let picture = file.extension().is_some_and(|e| PICTURES.iter().any(|p| e.eq_ignore_ascii_case(p)));
+            if !file.is_absolute() {
+                said.insert(path.to_string());
+                found.missing.push(path.to_string());
+                return path.to_string();
+            }
+            // Not on this device (in a returning package, a photo named at home): left as named. One
+            // there that can't be looked at is said, as one that can't be read is.
+            let size = match std::fs::metadata(file) {
+                Ok(m) if m.is_file() => m.len(),
+                // A folder, or nothing there: no photo file on this device.
+                Ok(_) => {
+                    said.insert(path.to_string());
+                    found.missing.push(path.to_string());
+                    return path.to_string();
+                }
+                // The browser has no files to look at by path: not here either.
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::Unsupported) => {
+                    said.insert(path.to_string());
+                    found.missing.push(path.to_string());
+                    return path.to_string();
+                }
+                Err(e) => {
+                    said.insert(path.to_string());
+                    found.unread.push(format!("{path} ({e})"));
+                    return path.to_string();
+                }
+            };
+            if !picture {
+                said.insert(path.to_string());
+                found.not_pictures.push(path.to_string());
+                return path.to_string();
+            }
+            // The index holds one path a line, its fields split by tabs: one holding either would be
+            // read back as another path.
+            if path.contains(['\t', '\n', '\r']) {
+                said.insert(path.to_string());
+                found.unread.push(format!("{path} (its name holds a tab or a line break)"));
+                return path.to_string();
+            }
+            // Past the budget, past what the computer reads of the index (its line as long as it can
+            // be, with a numbered name), or past the entries a package holds: it stays on the phone.
+            let longest_line = PHOTOS.len() + 8 + file.file_name().map_or(0, |n| n.len()) + path.len() + 2;
+            if size > *budget || (index.len() + longest_line) as u64 > MAX_INDEX || found.entries.len() >= most_entries {
+                said.insert(path.to_string());
+                found.too_large.push(path.to_string());
+                return path.to_string();
+            }
+            match crate::project::read_file(file, *budget) {
+                Ok(bytes) => {
+                    *budget = budget.saturating_sub(bytes.len() as u64);
+                    let stem = file.file_name().map(|n| plain_name(&n.to_string_lossy())).unwrap_or_else(|| "photo.jpg".into());
+                    let mut name = stem.clone();
+                    let from = next.entry(stem.to_ascii_lowercase()).or_insert(2);
+                    for n in *from.. {
+                        if taken.insert(name.to_ascii_lowercase()) {
+                            *from = n;
+                            break;
+                        }
+                        name = format!("{n}-{stem}");
+                    }
+                    let entry = format!("{PHOTOS}/{name}");
+                    index.push_str(&format!("{entry}\t{path}\n"));
+                    found.entries.push((entry.clone(), bytes));
+                    placed.insert(path.to_string(), entry.clone());
+                    entry
+                }
+                Err(e) => {
+                    said.insert(path.to_string());
+                    found.unread.push(format!("{path} ({e})"));
+                    path.to_string()
+                }
+            }
+        },
+        go_on,
+    )?;
+    for (folder, read) in &unpacked {
+        if let Err(e) = read {
+            found.notes.push(format!(
+                "The photo index of the field package this map came from couldn't be read ({}: {e}): its photos go back as copies, not as the computer's own files",
+                folder.display()
+            ));
+        }
+    }
+    if !index.is_empty() {
+        found.entries.push((INDEX.to_string(), index.into_bytes()));
+    }
+    Ok(found)
+}
+
+/// The first few of `names`, and how many more: a photos layer can name thousands.
+fn some_of(names: &[String]) -> String {
+    const SHOWN: usize = 10;
+    let first = names.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
+    match names.len().saturating_sub(SHOWN) {
+        0 => first,
+        more => format!("{first} and {more} more"),
+    }
+}
+
+/// The [`INDEX`] of each folder of photos a package unpacked, read once: entry → path at home.
+type Unpacked = std::collections::HashMap<PathBuf, Result<std::collections::HashMap<String, String>, String>>;
+
+/// The path a photo at `path` was named by at home, when a package brought it from there (the
+/// [`INDEX`] unpacked beside it names it); otherwise `path` itself.
+fn home_path(unpacked: &mut Unpacked, package: &str, path: &str) -> String {
+    let file = Path::new(path);
+    // Only a full path names an unpacked file: a relative one would be looked for wherever the
+    // app runs.
+    if !file.is_absolute() {
+        return path.to_string();
+    }
+    file.parent()
+        .zip(file.file_name())
+        .and_then(|(folder, own)| {
+            let index = unpacked.entry(folder.to_path_buf()).or_insert_with(|| unpacked_index(folder, package));
+            index.as_ref().ok()?.get(&format!("{PHOTOS}/{}", own.to_string_lossy())).cloned()
+        })
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// The [`INDEX`] a package unpacked into `folder` (its `photos` folder), as entry → path named
+/// by where it was packaged; empty where there is none. One that is there but can't be read is an
+/// error, said by the caller: its photos can't be told from the field's.
+fn unpacked_index(folder: &Path, package: &str) -> Result<std::collections::HashMap<String, String>, String> {
+    // Only this field project's package from home: one that went out names itself beside its
+    // photos (`given.v1.json`). A return opened elsewhere has none, and another package's photos
+    // aren't this one's, so their photos go back as they are.
+    if folder.file_name().is_none_or(|n| n != PHOTOS) {
+        return Ok(std::collections::HashMap::new());
+    }
+    // A marker that is there but can't be read is a damaged package, said by the caller.
+    let marked = match folder.parent() {
+        Some(dir) => super::field_changes::marked(dir, package)?,
+        None => false,
+    };
+    if !marked {
+        return Ok(std::collections::HashMap::new());
+    }
+    // A package's own index, read within a bound: one line for each photo it carried. A package
+    // that carried no photo has none; one whose photos are there without it is damaged.
+    let file = folder.join(INDEX_FILE);
+    if matches!(std::fs::symlink_metadata(&file), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+        let photos = std::fs::read_dir(folder).map_err(|e| format!("{}: {e}", folder.display()))?.next().is_some();
+        return if photos { Err(format!("{}: missing beside the photos", file.display())) } else { Ok(std::collections::HashMap::new()) };
+    }
+    let bytes = crate::project::read_file(&file, MAX_INDEX)?;
+    let text = String::from_utf8(bytes).map_err(|_| format!("{}: not UTF-8 text", file.display()))?;
+    let mut index = std::collections::HashMap::new();
+    // One the package didn't write that way (a line without its two fields, an entry listed twice)
+    // is damaged: none of it is trusted, and the caller says so.
+    for line in text.lines() {
+        let (entry, named) = line.split_once('\t').ok_or_else(|| format!("{}: a line isn't an entry and a path", file.display()))?;
+        if index.insert(entry.to_string(), named.to_string()).is_some() {
+            return Err(format!("{}: {entry} is listed twice", file.display()));
+        }
+    }
+    Ok(index)
+}
+
+/// The most a package's photo index is read: a line for each of many thousand photos.
+const MAX_INDEX: u64 = 16 << 20;
+
+/// The room kept in a package going out for the marker it ends with
+/// ([`super::field_changes::GIVEN`]), which is read back within the same bound.
+const MARKER_ROOM: u64 = 4096;
+
+/// What [`take_photos`] found: the package's photo entries (with [`INDEX`]), and the photos named
+/// that stay out of it: not on this device (or not named by a full path), not pictures, past the
+/// package's budget, or unreadable.
+#[derive(Default)]
 struct Photos {
     entries: Vec<(String, Vec<u8>)>,
-    unread: Vec<String>,
+    /// What couldn't be told about the photos as a whole (a package's photo index unreadable).
+    notes: Vec<String>,
+    missing: Vec<String>,
     not_pictures: Vec<String>,
+    too_large: Vec<String>,
+    unread: Vec<String>,
 }
 
 /// The entry listing each photo of a package and the path its feature named it by before
 /// (`photos/a.jpg<TAB>/storage/…/a.jpg`), so a photo brought back to where it already is keeps
 /// that path.
 const INDEX: &str = "photos/index.tsv";
+
+/// [`INDEX`]'s file name, in the folder a package's photos are unpacked into.
+const INDEX_FILE: &str = "index.tsv";
 
 /// The extensions of the picture files a returning field package carries.
 const PICTURES: &[&str] = &["jpg", "jpeg", "png", "heic", "heif", "webp"];
@@ -1181,8 +1572,7 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
         // left without a reference among the layers passed to Sync.
         let mut unused: std::collections::HashSet<_> = photos.iter().map(|(name, _)| name.clone()).collect();
         let prefix = format!("{PHOTOS}/");
-        for layer in edited.layers.iter().filter(|l| !l.is_raster()) {
-            let Some(field) = photos_field(layer) else { continue };
+        for (layer, field) in edited.layers.iter().filter(|l| !l.is_raster()).flat_map(|l| photos_fields(l).map(move |fi| (l, fi))) {
             for value in layer.dataset.features.column(field) {
                 let rustgis_data::Value::Text(text) = value else { continue };
                 for span in photo_paths(text) {
@@ -1203,12 +1593,18 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
     let unchanged_photos = match &changes {
         Some(changes) if !photos.is_empty() => {
             let home = s.project.offline_areas.get(ai).and_then(|a| s.project.maps.iter().find(|m| m.name.eq_ignore_ascii_case(&a.map)));
-            let named = super::field_changes::photos_named(&edited, home, changes, photos_field, |text| {
-                photo_paths(text)
-                    .into_iter()
-                    .filter_map(|r| text.get(r).and_then(|p| p.strip_prefix(&format!("{PHOTOS}/"))).map(str::to_string))
-                    .collect()
-            });
+            let named = super::field_changes::photos_named(
+                &edited,
+                home,
+                changes,
+                |l| photos_fields(l).collect(),
+                |text| {
+                    photo_paths(text)
+                        .into_iter()
+                        .filter_map(|r| text.get(r).and_then(|p| p.strip_prefix(&format!("{PHOTOS}/"))).map(str::to_string))
+                        .collect()
+                },
+            );
             let before = photos.len();
             photos.retain(|(name, _)| named.contains(name));
             before - photos.len()
@@ -1514,25 +1910,84 @@ pub(crate) fn project_in(text: &str, dir: &Path) -> Result<Project, String> {
     let mut project = Project::from_import_json(text, Some(dir))?;
     let photos = std::path::absolute(dir.join(PHOTOS)).map_err(|e| e.to_string())?;
     let mut relative = 0_usize;
+    // Photos from home that keep their names there, the unpack folder's name not being text.
+    let mut unshown = std::collections::HashSet::new();
+    // Photos from home the index lists that the package doesn't hold.
+    let mut absent = std::collections::HashSet::new();
     if photos.is_dir() {
+        // A package from home names its photos where they are at home; its index says which entry
+        // each is.
+        let index = match unpacked_index(&photos, project.field_origin.as_ref().map_or("", |o| o.package.as_str())) {
+            Ok(index) => index,
+            Err(e) => {
+                project.read_notices.push((
+                    crate::project::ReadPart::Maps,
+                    crate::notice_text::NoticeText::format(
+                        "The field package's photo index couldn't be read ({reason}): its photos keep the names they have at home, which may not be on this device.",
+                        [("reason", e.into())],
+                    ),
+                ));
+                Default::default()
+            }
+        };
+        // An entry the index lists belongs to the home path it names, and to nothing else: a
+        // feature naming the entry itself isn't pointed at that photo. A streamed layer's copy for
+        // reference can: its rows are read after the photo names are given (`collect_photos` skips
+        // streamed layers), so a home row naming `photos/home-00001.jpg` isn't kept clear of them.
+        let listed: std::collections::HashSet<String> = index.keys().cloned().collect();
+        let at_home: std::collections::HashMap<String, String> = index.into_iter().map(|(entry, named)| (named, entry)).collect();
         for map in &mut project.maps {
             rewrite_photos(map, |path| {
-                if let Some(name) = path.strip_prefix("photos/").filter(|name| plain_file(name)) {
+                if listed.contains(path) {
+                    return path.to_string();
+                }
+                // A return's photo is pointed at its unpacked file by its full path, or by its entry,
+                // relative to the package, where the unpack folder's name can't be held as text. One
+                // named where it is at home is pointed there by its full path only: otherwise it
+                // keeps its name at home, so the way back can't take its name here for an edit.
+                let (named, entry) = (path, at_home.get(path).map_or(path, String::as_str));
+                if let Some(name) = entry.strip_prefix("photos/").filter(|name| plain_file(name)) {
                     let file = photos.join(name);
+                    // A photo the index lists that isn't there: the feature keeps its name at home.
+                    if named != entry && !file.is_file() {
+                        absent.insert(named.to_string());
+                    }
                     if file.is_file() {
                         if let Some(path) = file.to_str() {
                             return path.to_string();
                         }
+                        if named != entry {
+                            unshown.insert(named.to_string());
+                            return named.to_string();
+                        }
                         relative += 1;
                     }
                 }
-                path.to_string()
+                named.to_string()
             });
         }
     }
     // The rows as given, taken (sharing them) for `offline.keepRows` to keep, when this package
     // went out from home: a return opened here keeps none.
     project.given = super::field_changes::GivenRows::in_package(dir, &project).map(std::sync::Arc::new);
+    if !absent.is_empty() {
+        project.read_notices.push((
+            crate::project::ReadPart::Maps,
+            crate::notice_text::NoticeText::format(
+                "{count} photo(s) the field package lists aren't in it: their features keep the names they have at home, which may not be on this device.",
+                [("count", absent.len().to_string().into())],
+            ),
+        ));
+    }
+    if !unshown.is_empty() {
+        project.read_notices.push((
+            crate::project::ReadPart::Maps,
+            crate::notice_text::NoticeText::format(
+                "{count} photo(s) the field package brought from home keep the names they have there, because the unpack folder is not UTF-8: they don't show on this device.",
+                [("count", unshown.len().to_string().into())],
+            ),
+        ));
+    }
     if relative > 0 {
         project.read_notices.push((
             crate::project::ReadPart::Maps,
@@ -1616,6 +2071,52 @@ mod tests {
 
     fn sample() -> Session {
         Session::new(crate::sample::world_project())
+    }
+
+    thread_local! {
+        pub(super) static UNPACKED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// Runs `f` with the unpacked limit of a package at `most` on this thread; put back after.
+    fn with_unpacked<T>(most: u64, f: impl FnOnce() -> T) -> T {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                UNPACKED.with(|m| m.set(None));
+            }
+        }
+        UNPACKED.with(|m| m.set(Some(most)));
+        let _restore = Restore;
+        f()
+    }
+
+    /// Photos the map needs the room of stay home, and that is said: a package that fit without
+    /// them still goes out.
+    #[test]
+    fn photos_the_map_needs_the_room_of_stay_home() {
+        let temp = Temp::new("photo-room");
+        let mut home = sample();
+        home.path = Some(temp.path().join("home.rgis"));
+        let cities = layer(&home, "Cities");
+        home.run("edit.addField", &json!({"layer": cities, "name": "photos", "type": "text"})).unwrap();
+        let area = json!({"name": "Room", "extent": [-180.0, -85.0, 180.0, 85.0]});
+        let map_bytes = |bytes: &[u8]| {
+            rustgis_data::zip::read(bytes).unwrap().into_iter().find(|(n, _)| n.ends_with(".rgis")).map(|(_, b)| b.len() as u64).unwrap()
+        };
+        let json = map_bytes(&package(&mut home, &area).unwrap().1);
+        // A photo that fits the budget for archives and photos (half the limit), but not beside the map.
+        let photo = temp.path().join("big.jpg");
+        std::fs::write(&photo, vec![0u8; (json * 6 / 10) as usize]).unwrap();
+        home.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": photo.display().to_string()})).unwrap();
+        let mark = home.notice_mark();
+        let out = with_unpacked(json * 14 / 10, || package(&mut home, &json!({"name": "Room"}))).unwrap().1;
+        let entries = rustgis_data::zip::read(&out).unwrap();
+        assert!(entries.iter().all(|(n, _)| !n.starts_with("photos/")));
+        let said: Vec<String> = home.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert!(said.iter().any(|t| t.starts_with("1 photo(s) stayed home: the map needed")), "{said:?}");
+        // With room for both, it goes.
+        let out = package(&mut home, &json!({"name": "Room"})).unwrap().1;
+        assert!(rustgis_data::zip::read(&out).unwrap().iter().any(|(n, _)| n == "photos/home-00001.jpg"));
     }
 
     #[test]
@@ -2221,9 +2722,14 @@ mod tests {
         std::fs::write(&picture, b"first").unwrap();
         let named = format!("{};{}", secret.display(), picture.display());
         home.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": named})).unwrap();
-        // Going out: no photos, whatever the features name.
+        // Going out: the picture, under a plain name; the text file is said and stays home.
+        let mark = home.notice_mark();
         let (_, out) = package(&mut home, &json!({"name": "Pics", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
-        assert!(rustgis_data::zip::read(&out).unwrap().iter().all(|(n, _)| !n.starts_with("photos/")));
+        let photos: Vec<String> =
+            rustgis_data::zip::read(&out).unwrap().into_iter().map(|(n, _)| n).filter(|n| n.starts_with("photos/") && n != INDEX).collect();
+        assert_eq!(photos, ["photos/home-00001.jpg"]);
+        let said: Vec<String> = home.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert!(said.iter().any(|t| t.starts_with("1 file(s) a photos field names") && t.contains("notes.txt")), "{said:?}");
         // Coming back: the picture only, under a plain name; the text file stays named as it was.
         let unpacked = temp.path().join("field");
         let text = unpack_into(&out, &unpacked).unwrap().0;
@@ -2275,13 +2781,14 @@ mod tests {
         let text = unpack_into(&out, &unpacked).unwrap().0;
         let mut field = opened(project_in(&text, &unpacked).unwrap());
         field.opened_package = Some(temp.path().join("sent.rgisfield"));
-        // Sent back with no edit: the picture goes in, listed with its path; the gif is said.
+        // Sent back with no edit: the picture, brought from home, isn't carried back; the gif is
+        // said.
         let mark = field.notice_mark();
         let (_, back) = package(&mut field, &Value::Null).unwrap();
         let said: Vec<String> = field.notices_since(mark).iter().map(|n| n.text.clone()).collect();
         assert!(said.iter().any(|t| t.contains("only pictures go") && t.contains("b.gif")), "{said:?}");
         let entries = rustgis_data::zip::read(&back).unwrap();
-        assert!(entries.iter().any(|(n, b)| n == INDEX && String::from_utf8_lossy(b).contains(&*photo.display().to_string())));
+        assert!(entries.iter().all(|(n, _)| !n.starts_with("photos/")));
         // Brought back here: the photo is where it was, so nothing changed and nothing is copied.
         let sent = temp.path().join("back.rgisfield");
         std::fs::write(&sent, &back).unwrap();
@@ -2289,6 +2796,398 @@ mod tests {
         assert_eq!((done["updated"].as_u64(), done["conflicts"].as_u64()), (Some(0), Some(0)), "{done}");
         assert_eq!(value(&home, "Cities", 0, "photos"), photo.display().to_string());
         assert!(!temp.path().join("Here photos").join("a.jpg").exists());
+    }
+
+    /// A photo named at home goes out with its feature, and comes back to the path it has at home:
+    /// an edit to its feature's photos, or the feature's deletion, is no conflict and copies
+    /// nothing. Photos the package can't carry are counted, going out.
+    #[test]
+    fn photos_named_at_home_go_out_and_come_back_to_their_own_paths() {
+        let temp = Temp::new("home-photos");
+        let mut home = sample();
+        home.path = Some(temp.path().join("home.rgis"));
+        let cities = layer(&home, "Cities");
+        home.run("edit.addField", &json!({"layer": cities, "name": "photos", "type": "text"})).unwrap();
+        let (kept, dropped) = (temp.path().join("kept.jpg"), temp.path().join("dropped.jpg"));
+        std::fs::write(&kept, b"kept at home").unwrap();
+        std::fs::write(&dropped, b"of a feature deleted in the field").unwrap();
+        let missing = temp.path().join("not-here.jpg");
+        let set = |s: &mut Session, row: usize, text: String| {
+            s.run("edit.setValue", &json!({"layer": cities, "row": row, "field": "photos", "value": text})).unwrap();
+        };
+        set(&mut home, 0, kept.display().to_string());
+        set(&mut home, 1, dropped.display().to_string());
+        set(&mut home, 2, format!("{};relative.jpg", missing.display()));
+        let (ids, before) = {
+            let f = &home.map().layer(cities).unwrap().dataset.features;
+            ([f[0].id, f[1].id], f.len())
+        };
+        let mark = home.notice_mark();
+        let (_, out) = package(&mut home, &json!({"name": "Away", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
+        let entries = rustgis_data::zip::read(&out).unwrap();
+        assert!(entries.iter().any(|(n, b)| n == "photos/home-00001.jpg" && b == b"kept at home"));
+        assert!(entries.iter().any(|(n, b)| n == "photos/home-00002.jpg" && b == b"of a feature deleted in the field"));
+        // The two named that aren't files here (one by no full path) are counted, for the sender
+        // and the crew.
+        let expected = "2 photo(s) a photos field names aren't files on this computer by their full path";
+        let said: Vec<String> = home.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert_eq!(said.iter().filter(|t| t.starts_with(expected) && t.contains("relative.jpg")).count(), 1, "{said:?}");
+        let unpacked = temp.path().join("field");
+        let (text, losses) = unpack_into(&out, &unpacked).unwrap();
+        assert!(losses.iter().any(|t| t.starts_with(expected)), "{losses:?}");
+        let mut field = opened(project_in(&text, &unpacked).unwrap());
+        field.opened_package = Some(temp.path().join("sent.rgisfield"));
+        let there = unpacked.join("photos").join("home-00001.jpg");
+        assert_eq!(Path::new(&value(&field, "Cities", 0, "photos")), there.as_path());
+        // In the field: a photo added to the first feature, the second feature deleted.
+        let taken = temp.path().join("photo-9.jpg");
+        std::fs::write(&taken, b"taken in the field").unwrap();
+        set(&mut field, 0, format!("{};{}", there.display(), taken.display()));
+        field.run("select.rows", &json!({"layer": cities, "rows": [1]})).unwrap();
+        field.run("edit.delete", &Value::Null).unwrap();
+        let mark = field.notice_mark();
+        let (_, back) = package(&mut field, &Value::Null).unwrap();
+        // The two photos that never went out aren't here either, and that is said.
+        let said: Vec<String> = field.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert!(said.iter().any(|t| t.starts_with("2 photo(s) a photos field names aren't on this device")), "{said:?}");
+        // Only the field's photo goes back: home has its own.
+        let carried: Vec<String> = rustgis_data::zip::read(&back)
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n)
+            .filter(|n| n.starts_with("photos/") && n != INDEX)
+            .collect();
+        assert_eq!(carried, ["photos/photo-9.jpg"]);
+        std::fs::remove_file(&taken).unwrap();
+        let sent = temp.path().join("back.rgisfield");
+        std::fs::write(&sent, &back).unwrap();
+        let done = home.run("offline.bringBack", &json!({"path": sent.display().to_string()})).unwrap();
+        assert_eq!(
+            (done["updated"].as_u64(), done["deleted"].as_u64(), done["conflicts"].as_u64(), done["kept"].as_u64()),
+            (Some(1), Some(1), Some(0), Some(0)),
+            "{done}"
+        );
+        let f = &home.map().layer(cities).unwrap().dataset.features;
+        assert_eq!(f.len(), before - 1);
+        assert!(f.iter().all(|r| r.id != ids[1]));
+        // The home photo keeps its own path; only the field's is copied in.
+        let row = f.iter().position(|r| r.id == ids[0]).unwrap();
+        let copied = temp.path().join("Away photos").join("photo-9.jpg");
+        assert_eq!(value(&home, "Cities", row, "photos"), format!("{};{}", kept.display(), copied.display()));
+        assert_eq!(std::fs::read(&copied).unwrap(), b"taken in the field");
+        assert!(!temp.path().join("Away photos").join("kept.jpg").exists());
+        assert!(home.project.offline_areas[0].conflicts.is_empty());
+    }
+
+    /// A streamed layer's photos aren't packed with the home photos: its copy for reference (or
+    /// its absence) decides what goes, and its photos are counted as staying home.
+    #[test]
+    fn a_streamed_layers_photos_stay_home_and_are_counted() {
+        let temp = Temp::new("stream-photos");
+        let photo = temp.path().join("site.jpg");
+        std::fs::write(&photo, b"a streamed layer's photo").unwrap();
+        let source = temp.path().join("sites.gpkg");
+        let mut seed = Session::new(Project::default());
+        let fields = vec![rustgis_data::Field::new("photos", rustgis_data::FieldType::Text)];
+        let mut sites = rustgis_data::Dataset::new("Sites", rustgis_data::GeometryType::Point, fields);
+        sites.crs = rustgis_data::raster::Crs::from_epsg(4326);
+        let point = rustgis_data::Geometry::Point(rustgis_data::Coord::new(1.0, 1.0));
+        sites.push(Some(point), vec![rustgis_data::Value::Text(photo.display().to_string())]);
+        let id = seed.map_mut().add_dataset(sites);
+        seed.run("share.exportLayer", &json!({"layer": id, "path": source})).unwrap();
+        let mut home = Session::new(Project::default());
+        home.path = Some(temp.path().join("home.rgis"));
+        home.run("layer.addData", &json!({"name": "Streamed", "path": source, "layer": "Sites", "stream": true})).unwrap();
+        assert!(home.map().layer_by_name("Streamed").unwrap().is_streamed());
+        // The rows a drawn view has read from the source, as the area's map may hold them.
+        let streamed = home.map_mut().layers.iter_mut().find(|l| l.name == "Streamed").unwrap();
+        let point = rustgis_data::Geometry::Point(rustgis_data::Coord::new(1.0, 1.0));
+        let fi = streamed.dataset.field_index("photos").unwrap();
+        let mut values = vec![rustgis_data::Value::Null; streamed.dataset.fields.len()];
+        values[fi] = rustgis_data::Value::Text(photo.display().to_string());
+        streamed.dataset.push(Some(point), values);
+        let mut budget = u64::MAX;
+        assert!(collect_photos(home.map(), &mut budget, usize::MAX).unwrap().entries.is_empty());
+        let mark = home.notice_mark();
+        let (_, out) = package(&mut home, &json!({"name": "Streams", "extent": [0, 0, 2, 2]})).unwrap();
+        assert!(rustgis_data::zip::read(&out).unwrap().iter().all(|(n, _)| !n.starts_with("photos/")));
+        let said: Vec<String> = home.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert!(said.iter().any(|t| t.starts_with("1 photo reference(s) of layer(s) copied for reference stayed home")), "{said:?}");
+    }
+
+    /// Coming back, a photo whose path holds a line break isn't carried (the index couldn't hold
+    /// it), and that is said; one beside it goes.
+    #[cfg(unix)]
+    #[test]
+    fn a_photo_named_with_a_line_break_stays_on_the_phone_and_is_said() {
+        let temp = Temp::new("newline-photo");
+        let mut home = sample();
+        home.path = Some(temp.path().join("home.rgis"));
+        let (_, out) = package(&mut home, &json!({"name": "Break", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
+        let unpacked = temp.path().join("field");
+        let text = unpack_into(&out, &unpacked).unwrap().0;
+        let mut field = opened(project_in(&text, &unpacked).unwrap());
+        field.opened_package = Some(temp.path().join("sent.rgisfield"));
+        let cities = layer(&field, "Cities");
+        let (odd, plain) = (temp.path().join("odd\nname.jpg"), temp.path().join("plain.jpg"));
+        std::fs::write(&odd, b"odd").unwrap();
+        std::fs::write(&plain, b"plain").unwrap();
+        field.run("edit.addField", &json!({"layer": cities, "name": "photos", "type": "text"})).unwrap();
+        let named = format!("{};{}", odd.display(), plain.display());
+        field.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": named})).unwrap();
+        let mark = field.notice_mark();
+        let (_, back) = package(&mut field, &Value::Null).unwrap();
+        let entries: Vec<String> = rustgis_data::zip::read(&back).unwrap().into_iter().map(|(n, _)| n).collect();
+        assert!(entries.iter().any(|n| n == "photos/plain.jpg") && !entries.iter().any(|n| n.contains("odd")), "{entries:?}");
+        let said: Vec<String> = field.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert!(said.iter().any(|t| t.starts_with("1 photo(s) couldn't be put") && t.contains("tab or a line break")), "{said:?}");
+    }
+
+    /// A package from home whose photo index is there but can't be read is said, on opening and
+    /// on sending back: its photos can't be told from the field's.
+    #[test]
+    fn an_unreadable_photo_index_is_said_on_opening_and_on_sending_back() {
+        let temp = Temp::new("bad-index");
+        let mut home = sample();
+        home.path = Some(temp.path().join("home.rgis"));
+        let cities = layer(&home, "Cities");
+        home.run("edit.addField", &json!({"layer": cities, "name": "photos", "type": "text"})).unwrap();
+        let photo = temp.path().join("site.jpg");
+        std::fs::write(&photo, b"a picture").unwrap();
+        home.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": photo.display().to_string()})).unwrap();
+        let (_, out) = package(&mut home, &json!({"name": "Bad", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
+        let unpacked = temp.path().join("field");
+        let text = unpack_into(&out, &unpacked).unwrap().0;
+        let index = unpacked.join("photos").join("index.tsv");
+        let notes = |project: &mut Project| -> Vec<String> {
+            project.take_read_notices(&[crate::project::ReadPart::Maps]).iter().map(crate::notice_text::NoticeText::english).collect()
+        };
+        // A photo the index lists that the package doesn't hold: counted.
+        let listed = std::fs::read_to_string(&index).unwrap();
+        let held = unpacked.join("photos").join("home-00001.jpg");
+        let bytes = std::fs::read(&held).unwrap();
+        std::fs::remove_file(&held).unwrap();
+        let said = notes(&mut project_in(&text, &unpacked).unwrap());
+        assert!(said.iter().any(|t| t.starts_with("1 photo(s) the field package lists aren't in it")), "{said:?}");
+        std::fs::write(&held, bytes).unwrap();
+        // An index that isn't UTF-8 text: damaged.
+        std::fs::write(&index, b"photos/home-00001.jpg\t\xff\n").unwrap();
+        let said = notes(&mut project_in(&text, &unpacked).unwrap());
+        assert!(said.iter().any(|t| t.contains("not UTF-8 text")), "{said:?}");
+        // An entry listed twice: the index is damaged.
+        std::fs::write(&index, format!("{listed}{listed}")).unwrap();
+        let said = notes(&mut project_in(&text, &unpacked).unwrap());
+        assert!(said.iter().any(|t| t.contains("is listed twice")), "{said:?}");
+        // The package's marker damaged: its photos can't be told as home's, and that is said.
+        let marker = unpacked.join(crate::cmd::field_changes::GIVEN);
+        let held_marker = std::fs::read(&marker).unwrap();
+        std::fs::write(&marker, b"not json").unwrap();
+        let said = notes(&mut project_in(&text, &unpacked).unwrap());
+        assert!(said.iter().any(|t| t.starts_with("The field package's photo index couldn't be read")), "{said:?}");
+        std::fs::write(&marker, held_marker).unwrap();
+        // The index gone from beside the photos: damaged too.
+        std::fs::remove_file(&index).unwrap();
+        let mut missing = project_in(&text, &unpacked).unwrap();
+        let said: Vec<String> =
+            missing.take_read_notices(&[crate::project::ReadPart::Maps]).iter().map(crate::notice_text::NoticeText::english).collect();
+        assert!(said.iter().any(|t| t.contains("missing beside the photos")), "{said:?}");
+        // The index damaged: a folder where the file was.
+        std::fs::create_dir(&index).unwrap();
+        let mut project = project_in(&text, &unpacked).unwrap();
+        let opened_notes: Vec<String> =
+            project.take_read_notices(&[crate::project::ReadPart::Maps]).iter().map(crate::notice_text::NoticeText::english).collect();
+        assert!(opened_notes.iter().any(|t| t.starts_with("The field package's photo index couldn't be read")), "{opened_notes:?}");
+        let mut field = opened(project);
+        field.opened_package = Some(temp.path().join("sent.rgisfield"));
+        // The feature names the unpacked photo: sending back can't tell it was home's.
+        let there = unpacked.join("photos").join("home-00001.jpg");
+        field.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": there.display().to_string()})).unwrap();
+        let mark = field.notice_mark();
+        package(&mut field, &Value::Null).unwrap();
+        let said: Vec<String> = field.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert!(said.iter().any(|t| t.starts_with("The photo index of the field package this map came from couldn't be read")), "{said:?}");
+    }
+
+    /// Unpacked into a folder whose name isn't UTF-8, a photo from home keeps its name at home
+    /// (no path the project holds can name the unpacked file), and that is said: the way back then
+    /// sees no edit in it. Apple's file system refuses such a name, so this runs on other Unix
+    /// systems.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    #[test]
+    fn a_home_photo_unpacked_where_no_text_names_it_keeps_its_home_name() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let temp = Temp::new("home-photo-non-utf8");
+        let mut home = sample();
+        home.path = Some(temp.path().join("home.rgis"));
+        let cities = layer(&home, "Cities");
+        home.run("edit.addField", &json!({"layer": cities, "name": "photos", "type": "text"})).unwrap();
+        let photo = temp.path().join("site.jpg");
+        std::fs::write(&photo, b"a picture").unwrap();
+        home.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": photo.display().to_string()})).unwrap();
+        let (_, out) = package(&mut home, &json!({"name": "Odd", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
+        let unpacked = temp.path().join(std::ffi::OsStr::from_bytes(b"non-utf8-\xff"));
+        let text = unpack_into(&out, &unpacked).unwrap().0;
+        let mut project = project_in(&text, &unpacked).unwrap();
+        let said: Vec<String> =
+            project.take_read_notices(&[crate::project::ReadPart::Maps]).iter().map(crate::notice_text::NoticeText::english).collect();
+        assert!(said.iter().any(|t| t.starts_with("1 photo(s) the field package brought from home keep the names")), "{said:?}");
+        assert_eq!(value(&Session::new(project), "Cities", 0, "photos"), photo.display().to_string());
+    }
+
+    /// Every photos field of a layer is read going out, and coming back a name a feature already
+    /// gives under `photos/` isn't given to a photo carried.
+    #[test]
+    fn both_photos_fields_go_out_and_a_returns_names_keep_clear_of_those_given() {
+        let temp = Temp::new("two-photo-fields");
+        let (one, two) = (temp.path().join("one.jpg"), temp.path().join("x.jpg"));
+        std::fs::write(&one, b"one").unwrap();
+        std::fs::write(&two, b"two").unwrap();
+        let mut s = sample();
+        let cities = layer(&s, "Cities");
+        for field in ["photos", "photo"] {
+            s.run("edit.addField", &json!({"layer": cities, "name": field, "type": "text"})).unwrap();
+        }
+        s.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": one.display().to_string()})).unwrap();
+        s.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photo", "value": two.display().to_string()})).unwrap();
+        let mut budget = u64::MAX;
+        let out = collect_photos(s.map(), &mut budget, usize::MAX).unwrap();
+        assert_eq!(out.entries.iter().filter(|(n, _)| n != INDEX).count(), 2);
+        // Coming back: a feature names `photos/x.jpg` (not on this device); the field's x.jpg takes
+        // another name.
+        s.run("edit.setValue", &json!({"layer": cities, "row": 1, "field": "photos", "value": "photos/x.jpg"})).unwrap();
+        let mut map = s.map().clone();
+        let back = take_photos(&mut map, &mut budget, "", usize::MAX).unwrap();
+        let names: Vec<&str> = back.entries.iter().map(|(n, _)| n.as_str()).filter(|n| *n != INDEX).collect();
+        assert!(names.contains(&"photos/2-x.jpg") && !names.contains(&"photos/x.jpg"), "{names:?}");
+    }
+
+    /// A photo taken into a layer's second photos field comes home with its edit.
+    #[test]
+    fn a_photo_in_a_second_photos_field_comes_home() {
+        let temp = Temp::new("second-field-home");
+        let mut home = sample();
+        home.path = Some(temp.path().join("home.rgis"));
+        let cities = layer(&home, "Cities");
+        for field in ["photos", "photo"] {
+            home.run("edit.addField", &json!({"layer": cities, "name": field, "type": "text"})).unwrap();
+        }
+        let id = home.map().layer(cities).unwrap().dataset.features[0].id;
+        let (_, out) = package(&mut home, &json!({"name": "Second", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
+        let unpacked = temp.path().join("field");
+        let text = unpack_into(&out, &unpacked).unwrap().0;
+        let mut field = opened(project_in(&text, &unpacked).unwrap());
+        field.opened_package = Some(temp.path().join("sent.rgisfield"));
+        let taken = temp.path().join("photo-7.jpg");
+        std::fs::write(&taken, b"in the second field").unwrap();
+        let row = field.map().layer(cities).unwrap().dataset.features.iter().position(|f| f.id == id).unwrap();
+        field.run("edit.setValue", &json!({"layer": cities, "row": row, "field": "photo", "value": taken.display().to_string()})).unwrap();
+        let (_, back) = package(&mut field, &Value::Null).unwrap();
+        std::fs::remove_file(&taken).unwrap();
+        let sent = temp.path().join("back.rgisfield");
+        std::fs::write(&sent, &back).unwrap();
+        home.run("offline.bringBack", &json!({"path": sent.display().to_string()})).unwrap();
+        let copied = temp.path().join("Second photos").join("photo-7.jpg");
+        assert_eq!(std::fs::read(&copied).unwrap(), b"in the second field");
+        let row = home.map().layer(cities).unwrap().dataset.features.iter().position(|f| f.id == id).unwrap();
+        assert_eq!(value(&home, "Cities", row, "photo"), copied.display().to_string());
+    }
+
+    /// A return opened on another device and sent again carries the field's photos from there:
+    /// only a package from home maps its photos back to home's paths, so a return's own index
+    /// (which names the first phone's paths) never stands in for the photo.
+    #[test]
+    fn a_return_sent_again_from_another_device_carries_the_fields_photos() {
+        let temp = Temp::new("resent-photo");
+        let mut home = sample();
+        home.path = Some(temp.path().join("home.rgis"));
+        let cities = layer(&home, "Cities");
+        home.run("edit.addField", &json!({"layer": cities, "name": "photos", "type": "text"})).unwrap();
+        let (_, out) = package(&mut home, &json!({"name": "Again", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
+        let first = temp.path().join("first");
+        let text = unpack_into(&out, &first).unwrap().0;
+        let mut phone = opened(project_in(&text, &first).unwrap());
+        phone.opened_package = Some(temp.path().join("sent.rgisfield"));
+        let taken = temp.path().join("photo-3.jpg");
+        std::fs::write(&taken, b"taken on the first phone").unwrap();
+        phone.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": taken.display().to_string()})).unwrap();
+        let (_, returned) = package(&mut phone, &Value::Null).unwrap();
+        // Gone from the first phone; the return is opened on another device and sent from there.
+        std::fs::remove_file(&taken).unwrap();
+        let second = temp.path().join("second");
+        let text = unpack_into(&returned, &second).unwrap().0;
+        let mut other = Session::new(project_in(&text, &second).unwrap());
+        other.opened_package = Some(temp.path().join("returned.rgisfield"));
+        let (_, again) = package(&mut other, &Value::Null).unwrap();
+        let entries = rustgis_data::zip::read(&again).unwrap();
+        assert!(entries.iter().any(|(n, b)| n == "photos/photo-3.jpg" && b == b"taken on the first phone"));
+    }
+
+    /// A package that goes back as a whole map (its rows weren't kept on the device) names the
+    /// photos it brought from home where they are at home: a feature the field left alone is no
+    /// edit, even when home's photo changed on disk meanwhile, so home's own edit to it stays.
+    #[test]
+    fn a_whole_map_return_leaves_a_feature_with_a_home_photo_as_home_has_it() {
+        let temp = Temp::new("whole-map-photo");
+        let mut home = sample();
+        home.path = Some(temp.path().join("home.rgis"));
+        let cities = layer(&home, "Cities");
+        home.run("edit.addField", &json!({"layer": cities, "name": "photos", "type": "text"})).unwrap();
+        let photo = temp.path().join("site.jpg");
+        std::fs::write(&photo, b"as it went out").unwrap();
+        home.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": photo.display().to_string()})).unwrap();
+        let id = home.map().layer(cities).unwrap().dataset.features[0].id;
+        let (_, out) = package(&mut home, &json!({"name": "Whole", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
+        let unpacked = temp.path().join("field");
+        let text = unpack_into(&out, &unpacked).unwrap().0;
+        // Opened where its rows aren't kept: it goes back as a whole map.
+        let mut field = Session::new(project_in(&text, &unpacked).unwrap());
+        field.opened_package = Some(temp.path().join("sent.rgisfield"));
+        let mark = field.notice_mark();
+        let (_, back) = package(&mut field, &Value::Null).unwrap();
+        assert!(field.notices_since(mark).iter().any(|n| n.text.contains("as a whole map")));
+        assert!(rustgis_data::zip::read(&back).unwrap().iter().all(|(n, _)| n != "photos/site.jpg"));
+        // Meanwhile at home: the photo replaced on disk, and the feature's name changed.
+        std::fs::write(&photo, b"retaken at home").unwrap();
+        let name =
+            home.map().layer(cities).unwrap().dataset.fields.iter().find(|f| f.ty == rustgis_data::FieldType::Text).unwrap().name.clone();
+        home.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": name, "value": "Home Edit"})).unwrap();
+        let sent = temp.path().join("back.rgisfield");
+        std::fs::write(&sent, &back).unwrap();
+        let done = home.run("offline.bringBack", &json!({"path": sent.display().to_string()})).unwrap();
+        assert_eq!(done["updated"].as_u64(), Some(0), "{done}");
+        let row = home.map().layer(cities).unwrap().dataset.features.iter().position(|f| f.id == id).unwrap();
+        assert_eq!(value(&home, "Cities", row, &name), "Home Edit");
+        assert_eq!(value(&home, "Cities", row, "photos"), photo.display().to_string());
+        assert!(!temp.path().join("Whole photos").exists());
+    }
+
+    /// Going out, a photo past what the package has room for stays home, and is counted. The
+    /// features aren't changed, so the map's rows stay shared with the project's; and a name a
+    /// feature already gives under `photos/` isn't given to another photo.
+    #[test]
+    fn a_photo_past_the_packages_budget_stays_home_and_is_counted() {
+        let temp = Temp::new("photo-budget");
+        let (small, large) = (temp.path().join("small.jpg"), temp.path().join("large.jpg"));
+        std::fs::write(&small, [0u8; 8]).unwrap();
+        std::fs::write(&large, [0u8; 64]).unwrap();
+        let mut s = sample();
+        let cities = layer(&s, "Cities");
+        s.run("edit.addField", &json!({"layer": cities, "name": "photos", "type": "text"})).unwrap();
+        let named = format!("{};{}", small.display(), large.display());
+        s.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": named})).unwrap();
+        s.run("edit.setValue", &json!({"layer": cities, "row": 1, "field": "photos", "value": "photos/home-00001.jpg"})).unwrap();
+        let map = s.map().clone();
+        let mut budget = 32;
+        let photos = collect_photos(&map, &mut budget, usize::MAX).unwrap();
+        assert_eq!(photos.too_large, [large.display().to_string()]);
+        assert_eq!(photos.missing, ["photos/home-00001.jpg"]);
+        assert_eq!(budget, 24);
+        let entries: Vec<&str> = photos.entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(entries, ["photos/home-00002.jpg", INDEX]);
+        let index = String::from_utf8(photos.entries[1].1.clone()).unwrap();
+        assert_eq!(index, format!("photos/home-00002.jpg\t{}\n", small.display()));
+        let (held, home) = (&map.layer(cities).unwrap().dataset.features, &s.map().layer(cities).unwrap().dataset.features);
+        assert!(held.shares(home));
     }
 
     #[test]
