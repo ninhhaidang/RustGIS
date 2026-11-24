@@ -127,7 +127,9 @@ Projects, map files and layer files whose symbology draws an image as a marker (
 a symbol's, a stacked stroke's or a dot fill's, saved styles included), or whose replayable
 commands set one (an `image` in `layer.marker`, a `layer.lineStrokes` stroke's markers or a
 `layer.fillLayers` fill), require `picture-markers`:
-an older reader must refuse them rather than fail on the marker or lose it.
+an older reader must refuse them rather than fail on the marker or lose it. Where such an image
+is an SVG, they also require `svg-markers`: a reader of PNG and JPEG markers only would draw it
+as a circle and refuse the command that sets it.
 
 Projects, model files and web tools that save a percent-slope function require `slope-percent`:
 an older reader must refuse them rather than run the saved function in degrees. Project

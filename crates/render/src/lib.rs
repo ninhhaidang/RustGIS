@@ -630,6 +630,12 @@ pub fn picture_marker_kept_refusal(p: rustgis_map::Picture) -> Option<MarkerRefu
     picture::marker_kept_refusal(p)
 }
 
+/// Whether base64 `b64`, a picture marker's image, starts as an SVG does (whether or not it then
+/// reads): what a reader of PNG and JPEG markers only can't draw.
+pub fn picture_marker_is_svg(b64: &str) -> bool {
+    picture::is_svg(b64)
+}
+
 /// Whether picture marker `p` draws rather than a circle ([`picture_marker_kept_check`]).
 pub fn picture_marker_draws(p: rustgis_map::Picture) -> bool {
     picture_marker_kept_check(p).is_ok()

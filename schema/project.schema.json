@@ -1278,7 +1278,8 @@
           "label-weight",
           "project-crs",
           "dggs-system",
-          "label-clearance"
+          "label-clearance",
+          "svg-markers"
         ],
         "type": "string"
       },
@@ -1385,7 +1386,8 @@
     "label-weight",
     "project-crs",
     "dggs-system",
-    "label-clearance"
+    "label-clearance",
+    "svg-markers"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2

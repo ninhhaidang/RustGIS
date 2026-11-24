@@ -2738,6 +2738,83 @@ fn an_svg_picture_marker_fixture_opens_drawn_or_said() {
     };
     assert!(rustgis_render::picture_marker_draws(picture(0)));
     assert!(picture(1).base64().starts_with("PHN2Zy") && !rustgis_render::picture_marker_draws(picture(1)));
+    // Saving names the SVGs for a reader of PNG and JPEG markers only to refuse (#2266 part E1b).
+    assert_eq!(serde_json::to_value(&s.project).unwrap()["requires"], json!(["picture-markers", "svg-markers"]));
+}
+
+/// An SVG image marker requires `svg-markers` as well as `picture-markers` wherever it is saved:
+/// a symbol's, a stroke's markers, a dot fill, what No Fill hid and a saved style, in a project, a
+/// map file and a layer file. A reader of PNG and JPEG markers only would draw it as a circle. A
+/// PNG, or text that doesn't start as XML, requires `picture-markers` alone; text that starts as
+/// XML counts as an SVG, as the renderer tells one, without reading it (#2266 part E1b).
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn an_svg_image_marker_requires_svg_markers_wherever_it_is_saved() {
+    use base64::Engine;
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let svg = b64(br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 4"><rect width="8" height="4" fill="#c81e1e"/></svg>"##);
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(8, 4, image::Rgba([200, 30, 30, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let png = b64(&png);
+    let pictures = json!(["picture-markers"]);
+    let both = json!(["picture-markers", "svg-markers"]);
+    let requires = |p: &Project| serde_json::to_value(p).unwrap()["requires"].clone();
+    // Removed however the test ends, and its own each run (the process id alone can repeat).
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = Dir(std::env::temp_dir().join(format!("rustgis-svg-markers-{}-{nanos}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let file = |s: &mut Session, command: &str, mut params: Value, name: &str| {
+        let path = dir.0.join(name);
+        params["path"] = json!(path.display().to_string());
+        s.run(command, &params).unwrap();
+        serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap()["requires"].clone()
+    };
+    // `<html>`: XML that isn't an SVG, which the renderer refuses when it reads it.
+    for (image, expected) in [(png.as_str(), &pictures), (svg.as_str(), &both), ("bm90IGFuIGltYWdl", &pictures), ("PGh0bWw+", &both)] {
+        // A symbol's (set directly: the command refuses an image that is neither), in the
+        // project, a map file and a layer file.
+        let mut s = world();
+        let cities = s.map().layer_by_name("Cities").unwrap().id;
+        let picture = rustgis_map::Marker::Picture(rustgis_map::Picture::new(image));
+        s.map_mut().layer_mut(cities).unwrap().renderer.map_symbols(|sym| sym.marker = picture);
+        assert_eq!(&requires(&s.project), expected, "symbol {image}");
+        assert_eq!(&file(&mut s, "map.save", json!({}), "map.rgismap"), expected, "map file {image}");
+        assert_eq!(&file(&mut s, "layer.save", json!({"layer": "Cities"}), "cities.rgislayer"), expected, "layer file {image}");
+        // And the map file a map package holds, for a computer and for a phone.
+        for mobile in [false, true] {
+            let pkg = dir.0.join("map.rgismpk");
+            s.run("map.package", &json!({"path": pkg.display().to_string(), "mobile": mobile})).unwrap();
+            let entries = rustgis_data::zip::read_matching(&std::fs::read(&pkg).unwrap(), |n| n.ends_with(".rgismap")).unwrap();
+            let packed: Value = serde_json::from_slice(&entries[0].1).unwrap();
+            assert_eq!(&packed["requires"], expected, "package {image}, mobile: {mobile}");
+        }
+        // A saved style keeps it once the layer no longer does.
+        s.run("style.new", &json!({"layer": "Cities", "name": "Icons"})).unwrap();
+        s.run("layer.marker", &json!({"layer": "Cities", "shape": "circle"})).unwrap();
+        assert_eq!(&requires(&s.project), expected, "style {image}");
+    }
+    for (image, expected) in [(&png, &pictures), (&svg, &both)] {
+        // A stroke's markers.
+        let mut s = world();
+        s.run("layer.lineStrokes", &json!({"layer": "Rivers", "strokes": [{"width": 1}, {"markers": {"image": image}}]})).unwrap();
+        assert_eq!(&requires(&s.project), expected, "stroke");
+        assert_eq!(&file(&mut s, "layer.save", json!({"layer": "Rivers"}), "rivers.rgislayer"), expected, "stroke layer file");
+        // A dot fill, and what No Fill hid of it.
+        let (mut s, id) = no_fill_layer(false);
+        s.run("layer.fillLayers", &json!({"layer": id, "fills": [{"pattern": "dots", "image": image}]})).unwrap();
+        assert_eq!(&requires(&s.project), expected, "dot fill");
+        s.run("layer.noFill", &Value::Null).unwrap();
+        assert!(s.map().layer(id).unwrap().hidden_fills.is_some());
+        assert_eq!(&requires(&s.project), expected, "hidden by No Fill");
+    }
 }
 
 /// A saved image marker that is a GIF (which the desktop's decoder reads and the web's doesn't)
@@ -26477,7 +26554,7 @@ fn an_arcgis_services_picture_markers_draw_their_images() {
     let texts: Vec<_> = s.notices.iter().map(|n| n.text.as_str()).collect();
     let said = "Places: the service's symbology came in, except: picture markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles";
     assert!(texts.contains(&said), "{texts:?}");
-    assert_eq!(serde_json::to_value(&s.project).unwrap()["requires"], json!(["picture-markers"]));
+    assert_eq!(serde_json::to_value(&s.project).unwrap()["requires"], json!(["picture-markers", "svg-markers"]));
 }
 
 /// An ArcGIS layer's description, read before its features, doesn't count against their budget:

@@ -1405,7 +1405,9 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
             } else if purpose == "assistantPicture" {
                 rfd::AsyncFileDialog::new()
                     .add_filter(rustgis_ui_egui::tl!("Pictures"), rustgis_ui_egui::rustgis_assistant::attach::EXTENSIONS)
-            } else if purpose == "picture" || marker.is_some() {
+            } else if marker.is_some() {
+                rfd::AsyncFileDialog::new().add_filter(rustgis_ui_egui::tl!("Pictures"), rustgis_ui_egui::MARKER_EXTENSIONS)
+            } else if purpose == "picture" {
                 rfd::AsyncFileDialog::new().add_filter(rustgis_ui_egui::tl!("Pictures"), &["png", "jpg", "jpeg"])
             } else {
                 rfd::AsyncFileDialog::new().add_filter(

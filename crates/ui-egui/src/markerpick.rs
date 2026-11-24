@@ -1,9 +1,9 @@
 //! «Image…» in the marker menus (#2266 part B): the symbol editor's Shape, the stroke editor's
-//! Shape and the fill editor's Marker each end with it, and it makes a PNG or JPEG file the
+//! Shape and the fill editor's Marker each end with it, and it makes a PNG, JPEG or SVG file the
 //! marker. The file is read into the command that sets the marker (`layer.marker`,
 //! `layer.lineStrokes`, `layer.fillLayers`), which keeps the image as it does one given by
-//! script. A file that isn't a PNG or JPEG, one too large, or one that doesn't decode is said in
-//! a notice and leaves the marker as it was.
+//! script. A file that isn't a PNG, JPEG or SVG, one too large, or one that doesn't decode or that
+//! RustGIS doesn't draw is said in a notice and leaves the marker as it was.
 
 use std::io::Read;
 
@@ -68,8 +68,8 @@ impl MarkerImage {
     }
 
     /// Runs the command with `bytes` as the image, as base64. A file that is too large, or that
-    /// doesn't decode as a PNG or JPEG (another format, or a broken one), is said in a notice in a
-    /// file's terms (the command's speak of base64) and runs nothing.
+    /// doesn't decode as a PNG, JPEG or SVG (another format, a broken one, or an SVG RustGIS doesn't
+    /// draw), is said in a notice in a file's terms (the command's speak of base64) and runs nothing.
     pub(crate) fn apply(mut self, app: &mut RustGisApp, bytes: &[u8]) -> Result<Value, String> {
         use base64::Engine;
         // The size first, so a file too large isn't decoded.
@@ -80,13 +80,11 @@ impl MarkerImage {
                 use rustgis_engine::render::MarkerRefusal;
                 // One phrase per refusal, whole, for translation.
                 rustgis_engine::render::picture_marker_check(b64).err().map(|why| match why {
-                    MarkerRefusal::NotAnImage => tl!("This image can't be a marker: it isn't a readable PNG or JPEG").to_string(),
+                    MarkerRefusal::NotAnImage => tl!("This image can't be a marker: it isn't a readable PNG, JPEG or SVG").to_string(),
                     MarkerRefusal::TooManyPixels => crate::i18n::fmt(
                         "This image can't be a marker: it has more pixels than {side} × {side}; make it smaller",
                         &[("side", &rustgis_engine::render::MARKER_PIXELS_SIDE.to_string())],
                     ),
-                    // An SVG's (a file of another name holding one, as the picker lists PNG and
-                    // JPEG).
                     MarkerRefusal::TooMuchToDraw => crate::i18n::fmt(
                         "This image can't be a marker: it is an SVG with more to draw than a {side} × {side} image",
                         &[("side", &rustgis_engine::render::MARKER_PIXELS_SIDE.to_string())],
@@ -145,7 +143,7 @@ impl MarkerImage {
 /// The marker menus' last entry, after the shapes (and Character): picks an image file as the
 /// marker, or another for the one it has (`on`).
 pub(crate) fn entry(ui: &mut Ui, on: bool) -> bool {
-    ui.selectable_label(on, tl!("Image…")).on_hover_text(tl!("A PNG or JPEG file as the marker")).clicked()
+    ui.selectable_label(on, tl!("Image…")).on_hover_text(tl!("A PNG, JPEG or SVG file as the marker")).clicked()
 }
 
 /// Asks for the image of `marker`: the system's dialog on a computer, read at once; the browser's
@@ -159,7 +157,7 @@ pub(crate) fn pick(app: &mut RustGisApp, mut marker: MarkerImage) {
         let purpose = format!("marker:{}", marker.request);
         app.ui.pending_marker_image = Some(marker);
         open(&purpose);
-    } else if let Some(path) = crate::dialogs::pick_open(&["png", "jpg", "jpeg"], tl!("Pictures")) {
+    } else if let Some(path) = crate::dialogs::pick_open(crate::MARKER_EXTENSIONS, tl!("Pictures")) {
         match read_capped(&path) {
             Ok(bytes) => {
                 let _ = marker.apply(app, &bytes);
@@ -212,8 +210,8 @@ mod tests {
         pick(app, marker);
     }
 
-    /// The notice for a file that isn't a readable PNG or JPEG the marker can take.
-    const UNREADABLE: &str = "This image can't be a marker: it isn't a readable PNG or JPEG";
+    /// The notice for a file that isn't a readable PNG, JPEG or SVG the marker can take.
+    const UNREADABLE: &str = "This image can't be a marker: it isn't a readable PNG, JPEG or SVG";
 
     /// «Image…» makes the file the marker of a point symbol, of one mark in a stack of strokes
     /// (the others as they were) and of a dot fill, on the layer it was clicked for even when
@@ -249,7 +247,7 @@ mod tests {
         assert!(matches!(now[1].pattern, FillPattern::Dots { marker, size: 5.0, .. } if drawn(marker)));
     }
 
-    /// A file that isn't a PNG or JPEG, a PNG that doesn't decode, or one too large, is said in a
+    /// A file that isn't a PNG, JPEG or SVG, a PNG that doesn't decode, or one too large, is said in a
     /// file's terms and changes nothing (no undo step either); a dialog cancelled changes nothing
     /// and says nothing.
     #[test]
@@ -292,9 +290,45 @@ mod tests {
         assert_eq!(app.session.undo_depth(), steps);
     }
 
+    /// «Image…» lists SVG files beside PNG and JPEG ones, on the computer and in the browser, and
+    /// a picked SVG becomes the marker; one RustGIS doesn't draw (a filter) is said with why, and
+    /// text that isn't an image is said as not a PNG, JPEG or SVG; neither changes anything
+    /// (#2266 part E1b).
+    #[test]
+    fn a_picked_svg_becomes_the_marker_and_one_it_cant_draw_is_said() {
+        assert_eq!(crate::MARKER_EXTENSIONS, ["png", "jpg", "jpeg", "svg"]);
+        let dir = tempfile::tempdir().unwrap();
+        let svg = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 4">{body}</svg>"#)).unwrap();
+            path
+        };
+        let pin = svg("pin.svg", r##"<rect width="8" height="4" fill="#c81e1e"/>"##);
+        let blurred = svg(
+            "blurred.svg",
+            r#"<filter id="f"><feGaussianBlur stdDeviation="1"/></filter><rect width="8" height="4" filter="url(#f)"/>"#,
+        );
+        let text = dir.path().join("notes.svg");
+        std::fs::write(&text, "not an image").unwrap();
+        let mut app = RustGisApp::with_sample();
+        let cities = id(&app, "Cities");
+        let before = layer(&app, "Cities").renderer.base_symbol();
+        let steps = app.session.undo_depth();
+        let undrawn = "This image can't be a marker: it is an SVG with filters, text, images, animation or links to other files, which RustGIS doesn't draw in marker images";
+        for (file, said) in [(&blurred, undrawn), (&text, UNREADABLE)] {
+            pick_file(&mut app, file, MarkerImage::symbol(cities));
+            assert_eq!(layer(&app, "Cities").renderer.base_symbol(), before);
+            assert!(app.session.notices.iter().any(|n| n.error && n.text == said), "{said}: {:?}", app.session.notices);
+        }
+        assert_eq!(app.session.undo_depth(), steps);
+        pick_file(&mut app, &pin, MarkerImage::symbol(cities));
+        assert!(drawn(layer(&app, "Cities").renderer.base_symbol().marker));
+        assert_eq!(app.session.undo_depth(), steps + 1);
+    }
+
     /// In the browser «Image…» asks the `"marker:<id>"` picker for a file and the file it gives
     /// back, marked with its request, becomes the marker. A dropped PNG, or another picker's,
-    /// leaves the marker waiting; a marked file that isn't a PNG or JPEG is said and changes
+    /// leaves the marker waiting; a marked file that isn't a PNG, JPEG or SVG is said and changes
     /// nothing; an earlier request's file, arriving after another «Image…», is dropped; a file
     /// arriving after the map changed is said and changes nothing; a cancelled picker ends the
     /// wait.

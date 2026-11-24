@@ -94,8 +94,8 @@ draws a circle, so the point still shows. By command:
 layer.marker={"layer":"Peaks","char":"▲","font":"DejaVu Sans","size":12}
 ```
 
-A marker can also be an **image**: a PNG or JPEG picked with **Image…** at the end of **Shape**
-(choose it again for another image), or a PNG, JPEG or SVG given by command as base64 (at most
+A marker can also be an **image**: a PNG, JPEG or SVG file picked with **Image…** at the end of
+**Shape** (choose it again for another image), or given by command as base64 (at most
 2 MiB of base64 text, an image of about 1.5 MiB). A PNG or JPEG may have at most 2048 × 2048
 pixels (by area: a 4096 × 1024 strip is taken). Other formats, such as GIF, aren't taken: a file
 in another format, one too large, or one that doesn't decode is said in a notice, with why, and

@@ -227,6 +227,10 @@ pub const ASSISTANT_FILE_MAX_BYTES: usize = rustgis_assistant::attach::MAX_FILE_
 /// refuse a larger one before reading it.
 pub const MARKER_FILE_MAX_BYTES: usize = rustgis_engine::map::symbology::MAX_PICTURE_BYTES / 4 * 3;
 
+/// The files «Image…» lists for a marker, on the computer and in the browser (the phone's picker
+/// lists every file).
+pub const MARKER_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "svg"];
+
 /// The largest script file the Script pane's Load… reads, as the assistant's command file; the
 /// browser's shell refuses a larger one before reading it.
 pub const SCRIPT_FILE_MAX_BYTES: usize = 1024 * 1024;

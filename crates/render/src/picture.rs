@@ -564,6 +564,11 @@ enum Format {
     Svg,
 }
 
+/// Whether base64 `b64` starts as an SVG would, as [`format`] tells it.
+pub(crate) fn is_svg(b64: &str) -> bool {
+    format(b64) == Some(Format::Svg)
+}
+
 /// What base64 `b64` starts as, if a picture marker may be one. Picture markers take PNG, JPEG and
 /// SVG alone, on every platform: the desktop's decoder also reads GIF (the engine's `gif` feature,
 /// for raster files), the web's doesn't, so a GIF marker would draw on one and not the other.
