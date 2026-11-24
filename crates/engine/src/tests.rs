@@ -43990,6 +43990,150 @@ fn text_elements_say_the_lines_left_out_of_their_box() {
     assert!(said(&mut s, "layout.addElement", json!({"kind":"text", "text":"Source", "x":10, "y":60, "w":60, "h":10})).1.is_empty());
 }
 
+/// `layout.addElement` and `layout.update` say a text whose ink crosses the page's edge when they
+/// add it, move it (`x`, `y`), turn it or change what it breaks into, as they say a scale bar's
+/// labels off the page; one notice of each kind, so a text cut below its box and past the edge is
+/// told both; a text inside the page, moved back inside or turned within it says nothing (#2703).
+#[test]
+fn text_elements_say_what_runs_off_the_page() {
+    let mut s = Session::new(Project::default());
+    s.run("layout.new", &json!({"template": "blank", "width": 120, "height": 90})).unwrap();
+    // The notices of the command: (past the edge, lines left out).
+    let said = |s: &mut Session, cmd: &str, p: Value| {
+        s.notices.clear();
+        let out = s.run(cmd, &p).unwrap();
+        let edge: Vec<String> = s.notices.iter().filter(|n| n.text.contains("runs off the page")).map(|n| n.text.clone()).collect();
+        let lines: Vec<String> = s.notices.iter().filter(|n| n.text.contains("fit its box")).map(|n| n.text.clone()).collect();
+        (out, edge, lines)
+    };
+    let off = |s: &Session, id: u64| {
+        let name = s.project.layouts[0].element(id as u32).map(|e| e.name.clone()).unwrap_or_default();
+        format!(
+            "The text \"{name}\" ({id}) runs off the page, so part of it isn't drawn; move it inside the page, resize it or reduce its size"
+        )
+    };
+    // Added inside the page: nothing. Added past an edge: told, once.
+    let (_, edge, lines) = said(&mut s, "layout.addElement", json!({"kind":"text", "text":"Note", "x":10, "y":10, "w":30, "h":10}));
+    assert!(edge.is_empty() && lines.is_empty(), "{edge:?} {lines:?}");
+    let (out, edge, _) = said(&mut s, "layout.addElement", json!({"kind":"text", "text":"Note", "x":118, "y":10, "w":30, "h":10}));
+    let past = out["element"].as_u64().unwrap();
+    assert_eq!(edge, vec![off(&s, past)]);
+    // A text moved past each side is told, once; moved back inside, it isn't.
+    let (out, ..) = said(&mut s, "layout.addElement", json!({"kind":"text", "text":"Note", "x":10, "y":40, "w":30, "h":10}));
+    let id = out["element"].as_u64().unwrap();
+    for (key, past_it) in [("x", 118), ("y", 89), ("x", -30), ("y", -8)] {
+        let (_, edge, lines) = said(&mut s, "layout.update", json!({"element": id, key: past_it}));
+        assert_eq!((edge, lines.len()), (vec![off(&s, id)], 0), "{key} {past_it}");
+        let back = if key == "x" { 10 } else { 40 };
+        let (_, edge, _) = said(&mut s, "layout.update", json!({"element": id, key: back}));
+        assert!(edge.is_empty(), "{key} back inside: {edge:?}");
+    }
+    // Moved on, still past the edge: told again, once a command; both places given: once.
+    assert_eq!(said(&mut s, "layout.update", json!({"element": id, "x": 118})).1.len(), 1);
+    assert_eq!(said(&mut s, "layout.update", json!({"element": id, "x": 119, "y": 41})).1, vec![off(&s, id)]);
+    assert!(said(&mut s, "layout.update", json!({"element": id, "x": 10, "y": 40})).1.is_empty());
+    // Turned about its box's centre: inside the page nothing, across its edge told.
+    assert!(said(&mut s, "layout.update", json!({"element": id, "rotation": 90})).1.is_empty());
+    assert!(said(&mut s, "layout.update", json!({"element": id, "rotation": null})).1.is_empty());
+    said(&mut s, "layout.update", json!({"element": id, "rotation": 0, "x": 106, "y": 40, "w": 20}));
+    assert!(said(&mut s, "layout.update", json!({"element": id, "x": 106})).1.is_empty(), "unturned, inside");
+    assert_eq!(said(&mut s, "layout.update", json!({"element": id, "rotation": 180})).1, vec![off(&s, id)]);
+    said(&mut s, "layout.update", json!({"element": id, "rotation": 0, "x": 10, "w": 30}));
+    // Cut below its box and past the edge: the move says the edge only (its lines were said), a resize
+    // or an edit says each, one notice of each kind.
+    let (out, edge, lines) =
+        said(&mut s, "layout.addElement", json!({"kind":"text", "text":"one\ntwo\nthree", "x":10, "y":10, "w":30, "h":2}));
+    let cut = out["element"].as_u64().unwrap();
+    assert!(edge.is_empty() && lines.len() == 1, "{edge:?} {lines:?}");
+    let (_, edge, lines) = said(&mut s, "layout.update", json!({"element": cut, "x": 118}));
+    assert!(edge == vec![off(&s, cut)] && lines.is_empty(), "{edge:?} {lines:?}");
+    let (_, edge, lines) = said(&mut s, "layout.update", json!({"element": cut, "x": 117, "w": 31}));
+    assert_eq!((edge.len(), lines.len()), (1, 1), "{edge:?} {lines:?}");
+    assert!(lines[0].starts_with("2 lines of the text \"") && lines[0].contains(&format!("({cut}) don't fit its box")), "{lines:?}");
+    // Hidden, without ink or empty: nothing to see off the page; shown or inked again, it is told.
+    let (_, edge, _) = said(&mut s, "layout.update", json!({"element": id, "x": 118, "visible": false}));
+    assert!(edge.is_empty(), "{edge:?}");
+    assert_eq!(said(&mut s, "layout.update", json!({"element": id, "visible": true})).1, vec![off(&s, id)]);
+    assert!(said(&mut s, "layout.update", json!({"element": id, "color": "#00000000"})).1.is_empty());
+    assert!(said(&mut s, "layout.update", json!({"element": id, "x": 119})).1.is_empty(), "no ink");
+    assert_eq!(said(&mut s, "layout.update", json!({"element": id, "color": "#1F2937"})).1, vec![off(&s, id)]);
+    assert!(said(&mut s, "layout.update", json!({"element": id, "text": ""})).1.is_empty(), "no letter");
+    // Another element moved past the edge isn't a text.
+    let rect =
+        said(&mut s, "layout.addElement", json!({"kind":"rectangle", "x":10, "y":10, "w":20, "h":20})).0["element"].as_u64().unwrap();
+    assert!(said(&mut s, "layout.update", json!({"element": rect, "x": 118})).1.is_empty());
+    // A place or size no page holds is held to its limits: told once, no panic.
+    let (_, edge, _) = said(&mut s, "layout.update", json!({"element": cut, "x": 1e300, "y": -1e300}));
+    assert_eq!(edge.len(), 1, "{edge:?}");
+    s.notices.clear();
+    let _ = s.run("layout.update", &json!({"element": cut, "size": 1e300}));
+    assert!(s.notices.iter().filter(|n| n.text.contains("runs off the page")).count() <= 1);
+}
+/// A copy of a text that lands past the page's edge, by the default offset or a `dx`, `dy` of its
+/// own, is told as a move is: the edge only, the lines it loses being the original's to say, once.
+/// A copy inside the page says nothing, nor does a rectangle's (#2703).
+#[test]
+fn a_copied_text_that_lands_off_the_page_is_told() {
+    let mut s = Session::new(Project::default());
+    s.run("layout.new", &json!({"template": "blank", "width": 120, "height": 90})).unwrap();
+    let add = |s: &mut Session, p: Value| s.run("layout.addElement", &p).unwrap()["element"].as_u64().unwrap();
+    // The copy's notices: (past the edge, lines left out).
+    let copied = |s: &mut Session, p: Value| {
+        s.notices.clear();
+        let out = s.run("layout.duplicateElement", &p).unwrap();
+        let edge: Vec<String> = s.notices.iter().filter(|n| n.text.contains("runs off the page")).map(|n| n.text.clone()).collect();
+        let lines = s.notices.iter().filter(|n| n.text.contains("fit its box")).count();
+        (out["element"].as_u64().unwrap(), edge, lines)
+    };
+    let off = |s: &Session, id: u64| {
+        let name = s.project.layouts[0].element(id as u32).map(|e| e.name.clone()).unwrap_or_default();
+        format!(
+            "The text \"{name}\" ({id}) runs off the page, so part of it isn't drawn; move it inside the page, resize it or reduce its size"
+        )
+    };
+    let note = add(&mut s, json!({"kind":"text", "text":"Note", "x":10, "y":10, "w":30, "h":10}));
+    let (_, edge, lines) = copied(&mut s, json!({"element": note}));
+    assert!(edge.is_empty() && lines == 0, "inside the page: {edge:?}");
+    let (copy, edge, _) = copied(&mut s, json!({"element": note, "dx": 108}));
+    assert_eq!(edge, vec![off(&s, copy)], "past the right edge");
+    let (copy, edge, _) = copied(&mut s, json!({"element": note, "dy": 79}));
+    assert_eq!(edge, vec![off(&s, copy)], "past the bottom");
+    let (copy, edge, _) = copied(&mut s, json!({"element": note, "dx": -50}));
+    assert_eq!(edge, vec![off(&s, copy)], "past the left edge");
+    // By the default offset: a text a few millimetres from the edge.
+    let near = add(&mut s, json!({"kind":"text", "text":"Note", "x":109, "y":10, "w":30, "h":10}));
+    let (copy, edge, _) = copied(&mut s, json!({"element": near}));
+    assert_eq!(edge, vec![off(&s, copy)], "the default offset");
+    // Cut below its box and past the edge: the copy says the edge only.
+    let cut = add(&mut s, json!({"kind":"text", "text":"one\ntwo\nthree", "x":10, "y":10, "w":30, "h":2}));
+    let (copy, edge, lines) = copied(&mut s, json!({"element": cut, "dx": 108}));
+    assert_eq!((edge, lines), (vec![off(&s, copy)], 0));
+    // A hidden text copied past the edge draws nothing; a rectangle isn't a text.
+    s.run("layout.update", &json!({"element": note, "visible": false})).unwrap();
+    assert!(copied(&mut s, json!({"element": note, "dx": 108})).1.is_empty());
+    let rect = add(&mut s, json!({"kind":"rectangle", "x":10, "y":10, "w":20, "h":20}));
+    assert!(copied(&mut s, json!({"element": rect, "dx": 108})).1.is_empty());
+}
+
+/// A text turned by a rotation that isn't a number (a layout file can hold one) draws as it
+/// always has: measured without a panic, and told nothing off the page (#2703).
+#[test]
+fn a_text_with_a_rotation_that_is_not_a_number_says_nothing_off_the_page() {
+    let mut s = Session::new(Project::default());
+    s.run("layout.new", &json!({"template": "blank", "width": 120, "height": 90})).unwrap();
+    let id = s.run("layout.addElement", &json!({"kind":"text", "text":"Note", "x":10, "y":10, "w":30, "h":10})).unwrap()["element"]
+        .as_u64()
+        .unwrap();
+    if let Some(rustgis_map::layout::ElementKind::Text { rotation, .. }) = s.project.layouts[0].element_mut(id as u32).map(|e| &mut e.kind)
+    {
+        *rotation = f64::NAN;
+    }
+    s.notices.clear();
+    s.run("layout.update", &json!({"element": id, "x": 118})).unwrap();
+    s.run("layout.update", &json!({"element": id, "y": 10, "rotation": null})).unwrap();
+    assert!(s.notices.iter().all(|n| !n.text.contains("runs off the page")), "{:?}", s.notices.iter().map(|n| &n.text).collect::<Vec<_>>());
+}
+
 /// A layout chart groups, orders and cuts its bars by the options of `layout.addElement` and
 /// `layout.update`, writes none of them at their defaults, refuses a bad one (changing nothing)
 /// and refuses them for other kinds; it says what it leaves out: bars past its limit, features

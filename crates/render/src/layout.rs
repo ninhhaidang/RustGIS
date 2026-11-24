@@ -564,6 +564,18 @@ pub fn lines_left_out_notice(loss: &TextLoss) -> Option<String> {
     Some(format!("{count} of the text \"{}\" ({}) {said}", loss.name, loss.id))
 }
 
+/// What a text whose ink crosses the page's edge is told (#2703), from its [`TextLoss`]: `None`
+/// when none does. Its lines left out below its box are [`lines_left_out_notice`]'s: a text can
+/// have both, and each is said.
+pub fn off_page_notice(loss: &TextLoss) -> Option<String> {
+    loss.off_page.then(|| {
+        format!(
+            "The text \"{}\" ({}) runs off the page, so part of it isn't drawn; move it inside the page, resize it or reduce its size",
+            loss.name, loss.id
+        )
+    })
+}
+
 /// One element on transparency, allocating only its on-page pixel bounds.
 /// Outer `None` means rendering failed; inner `None` means the element is off-page.
 /// A fatal source error is retained for the composed SVG's revision check and error report.
@@ -6923,6 +6935,91 @@ mod tests {
         let loss = losses(&l);
         assert_eq!(loss.len(), 1);
         assert_eq!(lines_left_out_notice(&loss[0]), None);
+    }
+
+    /// A text whose ink crosses the page's edge is told apart from its lines left out, with the
+    /// advice that fixes an edge: moved past each side it is, back inside or turned within the
+    /// page it isn't, and one cut below its box and past the edge has both (#2703).
+    #[test]
+    fn a_text_past_the_pages_edge_is_told_with_its_advice() {
+        let info = PageInfo::default();
+        let mut l = note_page("Note", false, TextAlign::Left, 0.0);
+        let id = l.elements[0].id;
+        let put = |l: &mut Layout, (x, y): (f64, f64)| {
+            if let Some(e) = l.element_mut(id) {
+                (e.x, e.y) = (x, y);
+            }
+        };
+        let turn = |l: &mut Layout, degrees: f64| {
+            if let Some(ElementKind::Text { rotation, .. }) = l.element_mut(id).map(|e| &mut e.kind) {
+                *rotation = degrees;
+            }
+        };
+        let told = |l: &Layout| text_loss(l, &[], 96.0, &info, id).and_then(|loss| off_page_notice(&loss));
+        let said = format!(
+            "The text \"Note\" ({id}) runs off the page, so part of it isn't drawn; move it inside the page, resize it or reduce its size"
+        );
+        assert_eq!(told(&l), None, "inside the page");
+        // Past each edge.
+        for at in [(98.0, 10.0), (10.0, 99.0), (-30.0, 10.0), (10.0, -5.0)] {
+            put(&mut l, at);
+            let loss = text_loss(&l, &[], 96.0, &info, id).unwrap_or_else(|| panic!("{at:?} is past an edge"));
+            assert!(loss.off_page && loss.left_out == 0 && !loss.below_box, "{at:?} {loss:?}");
+            assert_eq!(off_page_notice(&loss), Some(said.clone()), "{at:?}");
+            assert_eq!(lines_left_out_notice(&loss), None, "{at:?}: no line is left out");
+            put(&mut l, (10.0, 10.0));
+            assert_eq!(told(&l), None, "{at:?} moved back inside");
+        }
+        // A text that doesn't cross says nothing, whatever else is lost.
+        let inside =
+            TextLoss { id, name: "Note".into(), left_out: 1, at_least: false, below_box: true, past_limit: false, off_page: false };
+        assert_eq!(off_page_notice(&inside), None);
+        // Turned within the page: nothing. Turned about its box's centre past the edge: told.
+        put(&mut l, (30.0, 10.0));
+        turn(&mut l, 90.0);
+        assert_eq!(told(&l), None, "turned within the page");
+        turn(&mut l, 180.0);
+        assert_eq!(told(&l), None, "turned within the page");
+        put(&mut l, (80.0, 10.0));
+        turn(&mut l, 0.0);
+        assert_eq!(told(&l), None, "unturned, it is inside");
+        turn(&mut l, 180.0);
+        assert_eq!(told(&l), Some(said.clone()), "turned about its box's centre, past the edge");
+        // Cut below its box and past the edge: each is told, apart.
+        let mut l = note_page("one\ntwo\nthree", false, TextAlign::Left, 0.0);
+        let id = l.elements[0].id;
+        if let Some(e) = l.element_mut(id) {
+            (e.x, e.h) = (98.0, 2.0);
+        }
+        let loss = text_loss(&l, &[], 96.0, &info, id).unwrap_or_else(|| panic!("cut"));
+        assert!(loss.below_box && loss.off_page && loss.left_out == 2, "{loss:?}");
+        let (lines, edge) = (lines_left_out_notice(&loss).unwrap_or_default(), off_page_notice(&loss).unwrap_or_default());
+        assert!(lines.contains("don't fit its box") && !lines.contains("page"), "{lines}");
+        assert!(edge.contains("runs off the page") && !edge.contains("lines"), "{edge}");
+        // No ink, nothing to cut: an empty or blank text, past the edge.
+        for blank in ["", "  \n "] {
+            let mut l = note_page(blank, false, TextAlign::Left, 0.0);
+            let id = l.elements[0].id;
+            if let Some(e) = l.element_mut(id) {
+                e.x = 98.0;
+            }
+            assert_eq!(text_loss(&l, &[], 96.0, &info, id), None, "{blank:?} has no ink");
+        }
+        // A file can hold any place and size: measured without a panic, and told at most once.
+        for (x, y, size) in
+            [(1e300, -1e300, 12.0), (f64::NAN, f64::INFINITY, 12.0), (10.0, 10.0, f64::NAN), (10.0, 10.0, 1e300), (98.0, 10.0, 1e300)]
+        {
+            let mut l = note_page("Note", false, TextAlign::Left, 0.0);
+            let id = l.elements[0].id;
+            if let Some(e) = l.element_mut(id) {
+                (e.x, e.y) = (x, y);
+                if let ElementKind::Text { size: s, .. } = &mut e.kind {
+                    *s = size;
+                }
+            }
+            let losses = text_losses(&l, &[], 96.0, &info);
+            assert!(losses.len() <= 1 && losses.iter().all(|loss| off_page_notice(loss).iter().count() <= 1), "{x} {y} {size}");
+        }
     }
 
     /// A long text counts every line left out below its box, each only looked at for a letter

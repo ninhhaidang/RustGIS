@@ -3194,6 +3194,7 @@ fn duplicate_element(s: &mut Session, p: &Value) -> CmdResult {
     if dx.abs() > 5000.0 || dy.abs() > 5000.0 {
         return Err("the copy's offset is up to 5000 mm".into());
     }
+    let li = index(s, p)?;
     let l = active(s, p)?;
     let e = l.element(id).cloned().ok_or_else(|| format!("no element {id}"))?;
     let name = numbered(&e.name, |n| l.elements.iter().any(|x| x.name == n));
@@ -3203,6 +3204,9 @@ fn duplicate_element(s: &mut Session, p: &Value) -> CmdResult {
         c.background = e.background;
     }
     super::say_name_cut(s, "Duplicate Element", "the copy's name", &e.name, &name);
+    // Its offset can take a text's ink past the page's edge, as a move does (#2703); the lines it
+    // loses are the original's, said when it was set.
+    say_text_fit(s, li, copy, false);
     Ok(json!({"element": copy, "name": name}))
 }
 
@@ -3601,9 +3605,10 @@ fn say_legend_fit(s: &mut Session, li: usize, id: u32) {
 
 /// Says how many lines of the text `id` of the layout `li` don't fit its box (#2346), as the
 /// layout view and an export count them: on the series' current page, measured at 300 dpi as a
-/// wrapped text is broken. For a scale bar `id`, whether its box is too short for its labels or
-/// one runs off the page (#2581).
-fn say_text_fit(s: &mut Session, li: usize, id: u32) {
+/// wrapped text is broken, and, a notice of its own, that its ink runs off the page (#2703). A
+/// `lines` of false (a move or a turn, which change no line) says only the edge. For a scale bar
+/// `id`, whether its box is too short for its labels or one runs off the page (#2581).
+fn say_text_fit(s: &mut Session, li: usize, id: u32, lines: bool) {
     let bar = match s.project.layouts.get(li).and_then(|l| l.element(id)).map(|e| &e.kind) {
         Some(ElementKind::Text { .. }) => false,
         Some(ElementKind::ScaleBar { .. }) => true,
@@ -3614,7 +3619,8 @@ fn say_text_fit(s: &mut Session, li: usize, id: u32) {
     let notices = if bar {
         rustgis_render::layout::scale_bar_fit_notices(&[loss])
     } else {
-        rustgis_render::layout::lines_left_out_notice(&loss).into_iter().collect()
+        let left_out = rustgis_render::layout::lines_left_out_notice(&loss).filter(|_| lines);
+        left_out.into_iter().chain(rustgis_render::layout::off_page_notice(&loss)).collect()
     };
     for notice in notices {
         s.warn(notice);
@@ -3636,8 +3642,9 @@ fn text_fit_loss(s: &Session, li: usize, id: u32) -> Option<rustgis_render::layo
 }
 
 /// What a text is given that changes the lines it breaks into or the room they have, or shows it
-/// (#2346): a move or a turn doesn't, nor a colour (the Format pane sets one at each step of a
-/// pick), except one that shows a text without ink, which `update` tells apart.
+/// (#2346). A move or a turn changes no line, so `update` says only whether the text runs off the
+/// page then (#2703); nor does a colour (the Format pane sets one at each step of a pick), except
+/// one that shows a text without ink, which `update` tells apart.
 const TEXT_FIT_KEYS: [&str; 12] =
     ["text", "size", "w", "h", "wrap", "font", "fallback", "bold", "italic", "letterSpacing", "align", "visible"];
 /// What a scale bar is given that changes its labels (#2581): its text size (`null` included, which
@@ -4038,7 +4045,7 @@ fn add_element(s: &mut Session, p: &Value) -> CmdResult {
     if kind == "chart" {
         say_chart_losses(s, i, id);
     }
-    say_text_fit(s, i, id);
+    say_text_fit(s, i, id, true);
     if let Some(said) = empty_colorbar {
         s.warn(said);
     }
@@ -5648,15 +5655,14 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
     } else if let Some(basis) = &refit {
         refit_scale_box(s, li, basis);
     }
-    // After the scale box is refitted: a text is measured in the box it is saved with, and a scale
-    // bar moved, whose labels can then run off the page, too.
-    let bar = s.project.layouts.get(li).and_then(|l| l.element(id)).is_some_and(|e| matches!(e.kind, ElementKind::ScaleBar { .. }));
-    if shown
-        || TEXT_FIT_KEYS.iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null()))
-        || BAR_FIT_KEYS.iter().any(|k| p.get(*k).is_some())
-        || (bar && given(&["x", "y"]))
-    {
-        say_text_fit(s, li, id);
+    // After the scale box is refitted: a text is measured in the box it is saved with, and a text
+    // or scale bar moved, whose ink can then run off the page, too.
+    if shown || TEXT_FIT_KEYS.iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null())) || BAR_FIT_KEYS.iter().any(|k| p.get(*k).is_some()) {
+        say_text_fit(s, li, id, true);
+    } else if given(&["x", "y", "rotation"]) {
+        // A move or a turn changes no line a text breaks into, but can take its ink past the page's
+        // edge (#2703); a scale bar's labels move with it (#2581).
+        say_text_fit(s, li, id, false);
     }
     // A centre the frame's map can't place (a pole on Web Mercator) is said (#2684).
     if new_center.is_some() || given(&["map"]) {
