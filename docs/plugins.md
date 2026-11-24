@@ -760,6 +760,11 @@ that needs it left out.
   address taken from the one before, runs once per step, up to 64 times. The browser follows
   redirects itself, and the server must allow requests from web pages (CORS).
 
+Service discovery a plugin starts follows the same rule. The service or catalogue address it gives
+`service.add`, `service.layers`, `service.coverage`, `service.groupPlan`, `service.import`,
+`service.refresh` or `catalog.search` must be on the internet, and the documents read from it,
+any `text` the plugin supplies and everything they name are held to the internet too.
+
 Use `host::call("host.fetch", json!({"url": url}))` in the Rust SDK, or
 `host::call("host.fetch", json!({"url": url, "json": false}))` for the text only.
 

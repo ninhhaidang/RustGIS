@@ -20377,6 +20377,84 @@ fn plugins_fetch_documents_with_network() {
     rustgis_plugins::unload("eng-fetch");
 }
 
+/// A service's collections at `local`, on this computer, whose one layer is there too (nothing
+/// listens on port 9, so a read that is tried fails at once), and a catalogue's answer for a
+/// catalogue on the local network linking to a service there: `(listing, search)`, each with its
+/// document given as `text`.
+fn local_service_and_catalogue(local: &str, catalogue: &str) -> (Value, Value) {
+    let items = format!("{local}/parcels/items");
+    let collections =
+        json!({"collections":[{"id":"parcels","title":"Parcels","links":[{"rel":"items","type":"application/geo+json","href":items}]}]});
+    let record = format!(
+        r#"<csw:GetRecordsResponse xmlns:csw="http://www.opengis.net/cat/csw/2.0.2" xmlns:dc="http://purl.org/dc/elements/1.1/"><csw:SearchResults numberOfRecordsMatched="1"><csw:Record><dc:identifier>a</dc:identifier><dc:title>A</dc:title><dc:URI protocol="OGC:WMS">{catalogue}/wms</dc:URI></csw:Record></csw:SearchResults></csw:GetRecordsResponse>"#
+    );
+    (json!({"url": local, "type": "ogcapi", "text": collections.to_string()}), json!({"url": catalogue, "text": record}))
+}
+
+/// Plugins reach only the internet, and so does the service discovery one starts: a service or
+/// catalogue address on this computer or the local network is refused for a plugin, naming it and
+/// why, by every command that discovers a service or searches a catalogue, and nothing is added.
+#[test]
+fn a_plugin_cannot_discover_a_service_off_the_internet() {
+    let mut s = world();
+    let id = "eng-service-local";
+    plugin(id, &["network", "edit"]);
+    let (local, catalogue) = ("http://127.0.0.1:9/ogc/collections", "http://192.168.21.4/csw");
+    let (listing, search) = local_service_and_catalogue(local, catalogue);
+    let with = |extra: Value| {
+        let mut p = listing.clone();
+        if let (Some(p), Some(extra)) = (p.as_object_mut(), extra.as_object()) {
+            p.extend(extra.clone());
+        }
+        p
+    };
+    for (op, p, url) in [
+        ("service.add", with(json!({"layer": "parcels"})), local),
+        ("service.add", json!({"url": "http://127.0.0.1:9/wms", "type": "wms", "layer": "roads"}), "http://127.0.0.1:9/wms"),
+        ("service.layers", listing.clone(), local),
+        ("service.coverage", with(json!({"layer": "parcels"})), local),
+        ("service.groupPlan", listing.clone(), local),
+        ("service.import", with(json!({"name": "Parcels"})), local),
+        ("catalog.search", search.clone(), catalogue),
+    ] {
+        let e = forward(&mut s, id, op, p).unwrap_err();
+        assert!(e.contains(url) && e.contains("plugins fetch only from the internet, not this computer or the local network"), "{op}: {e}");
+    }
+    assert!(s.map().layers.iter().all(|l| l.name != "Parcels" && l.name != "roads"), "nothing was added");
+    rustgis_plugins::unload(id);
+}
+
+/// The user's own service and catalogue on this computer and the local network are read as ever:
+/// only a plugin's discovery is held to the internet.
+#[test]
+fn the_users_own_local_service_is_still_discovered() {
+    let mut s = world();
+    let (listing, search) = local_service_and_catalogue("http://127.0.0.1:9/ogc/collections", "http://192.168.21.4/csw");
+    let own = s.run("service.layers", &listing).unwrap();
+    assert_eq!(own["layers"].as_array().map_or(0, Vec::len), 1, "{own}");
+    let own = s.run("catalog.search", &search).unwrap();
+    assert_eq!(own["records"][0]["links"].as_array().map_or(0, Vec::len), 1, "{own}");
+}
+
+/// A document a plugin supplies for a service on the internet has what it names held there: its
+/// link into the local network is refused, naming it, as is a catalogue answer's.
+#[test]
+fn a_document_a_plugin_supplies_names_only_the_internet() {
+    let mut s = world();
+    let id = "eng-service-text";
+    plugin(id, &["network"]);
+    let linked = "http://10.0.21.5/collections";
+    let landing = json!({"links":[{"rel":"data","type":"application/json","href":linked}]}).to_string();
+    let p = json!({"url": "https://gis-21.corp-looks-public.example/ogc", "type": "ogcapi", "text": landing});
+    let e = forward(&mut s, id, "service.layers", p).unwrap_err();
+    assert!(e.contains(linked) && e.contains("local network"), "{e}");
+    let (_, search) = local_service_and_catalogue("http://127.0.0.1:9/ogc/collections", "http://192.168.21.4/csw");
+    let search = json!({"url": "https://csw-21.corp-looks-public.example/csw", "text": search["text"]});
+    let out = forward(&mut s, id, "catalog.search", search).unwrap();
+    assert_eq!(out["records"][0]["links"].as_array().map_or(0, Vec::len), 0, "{out}");
+    rustgis_plugins::unload(id);
+}
+
 /// Where nothing may wait (the browser), `host.fetch` answers pending: the command is undone,
 /// quietly, and runs again once the answer is in, when the cache answers.
 #[test]

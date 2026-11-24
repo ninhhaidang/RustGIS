@@ -262,6 +262,10 @@ fn read_documents_with(
     fetch: FetchDocument<'_>,
 ) -> Result<Discovery, String> {
     let original = url_of(p)?;
+    // The service's own address is the caller's choice, unless a document read from the internet
+    // named it (a catalogue's record: [`cache::ceiling_for`] holds it there) or a plugin did
+    // (plugins reach only the internet: [`Session::named_reach`]).
+    let named = s.named_reach(original)?;
     let mut address =
         crate::render::rustgis_tiles::logins::inherit(original, &rustgis_data::ogc::capabilities_url(original, ps(p, "type")));
     let supplied = ps(p, "text");
@@ -289,14 +293,12 @@ fn read_documents_with(
     loop {
         rustgis_data::progress::check().map_err(|e| e.to_string())?;
         let crossed_origin = histories.get(&parent).copied().unwrap_or(false) || crosses_origin(&parent, &address);
-        // The service's own address is the user's choice, unless a document read from the
-        // internet named it (a catalogue's record: [`cache::ceiling_for`] holds it there); a linked
-        // one inherits its document's reach (a document not recorded, which can't happen, reaches
-        // only the internet). Either is judged by that reach, never by how the document's address
-        // is spelled: a public-looking name may connect on the local network, and its local links
-        // are then the service's own.
+        // The service's own address is read within `named`; a linked one inherits its document's
+        // reach (a document not recorded, which can't happen, reaches only the internet). Either is
+        // judged by that reach, never by how the document's address is spelled: a public-looking
+        // name may connect on the local network, and its local links are then the service's own.
         let inherited = if seen.is_empty() {
-            cache::ceiling_for(original)
+            named
         } else {
             reaches.get(crate::render::rustgis_tiles::logins::inner(&parent)).copied().unwrap_or(Reach::Public)
         };
@@ -304,7 +306,7 @@ fn read_documents_with(
         // A document the app supplies was recorded by its fetch if it came from the internet; one
         // supplied by anything else (the Assistant, MCP, a plugin) says nothing trustworthy about
         // where it was read, so what it names is taken as named on the internet. Its address
-        // itself stays the caller's own choice.
+        // itself is the caller's choice, as `named` holds it.
         let read_within = if seen.is_empty() && supplied.is_some() && !s.policy_user() { ceiling.min(Reach::Public) } else { ceiling };
         let rejected = match crate::render::rustgis_tiles::address::check_reach(&address, ceiling) {
             Ok(()) => false,
@@ -1893,9 +1895,10 @@ pub(super) fn catalog_search_read(s: &mut Session, p: &Value, read: Option<Reach
     let url = url_of(p)?;
     let request = records_request(s, p)?;
     // Where the answer was read: natively, where the fetch connected; otherwise what the app's
-    // fetch recorded of it ([`cache::ceiling_for`]). The catalogue's own address is the user's
-    // choice, unless a document read from the internet named it.
-    let within = cache::ceiling_for(url).min(cache::ceiling_for(&request));
+    // fetch recorded of it ([`cache::ceiling_for`]). The catalogue's own address is the caller's
+    // choice, unless a document read from the internet or a plugin named it
+    // ([`Session::named_reach`]).
+    let within = s.named_reach(url)?.min(cache::ceiling_for(&request));
     // An answer supplied by anything but the app says nothing trustworthy about where it was read.
     let within = match read {
         Some(read) => within.min(read),

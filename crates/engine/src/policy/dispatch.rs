@@ -336,6 +336,19 @@ impl Session {
     pub(crate) fn policy_user(&self) -> bool {
         self.policy.scopes.last().is_none_or(|s| matches!(s.kind, Kind::User))
     }
+    /// Whether a plugin's authority is in the active scope: one of its commands, or what its
+    /// session program asks between them, through any item it runs.
+    pub(crate) fn policy_plugin(&self) -> bool {
+        /// Looks through item narrowing for a plugin.
+        fn plugin(kind: &Kind) -> bool {
+            match kind {
+                Kind::Plugin { .. } => true,
+                Kind::Item { within, .. } => plugin(within),
+                _ => false,
+            }
+        }
+        self.policy.scopes.last().is_some_and(|s| plugin(&s.kind))
+    }
     /// Whether the active scope may exercise reserved connection/account authority.
     pub(crate) fn policy_allows_reserved(&self) -> bool {
         match &self.scope().kind {

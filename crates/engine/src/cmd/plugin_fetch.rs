@@ -163,12 +163,31 @@ pub fn checked(url: &str) -> Result<String, String> {
     let url = url.split('#').next().unwrap_or(url);
     address::check(url, None)?;
     if address::reach(url) != address::Reach::Public && !allow_local() {
-        return Err(crate::sources::message_with_address(
-            url,
-            "plugins fetch only from the internet, not this computer or the local network",
-        ));
+        return Err(crate::sources::message_with_address(url, INTERNET_ONLY));
     }
     Ok(url.to_string())
+}
+
+/// Why a plugin can't reach an address: plugins reach only the internet.
+const INTERNET_ONLY: &str = "plugins fetch only from the internet, not this computer or the local network";
+
+impl Session {
+    /// The widest reach a service or catalogue the caller names (`url`, the address discovery
+    /// starts from) is read within. A plugin reaches only the internet, as its own `host.fetch`
+    /// does: under its authority an address on this computer or the local network is refused,
+    /// and one on the internet starts discovery within the internet, so the documents read from
+    /// it, the text the plugin supplies for it and everything they name are held there too. Any
+    /// other caller's address is its own choice, held only by what the app recorded of it.
+    pub(crate) fn named_reach(&self, url: &str) -> Result<address::Reach, String> {
+        if !self.policy_plugin() {
+            return Ok(crate::render::rustgis_tiles::cache::ceiling_for(url));
+        }
+        match address::check_reach(url, address::Reach::Public) {
+            Ok(()) => Ok(address::Reach::Public),
+            Err(e) if address::is_refusal(&e) => Err(crate::sources::message_with_address(url, INTERNET_ONLY)),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// The answer for a fetched document: `{url, text}`, and `json` when the text is a JSON object
