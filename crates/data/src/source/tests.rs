@@ -3820,6 +3820,98 @@ fn gpkg_tables(path: &Path) -> Vec<String> {
     st.query_map([], |r| r.get(0)).unwrap().collect::<std::result::Result<_, _>>().unwrap()
 }
 
+/// A table's count is the one GDAL keeps in `gpkg_ogr_contents`, when it keeps one with the
+/// triggers that keep it up to date, so a large table isn't scanned to count it (#2849); else its
+/// rows are counted, as before. A table with Z or M on every geometry is still scanned, as that
+/// scan also counts its geometries.
+#[test]
+fn geopackage_count_is_the_one_gdal_keeps_when_it_keeps_one() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut parcels = Dataset::new("parcels", GeometryType::Point, vec![Field::new("apn", FieldType::Text)]);
+    for i in 0..3 {
+        parcels.push(Some(Geometry::Point(Coord::new(f64::from(i), 2.0))), vec![Value::Text(format!("00{i}"))]);
+    }
+    // The table of counts and the triggers GDAL keeps it with, as GDAL writes them.
+    let kept = "DROP TABLE IF EXISTS gpkg_ogr_contents;
+                CREATE TABLE gpkg_ogr_contents (table_name TEXT NOT NULL PRIMARY KEY, feature_count INTEGER DEFAULT NULL);
+                CREATE TRIGGER \"trigger_insert_feature_count_parcels\" AFTER INSERT ON \"parcels\" BEGIN UPDATE gpkg_ogr_contents
+                  SET feature_count = feature_count + 1 WHERE lower(table_name) = lower('parcels'); END;
+                CREATE TRIGGER \"trigger_delete_feature_count_parcels\" AFTER DELETE ON \"parcels\" BEGIN UPDATE gpkg_ogr_contents
+                  SET feature_count = feature_count - 1 WHERE lower(table_name) = lower('parcels'); END;";
+    // The file's three rows, against what the table of counts says, and whether the count is kept.
+    let cases = [
+        ("kept", format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('parcels', 250000);"), 250_000, true),
+        ("kept zero", format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('parcels', 0);"), 0, true),
+        ("upper-case name", format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('PARCELS', 7);"), 7, true),
+        // Names differing in case are two rows (the key is case-sensitive): the table's own is taken.
+        ("a row for each case", format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('PARCELS', 7), ('parcels', 250000);"), 250_000, true),
+        // The table's own row says no count: it is counted, whatever another row says.
+        ("own row null", format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('PARCELS', 250000), ('parcels', NULL);"), 3, false),
+        // The column's INTEGER affinity stores text digits as a number.
+        ("digits as text", format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('parcels', '250000');"), 250_000, true),
+        // Without either trigger nothing kept it up to date (GDAL drops them while it writes).
+        (
+            "no insert trigger",
+            format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('parcels', 250000); DROP TRIGGER trigger_insert_feature_count_parcels;"),
+            3,
+            false,
+        ),
+        (
+            "no delete trigger",
+            format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('parcels', 250000); DROP TRIGGER trigger_delete_feature_count_parcels;"),
+            3,
+            false,
+        ),
+        (
+            "triggers on another table",
+            format!(
+                "{kept} INSERT INTO gpkg_ogr_contents VALUES ('parcels', 250000);
+                 DROP TRIGGER trigger_insert_feature_count_parcels; DROP TRIGGER trigger_delete_feature_count_parcels;
+                 CREATE TABLE other (v); CREATE TRIGGER trigger_insert_feature_count_parcels AFTER INSERT ON other BEGIN SELECT 1; END;
+                 CREATE TRIGGER trigger_delete_feature_count_parcels AFTER DELETE ON other BEGIN SELECT 1; END;"
+            ),
+            3,
+            false,
+        ),
+        ("null", format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('parcels', NULL);"), 3, false),
+        ("no table", "DROP TABLE IF EXISTS gpkg_ogr_contents;".to_string(), 3, false),
+        ("no row", format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('roads', 9);"), 3, false),
+        ("negative", format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('parcels', -5);"), 3, false),
+        ("text", format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('parcels', 'many');"), 3, false),
+        ("fraction", format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('parcels', 2.5);"), 3, false),
+        (
+            "z on every geometry",
+            format!("{kept} INSERT INTO gpkg_ogr_contents VALUES ('parcels', 250000); UPDATE gpkg_geometry_columns SET z = 1;"),
+            3,
+            false,
+        ),
+    ];
+    for (case, sql, count, is_kept) in cases {
+        let path = workspace.path().join(format!("{}.gpkg", case.replace(' ', "-")));
+        crate::io::write_path(&parcels, &path).unwrap();
+        rusqlite::Connection::open(&path).unwrap().execute_batch(&sql).unwrap();
+        let src = open_path(&path, Some("parcels")).unwrap();
+        assert_eq!(src.info().count, Some(count), "{case}");
+        // A preview gets the rows there are, whatever the count says: a count past them (an
+        // `INSERT OR REPLACE` leaves it high, a file may say any number) doesn't thin it.
+        // Its progress, and a whole read's (Load All), has the rows counted as its total, or none
+        // (unknown) for a kept count.
+        let total = if is_kept { 0 } else { 3 };
+        let watched = |read: &dyn Fn() -> usize| {
+            let probe = std::sync::Arc::new(crate::progress::tests::Counted::default());
+            let _watched = crate::progress::install(Some(probe.clone()));
+            (read(), probe.total.load(std::sync::atomic::Ordering::Relaxed))
+        };
+        let preview = || {
+            let batch = src.read(&Request { extent: None, limit: 100, own: None }).unwrap();
+            if batch.complete { batch.features.len() } else { 0 }
+        };
+        assert_eq!(watched(&preview), (3, total), "{case}: preview");
+        let whole = || materialize(src.as_ref()).unwrap().0.features.len();
+        assert_eq!(watched(&whole), (3, total), "{case}: whole read");
+    }
+}
+
 /// Text in a date-time field with digits past the microsecond is written as a read takes it: as
 /// that date-time, to the millisecond and counted, not kept as text a read would call no date.
 #[test]

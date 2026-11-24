@@ -1492,7 +1492,11 @@ past 32 MiB starts at Link, and stays linked even when it holds few features). A
 the file's path (relative to the project's folder when it can, so a folder moved whole keeps it),
 not its features: to edit it or define its projection, choose **Load All Features** first. A file
 too large to read whole can only be linked. A GeoPackage of several tables asks once, at the foot
-of **Choose Layers**. A linked layer shows "(linked)" after its name in Layers, and Package Project
+of **Choose Layers**; one table read in place links them all. A GeoPackage table's size is the
+feature count GDAL keeps in `gpkg_ogr_contents`, when the file has one along with the triggers GDAL
+keeps it up to date by, so a large table isn't scanned to count it; otherwise its rows are counted
+(a table with Z or M on every geometry is always counted, as that also counts its geometries). A
+linked layer shows "(linked)" after its name in Layers, and Package Project
 names the layers it leaves linked to files outside the package. LiDAR is always linked, and a `.json`
 file (which may be a city model) isn't asked about: it is linked or copied by the size rule above,
 as before. Files read whole are copied.

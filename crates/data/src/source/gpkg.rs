@@ -36,6 +36,10 @@ pub struct GpkgSource {
     /// The database file and its identity when opened ([`file_identity`]), for a traversal on a
     /// connection of its own to check it reads the same file.
     file: Option<(PathBuf, Option<(u64, u64)>)>,
+    /// Whether `info.count` is the count GDAL keeps ([`kept_count`]) rather than the rows counted:
+    /// it may be past them (an `INSERT OR REPLACE` leaves it high, a file may say any number), so
+    /// a read doesn't start its sample's step from it.
+    count_kept: bool,
 }
 
 impl Drop for GpkgSource {
@@ -151,6 +155,31 @@ fn has_table(conn: &Connection, name: &str) -> Result<bool> {
     .map_err(err)
 }
 
+/// The feature count GDAL keeps for `table` in `gpkg_ogr_contents`, used as the table's count
+/// when the file also has the two triggers that keep it up to date
+/// (`trigger_insert_feature_count_<table>` and `trigger_delete_feature_count_<table>`, which add or
+/// take one per insert and delete); GDAL answers a table's count with it too, and it is as right
+/// as GDAL's: a row an `INSERT OR REPLACE` puts out fires no delete trigger (SQLite's
+/// `recursive_triggers` is off by default), so such writes leave it high. A read doesn't start
+/// its sample's step from it (`GpkgSource::count_kept`), so a preview still gets the rows there
+/// are. GDAL may drop the triggers while it writes and create them again when it saves the file,
+/// so a file without them may hold an out-of-date count. `None` then, and when there is no such
+/// table or row (a file GDAL didn't write), or when the count isn't a whole number from zero up
+/// (NULL, text, a negative): the table is counted instead.
+fn kept_count(conn: &Connection, table: &str) -> Option<i64> {
+    conn.query_row(
+        // The table's row (its own name first, then one differing in case), then whether its count holds.
+        "SELECT feature_count FROM (SELECT feature_count FROM gpkg_ogr_contents WHERE lower(table_name) = lower(?1)
+                                    ORDER BY table_name = ?1 DESC LIMIT 1)
+         WHERE typeof(feature_count) = 'integer' AND feature_count >= 0
+           AND (SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND lower(tbl_name) = lower(?1) AND lower(name) IN
+                (lower('trigger_insert_feature_count_' || ?1), lower('trigger_delete_feature_count_' || ?1))) = 2",
+        [table],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
 fn feature_tables(conn: &Connection) -> Result<Vec<String>> {
     if !has_geometry_columns(conn)? {
         if !has_table(conn, "gpkg_contents")? {
@@ -164,6 +193,12 @@ fn feature_tables(conn: &Connection) -> Result<Vec<String>> {
 }
 
 impl GpkgSource {
+    /// The total a scan of the table counts its progress against: none (unknown) for a kept count
+    /// (`count_kept`), which may be past the rows.
+    fn progress_total(&self) -> usize {
+        self.info.count.filter(|_| !self.count_kept).and_then(|n| usize::try_from(n).ok()).unwrap_or(0)
+    }
+
     pub fn open(path: &Path, layer: Option<&str>) -> Result<Self> {
         // The identity is taken before the database is opened: a file put in its place after
         // this leaves it describing the file opened, which a traversal then refuses to swap.
@@ -280,17 +315,25 @@ impl GpkgSource {
                 Ok((r.get(0)?, r.get(1)?))
             })
             .ok();
-        // Rows; with Z or M declared for every geometry, also the rows with one (what the note on
-        // them counts), in the same scan. Counting geometries reads every blob, so only then.
+        // Rows: the count GDAL keeps ([`kept_count`]), so a large table isn't scanned to count it
+        // (#2849), else counted. With Z or M declared for every geometry, also the rows with one
+        // (what the note on them counts), in the same scan. Counting geometries reads every blob,
+        // so only then.
         let mandatory = zm.is_some_and(|(z, m)| z == 1 || m == 1);
         let counted = if mandatory { format!("COUNT({})", quote(&geom)) } else { "0".into() };
-        let counts = conn
-            .query_row(&format!("SELECT COUNT(*), {counted} FROM {}", quote(&table)), [], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            })
-            .ok();
+        let kept = if mandatory { None } else { kept_count(&conn, &table) };
+        // The rows, and the geometries when `mandatory`.
+        let counts: Option<(i64, Option<i64>)> = match kept {
+            Some(n) => Some((n, None)),
+            None => conn
+                .query_row(&format!("SELECT COUNT(*), {counted} FROM {}", quote(&table)), [], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                })
+                .ok()
+                .map(|(n, g)| (n, mandatory.then_some(g))),
+        };
         let count = counts.and_then(|(n, _)| u64::try_from(n).ok());
-        let geometries = counts.filter(|_| mandatory).and_then(|(_, g)| u64::try_from(g).ok());
+        let geometries = counts.and_then(|(_, g)| g).and_then(|g| u64::try_from(g).ok());
         let geometry_type = match geom_type.to_ascii_uppercase().as_str() {
             "POINT" | "MULTIPOINT" => GeometryType::Point,
             "LINESTRING" | "MULTILINESTRING" | "CURVE" | "MULTICURVE" => GeometryType::Polyline,
@@ -312,7 +355,18 @@ impl GpkgSource {
             zm_dropped: false,
         };
         let file = Some((path.to_path_buf(), id));
-        let mut src = GpkgSource { info, conn: Mutex::new(Some(conn)), table, geom, pk, rtree, reproject, temp: None, file };
+        let mut src = GpkgSource {
+            info,
+            conn: Mutex::new(Some(conn)),
+            table,
+            geom,
+            pk,
+            rtree,
+            reproject,
+            temp: None,
+            file,
+            count_kept: kept.is_some(),
+        };
         if src.info.geometry_type == GeometryType::None {
             src.info.geometry_type = src.peek_kind();
         }
@@ -506,10 +560,14 @@ impl FeatureSource for GpkgSource {
                 let sql = format!("SELECT {} FROM {}", self.select_list(), quote(&self.table));
                 let mut st = conn.prepare(&sql).map_err(err)?;
                 let mut rows = st.query([]).map_err(err)?;
-                // A whole read knows its count; an extent, bounded natively or not, is matched as it goes.
-                let mut sample =
-                    if req.extent.is_none() { Sampler::with_total(limit, self.info.count.unwrap_or(0)) } else { Sampler::new(limit) };
-                crate::progress::begin(self.info.count.and_then(|n| usize::try_from(n).ok()).unwrap_or(0));
+                // A whole read knows its count, unless the file's own; an extent, bounded natively
+                // or not, is matched as it goes.
+                let mut sample = if req.extent.is_none() && !self.count_kept {
+                    Sampler::with_total(limit, self.info.count.unwrap_or(0))
+                } else {
+                    Sampler::new(limit)
+                };
+                crate::progress::begin(self.progress_total());
                 while let Some(r) = rows.next().map_err(err)? {
                     crate::progress::step(1)?;
                     // With an extent, the envelope in the geometry's header says whether the row
@@ -576,7 +634,7 @@ impl FeatureSource for GpkgSource {
         let mut st = conn.prepare(&sql).map_err(err)?;
         let mut rows = st.query([]).map_err(err)?;
         let mut out = Batch { complete: true, ..Batch::default() };
-        crate::progress::begin(self.info.count.and_then(|n| usize::try_from(n).ok()).unwrap_or(0));
+        crate::progress::begin(self.progress_total());
         while let Some(r) = rows.next().map_err(err)? {
             crate::progress::step(1)?;
             match self.feature(r, native.as_ref(), &req, &mut out.unread_dates, &mut out.rounded_dates).map_err(err)? {
