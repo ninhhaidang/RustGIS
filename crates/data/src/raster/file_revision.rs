@@ -73,6 +73,11 @@ impl super::Raster {
         original.check_metadata(&metadata)
     }
 
+    /// Whether this raster's pixels came from the file at `revision`, as it was then.
+    pub(crate) fn is_from(&self, revision: &FileRevision) -> bool {
+        matches!(&self.source_file, Some(Ok(original)) if original == revision)
+    }
+
     /// Checks fresh metadata from this open handle against the original source.
     /// This does not verify that the live path still names the handle; check_original_file does.
     pub fn check_original_handle(&self, file: &std::fs::File) -> std::result::Result<(), String> {

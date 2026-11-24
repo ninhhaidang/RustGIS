@@ -976,6 +976,46 @@ impl<R: Seek> Seek for Unpaletted<R> {
 /// Opens another reader on the same file, for decoding its chunks on more than one thread.
 pub(crate) type Opener<'a> = &'a (dyn Fn() -> std::io::Result<Reader<'static>> + Sync);
 
+/// The columns and rows (half-open) of a grid read that are kept: of every `k`-th pixel of the
+/// image each way, as [`decimate`] reads it, all of them for a whole image, else those of a part
+/// ([`super::Part`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Span {
+    pub(super) cols: (u32, u32),
+    pub(super) rows: (u32, u32),
+}
+
+impl Span {
+    /// The whole of a grid `w` × `h`.
+    pub(super) fn whole(w: u32, h: u32) -> Span {
+        Span { cols: (0, w), rows: (0, h) }
+    }
+
+    pub(super) fn width(self) -> usize {
+        self.cols.1.saturating_sub(self.cols.0) as usize
+    }
+
+    pub(super) fn height(self) -> usize {
+        self.rows.1.saturating_sub(self.rows.0) as usize
+    }
+
+    /// Its columns and rows.
+    pub(super) fn size(self) -> (u32, u32) {
+        (self.cols.1.saturating_sub(self.cols.0), self.rows.1.saturating_sub(self.rows.0))
+    }
+
+    fn is_empty(self) -> bool {
+        self.width() == 0 || self.height() == 0
+    }
+
+    /// The image's pixels (half-open, every `k`-th one) within `len` of them from `at` that the
+    /// span's `range` (of the grid read) keeps: the first is a multiple of `k`.
+    pub(super) fn kept(self, range: (u32, u32), at: u64, len: u64, k: u64) -> (u64, u64) {
+        let start = at.max(u64::from(range.0) * k).div_ceil(k) * k;
+        (start, (at + len).min(u64::from(range.1) * k))
+    }
+}
+
 /// How an image is cut into chunks (strips or tiles), and how they're laid out.
 #[derive(Clone, Copy)]
 struct Chunks {
@@ -1024,6 +1064,7 @@ impl Chunks {
         (self.cw as usize).saturating_mul(self.ch as usize).saturating_mul(self.samples).saturating_mul(13)
     }
 
+    #[cfg(test)]
     fn count(&self) -> u64 {
         u64::from(self.per_plane) * self.planes as u64
     }
@@ -1054,24 +1095,62 @@ impl Chunks {
         (x0, y0, u64::from(self.cw).min(w.saturating_sub(x0)), u64::from(self.ch).min(h.saturating_sub(y0)))
     }
 
+    /// The chunk columns and rows (half-open) holding a pixel of `span` (of every `k`-th pixel
+    /// each way): every chunk for the whole image.
+    fn covering(&self, span: Span, k: u32) -> ((u64, u64), (u64, u64)) {
+        let k = u64::from(k.max(1));
+        let reach = |(a, b): (u32, u32), size: u32, image: u32| {
+            // The image's pixels the span reaches, to its end: for the whole image, every chunk
+            // (one past its last kept pixel is still looked at, as before).
+            let (first, end) = (u64::from(a) * k, (u64::from(b) * k).min(u64::from(image)));
+            (first / u64::from(size.max(1)), end.div_ceil(u64::from(size.max(1))))
+        };
+        let (cols, rows) = (reach(span.cols, self.cw, self.w), reach(span.rows, self.ch, self.h));
+        let down = u64::from(self.per_plane / self.across.max(1));
+        ((cols.0, cols.1.min(u64::from(self.across))), (rows.0, rows.1.min(down)))
+    }
+
+    /// How many chunks [`Chunks::nth`] goes through for `span`, every plane's.
+    fn count_in(&self, span: Span, k: u32) -> u64 {
+        if span.is_empty() {
+            return 0;
+        }
+        let ((c0, c1), (r0, r1)) = self.covering(span, k);
+        c1.saturating_sub(c0).saturating_mul(r1.saturating_sub(r0)).saturating_mul(self.planes as u64)
+    }
+
+    /// The `p`-th chunk holding a pixel of `span` (plane by plane, then row by row), counting
+    /// through every plane as [`Chunks::wanted`] takes it: for the whole image, `p` itself.
+    fn nth(&self, p: u64, span: Span, k: u32) -> Option<u64> {
+        let ((c0, c1), (r0, r1)) = self.covering(span, k);
+        let (across, down) = (c1.checked_sub(c0).filter(|n| *n > 0)?, r1.checked_sub(r0).filter(|n| *n > 0)?);
+        let per_plane = across.checked_mul(down)?;
+        let (plane, at) = (p / per_plane, p % per_plane);
+        let c = (r0 + at / across).checked_mul(u64::from(self.across))?.checked_add(c0 + at % across)?;
+        plane.checked_mul(u64::from(self.per_plane))?.checked_add(c)
+    }
+
     /// Chunk `i` (counting through every plane) as (plane, chunk index in the file), when it holds
-    /// a kept row and column; a chunk holding none is skipped unread.
-    fn wanted(&self, i: u64, k: u32) -> Option<(usize, u32)> {
+    /// a kept row and column of `span`; a chunk holding none is skipped unread.
+    fn wanted(&self, i: u64, k: u32, span: Span) -> Option<(usize, u32)> {
         let plane = usize::try_from(i / u64::from(self.per_plane.max(1))).ok()?;
         let c = u32::try_from(i % u64::from(self.per_plane.max(1))).ok()?;
         let (x0, y0, cols, rows) = self.span(c);
         let k = u64::from(k.max(1));
-        if y0.div_ceil(k) * k >= y0 + rows || x0.div_ceil(k) * k >= x0 + cols {
+        let (xs, xe) = span.kept(span.cols, x0, cols, k);
+        let (ys, ye) = span.kept(span.rows, y0, rows, k);
+        if xs >= xe || ys >= ye {
             return None;
         }
         let index = u32::try_from(plane).ok()?.checked_mul(self.per_plane)?.checked_add(c)?;
         Some((plane, index))
     }
 
-    /// Copies every `k`-th pixel each way of chunk `c` of `plane` (decoded as `values`) into
-    /// `bands`, each `ow` pixels wide, counting in `rounded` (by band) the pixels copied whose bit
-    /// is set in `changed` (from [`rounded_bits`]). Values of none of the chunk's shapes are an
-    /// error: a row length guessed from them would put pixels in other pixels' places.
+    /// Copies every `k`-th pixel each way of chunk `c` of `plane` (decoded as `values`) that
+    /// `span` keeps into `bands`, each the span's width, counting in `rounded` (by band) the
+    /// pixels copied whose bit is set in `changed` (from [`rounded_bits`]). Values of none of the
+    /// chunk's shapes are an error: a row length guessed from them would put pixels in other
+    /// pixels' places.
     fn place(
         &self,
         bands: &mut [Vec<f32>],
@@ -1081,9 +1160,10 @@ impl Chunks {
         plane: usize,
         c: u32,
         k: u32,
-        ow: usize,
+        span: Span,
     ) -> Result<()> {
         let c = c % self.per_plane.max(1);
+        let ow = span.width();
         let (x0, y0, cols, rows) = self.span(c);
         let k = u64::from(k.max(1));
         // The chunk's row length: the data width, or the full tile width when padded. The tiff
@@ -1104,10 +1184,12 @@ impl Chunks {
                     values.len()
                 ))
             })?;
-        let mut y = y0.div_ceil(k) * k;
-        while y < y0 + rows {
-            let mut x = x0.div_ceil(k) * k;
-            while x < x0 + cols {
+        let ((xs, xe), (ys, ye)) = (span.kept(span.cols, x0, cols, k), span.kept(span.rows, y0, rows, k));
+        let (sc, sr) = (u64::from(span.cols.0), u64::from(span.rows.0));
+        let mut y = ys;
+        while y < ye {
+            let mut x = xs;
+            while x < xe {
                 // With `stride` one of the chunk's shapes, every position is inside `values`; the
                 // checked arithmetic only keeps a product from being computed unchecked.
                 let src = usize::try_from(y - y0)
@@ -1115,7 +1197,7 @@ impl Chunks {
                     .and_then(|row| row.checked_mul(stride))
                     .and_then(|at| at.checked_add(usize::try_from(x - x0).ok()?))
                     .and_then(|at| at.checked_mul(self.samples));
-                let dst = (y / k) as usize * ow + (x / k) as usize;
+                let dst = (y / k - sr) as usize * ow + (x / k - sc) as usize;
                 for b in 0..self.samples {
                     let band = if self.planar { plane } else { b };
                     let at = src.unwrap_or(usize::MAX).saturating_add(b);
@@ -1157,9 +1239,10 @@ fn limits() -> Limits {
 const PARALLEL_CHUNKS: u64 = 16;
 
 /// Reads an image a strip or tile at a time, keeping every `k`-th pixel each way: an overview
-/// made as it is read, for a file too large to hold that has none. Returns the bands. With `k`
-/// 1, the whole image a chunk at a time. With `open`, chunks are decoded on several threads,
-/// each reading image `image` of its own copy of the file.
+/// made as it is read, for a file too large to hold that has none. Returns the bands, of the
+/// pixels `span` keeps (`None`: all of them). With `k` 1, the whole image a chunk at a time.
+/// With `open`, chunks are decoded on several threads, each reading image `image` of its own
+/// copy of the file. Only the chunks holding a pixel of the span are looked at.
 /// Progress counts chunks examined, including ones skipped by the overview. Cancel is checked
 /// between chunks; decoding and placing an individual chunk cannot be interrupted.
 fn decimate<R: Read + Seek>(
@@ -1169,13 +1252,16 @@ fn decimate<R: Read + Seek>(
     nbands: usize,
     planar: bool,
     k: u32,
+    span: Option<Span>,
     nodata: Uncounted,
     open: Option<(Opener<'_>, usize, Limits)>,
 ) -> Result<(Vec<Vec<f32>>, &'static str, Vec<u64>)> {
     crate::progress::check()?;
     let k = k.max(1);
-    let (ow, oh) = (w.div_ceil(k) as usize, h.div_ceil(k) as usize);
+    let span = span.unwrap_or_else(|| Span::whole(w.div_ceil(k), h.div_ceil(k)));
+    let (ow, oh) = (span.width(), span.height());
     let chunks = Chunks::new(dec, w, h, nbands, planar);
+    let examined = chunks.count_in(span, k);
     // A chunk larger than its decoder takes can't be read: said before the bands are set aside,
     // which can be gigabytes for a header claiming a vast image (a few hundred bytes of file, found
     // by fuzzing, #1952). LERC chunks go to its reader only, which holds 8 bytes a sample with a
@@ -1198,32 +1284,32 @@ fn decimate<R: Read + Seek>(
     let mut bands = (0..nbands).map(|_| super::filled(ow, oh, f32::NAN)).collect::<Result<Vec<_>>>()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some((open, image, limits)) = open
-        && chunks.count() >= PARALLEL_CHUNKS
+        && examined >= PARALLEL_CHUNKS
     {
         // Each thread decodes a chunk of its own. Up to the default count as before; past it (a
         // high setting) no more than the threads' scratch budget holds, so the peak doesn't
         // multiply with the setting.
         let affordable = 1 + crate::memory::thread_scratch() / chunks.bytes().max(1);
-        let chunk_count = usize::try_from(chunks.count()).unwrap_or(usize::MAX);
+        let chunk_count = usize::try_from(examined).unwrap_or(usize::MAX);
         let threads = crate::threads::max().min(affordable.max(crate::threads::default_max())).min(chunk_count);
         if threads > 1 {
-            return decimate_parallel(chunks, bands, k, (ow, oh), nodata, threads, open, image, limits);
+            return decimate_parallel(chunks, bands, k, span, nodata, threads, open, image, limits);
         }
     }
     let _ = open;
-    crate::progress::begin(usize::try_from(chunks.count()).unwrap_or(usize::MAX));
+    crate::progress::begin(usize::try_from(examined).unwrap_or(usize::MAX));
     let mut data_type = "Float32";
     let mut rounded = vec![0u64; nbands];
     let mut table = super::lerc::Table::default();
-    for i in 0..chunks.count() {
+    for p in 0..examined {
         crate::progress::check()?;
-        if let Some((plane, index)) = chunks.wanted(i, k) {
+        if let Some((plane, index)) = chunks.nth(p, span, k).and_then(|i| chunks.wanted(i, k, span)) {
             let (buf, gaps) = read_chunk(dec, index, &mut table)?;
             let changed = rounded_bits(&buf, nodata);
             let (mut values, dt) = to_f32(buf, (ow, oh))?;
             super::lerc::blank(&mut values, gaps.as_deref());
             data_type = dt;
-            chunks.place(&mut bands, &values, changed.as_deref(), &mut rounded, plane, index, k, ow)?;
+            chunks.place(&mut bands, &values, changed.as_deref(), &mut rounded, plane, index, k, span)?;
         }
         crate::progress::step(1)?;
     }
@@ -1237,7 +1323,7 @@ fn decimate_parallel(
     chunks: Chunks,
     bands: Vec<Vec<f32>>,
     k: u32,
-    (ow, oh): (usize, usize),
+    span: Span,
     nodata: Uncounted,
     threads: usize,
     open: Opener<'_>,
@@ -1246,7 +1332,9 @@ fn decimate_parallel(
 ) -> Result<(Vec<Vec<f32>>, &'static str, Vec<u64>)> {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    crate::progress::begin(usize::try_from(chunks.count()).unwrap_or(usize::MAX));
+    let (ow, oh) = (span.width(), span.height());
+    let examined = chunks.count_in(span, k);
+    crate::progress::begin(usize::try_from(examined).unwrap_or(usize::MAX));
     crate::progress::check()?;
     let probe = crate::progress::current();
     let next = AtomicU64::new(0);
@@ -1275,11 +1363,11 @@ fn decimate_parallel(
             if let Err(e) = crate::progress::check() {
                 return fail(e);
             }
-            let i = next.fetch_add(1, Ordering::Relaxed);
-            if i >= chunks.count() {
+            let p = next.fetch_add(1, Ordering::Relaxed);
+            if p >= examined {
                 break;
             }
-            let Some((plane, index)) = chunks.wanted(i, k) else {
+            let Some((plane, index)) = chunks.nth(p, span, k).and_then(|i| chunks.wanted(i, k, span)) else {
                 if let Err(e) = crate::progress::step(1) {
                     return fail(e);
                 }
@@ -1297,7 +1385,7 @@ fn decimate_parallel(
                         Ok(mut o) => {
                             let (bands, data_type, rounded) = &mut *o;
                             *data_type = dt;
-                            chunks.place(bands, &values, changed.as_deref(), rounded, plane, index, k, ow)
+                            chunks.place(bands, &values, changed.as_deref(), rounded, plane, index, k, span)
                         }
                         Err(_) => Err(err("a chunk couldn't be decoded")),
                     };
@@ -1462,6 +1550,32 @@ pub(super) fn read_file_with_nodata(path: &std::path::Path, name: &str, sidecar_
     read_file_with_revision(path, name, sidecar_nodata, file, revision)
 }
 
+/// [`read_file_with_nodata`] of `part` of the image only, at the finest level whose part of it
+/// fits `max` samples, decoding only the chunks that hold it (see [`read_part`]): `Ok(None)` when
+/// the file can't be read by part, or isn't the revision `same_as` was read from. The raster's
+/// pixels aren't the file's whole grid, so it keeps no revision of the file to pair later reads of
+/// the grid with.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn read_file_part(
+    path: &std::path::Path,
+    name: &str,
+    sidecar_nodata: Option<f64>,
+    part: super::Part,
+    max: usize,
+    same_as: Option<&Raster>,
+) -> Result<Option<super::PartRead>> {
+    let file = crate::provenance::open(path).map_err(err)?;
+    let revision = file.metadata().and_then(|metadata| super::file_revision::FileRevision::capture(&metadata));
+    // The part is of the image `same_as` was read from: of another, it would be another place.
+    // The revision compared is the one the read is checked against as it goes.
+    if let Some(r) = same_as
+        && !revision.as_ref().is_ok_and(|rev| r.is_from(rev))
+    {
+        return Ok(None);
+    }
+    read_file_revision_part(path, name, sidecar_nodata, file, revision, Some(part), max)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn load_revision_error(reason: impl std::fmt::Display) -> String {
     format!(
@@ -1477,6 +1591,23 @@ fn read_file_with_revision(
     file: std::fs::File,
     revision: std::io::Result<super::file_revision::FileRevision>,
 ) -> Result<Raster> {
+    read_file_revision_part(path, name, sidecar_nodata, file, revision, None, max_samples())?
+        .map(|p| p.raster)
+        .ok_or_else(|| err("the image couldn't be read"))
+}
+
+/// [`read_file_with_revision`], of `part` of the image only when given (`Ok(None)` when the file
+/// can't be read by part, see [`read_part`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn read_file_revision_part(
+    path: &std::path::Path,
+    name: &str,
+    sidecar_nodata: Option<f64>,
+    file: std::fs::File,
+    revision: std::io::Result<super::file_revision::FileRevision>,
+    part: Option<super::Part>,
+    max: usize,
+) -> Result<Option<super::PartRead>> {
     let revision = revision.map_err(|e| e.to_string());
     let open = || -> std::io::Result<Reader<'static>> {
         let file = crate::provenance::open(path)?;
@@ -1491,9 +1622,8 @@ fn read_file_with_revision(
         }
         reader(std::io::BufReader::new(file))
     };
-    let decoded = reader(std::io::BufReader::new(file))
-        .map_err(err)
-        .and_then(|r| read_limited_with_nodata(r, name, max_samples(), Some(&open), sidecar_nodata, None));
+    let decoded =
+        reader(std::io::BufReader::new(file)).map_err(err).and_then(|r| read_image(r, name, max, Some(&open), sidecar_nodata, None, part));
     // A file cut short while it is read fails to decode: the revision says whether that was a
     // change to wait out (Cancel is said as itself).
     if let Ok(original) = &revision
@@ -1506,9 +1636,12 @@ fn read_file_with_revision(
             return Err(err(load_revision_error("The image file changed while its pixels were read")));
         }
     }
-    let mut raster = decoded?;
-    raster.source_file = Some(revision);
-    Ok(raster)
+    let Some(mut read) = decoded? else { return Ok(None) };
+    // A part's pixels aren't the file's grid: no later read of it pairs with them.
+    if part.is_none() {
+        read.raster.source_file = Some(revision);
+    }
+    Ok(Some(read))
 }
 
 /// [`read`], holding at most `max` samples (the tests' small limit exercises the overviews), with
@@ -1527,6 +1660,33 @@ pub(super) fn read_limited_with_nodata(
     sidecar_nodata: Option<f64>,
     asked: Option<Crs>,
 ) -> Result<Raster> {
+    // Only a part is ever not read.
+    read_image(r, name, max, open, sidecar_nodata, asked, None)?.map(|p| p.raster).ok_or_else(|| err("the image couldn't be read"))
+}
+
+/// [`read_limited_with_nodata`] of `part` of the image only: the finest level (the full image, an
+/// overview, or every `k`-th pixel of the full image when it has none fine enough) whose part
+/// fits `max`, its part read out to whole pixels, decoding only the strips or tiles that hold it.
+/// Its transparency mask is read for the part alike. `Ok(None)` when the image can't be read by
+/// part: a rotated or skewed one (read resampled north up), or one without coordinates (placed,
+/// if at all, by a world file once read). Its no-data value, coordinate system and band
+/// descriptions are the whole image's. `overview`, when the level isn't the full image, is the
+/// part's size in the full image's pixels.
+#[cfg(test)]
+pub(super) fn read_part(r: Reader<'_>, name: &str, max: usize, part: super::Part) -> Result<Option<super::PartRead>> {
+    read_image(r, name, max, None, None, None, Some(part))
+}
+
+/// [`read_limited_with_nodata`], or of `part` of the image only ([`read_part`]).
+fn read_image(
+    r: Reader<'_>,
+    name: &str,
+    max: usize,
+    open: Option<Opener<'_>>,
+    sidecar_nodata: Option<f64>,
+    asked: Option<Crs>,
+    part: Option<super::Part>,
+) -> Result<Option<super::PartRead>> {
     // The full image says whether it is read as a palette image, whichever image is read, as a
     // COG window has it: a grey full image's stray colour table colours nothing, nor do palette
     // overviews of it.
@@ -1536,6 +1696,11 @@ pub(super) fn read_limited_with_nodata(
     let mut dec = Decoder::new(r).map_err(err)?.with_limits(limits.clone());
     let (full_w, full_h) = dec.dimensions().map_err(err)?;
     let geo = geo_tags(&mut dec)?;
+    // A turned image is resampled north up whole, and one without coordinates may be placed by a
+    // world file: neither is read by part.
+    if part.is_some() && (geo.affine.is_some() || !geo.referenced) {
+        return Ok(None);
+    }
     // The no-data value whose pixels aren't counted as rounded.
     let uncounted = Uncounted::new(geo.nodata_exact, sidecar_nodata);
     // The bands' descriptions GDAL keeps in the file (an `.aux.xml` sidecar's are applied after).
@@ -1560,7 +1725,11 @@ pub(super) fn read_limited_with_nodata(
     let bytes = sample_bytes(&mut dec);
     // The decoded image is held at its own pixel size before conversion to f32, so bound bytes
     // as well as samples.
-    let fits = |w: u32, h: u32, spp: usize, bytes: usize| {
+    // `w` × `h` pixels whose image spans `extent` of them each way (every k-th pixel's grid
+    // passes the image's edge when k doesn't divide its size).
+    let fits = |w: u32, h: u32, extent: (f64, f64), spp: usize, bytes: usize| {
+        // Of a part, its pixels at that size.
+        let (w, h) = part.map_or((w, h), |p| p.span((w, h), extent).size());
         let n = (w as usize).saturating_mul(h as usize).saturating_mul(spp);
         n <= max && n.saturating_mul(bytes) <= max.saturating_mul(4)
     };
@@ -1570,7 +1739,7 @@ pub(super) fn read_limited_with_nodata(
     let mut decimate_by = 1u32;
     // The image read: 0, the full one, or an overview.
     let mut image = 0;
-    if !fits(w, h, spp, bytes) {
+    if !fits(w, h, (f64::from(w), f64::from(h)), spp, bytes) {
         // The largest overview that fits, whatever order the images are in; a damaged image
         // ends the search rather than the open.
         let mut best: Option<(usize, u32, u32)> = None;
@@ -1591,7 +1760,7 @@ pub(super) fn read_limited_with_nodata(
             // would read as another kind of image: the full image is read sparsely instead.
             if ospp == spp
                 && extra_alpha(&mut dec) == full_alpha
-                && fits(ow, oh, ospp, obytes)
+                && fits(ow, oh, (f64::from(ow), f64::from(oh)), ospp, obytes)
                 && best.is_none_or(|(_, bw, bh)| ow as u64 * oh as u64 > bw as u64 * bh as u64)
             {
                 best = Some((index, ow, oh));
@@ -1599,7 +1768,7 @@ pub(super) fn read_limited_with_nodata(
         }
         // Every k-th pixel of the full image, the fewest left out that fit.
         let mut k = 2u32;
-        while !fits(full_w.div_ceil(k), full_h.div_ceil(k), spp, 4) {
+        while !fits(full_w.div_ceil(k), full_h.div_ceil(k), (f64::from(full_w) / f64::from(k), f64::from(full_h) / f64::from(k)), spp, 4) {
             k = k.saturating_mul(2);
             if k > 1 << 20 {
                 break;
@@ -1691,7 +1860,17 @@ pub(super) fn read_limited_with_nodata(
         other => return Err(err(format!("{other:?} images aren't supported"))),
     };
     let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).ok().flatten() == Some(2);
-    let n = (w as usize) * (h as usize);
+    // The pixels kept of the grid read (`w` × `h`): a part's, else all of them.
+    // The image's extent in the grid's pixels: every k-th pixel's grid passes its edge when k
+    // doesn't divide its size.
+    let extent = if decimate_by > 1 {
+        (f64::from(full_w) / f64::from(decimate_by), f64::from(full_h) / f64::from(decimate_by))
+    } else {
+        (f64::from(w), f64::from(h))
+    };
+    let span = part.map(|p| p.span((w, h), extent));
+    let (ow, oh) = span.map_or((w, h), Span::size);
+    let n = (ow as usize) * (oh as usize);
     // Extra samples the decoder leaves out can make padded edge tiles spill into the next row
     // when read whole (issue #162). Read those tile by tile. An RGBI image the patched reader
     // shows as grey (see `Unpaletted`) keeps its fourth sample and doesn't need this.
@@ -1714,7 +1893,7 @@ pub(super) fn read_limited_with_nodata(
     // The decoder has no LERC codec: such an image is read a chunk at a time, every chunk decoded
     // by [`super::lerc`] (#1818).
     let lerc = super::lerc::is_lerc(&mut dec);
-    let whole = if decimate_by > 1 || extra_samples || planar_tiles || chunked || lerc {
+    let whole = if decimate_by > 1 || extra_samples || planar_tiles || chunked || lerc || span.is_some() {
         None
     } else {
         let mut buf = DecodingResult::U8(Vec::new());
@@ -1739,7 +1918,7 @@ pub(super) fn read_limited_with_nodata(
                 }
             }
         }
-        let (values, dt) = to_f32(buf, (w as usize, h as usize))?;
+        let (values, dt) = to_f32(buf, (ow as usize, oh as usize))?;
         if values.len() < n.saturating_mul(nbands) {
             return Err(err("couldn't read every band"));
         }
@@ -1750,14 +1929,14 @@ pub(super) fn read_limited_with_nodata(
         } else if planar {
             let mut bands = Vec::new();
             for plane in values.chunks(n).take(nbands) {
-                let mut band = super::room(n, w as usize, h as usize)?;
+                let mut band = super::room(n, ow as usize, oh as usize)?;
                 band.extend_from_slice(plane);
                 bands.push(band);
             }
             bands
         } else {
             // One pass over the interleaved pixels.
-            let mut bands = (0..nbands).map(|_| super::room(n, w as usize, h as usize)).collect::<Result<Vec<Vec<f32>>>>()?;
+            let mut bands = (0..nbands).map(|_| super::room(n, ow as usize, oh as usize)).collect::<Result<Vec<Vec<f32>>>>()?;
             for px in values.chunks(nbands).take(n) {
                 for (band, v) in bands.iter_mut().zip(px) {
                     band.push(*v);
@@ -1771,7 +1950,7 @@ pub(super) fn read_limited_with_nodata(
         let (iw, ih) = if decimate_by > 1 { (full_w, full_h) } else { (w, h) };
         let open = open.map(|o| (o, image, limits));
         // Already one vector per band.
-        decimate(&mut dec, iw, ih, nbands, planar, decimate_by, uncounted, open)?
+        decimate(&mut dec, iw, ih, nbands, planar, decimate_by, span, uncounted, open)?
     };
     let rounded = if rounded.iter().any(|n| *n > 0) { rounded } else { Vec::new() };
 
@@ -1782,7 +1961,7 @@ pub(super) fn read_limited_with_nodata(
     // reprojection are. One that can't be read leaves them as stored, and says so.
     let mut mask_lost = None;
     match super::mask::find(&mut dec, image, if decimate_by > 1 { (full_w, full_h) } else { (w, h) }) {
-        super::mask::Found::At(m) => match super::mask::read(&mut dec, m, decimate_by) {
+        super::mask::Found::At(m) => match super::mask::read(&mut dec, m, decimate_by, span) {
             Ok(opaque) if opaque.len() == n => {
                 for band in &mut bands {
                     for (v, _) in band.iter_mut().zip(&opaque).filter(|(_, o)| !**o) {
@@ -1813,7 +1992,8 @@ pub(super) fn read_limited_with_nodata(
         if let Some(p) = &described {
             r.apply_pam(p, super::pam::GDAL_METADATA);
         }
-        return Ok(r);
+        let (grid, bounds) = ((r.transform, w, h), r.extent());
+        return Ok(Some(super::PartRead { raster: r, at: (0, 0), grid, bounds, full: (full_w, full_h) }));
     }
     let mut transform = geo.transform;
     // How many full-image pixels one pixel read spans, across and down.
@@ -1876,6 +2056,18 @@ pub(super) fn read_limited_with_nodata(
             }
         }
     };
+    // The grid read, whole, as a whole read of it places it.
+    let grid = (transform, w, h);
+    // A part: its corner, and its size in the full image's pixels when it is coarser.
+    let (w, h, overview) = match span {
+        Some(span) => {
+            transform.origin_x += f64::from(span.cols.0) * transform.pixel_width;
+            transform.origin_y += f64::from(span.rows.0) * transform.pixel_height;
+            let file = |n: u32, by: f64| (f64::from(n) * by).round().clamp(1.0, f64::from(u32::MAX)) as u32;
+            (ow, oh, overview.map(|_| (file(ow, sx), file(oh, sy))))
+        }
+        None => (w, h, overview),
+    };
     let mut r = Raster::new(name, w, h, bands, transform, crs, geo.nodata, color, data_type)?;
     r.overview = overview;
     // A turned image is resampled to a grid of its own: its pixels are no longer the file's.
@@ -1892,7 +2084,9 @@ pub(super) fn read_limited_with_nodata(
     if let Some(p) = &described {
         r.apply_pam(p, super::pam::GDAL_METADATA);
     }
-    Ok(r)
+    let at = span.map_or((0, 0), |s| (s.cols.0, s.rows.0));
+    let bounds = if span.is_some() { super::extent_of(&grid.0, r.transformer(), grid.1, grid.2) } else { r.extent() };
+    Ok(Some(super::PartRead { raster: r, at, grid, bounds, full: (full_w, full_h) }))
 }
 
 /// What turning a rotated or skewed image north up says ([`super::north_up`]): its pixels are
@@ -2375,12 +2569,12 @@ mod tests {
                             }
                             reader(Cursor::new(bytes.clone()))
                         };
-                        let side = 16usize.div_ceil(k as usize);
+                        let side = 16u32.div_ceil(k);
                         decimate_parallel(
                             chunks,
-                            vec![vec![f32::NAN; side * side]],
+                            vec![vec![f32::NAN; (side * side) as usize]],
                             k,
-                            (side, side),
+                            Span::whole(side, side),
                             Uncounted::new(None, None),
                             2,
                             &open,
@@ -2388,7 +2582,7 @@ mod tests {
                             Limits::default(),
                         )
                     } else {
-                        decimate(&mut dec, 16, 16, 1, false, k, Uncounted::new(None, None), None)
+                        decimate(&mut dec, 16, 16, 1, false, k, None, Uncounted::new(None, None), None)
                     };
                     if let Some(after) = after {
                         assert!(matches!(got, Err(DataError::Cancelled)), "parallel={parallel}, k={k}, after={after}: {got:?}");
@@ -2420,7 +2614,8 @@ mod tests {
     }
 
     /// Every `k`-th pixel each way, whatever the chunks' shape and whether the edge ones are
-    /// padded: the same pixels, in the same places.
+    /// padded: the same pixels, in the same places; of a part of the grid, its pixels alone, from
+    /// the chunks that hold it.
     #[test]
     fn decimation_keeps_the_same_pixels_whatever_the_chunk_shape() {
         let value = |x: u32, y: u32, s: usize| (y * 1000 + x * 10) as f32 + s as f32;
@@ -2428,24 +2623,38 @@ mod tests {
             for padded in [false, true] {
                 for k in 1..=9u32 {
                     let chunks = chunk_grid(13, 8, cw, ch, 2);
-                    let (ow, oh) = (13u32.div_ceil(k) as usize, 8u32.div_ceil(k) as usize);
-                    let mut bands = vec![vec![f32::NAN; ow * oh]; 2];
-                    for i in 0..chunks.count() {
-                        let Some((plane, index)) = chunks.wanted(i, k) else { continue };
-                        let (x0, y0) = ((index % chunks.across) * cw, (index / chunks.across) * ch);
-                        let (dw, rows) = if padded { (cw, ch) } else { (cw.min(13 - x0), ch.min(8 - y0)) };
-                        let mut values = Vec::new();
-                        for y in y0..y0 + rows {
-                            for x in x0..x0 + dw {
-                                values.extend([value(x, y, 0), value(x, y, 1)]);
+                    let (gw, gh) = (13u32.div_ceil(k), 8u32.div_ceil(k));
+                    for span in [
+                        Span::whole(gw, gh),
+                        Span { cols: (gw / 3, gw), rows: (gh / 2, gh) },
+                        Span { cols: (1.min(gw - 1), gw.min(2)), rows: (0, 1) },
+                    ] {
+                        let (ow, oh) = (span.width(), span.height());
+                        let mut bands = vec![vec![f32::NAN; ow * oh]; 2];
+                        let mut read = 0;
+                        for p in 0..chunks.count_in(span, k) {
+                            let Some((plane, index)) = chunks.nth(p, span, k).and_then(|i| chunks.wanted(i, k, span)) else { continue };
+                            read += 1;
+                            let (x0, y0) = ((index % chunks.across) * cw, (index / chunks.across) * ch);
+                            let (dw, rows) = if padded { (cw, ch) } else { (cw.min(13 - x0), ch.min(8 - y0)) };
+                            let mut values = Vec::new();
+                            for y in y0..y0 + rows {
+                                for x in x0..x0 + dw {
+                                    values.extend([value(x, y, 0), value(x, y, 1)]);
+                                }
                             }
+                            chunks.place(&mut bands, &values, None, &mut [0, 0], plane, index, k, span).unwrap();
                         }
-                        chunks.place(&mut bands, &values, None, &mut [0, 0], plane, index, k, ow).unwrap();
-                    }
-                    for (s, band) in bands.iter().enumerate() {
-                        let want: Vec<f32> =
-                            (0..oh as u32).flat_map(|r| (0..ow as u32).map(move |c| (c * k, r * k))).map(|(x, y)| value(x, y, s)).collect();
-                        assert_eq!(band, &want, "chunks of {cw} × {ch}, padded {padded}, every {k}th, band {s}");
+                        for (s, band) in bands.iter().enumerate() {
+                            let want: Vec<f32> = (span.rows.0..span.rows.1)
+                                .flat_map(|r| (span.cols.0..span.cols.1).map(move |c| (c * k, r * k)))
+                                .map(|(x, y)| value(x, y, s))
+                                .collect();
+                            assert_eq!(band, &want, "chunks of {cw} × {ch}, padded {padded}, every {k}th, {span:?}, band {s}");
+                        }
+                        // No chunk is read that holds none of the part's pixels.
+                        let holding = (0..chunks.count()).filter(|i| chunks.wanted(*i, k, span).is_some()).count();
+                        assert_eq!(read, holding, "chunks of {cw} × {ch}, every {k}th, {span:?}");
                     }
                 }
             }
@@ -2506,12 +2715,14 @@ mod tests {
         for wide in [true, false] {
             let chunks = if wide { chunk_grid(u32::MAX, 1, k, 1, 1) } else { chunk_grid(1, u32::MAX, 1, k, 1) };
             assert_eq!(chunks.count(), 4096);
-            assert!((0..4096).all(|i| chunks.wanted(i, k) == Some((0, i as u32))));
+            let span = if wide { Span::whole(4096, 1) } else { Span::whole(1, 4096) };
+            assert!((0..4096).all(|i| chunks.wanted(i, k, span) == Some((0, i as u32))));
+            assert_eq!(chunks.count_in(span, k), 4096);
             // The last chunk holds one pixel fewer than the others; its first is kept.
             let mut values = vec![0.0f32; k as usize - 1];
             values[0] = 7.0;
             let mut band = vec![vec![f32::NAN; 4096]];
-            chunks.place(&mut band, &values, None, &mut [0], 0, 4095, k, if wide { 4096 } else { 1 }).unwrap();
+            chunks.place(&mut band, &values, None, &mut [0], 0, 4095, k, span).unwrap();
             assert_eq!(band[0].iter().filter(|v| !v.is_nan()).count(), 1, "wide {wide}");
             assert_eq!(band[0][4095], 7.0, "wide {wide}");
         }
@@ -2526,12 +2737,12 @@ mod tests {
         let chunks = chunk_grid(u32::MAX, 1, 3, 1, 1);
         let last = chunks.across - 1;
         assert_eq!(chunks.span(last), (4_294_967_292, 0, 3, 1));
-        assert_eq!(chunks.wanted(u64::from(last), 1 << 20), None);
-        assert_eq!(chunks.wanted(u64::from(last), 2), Some((0, last)));
+        assert_eq!(chunks.wanted(u64::from(last), 1 << 20, Span::whole(4096, 1)), None);
+        assert_eq!(chunks.wanted(u64::from(last), 2, Span::whole(1 << 31, 1)), Some((0, last)));
         // Every second pixel keeps 4,294,967,292 and 4,294,967,294; the output isn't made (it would
         // hold 2 GiB): the walk ending is what is checked.
         let mut bands = vec![Vec::new()];
-        chunks.place(&mut bands, &[1.0, 2.0, 3.0], None, &mut [0], 0, last, 2, 1 << 31).unwrap();
+        chunks.place(&mut bands, &[1.0, 2.0, 3.0], None, &mut [0], 0, last, 2, Span::whole(1 << 31, 1)).unwrap();
         assert!(bands[0].is_empty());
         // Chunks of no width or height, and an image of no width, are nothing, not a division by 0.
         let none = chunk_grid(0, 0, 1, 1, 1);
@@ -2546,12 +2757,12 @@ mod tests {
         // One 4 × 2 tile; 5 values make neither 4 × 2 nor any padded shape.
         let chunks = chunk_grid(4, 2, 4, 2, 1);
         let mut bands = vec![vec![f32::NAN; 8]];
-        let e = chunks.place(&mut bands, &[1.0, 2.0, 3.0, 4.0, 5.0], None, &mut [0], 0, 0, 1, 4).unwrap_err().to_string();
+        let e = chunks.place(&mut bands, &[1.0, 2.0, 3.0, 4.0, 5.0], None, &mut [0], 0, 0, 1, Span::whole(4, 2)).unwrap_err().to_string();
         assert!(e.contains("decodes to 5 values, not the 4 × 2 pixels"), "{e}");
         assert!(bands[0].iter().all(|v| v.is_nan()), "nothing placed from a refused chunk");
         // All 8 are placed where they belong.
         let all: Vec<f32> = (0..8).map(|v| v as f32).collect();
-        chunks.place(&mut bands, &all, None, &mut [0], 0, 0, 1, 4).unwrap();
+        chunks.place(&mut bands, &all, None, &mut [0], 0, 0, 1, Span::whole(4, 2)).unwrap();
         assert_eq!(bands[0], all);
     }
 
@@ -3442,6 +3653,113 @@ mod tests {
         let up = example_with(&Example { size: 1001, tile: 256, ..Example::default() });
         let r = read_limited(reader(std::io::Cursor::new(&up)).unwrap(), "up", max, None).unwrap();
         assert_eq!((r.width, r.height), (501, 501));
+    }
+
+    /// A part of a tiled file (#2865) is the pixels, place, no-data, system and band names of
+    /// the whole file read at the same level then cut to it: the full image when the part fits,
+    /// the finest overview whose part does when it doesn't, and every other pixel of a file
+    /// without overviews (a file whose size two doesn't divide too, whose last pixel read passes
+    /// its edge). It covers all the ground asked for, says where it lies in the grid read, and
+    /// only the tiles that hold it are read.
+    #[test]
+    fn a_part_is_the_whole_file_read_at_its_level_then_cut_to_it() {
+        use super::super::Part;
+        use super::super::cog::{Example, example_with};
+        /// A file's reader, counting the bytes read from it.
+        struct Counting(std::io::Cursor<Vec<u8>>, std::rc::Rc<std::cell::Cell<u64>>);
+        impl Read for Counting {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.0.read(buf)?;
+                self.1.set(self.1.get() + n as u64);
+                Ok(n)
+            }
+        }
+        impl Seek for Counting {
+            fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+                self.0.seek(to)
+            }
+        }
+        let base = Example { size: 1024, tile: 128, ..Example::default() };
+        let cases = [
+            Example { bands: 3, wavelengths: true, ..base },
+            Example { bands: 2, planar: true, ..base },
+            Example { int8: true, ..base },
+            Example { bottom_up: true, ..base },
+            Example { no_overviews: true, ..base },
+            Example { size: 1001, no_overviews: true, ..base },
+        ];
+        // The parts: one inside, and one reaching the image's right and bottom edges.
+        let parts = [Part::new(0.3, 0.55, 0.42, 0.9).unwrap(), Part::new(0.987, 0.9, 1.0, 1.0).unwrap()];
+        for e in cases {
+            let file = example_with(&e);
+            let (bands, size) = (usize::from(e.bands), e.size as usize);
+            for part in parts {
+                // The part fits at full size; then only at half size (an overview, or every other
+                // pixel); the whole file is read at that size to compare.
+                let (pw, ph) = part.span((e.size, e.size), (f64::from(e.size), f64::from(e.size))).size();
+                let at_full = pw as usize * ph as usize * bands;
+                for (part_max, whole_max, half) in
+                    [(at_full, size * size * bands, false), (at_full - 1, size.div_ceil(2).pow(2) * bands, true)]
+                {
+                    let read = std::rc::Rc::new(std::cell::Cell::new(0));
+                    let p = read_part(reader(Counting(std::io::Cursor::new(file.clone()), read.clone())).unwrap(), "part", part_max, part)
+                        .unwrap()
+                        .expect("read by part");
+                    let whole = read_limited(reader(std::io::Cursor::new(&file)).unwrap(), "whole", whole_max, None).unwrap();
+                    let r = &p.raster;
+                    let at = format!("{e:?}, {part:?}, half {half}");
+                    assert_eq!(whole.width as usize, if half { size.div_ceil(2) } else { size }, "{at}");
+                    assert_eq!(p.grid, (whole.transform, whole.width, whole.height), "{at}");
+                    let (c0, r0) = (i64::from(p.at.0), i64::from(p.at.1));
+                    let gt = r.transform;
+                    assert!((gt.origin_x - whole.transform.to_world(c0 as f64, r0 as f64).x).abs() < 1e-9, "{at}");
+                    assert_eq!((gt.pixel_width, gt.pixel_height), (whole.transform.pixel_width, whole.transform.pixel_height));
+                    // Every place asked for is on it: the part of the full image's ground, in the
+                    // grid's pixels (the full image's size over how many of its pixels one spans).
+                    let (sx, sy) = whole.file_pixels();
+                    let (ex, ey) = (f64::from(e.size) / sx, f64::from(e.size) / sy);
+                    assert!(c0 as f64 <= part.left * ex + 1e-9, "{at}: starts past the part");
+                    assert!(c0 as f64 + f64::from(r.width) >= part.right * ex - 1e-9, "{at}: ends before the part does");
+                    assert!(r0 as f64 <= part.top * ey + 1e-9, "{at}: starts below the part");
+                    assert!(r0 as f64 + f64::from(r.height) >= part.bottom * ey - 1e-9, "{at}: ends above the part's end");
+                    assert_eq!(
+                        (r.crs, r.nodata, r.color.clone(), r.data_type.clone(), r.step),
+                        (whole.crs, whole.nodata, whole.color.clone(), whole.data_type.clone(), whole.step)
+                    );
+                    let names = |r: &Raster| r.bands.iter().map(|b| (b.name.clone(), b.wavelength)).collect::<Vec<_>>();
+                    assert_eq!(names(r), names(&whole), "{at}");
+                    for b in 0..r.band_count() {
+                        for y in 0..i64::from(r.height) {
+                            for x in 0..i64::from(r.width) {
+                                assert_eq!(r.value(b, x, y), whole.value(b, x + c0, y + r0), "{at}: band {b} at {x},{y}");
+                            }
+                        }
+                    }
+                    // Its size in the full image's pixels when coarser, as an overview of it.
+                    let scale = |n: u32, by: f64| (f64::from(n) * by).round() as u32;
+                    assert_eq!(r.overview, half.then(|| (scale(r.width, sx), scale(r.height, sy))), "{at}");
+                    assert!(read.get() < file.len() as u64 / 4, "{at}: {} bytes of {} read", read.get(), file.len());
+                }
+            }
+        }
+    }
+
+    /// A rotated file is resampled north up whole, and one without coordinates may be placed by a
+    /// world file: neither is read by part, for the caller to read whole.
+    #[test]
+    fn a_turned_or_unplaced_file_is_not_read_by_part() {
+        let part = super::super::Part::new(0.0, 0.0, 0.5, 0.5).unwrap();
+        let data: Vec<u8> = (0..64 * 64).map(|i| (i % 251) as u8).collect();
+        // A TIFF with no GeoTIFF tags: a scan.
+        let mut scan = std::io::Cursor::new(Vec::new());
+        tiff::encoder::TiffEncoder::new(&mut scan).unwrap().write_image::<tiff::encoder::colortype::Gray8>(64, 64, &data).unwrap();
+        let scan = scan.into_inner();
+        // Georeferenced, the same pixels are.
+        assert!(read_part(reader(std::io::Cursor::new(grey8(64, 64, &data, None))).unwrap(), "placed", 1 << 20, part).unwrap().is_some());
+        assert!(read_part(reader(std::io::Cursor::new(&scan)).unwrap(), "scan", 1 << 20, part).unwrap().is_none());
+        let m = [30.0, 5.0, 0.0, 400_000.0, 3.0, -30.0, 0.0, 5_000_000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let turned = tests_support::matrix_tiff(m, false);
+        assert!(read_part(reader(std::io::Cursor::new(&turned)).unwrap(), "turned", 1 << 20, part).unwrap().is_none());
     }
 
     #[test]

@@ -358,3 +358,96 @@ fn a_run_that_panics_reads_no_file_after_it() {
     assert_eq!(within, 1024, "the file, within the run");
     assert_eq!(input.read().unwrap().width, 512, "the overview the layer holds, after the run");
 }
+
+/// A 1000-pixel RGB tiled GeoTIFF over 10°–11° E, 45°–46° N, its pixels a thousandth of a degree
+/// (which binary fractions don't hold exactly, so a window found from another origin can round
+/// another way), with its 500 overview: values vary across, down, and pixel by pixel.
+fn thousandths(dir: &std::path::Path) -> String {
+    const N: u32 = 1000;
+    let at = |f: fn(u32, u32) -> f32| (0..N * N).map(|i| f(i % N, i / N)).collect::<Vec<f32>>();
+    let bands = vec![at(|x, y| ((x * 7 + y * 13) % 256) as f32), at(|x, _| (x / 4) as f32), at(|_, y| (y / 4) as f32)];
+    let gt = GeoTransform { origin_x: 10.0, origin_y: 46.0, pixel_width: 0.001, pixel_height: -0.001 };
+    let r = Raster::new("checks", N, N, bands, gt, Crs::LonLat, None, ColorHint::Rgb { alpha: false }, "UInt8").unwrap();
+    let path = dir.join("checks.tif");
+    let info = rustgis_data::raster::cogwrite::write_file(&r, 0, &path).unwrap();
+    assert_eq!(info.levels, vec![(N, N), (N / 2, N / 2)], "the fixture's levels");
+    path.display().to_string()
+}
+
+/// Clip by extent of a layer read in place reads only the part of its file under the extent
+/// (#2865): the clip is the one made of the file held whole, to the pixel, and the file isn't
+/// read whole for it. A file replaced since the layer read it is read whole, so the clip is of the
+/// file as it is.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_clip_by_extent_reads_only_its_part_of_a_tiled_file() {
+    let d = dir("clip");
+    let path = thousandths(&d);
+    let clip = |extent: [f64; 4]| json!({"layer": "checks", "operation": "clip", "extent": extent, "name": "clip"});
+    // The same clip of the file held whole, as a file this size is.
+    let whole = |extent: [f64; 4]| {
+        // Held whole, whatever limit this thread has set meanwhile.
+        let limit = HELD_WHOLE.with(|c| c.replace(None));
+        let mut whole = Session::new(Project::default());
+        whole.run("layer.addData", &json!({"path": path})).unwrap();
+        assert!(!raster(&whole, "checks").tiled);
+        whole.run("raster.process", &clip(extent)).unwrap();
+        HELD_WHOLE.with(|c| c.set(limit));
+        raster(&whole, "clip").data.clone().unwrap()
+    };
+    let _held = HeldWhole::at(1_000_000);
+    let mut s = Session::new(Project::default());
+    s.run("layer.addData", &json!({"path": path})).unwrap();
+    assert!(raster(&s, "checks").tiled);
+    let reads = || crate::cmd::gp::TILED_READS.with(std::cell::Cell::get);
+    let extents =
+        [[10.3, 45.55, 10.42, 45.9], [10.123, 45.456, 10.789, 45.9], [10.007, 45.003, 10.509, 45.611], [10.25, 45.5, 10.5, 45.75]];
+    for extent in extents {
+        let (before, mark) = (reads(), s.notice_mark());
+        s.run("layer.remove", &json!({"layer": "clip"})).ok();
+        s.run("raster.process", &clip(extent)).unwrap();
+        assert_eq!(reads(), before, "the file isn't read whole");
+        let (got, want) = (raster(&s, "clip").data.clone().unwrap(), whole(extent));
+        assert_eq!(got.overview, None, "{extent:?}: at the file's full size");
+        assert_eq!((got.width, got.height, got.transform), (want.width, want.height, want.transform), "{extent:?}");
+        for (g, w) in got.bands.iter().zip(&want.bands) {
+            assert!(g.data == w.data, "{extent:?}: band {}", g.name);
+        }
+        let notes = said(&s, mark);
+        assert!(!notes.iter().any(|n| n.contains("finest level")), "{notes:?}");
+    }
+    // A part too large for what the run holds is read from an overview, and said, with its size.
+    crate::cmd::gp::PART_SAMPLES.with(|c| c.set(Some(40_000)));
+    let mark = s.notice_mark();
+    s.run("layer.remove", &json!({"layer": "clip"})).ok();
+    s.run("raster.process", &clip([10.3, 45.55, 10.42, 45.9])).unwrap();
+    crate::cmd::gp::PART_SAMPLES.with(|c| c.set(None));
+    let got = raster(&s, "clip").data.clone().unwrap();
+    assert_eq!((got.width, got.height), (60, 176), "the part at the 500 overview");
+    let notes = said(&s, mark);
+    let note = "Process: read at the finest level each can hold: checks at its 500 × 500 overview of the 1000 × 1000 raster, a 62 × 177 part of it";
+    assert!(notes.iter().any(|n| n == note), "{notes:?}");
+    // The file replaced by one a twentieth of a degree east: read whole, and clipped where it is.
+    const N: u32 = 1000;
+    let shifted = Raster::new(
+        "checks",
+        N,
+        N,
+        vec![(0..N * N).map(|i| (i % 251) as f32).collect()],
+        GeoTransform { origin_x: 10.05, origin_y: 46.0, pixel_width: 0.001, pixel_height: -0.001 },
+        Crs::LonLat,
+        None,
+        ColorHint::Gray,
+        "UInt8",
+    )
+    .unwrap();
+    rustgis_data::raster::cogwrite::write_file(&shifted, 0, std::path::Path::new(&path)).unwrap();
+    let extent = [10.3, 45.55, 10.42, 45.9];
+    s.run("layer.remove", &json!({"layer": "clip"})).ok();
+    let before = reads();
+    s.run("raster.process", &clip(extent)).unwrap();
+    assert_eq!(reads(), before + 1, "a replaced file is read whole");
+    let (got, want) = (raster(&s, "clip").data.clone().unwrap(), whole(extent));
+    assert_eq!((got.width, got.height, got.transform), (want.width, want.height, want.transform));
+    assert!(got.bands[0].data == want.bands[0].data, "the clip is of the file as it is now");
+}

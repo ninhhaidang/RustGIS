@@ -1717,7 +1717,7 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
                     .ok_or_else(|| {
                         format!("no cell of {} falls inside {pl} ({} polygon part(s) failed raster projection)", r.name, failed_parts.len())
                     })?;
-                let clipped = clip_window(&r, cols, rows, Some(&mask), out)?;
+                let clipped = clip_window(&r, cols, rows, Some(&mask), None, out)?;
                 let mut messages = Vec::new();
                 if skipped > 0 {
                     messages.push(format!("{pl}: skipped {skipped} feature(s) with invalid polygon geometry"));
@@ -1753,13 +1753,35 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
                     e
                 }
             };
-            // Checked on the raster the layer holds, which covers the same ground as its file.
+            // Checked on the raster the layer holds, which covers the same ground as its file:
+            // only that part of the file is read (#2865).
             extent_window(r.held(), &e)?;
+            let part = extent_part(r.held(), &e);
             let out = name(p, format!("{}_clip", r.held().name))?;
             Ok(Box::new(move || {
-                let r = r.read()?;
-                let (cols, rows) = extent_window(&r, &e)?;
-                super::workflows::made(clip_window(&r, cols, rows, None, out)?, None)
+                // A third of what a run holds: the part, its clip, and the clip's file at once.
+                let input = match part {
+                    Some(part) => r.read_part(part, 3)?,
+                    None => r.read()?,
+                };
+                // The part goes before the clip is written as a file.
+                let clipped = match part_window(&input, &e)? {
+                    Some((cols, rows, corner)) => {
+                        input.used();
+                        let clipped = clip_window(&input, cols, rows, None, corner, out)?;
+                        drop(input);
+                        clipped
+                    }
+                    // A part that doesn't hold all of the window (the file isn't as the layer
+                    // found it): the whole file, as before.
+                    None => {
+                        drop(input);
+                        let whole = r.read()?;
+                        let (cols, rows) = extent_window(&whole, &e)?;
+                        clip_window(&whole, cols, rows, None, None, out)?
+                    }
+                };
+                super::workflows::made(clipped, None)
             }))
         }
         "resample" => {
@@ -1829,15 +1851,59 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
 /// The pixel window of `r` covering extent `e`'s edges (columns, rows); an error when it can't be
 /// placed on the raster or doesn't overlap it.
 fn extent_window(r: &Raster, e: &Extent) -> Result<(std::ops::Range<u32>, std::ops::Range<u32>), String> {
-    let px = edge_pixels(r, e).ok_or("the extent can't be placed on the raster")?;
+    grid_window(r, &r.transform, (r.width, r.height), r.extent(), e)
+}
+
+/// [`extent_window`] on a grid of `r`'s system: its transform `gt` and size, its ground `bounds`.
+fn grid_window(
+    r: &Raster,
+    gt: &GeoTransform,
+    (w, h): (u32, u32),
+    bounds: Extent,
+    e: &Extent,
+) -> Result<(std::ops::Range<u32>, std::ops::Range<u32>), String> {
+    let px = edge_pixels_on(r, gt, bounds, e).ok_or("the extent can't be placed on the raster")?;
     let c0 = px.iter().map(|p| p.0).fold(f64::INFINITY, f64::min).floor().max(0.0) as u32;
-    let c1 = px.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max).ceil().min(r.width as f64) as u32;
+    let c1 = px.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max).ceil().min(f64::from(w)) as u32;
     let r0 = px.iter().map(|p| p.1).fold(f64::INFINITY, f64::min).floor().max(0.0) as u32;
-    let r1 = px.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max).ceil().min(r.height as f64) as u32;
+    let r1 = px.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max).ceil().min(f64::from(h)) as u32;
     if c1 <= c0 || r1 <= r0 {
         return Err("the extent doesn't overlap the raster".into());
     }
     Ok((c0..c1, r0..r1))
+}
+
+/// [`extent_window`] of a part of a file ([`super::workflows::Input::read_part`]), found on the
+/// whole grid it was read from, as a whole read finds it, then moved onto the part in whole
+/// pixels, with its corner on that grid: `None` when the part doesn't hold all of it. A raster
+/// read whole gives its own, and no corner.
+fn part_window(r: &super::workflows::Read, e: &Extent) -> Result<Option<PartWindow>, String> {
+    // Only the desktop reads a part of a file.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(place) = r.place() {
+        let ((c, row), (gt, w, h)) = (place.at, place.grid);
+        let (cols, rows) = grid_window(r, &gt, (w, h), place.bounds, e)?;
+        let inside = cols.start >= c && rows.start >= row && cols.end <= c + r.width && rows.end <= row + r.height;
+        let corner = gt.to_world(f64::from(cols.start), f64::from(rows.start));
+        return Ok(inside.then(|| (cols.start - c..cols.end - c, rows.start - row..rows.end - row, Some(corner))));
+    }
+    extent_window(r, e).map(|(cols, rows)| Some((cols, rows, None)))
+}
+
+/// A window of a raster's columns and rows, and its corner when found on another grid
+/// ([`part_window`]).
+type PartWindow = (std::ops::Range<u32>, std::ops::Range<u32>, Option<Coord>);
+
+/// The part of a raster's ground under a longitude/latitude box ([`extent_window`]), as fractions
+/// of its width and height, a pixel of its file wider each way so a file read at a finer level
+/// than `r` still holds every pixel the box touches: the part a clip of it reads.
+fn extent_part(r: &Raster, e: &Extent) -> Option<rustgis_data::raster::Part> {
+    let px = edge_pixels(r, e)?;
+    let (w, h) = (f64::from(r.width.max(1)), f64::from(r.height.max(1)));
+    let (fw, fh) = r.overview.map_or((w, h), |(fw, fh)| (f64::from(fw.max(1)), f64::from(fh.max(1))));
+    let (x0, x1) = px.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.0), b.max(p.0)));
+    let (y0, y1) = px.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.1), b.max(p.1)));
+    rustgis_data::raster::Part::new(x0 / w - 1.0 / fw, y0 / h - 1.0 / fh, x1 / w + 1.0 / fw, y1 / h + 1.0 / fh)
 }
 
 /// Most inputs a mosaic takes.
@@ -2073,12 +2139,14 @@ fn mosaic_matches(first: &Raster, r: &Raster) -> Result<(), String> {
 /// the cells outside its source (`rustgis_analysis::warp`): in a raster with alpha they are
 /// see-through, 0 in every band, and a three-band colour raster with neither alpha nor no-data gains an alpha
 /// band for them, so an 8-bit image stays 8-bit (#1731). Otherwise they are its no-data, or
-/// -3.4e38 when it has none.
+/// -3.4e38 when it has none. Its corner is `corner` when given (found on the whole grid a part of
+/// a file was read from, as a clip of all of it places it), else the window's on `r`.
 fn clip_window(
     r: &Raster,
     cols: std::ops::Range<u32>,
     rows: std::ops::Range<u32>,
     mask: Option<&[bool]>,
+    corner: Option<Coord>,
     name: String,
 ) -> Result<Raster, String> {
     r.require_coordinates()?;
@@ -2111,7 +2179,7 @@ fn clip_window(
         let valued = |i: usize| r.bands.iter().any(|b| b.data.get(at(i)).is_some_and(|v| !v.is_nan()));
         bands.push(rasterops::per_index(wu * h as usize, wu, n, || (), |_, i| if kept(i) && valued(i) { 255.0 } else { 0.0 })?);
     }
-    let o = r.transform.to_world(f64::from(cols.start), f64::from(rows.start));
+    let o = corner.unwrap_or_else(|| r.transform.to_world(f64::from(cols.start), f64::from(rows.start)));
     let gt = GeoTransform { origin_x: o.x, origin_y: o.y, ..r.transform };
     let color = if add_alpha { ColorHint::Rgb { alpha: true } } else { r.color.clone() };
     let mut out = Raster::new(name, w, h, bands, gt, r.crs, nodata, color, r.data_type.clone()).map_err(|e| e.to_string())?;
@@ -2139,6 +2207,11 @@ fn point(v: &Value) -> Result<Coord, String> {
 /// A window made from the places left would leave out part of the box, so a box reaching that far
 /// is first cut to the raster's own bounds, where its system takes places.
 fn edge_pixels(r: &Raster, e: &Extent) -> Option<Vec<(f64, f64)>> {
+    edge_pixels_on(r, &r.transform, r.extent(), e)
+}
+
+/// [`edge_pixels`] on a grid of `r`'s system: its transform `gt`, its ground `bounds`.
+fn edge_pixels_on(r: &Raster, gt: &GeoTransform, bounds: Extent, e: &Extent) -> Option<Vec<(f64, f64)>> {
     const N: u32 = 16;
     let at = |e: &Extent| -> Option<Vec<(f64, f64)>> {
         (0..=N)
@@ -2149,11 +2222,11 @@ fn edge_pixels(r: &Raster, e: &Extent) -> Option<Vec<(f64, f64)>> {
             })
             // Robinson's widest parallel is the equator, even when the uniform samples miss it.
             .chain([Coord::new(e.min_x, 0.0_f64.max(e.min_y).min(e.max_y)), Coord::new(e.max_x, 0.0_f64.max(e.min_y).min(e.max_y))])
-            .map(|c| r.transformer().from_lonlat(c).map(|w| r.transform.to_pixel(w)))
+            .map(|c| r.transformer().from_lonlat(c).map(|w| gt.to_pixel(w)))
             .collect()
     };
     at(e).or_else(|| {
-        let b = r.extent();
+        let b = bounds;
         let (w, s, east, n) = (e.min_x.max(b.min_x), e.min_y.max(b.min_y), e.max_x.min(b.max_x), e.max_y.min(b.max_y));
         (w <= east && s <= n).then(|| at(&Extent::new(w, s, east, n))).flatten()
     })

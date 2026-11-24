@@ -156,26 +156,56 @@ impl Input {
         if let Some((name, path)) = &self.file
             && RUN_READS.with(|r| r.borrow().is_some())
         {
-            let kept = RUN_READS.with(|r| r.borrow().as_ref().and_then(|read| read.iter().find(|k| k.0 == *path).cloned()));
-            let (_, _, raster, count) = match kept {
+            let kept = RUN_READS.with(|r| {
+                r.borrow().as_ref().and_then(|read| read.iter().find(|k| k.path.as_ref() == Some(path)).and_then(|k| k.kept.clone()))
+            });
+            let (raster, count) = match kept {
                 Some(k) => k,
                 None => {
                     let (raster, count) = super::gp::read_tiled(name, path)?;
-                    let k = (path.clone(), name.clone(), raster, count);
+                    let note = super::gp::ReadNote::of(name, &raster);
                     RUN_READS.with(|r| {
                         if let Some(read) = r.borrow_mut().as_mut() {
-                            read.push(k.clone());
+                            read.push(RunRead { path: Some(path.clone()), kept: Some((raster.clone(), count.clone())), note });
                         }
                     });
-                    k
+                    (raster, count)
                 }
             };
-            return Ok(Read { raster, _count: Some(count) });
+            return Ok(Read { raster, _count: Some(count), place: None });
         }
         // The browser has no files to read by path: none is read in place from one there.
         #[cfg(target_arch = "wasm32")]
         let _ = &self.file;
-        Ok(Read { raster: self.held.clone(), _count: None })
+        Ok(Read {
+            raster: self.held.clone(),
+            _count: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            place: None,
+        })
+    }
+
+    /// The raster the work reads, for work that uses only `part` of it: within a run, a layer read
+    /// in place from a GeoTIFF on this computer reads only that part of its file, out to whole
+    /// pixels, at the finest level whose part fits `1 / share` of what the run can hold, decoding
+    /// only the strips or tiles that hold it (`rustgis_data::raster::read_path_part`), with where
+    /// it lies in the grid read ([`Read::place`]). A part isn't kept for the run's other inputs,
+    /// and the run says what it says of it only once the work uses it ([`Read::used`]). A file
+    /// that can't be read by part, or that is no longer the one the layer was read from, and any
+    /// other layer, give [`Input::read`].
+    pub(crate) fn read_part(&self, part: rustgis_data::raster::Part, share: usize) -> Result<Read, String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((name, path)) = &self.file
+            && RUN_READS.with(|r| r.borrow().is_some())
+            && let Some((read, count)) = super::gp::read_tiled_part(name, path, part, share, &self.held)?
+        {
+            let rustgis_data::raster::PartRead { raster, at, grid, bounds, full } = read;
+            let note = super::gp::ReadNote::of_part(name, &raster, (grid.1, grid.2), full);
+            return Ok(Read { raster: std::sync::Arc::new(raster), _count: Some(count), place: Some(Place { at, grid, bounds, note }) });
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (part, share);
+        self.read()
     }
 }
 
@@ -184,6 +214,45 @@ impl Input {
 pub(crate) struct Read {
     raster: std::sync::Arc<Raster>,
     _count: Option<std::sync::Arc<rustgis_data::memory::Holding>>,
+    /// For a part of a file ([`Input::read_part`]), where it lies in the grid it was read from.
+    #[cfg(not(target_arch = "wasm32"))]
+    place: Option<Place>,
+}
+
+/// Where a part of a raster file lies in the grid it was read from ([`Read::place`]), and what
+/// the run says of it once the work uses it ([`Read::used`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct Place {
+    /// The part's first column and row in the grid.
+    pub(crate) at: (u32, u32),
+    /// The grid, whole: its transform, columns and rows.
+    pub(crate) grid: (rustgis_data::raster::GeoTransform, u32, u32),
+    /// The grid's longitude/latitude bounds.
+    pub(crate) bounds: rustgis_geom::Extent,
+    note: super::gp::ReadNote,
+}
+
+impl Read {
+    /// Where the raster lies in the grid it was read from, for a part of a file
+    /// ([`Input::read_part`]); `None` for a raster read whole.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn place(&self) -> Option<&Place> {
+        self.place.as_ref()
+    }
+
+    /// Says, once the run's raster is added, what is said of a part of a file the work went on to
+    /// use (read at a coarser level, values rounded as it was read): a part it put aside for the
+    /// whole file says nothing. A raster read whole says its own as it is read.
+    pub(crate) fn used(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(place) = &self.place {
+            RUN_READS.with(|r| {
+                if let Some(read) = r.borrow_mut().as_mut() {
+                    read.push(RunRead { path: None, kept: None, note: place.note.clone() });
+                }
+            });
+        }
+    }
 }
 
 impl std::ops::Deref for Read {
@@ -193,10 +262,16 @@ impl std::ops::Deref for Read {
     }
 }
 
-/// A raster file read in place that a run read ([`RUN_READS`]): its path, its layer's name, the
-/// raster read and its count in [`rustgis_data::memory::held`].
+/// A raster file read in place that a run read ([`RUN_READS`]): its path (`None` for a part of it,
+/// [`Input::read_part`], which no other input takes), the raster read and its count in
+/// [`rustgis_data::memory::held`], kept for the run's other inputs naming the file (not a part's),
+/// and what the run says of it.
 #[cfg(not(target_arch = "wasm32"))]
-type RunRead = (String, String, std::sync::Arc<Raster>, std::sync::Arc<rustgis_data::memory::Holding>);
+struct RunRead {
+    path: Option<String>,
+    kept: Option<(std::sync::Arc<Raster>, std::sync::Arc<rustgis_data::memory::Holding>)>,
+    note: super::gp::ReadNote,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
@@ -249,7 +324,7 @@ pub(crate) fn reading_files(name: &str, work: impl FnOnce() -> Result<Made, Stri
         let made = work();
         let read = run.end();
         let made = made?;
-        let read: Vec<(String, std::sync::Arc<Raster>)> = read.into_iter().map(|(_, name, r, _)| (name, r)).collect();
+        let read: Vec<super::gp::ReadNote> = read.into_iter().map(|r| r.note).collect();
         let notes: Vec<String> = super::gp::tiled_read_notes(&read, "its").into_iter().map(|n| format!("{name}: {n}")).collect();
         if notes.is_empty() {
             return Ok(made);
