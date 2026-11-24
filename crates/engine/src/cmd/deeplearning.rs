@@ -183,7 +183,9 @@ fn train(s: &Session, p: &Value) -> Result<(DlModel, super::whole::Unread), Stri
 /// training layer is read whole and the pixels under its polygons sampled there, as the network
 /// learns).
 struct Training {
-    raster: std::sync::Arc<rustgis_data::raster::Raster>,
+    /// Read as the model is fitted: from its file, for a layer read in place from one, in a
+    /// classification's run.
+    raster: super::workflows::Input,
     bands: Vec<usize>,
     /// The training layer's rows, read whole in [`Training::fit`].
     rows: super::whole::Whole,
@@ -204,6 +206,7 @@ impl Training {
     fn fit(self) -> Result<(DlModel, super::whole::Unread), String> {
         let Training { raster, bands, rows, field, hidden, epochs, name, .. } = self;
         let (ds, unread) = rows.read()?;
+        let raster = raster.read()?;
         let model = Self::learn(&ds, field, &raster, &bands, &hidden, epochs, name).map_err(|e| unread.explain(e))?;
         Ok((model, unread))
     }
@@ -269,9 +272,9 @@ fn training_polygons(ds: &rustgis_data::Dataset, fi: usize) -> Result<(Vec<Strin
 /// What training takes of the session: the raster, the training layer (read whole when the model
 /// is fitted), and the model's name.
 fn training(s: &Session, p: &Value) -> Result<Training, String> {
-    let r = raster(s, p)?;
-    r.require_coordinates()?;
-    let bands = bands_param(p, &r)?;
+    let r = super::imagery::input(s, p)?;
+    r.held().require_coordinates()?;
+    let bands = bands_param(p, r.held())?;
     let tl = super::imagery::training_name(p)?;
     let l = s
         .map()
@@ -299,7 +302,7 @@ fn training(s: &Session, p: &Value) -> Result<Training, String> {
     let (name, auto) = match ps(p, "model").map(str::trim).filter(|m| !m.is_empty()) {
         Some(m) => (super::within("model", "a model's name", m, 200)?, None),
         None => {
-            let base = format!("{}_model", r.name);
+            let base = format!("{}_model", r.held().name);
             (free_name(s, &base), Some(base))
         }
     };
@@ -332,16 +335,17 @@ enum Model {
 /// trains one), and the work that trains the model if need be and classifies the pixels. A model
 /// trained is kept in the project once the classes are added.
 pub(crate) fn classify_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
-    let r = raster(s, p)?;
-    r.require_coordinates()?;
+    let r = super::imagery::input(s, p)?;
+    r.held().require_coordinates()?;
     let model = if p.get("training").is_some() {
         Model::Train(training(s, p)?)
     } else {
         let i = model_index(s, p)?;
         Model::Saved(s.project.dl_models.get(i).cloned().ok_or("no model")?)
     };
-    let out = name(p, format!("{}_dl", r.name))?;
+    let out = name(p, format!("{}_dl", r.held().name))?;
     Ok(Box::new(move || {
+        let r = r.read()?;
         let (m, trained) = match model {
             Model::Saved(m) => (m, None),
             Model::Train(t) => {

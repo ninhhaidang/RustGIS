@@ -422,13 +422,14 @@ fn names_said(names: &[String]) -> String {
 
 /// What a raster layer read in place holds for its statistics and tools, when it holds an
 /// overview of the image the map draws. A file on this computer (`tools_read_file`) is read again
-/// by each geoprocessing tool, at the finest level it can hold ([`crate::cmd::gp`]).
+/// by each geoprocessing tool and each command that makes a raster in the background, at the
+/// finest level it can hold ([`crate::cmd::gp`], [`crate::cmd::workflows::Input`]).
 pub(crate) fn in_place_overview(d: &rustgis_data::raster::Raster, tools_read_file: bool) -> Option<String> {
     let (fw, fh) = d.overview?;
     let (w, h) = (d.width, d.height);
     Some(if tools_read_file {
         format!(
-            "read in place: the map draws its {fw} × {fh} pixels as it needs them, and geoprocessing tools read the file (built-in ones at the finest level they can hold, GeoLibre ones whole), while statistics, histograms, plugin tools and other raster commands read a {w} × {h} overview"
+            "read in place: the map draws its {fw} × {fh} pixels as it needs them, and geoprocessing tools and the commands that make a raster read the file (at the finest level they can hold, GeoLibre tools whole), while statistics, histograms, plugin tools, Build Mosaic, Train Deep Learning Model and other raster commands read a {w} × {h} overview"
         )
     } else {
         format!(
