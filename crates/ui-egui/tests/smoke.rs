@@ -1404,6 +1404,111 @@ fn move_up_and_down_in_the_map_and_layout_menus_reorder_them() {
     assert_eq!(layout_names(&h), ["L1", "L2"]);
 }
 
+/// The Browser's row for the map or layout `name` (the strip has a tab with the same name).
+fn browser_row(h: &egui_kittest::Harness<'_, RustGisApp>, name: &str) -> egui::Rect {
+    let row = strip_row(h);
+    h.query_all_by_label(name)
+        .map(|n| n.rect())
+        .find(|r| (r.center().y - row).abs() > 8.0)
+        .unwrap_or_else(|| panic!("no Browser row {name}"))
+}
+
+/// Dragging a map or layout row in the Browser to another place among its kind changes the
+/// project's order in one undo step, as its tab does; let go where it was, over the other kind or
+/// with another button, it moves nothing, and a click still opens it (#2829).
+#[test]
+fn dragging_browser_rows_reorders_maps_or_layouts_in_one_undo_step() {
+    let mut h = harness();
+    h.state_mut().run("ui.pane.catalog", json!(null)).unwrap();
+    activate_world(&mut h);
+    let depth = h.state().session.undo_depth();
+    // The only map: nowhere to go.
+    let at = browser_row(&h, "World").center();
+    drag(&mut h, at, at + egui::vec2(0.0, 40.0), 0);
+    assert_eq!((map_names(&h), h.state().session.undo_depth()), (vec!["World".to_string()], depth));
+    for n in ["M2", "M3"] {
+        h.state_mut().run("map.new", json!({"name": n})).unwrap();
+    }
+    for n in ["L1", "L2"] {
+        h.state_mut().run("layout.new", json!({"name": n})).unwrap();
+    }
+    activate_world(&mut h);
+    let depth = h.state().session.undo_depth();
+    // M3 onto the upper half of World's row: first.
+    let (from, onto) = (browser_row(&h, "M3").center(), browser_row(&h, "World"));
+    drag(&mut h, from, egui::pos2(onto.center().x, onto.min.y + 3.0), 0);
+    assert_eq!(map_names(&h), ["M3", "World", "M2"]);
+    assert_eq!(h.state().session.undo_depth(), depth + 1);
+    assert_eq!(active_view(&h), "World", "the map in view stays in view");
+    // Let go within its own row (a drag, past egui's click distance), over the layouts, or dragged
+    // with the secondary button: nothing.
+    let at = browser_row(&h, "M2").center();
+    drag(&mut h, at, at + egui::vec2(0.0, 8.0), 0);
+    assert_eq!(active_view(&h), "World", "a drag, not a click");
+    let layout = browser_row(&h, "L1").center();
+    drag(&mut h, at, layout, 0);
+    let secondary = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Secondary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let top = browser_row(&h, "M3");
+    let to = egui::pos2(top.center().x, top.min.y + 3.0);
+    h.event(egui::Event::PointerMoved(at));
+    h.event(secondary(at, true));
+    h.step();
+    for i in 1..=6 {
+        h.event(egui::Event::PointerMoved(at + (to - at) * (i as f32 / 6.0)));
+        h.step();
+    }
+    h.event(secondary(to, false));
+    settle(&mut h);
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+    assert_eq!((map_names(&h), h.state().session.undo_depth()), (vec!["M3".to_string(), "World".into(), "M2".into()], depth + 1));
+    // L1 onto the lower half of L2's row: last.
+    let (from, onto) = (browser_row(&h, "L1").center(), browser_row(&h, "L2"));
+    drag(&mut h, from, egui::pos2(onto.center().x, onto.max.y - 3.0), 0);
+    assert_eq!((layout_names(&h), h.state().session.undo_depth()), (vec!["L2".to_string(), "L1".into()], depth + 2));
+    h.state_mut().run("edit.undo", json!(null)).unwrap();
+    settle(&mut h);
+    assert_eq!(layout_names(&h), ["L1", "L2"]);
+    // A click still opens it.
+    let row = strip_row(&h);
+    h.query_all_by_label("M2").find(|n| (n.rect().center().y - row).abs() > 8.0).expect("M2 in the Browser").click();
+    settle(&mut h);
+    assert_eq!(active_view(&h), "M2");
+}
+
+/// Held near the Browser's bottom edge, a dragged map row scrolls the list down past the rows in
+/// view, and lands there when let go (#2829).
+#[test]
+fn a_row_dragged_to_the_edge_of_a_long_browser_scrolls_it() {
+    let mut h = harness();
+    h.set_size(egui::vec2(900.0, 600.0));
+    for i in 1..=40 {
+        h.state_mut().run("map.new", json!({"name": format!("Row Map {i}")})).unwrap();
+    }
+    h.state_mut().run("ui.pane.catalog", json!(null)).unwrap();
+    activate_world(&mut h);
+    let from = browser_row(&h, "World").center();
+    // The list's bottom edge, where its scroll bar ends (the map is right of the Browser).
+    let bottom = h
+        .query_all_by_role(egui::accesskit::Role::ScrollBar)
+        .map(|n| n.rect())
+        .find(|r| r.max.x < from.x + 250.0)
+        .expect("the Browser's scroll bar")
+        .max
+        .y;
+    let in_view = map_names(&h).iter().position(|n| browser_row(&h, n).max.y > bottom).expect("more maps than fit");
+    // A few frames: each scrolls up to 60 points here (the harness steps a quarter second), and
+    // held longer the list reaches its end and the pointer is past the maps, over Toolboxes.
+    drag(&mut h, from, egui::pos2(from.x, bottom - 6.0), 5);
+    let landed = map_names(&h).iter().position(|n| n == "World").unwrap();
+    assert!(landed > in_view, "World landed at {landed}, past the {in_view} rows first in view");
+}
+
 #[test]
 fn plugins_install_from_a_file_after_a_prompt() {
     let _turn = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());

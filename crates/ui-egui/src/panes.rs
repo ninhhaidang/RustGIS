@@ -2634,18 +2634,23 @@ fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
             egui::CollapsingHeader::new(egui::RichText::new(tl!("Maps")).font(semibold(12.5))).default_open(true).show(ui, |ui| {
                 let maps: Vec<String> = app.session.project.maps.iter().map(|m| m.name.clone()).collect();
+                let mut rows = Vec::with_capacity(maps.len());
                 for (i, m) in maps.iter().enumerate() {
-                    ui.horizontal(|ui| {
+                    let row = ui.horizontal(|ui| {
                         let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
                         icons::paint(ui.painter(), r, "map", t.icon, t.accent);
                         let active = i == app.session.project.active_map;
-                        let resp = ui.selectable_label(active, m);
+                        // Dragged to another place among the maps, as its tab is (#2829).
+                        let resp = ui.selectable_label(active, m).interact(Sense::drag());
+                        crate::mapview::drag_tab(ui, &resp, false, m);
                         if resp.clicked() {
                             let _ = app.run("map.activate", json!({"name": m}));
                         }
                         resp.context_menu(|ui| map_menu(app, ui, m));
                     });
+                    rows.push(row.response.rect);
                 }
+                crate::mapview::tab_drop(app, ui, t, &rows, &maps, false, true);
             });
             let toolboxes =
                 egui::CollapsingHeader::new(egui::RichText::new(tl!("Toolboxes")).font(semibold(12.5))).id_salt("browser_toolboxes");
@@ -2681,25 +2686,31 @@ fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             let layouts: Vec<String> = app.session.project.layouts.iter().map(|l| l.name.clone()).collect();
             if !layouts.is_empty() {
                 egui::CollapsingHeader::new(egui::RichText::new(tl!("Layouts")).font(semibold(12.5))).default_open(true).show(ui, |ui| {
-                    for n in layouts {
-                        ui.horizontal(|ui| {
+                    let mut rows = Vec::with_capacity(layouts.len());
+                    for n in &layouts {
+                        let row = ui.horizontal(|ui| {
                             let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
                             icons::paint(ui.painter(), r, "new_layout", t.icon, t.accent);
-                            let resp = ui.selectable_label(
-                                app.session
-                                    .project
-                                    .layouts
-                                    .get(app.session.active_layout.unwrap_or(usize::MAX))
-                                    .is_some_and(|l| l.name == n),
-                                &n,
-                            );
+                            let resp = ui
+                                .selectable_label(
+                                    app.session
+                                        .project
+                                        .layouts
+                                        .get(app.session.active_layout.unwrap_or(usize::MAX))
+                                        .is_some_and(|l| l.name == *n),
+                                    n,
+                                )
+                                .interact(Sense::drag());
+                            crate::mapview::drag_tab(ui, &resp, true, n);
                             if resp.clicked() {
                                 let _ = app.run("layout.activate", json!({"name": n}));
                                 app.ui.tab = "Publish".into();
                             }
-                            resp.context_menu(|ui| layout_menu(app, ui, &n));
+                            resp.context_menu(|ui| layout_menu(app, ui, n));
                         });
+                        rows.push(row.response.rect);
                     }
+                    crate::mapview::tab_drop(app, ui, t, &rows, &layouts, true, true);
                 });
             }
             let styles: Vec<String> = app.session.project.styles.iter().map(|st| st.name.clone()).collect();

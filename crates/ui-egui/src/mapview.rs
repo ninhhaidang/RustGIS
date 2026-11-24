@@ -4944,55 +4944,71 @@ fn view_tab_row(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, follow: bool) -> 
             let _ = app.run("ui.modelBuilder", Value::Null);
         }
     }
-    let (tabs, names, cmd) = match egui::DragAndDrop::payload::<DraggedTab>(ui.ctx()) {
-        Some(d) if d.layout => (layout_tabs, layouts, "layout.move"),
-        _ => (map_tabs, names, "map.move"),
-    };
-    tab_drop(app, ui, t, &tabs, &names, cmd);
+    let layout = egui::DragAndDrop::payload::<DraggedTab>(ui.ctx()).is_some_and(|d| d.layout);
+    let (tabs, names) = if layout { (layout_tabs, layouts) } else { (map_tabs, names) };
+    tab_drop(app, ui, t, &tabs, &names, layout, false);
     close
 }
 
-/// A map or layout tab being dragged to another place in the row (#2802): which of the two, and
-/// its name, so a list that changes during the drag (an undo, a script) moves the same one.
+/// A map or layout tab, or its row in the Browser (#2829), being dragged to another place among
+/// its kind (#2802): which of the two, and its name, so a list that changes during the drag (an
+/// undo, a script) moves the same one.
 struct DraggedTab {
     layout: bool,
     name: String,
 }
 
-/// Starts dragging the map or layout tab `name` when `resp` starts a drag; whether that tab is
-/// the one being dragged.
-fn drag_tab(ui: &Ui, resp: &egui::Response, layout: bool, name: &str) -> bool {
+/// Starts dragging the map or layout tab or row `name` when `resp` starts a drag; whether that one
+/// is being dragged.
+pub(crate) fn drag_tab(ui: &Ui, resp: &egui::Response, layout: bool, name: &str) -> bool {
     if resp.drag_started_by(egui::PointerButton::Primary) {
         egui::DragAndDrop::set_payload(ui.ctx(), DraggedTab { layout, name: name.to_string() });
     }
     egui::DragAndDrop::payload::<DraggedTab>(ui.ctx()).is_some_and(|d| d.layout == layout && d.name == name)
 }
 
-/// While a map or layout tab is dragged over the strip: a mark where it would land among the
-/// others of its kind (`tabs`, named `names`), which `cmd` takes it to when let go. A map dragged
-/// past the maps lands last among them, a layout dragged before the layouts first. Near the
-/// strip's ends the tabs scroll, faster the closer the pointer is, as the Layers pane does.
-fn tab_drop(app: &mut RustGisApp, ui: &Ui, t: &Tokens, tabs: &[Rect], names: &[String], cmd: &str) {
-    let Some(dragged) = egui::DragAndDrop::payload::<DraggedTab>(ui.ctx()) else { return };
+/// While a map or layout tab is dragged over the strip, or its row over the Browser's list
+/// (`vertical`): a mark where it would land among the others of its kind (`tabs`, named `names`;
+/// layouts with `layout`, else maps), which `map.move` or `layout.move` takes it to when let go;
+/// one of the other kind lands nowhere. On the strip a map dragged past the maps lands last among
+/// them, a layout dragged before the layouts first; in the list, let go off its kind's rows it
+/// lands nowhere. Near the strip's or list's ends they scroll, faster the closer the pointer is,
+/// as the Layers pane does.
+pub(crate) fn tab_drop(app: &mut RustGisApp, ui: &Ui, t: &Tokens, tabs: &[Rect], names: &[String], layout: bool, vertical: bool) {
+    let Some(dragged) = egui::DragAndDrop::payload::<DraggedTab>(ui.ctx()).filter(|d| d.layout == layout) else { return };
     let view = ui.clip_rect();
     let Some(pointer) = ui.ctx().pointer_interact_pos().filter(|p| view.contains(*p)) else { return };
+    // Along the row (x) or the list (y).
+    let a = usize::from(vertical);
     let edge = 28.0;
-    let push = ((view.min.x + edge - pointer.x).max(0.0) - (pointer.x - (view.max.x - edge)).max(0.0)) / edge;
+    let push = ((view.min[a] + edge - pointer[a]).max(0.0) - (pointer[a] - (view.max[a] - edge)).max(0.0)) / edge;
     if push != 0.0 {
         let dt = ui.input(|i| i.stable_dt).min(0.1);
-        ui.scroll_with_delta_animation(vec2(push * 600.0 * dt, 0.0), egui::style::ScrollAnimation::none());
+        let step = push * 600.0 * dt;
+        ui.scroll_with_delta_animation(if vertical { vec2(0.0, step) } else { vec2(step, 0.0) }, egui::style::ScrollAnimation::none());
         ui.ctx().request_repaint();
     }
-    let (Some(from), Some(last)) = (names.iter().position(|n| *n == dragged.name), tabs.last()) else { return };
-    // The tabs whose middle is left of the pointer go before it.
-    let slot = tabs.iter().filter(|r| r.center().x < pointer.x).count();
+    let (Some(from), Some(first), Some(last)) = (names.iter().position(|n| *n == dragged.name), tabs.first(), tabs.last()) else {
+        return;
+    };
+    if vertical && (pointer.y < first.min.y || pointer.y > last.max.y) {
+        return;
+    }
+    // The tabs or rows whose middle is before the pointer go before it.
+    let slot = tabs.iter().filter(|r| r.center()[a] < pointer[a]).count();
     let to = if slot > from { slot - 1 } else { slot };
     if to == from {
         return;
     }
-    let x = tabs.get(slot).map_or(last.max.x + 1.0, |r| r.min.x - 1.0);
-    ui.painter().line_segment([pos2(x, last.min.y + 2.0), pos2(x, last.max.y - 2.0)], Stroke::new(2.0, t.accent));
+    let at = tabs.get(slot).map_or(last.max[a] + 1.0, |r| r.min[a] - 1.0);
+    let mark = if vertical {
+        [pos2(last.min.x + 2.0, at), pos2(last.max.x - 2.0, at)]
+    } else {
+        [pos2(at, last.min.y + 2.0), pos2(at, last.max.y - 2.0)]
+    };
+    ui.painter().line_segment(mark, Stroke::new(2.0, t.accent));
     if ui.input(|i| i.pointer.primary_released()) {
+        let cmd = if layout { "layout.move" } else { "map.move" };
         let _ = app.run(cmd, json!({"name": dragged.name, "to": to}));
     }
 }
