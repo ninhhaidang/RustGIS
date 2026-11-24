@@ -260,6 +260,8 @@ pub(crate) struct GpuMapRenderer {
     blit_layout: wgpu::BindGroupLayout,
     templates: wgpu::Buffer,
     sampler: wgpu::Sampler,
+    /// Each pixel a block, for tile layers set to nearest-neighbour resampling (#2804).
+    nearest_sampler: wgpu::Sampler,
     /// MSAA sample count of the offscreen scene target.
     samples: u32,
     /// The tile pictures uploaded so far, kept across scenes.
@@ -351,6 +353,12 @@ impl GpuMapRenderer {
             label: Some("mapgpu_image"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("mapgpu_image_nearest"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
         let pipeline = |label: &str,
@@ -555,6 +563,7 @@ impl GpuMapRenderer {
             blit_layout,
             templates,
             sampler,
+            nearest_sampler,
             samples,
             tile_textures: Default::default(),
             tile_meshes: Default::default(),
@@ -680,6 +689,9 @@ struct TileTextures {
 struct TileTexture {
     picture: std::sync::Weak<Payload>,
     bind: wgpu::BindGroup,
+    /// The same texture sampled nearest, for a layer set to nearest-neighbour resampling
+    /// (#2804): one upload whichever way the layers that draw it sample it.
+    nearest_bind: wgpu::BindGroup,
     texture: Arc<Owned<wgpu::Texture>>,
     used: u64,
     bytes: u64,
@@ -700,7 +712,8 @@ impl TileTextures {
             && t.picture.upgrade().is_some_and(|p| Arc::ptr_eq(&p, &q.picture))
         {
             t.used = self.scene;
-            return Some((t.bind.clone(), t.texture.clone()));
+            let bind = if q.nearest { &t.nearest_bind } else { &t.bind };
+            return Some((bind.clone(), t.texture.clone()));
         }
         let pm = q.pixmap()?;
         let (w, h) = (pm.width(), pm.height());
@@ -729,24 +742,29 @@ impl TileTextures {
             size,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("mapgpu_tile_bind"),
-            layout: &r.image_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&r.sampler) },
-            ],
-        });
+        let bind_with = |sampler: &wgpu::Sampler| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mapgpu_tile_bind"),
+                layout: &r.image_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                ],
+            })
+        };
+        let (bind, nearest_bind) = (bind_with(&r.sampler), bind_with(&r.nearest_sampler));
+        let chosen = if q.nearest { nearest_bind.clone() } else { bind.clone() };
         let texture = Arc::new(texture);
         let t = TileTexture {
             picture: Arc::downgrade(&q.picture),
-            bind: bind.clone(),
+            bind,
+            nearest_bind,
             texture: texture.clone(),
             used: self.scene,
             bytes: u64::from(w) * u64::from(h) * 4,
         };
         self.by_picture.insert(key, t);
-        Some((bind, texture))
+        Some((chosen, texture))
     }
 
     /// Ends a scene: drops the textures of pictures the tile cache let go, and past
@@ -2587,25 +2605,39 @@ mod tests {
                 return;
             }
             let mut png = std::io::Cursor::new(Vec::new());
-            let tile = image::RgbaImage::from_fn(256, 256, |x, y| image::Rgba([40 + (x / 2) as u8, 60 + (y / 2) as u8, 140, 255]));
+            // Blocks of 8 pixels, light and dark: drawn larger, sharp edges or blended ones.
+            let blocks = url.contains("/blocks/");
+            let tile = image::RgbaImage::from_fn(256, 256, |x, y| match blocks {
+                true if (x / 8 + y / 8) % 2 == 0 => image::Rgba([230, 220, 90, 255]),
+                true => image::Rgba([30, 60, 140, 255]),
+                false => image::Rgba([40 + (x / 2) as u8, 60 + (y / 2) as u8, 140, 255]),
+            });
             match tile.write_to(&mut png, image::ImageFormat::Png) {
                 Ok(()) => done(Ok(png.into_inner())),
                 Err(e) => done(Err(e.to_string())),
             }
         });
-        let build = |opacity: f32| {
+        // `nearest`: tiles of blocks no finer than zoom 2, drawn about three times their size,
+        // each pixel a block (#2804).
+        let build = |opacity: f32, nearest: bool| {
             move || {
                 let mut m = Map::new("Map");
                 m.graticule = false;
-                let mut t = TileLayer::new("Tiles", TileKind::Raster, "https://parity.test/{z}/{x}/{y}.png");
+                let url = if nearest { "https://parity.test/blocks/{z}/{x}/{y}.png" } else { "https://parity.test/{z}/{x}/{y}.png" };
+                let mut t = TileLayer::new("Tiles", TileKind::Raster, url);
                 t.opacity = opacity;
+                if nearest {
+                    t.max_zoom = 2;
+                    t.resampling = rustgis_engine::map::raster::Resampling::Nearest;
+                }
                 m.tiles.push(t);
                 m
             }
         };
         let center = lonlat_to_merc(Coord::new(12.3, 45.6));
         // Zoom 4 at its own size, and zoom 3 drawn between levels.
-        for (res, opacity) in [(9783.939620500, 1.0), (13_000.0, 1.0), (13_000.0, 0.6)] {
+        for (res, opacity, nearest) in [(9783.939620500, 1.0, false), (13_000.0, 1.0, false), (13_000.0, 0.6, false), (13_000.0, 1.0, true)]
+        {
             let view = View {
                 width: 320.0,
                 height: 200.0,
@@ -2613,8 +2645,13 @@ mod tests {
                 camera: Camera { center, res, bearing: 0.0, pitch: 0.0 },
                 sky: false,
             };
-            let mut m = build(opacity)();
-            render::render_png(&mut m, &view).expect("tiles fetched");
+            let mut m = build(opacity, nearest)();
+            let png = render::render_png(&mut m, &view).expect("tiles fetched");
+            if nearest {
+                let mut smooth = build(opacity, nearest)();
+                smooth.tiles[0].resampling = rustgis_engine::map::raster::Resampling::Bilinear;
+                assert_ne!(png, render::render_png(&mut smooth, &view).expect("tiles fetched"), "nearest draws as bilinear");
+            }
             let Some(RenderOutput::Gpu(scene)) = render::render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
             assert!(!scene.cmds.iter().any(|c| matches!(c, DrawCmd::Image { .. })), "no picture of the view at {res}");
             assert!(scene.cmds.iter().any(|c| matches!(c, DrawCmd::Tiles { .. })), "tiles at {res}");
@@ -2622,7 +2659,7 @@ mod tests {
             let Some(RenderOutput::Gpu(scene)) = render::render_backend(&mut m, &view, Backend::GpuLive) else { panic!("gpu scene") };
             assert!(scene.cmds.iter().any(|c| matches!(c, DrawCmd::LiveTiles { .. })), "live tiles at {res}");
             assert!(!scene.cmds.iter().any(|c| matches!(c, DrawCmd::Tiles { .. } | DrawCmd::Image { .. })), "only live tiles at {res}");
-            assert_parity(&format!("raster tiles {res} {opacity}"), build(opacity), &view);
+            assert_parity(&format!("raster tiles {res} {opacity} {nearest}"), build(opacity, nearest), &view);
         }
     }
 
@@ -2656,7 +2693,8 @@ mod tests {
         let mut pm = rustgis_engine::render::Pixmap::new(4, 4).expect("pixmap");
         pm.data_mut().chunks_mut(4).for_each(|p| p.copy_from_slice(&[200, 30, 30, 255]));
         let picture = Arc::new(Payload::Image(pm));
-        let quad = TileQuad { picture: picture.clone(), rect: [0.0, 0.0, 100.0, 100.0], uv: [0.0, 0.0, 1.0, 1.0], opacity: 1.0 };
+        let quad =
+            TileQuad { picture: picture.clone(), rect: [0.0, 0.0, 100.0, 100.0], uv: [0.0, 0.0, 1.0, 1.0], opacity: 1.0, nearest: false };
         let scene = |q: &TileQuad| GpuScene {
             clear: [0.0; 4],
             cmds: vec![DrawCmd::Tiles { origin: [0.0, 0.0], tiles: vec![q.clone()] }],
@@ -2675,13 +2713,21 @@ mod tests {
         let first = upload(&scene(&quad)).expect("fits");
         assert!(first.has_tiles && !first.has_images, "tiles move with the camera");
         let _second = upload(&scene(&quad)).expect("fits");
+        // Drawn nearest by another layer (#2804): the same texture, sampled another way.
+        let _nearest = upload(&scene(&TileQuad { nearest: true, ..quad.clone() })).expect("fits");
         let textures = r.tile_textures.lock().expect("textures");
-        assert_eq!(textures.by_picture.len(), 1, "one texture for the picture");
+        assert_eq!(textures.by_picture.len(), 1, "one texture for the picture, however it's sampled");
         drop(textures);
         // Once the tile cache lets the picture go, so does the GPU.
         drop((quad, picture, first, _second));
         let other = rustgis_engine::render::Pixmap::new(4, 4).expect("pixmap");
-        let q = TileQuad { picture: Arc::new(Payload::Image(other)), rect: [0.0, 0.0, 1.0, 1.0], uv: [0.0, 0.0, 1.0, 1.0], opacity: 1.0 };
+        let q = TileQuad {
+            picture: Arc::new(Payload::Image(other)),
+            rect: [0.0, 0.0, 1.0, 1.0],
+            uv: [0.0, 0.0, 1.0, 1.0],
+            opacity: 1.0,
+            nearest: false,
+        };
         let _third = upload(&scene(&q)).expect("fits");
         assert_eq!(r.tile_textures.lock().expect("textures").by_picture.len(), 1);
     }
@@ -2698,7 +2744,13 @@ mod tests {
             pm.data_mut().chunks_mut(4).for_each(|p| p.copy_from_slice(&[c, 30, 30, 255]));
             Arc::new(Payload::Image(pm))
         };
-        let quad = |p: &Arc<Payload>| TileQuad { picture: p.clone(), rect: [0.0, 0.0, 10.0, 10.0], uv: [0.0, 0.0, 1.0, 1.0], opacity: 1.0 };
+        let quad = |p: &Arc<Payload>| TileQuad {
+            picture: p.clone(),
+            rect: [0.0, 0.0, 10.0, 10.0],
+            uv: [0.0, 0.0, 1.0, 1.0],
+            opacity: 1.0,
+            nearest: false,
+        };
         // Two chunks of 64 pictures of 256 pixels.
         let chunk = 64 * 256 * 256 * 4;
         let mut live =
@@ -2752,7 +2804,13 @@ mod tests {
             pm.data_mut().chunks_mut(4).for_each(|p| p.copy_from_slice(&[c, 30, 30, 255]));
             Arc::new(Payload::Image(pm))
         };
-        let quad = |p: &Arc<Payload>| TileQuad { picture: p.clone(), rect: [0.0, 0.0, 10.0, 10.0], uv: [0.0, 0.0, 1.0, 1.0], opacity: 1.0 };
+        let quad = |p: &Arc<Payload>| TileQuad {
+            picture: p.clone(),
+            rect: [0.0, 0.0, 10.0, 10.0],
+            uv: [0.0, 0.0, 1.0, 1.0],
+            opacity: 1.0,
+            nearest: false,
+        };
         let chunk = 16u64 << 20;
         let mut live =
             crate::tilelayer::LiveTiles::new(&rs.device, wgpu::TextureFormat::Rgba8Unorm, 4, DEPTH_FORMAT).with_budget(2 * chunk);

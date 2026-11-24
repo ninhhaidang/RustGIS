@@ -51,7 +51,7 @@ pub mod vector;
 pub use tiles::{Live, live as live_tiles};
 
 pub use rustgis_tiles;
-pub use tiles::{source_layers as tile_source_layers, spec as tile_spec, style_view};
+pub use tiles::{draws_pictures as tile_draws_pictures, source_layers as tile_source_layers, spec as tile_spec, style_view};
 
 /// Natural Earth 1:110m sample data (public domain), fetched by `build.rs` from rustgis-assets.
 /// The countries in another worldview are downloaded when one is chosen, never built in.

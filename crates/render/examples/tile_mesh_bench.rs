@@ -20,6 +20,7 @@ fn main() {
         layers: Vec::new(),
         style_layers: String::new(),
         hidden_layers: Vec::new(),
+        nearest: false,
     };
     for (name, lon, lat, zoom) in
         [("Manhattan z14.3", -73.98, 40.75, 14.3f64), ("Manhattan z12.3", -73.98, 40.75, 12.3), ("Paris z15.3", 2.35, 48.86, 15.3)]

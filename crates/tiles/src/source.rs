@@ -50,12 +50,15 @@ pub struct Spec {
     /// Source layers left out (`roads`, `pois`): the style layers drawing them are dropped, so
     /// they neither draw nor are picked.
     pub hidden_layers: Vec<String>,
+    /// Picture tiles drawn at a size other than their own keep each pixel a block
+    /// (`raster-resampling: nearest`) instead of blending them (#2804).
+    pub nearest: bool,
 }
 
 impl Spec {
     fn key(&self) -> String {
         format!(
-            "{:?}|{}:{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{:?}|{}:{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.kind,
             self.url.len(),
             self.url,
@@ -68,7 +71,8 @@ impl Spec {
             // Each name with its length, so ["a,b"] and ["a", "b"] differ.
             self.layers.iter().map(|l| format!("{}:{l}", l.len())).collect::<String>(),
             self.style_layers,
-            self.hidden_layers.iter().map(|l| format!("{}:{l}", l.len())).collect::<String>()
+            self.hidden_layers.iter().map(|l| format!("{}:{l}", l.len())).collect::<String>(),
+            self.nearest
         )
     }
 }
@@ -573,6 +577,30 @@ pub fn source_layers(kind: Kind, url: &str) -> Option<Vec<String>> {
     }
 }
 
+/// Whether a tile archive holds vector tiles (`Some(true)`) or pictures (`Some(false)`); `None`
+/// while its header is on its way, and an error when it can't be read or its tiles are of a type
+/// RustGIS doesn't know. Other kinds aren't archives: `None`.
+pub fn archive_holds_vectors(kind: Kind, url: &str) -> Result<Option<bool>, String> {
+    use pmtiles::TileType;
+    use rustgis_data::mbtiles::Format;
+    const UNKNOWN: &str = "its tiles are of a type RustGIS doesn't know";
+    match kind {
+        Kind::PmTiles => match pmtiles::info(url)?.map(|i| i.tile_type) {
+            None => Ok(None),
+            Some(TileType::Mvt) => Ok(Some(true)),
+            Some(TileType::Png | TileType::Jpeg | TileType::Webp | TileType::Avif) => Ok(Some(false)),
+            Some(TileType::Unknown) => Err(UNKNOWN.into()),
+        },
+        Kind::MbTiles => match mbtiles::info_ready(url, web_time::Duration::ZERO)?.map(|i| i.format) {
+            None => Ok(None),
+            Some(Format::Pbf) => Ok(Some(true)),
+            Some(Format::Png | Format::Jpeg | Format::Webp) => Ok(Some(false)),
+            Some(Format::Unknown) => Err(UNKNOWN.into()),
+        },
+        _ => Ok(None),
+    }
+}
+
 /// The document at `url`: `Ok(None)` while it is on its way.
 fn fetch_json(url: &str, from: Option<&address::Origin>) -> Result<Option<(Value, address::Origin)>, String> {
     match cache::document(url, from) {
@@ -609,8 +637,17 @@ fn raster_style(spec: &Spec) -> Value {
             "type": "raster", "tiles": templates(spec), "tileSize": spec.tile_size,
             "minzoom": spec.min_zoom, "maxzoom": spec.max_zoom,
         }},
-        "layers": [{"id": "raster", "type": "raster", "source": "raster"}],
+        "layers": [raster_layer(spec)],
     })
+}
+
+/// The one layer of a style drawing picture tiles, crisp when the spec asks.
+fn raster_layer(spec: &Spec) -> Value {
+    let mut layer = json!({"id": "raster", "type": "raster", "source": "raster"});
+    if spec.nearest {
+        layer["paint"] = json!({"raster-resampling": "nearest"});
+    }
+    layer
 }
 
 /// A tile archive (PMTiles or MBTiles), as far as styling it goes.
@@ -639,7 +676,7 @@ fn archive_style(spec: &Spec, info: Archive) -> Option<Value> {
                 "type": "raster", "tiles": tiles, "tileSize": spec.tile_size,
                 "minzoom": minzoom, "maxzoom": maxzoom, "attribution": attribution,
             }},
-            "layers": [{"id": "raster", "type": "raster", "source": "raster"}],
+            "layers": [raster_layer(spec)],
         }));
     }
     let source = json!({"type": "vector", "tiles": tiles, "minzoom": minzoom, "maxzoom": maxzoom, "attribution": attribution});
@@ -852,6 +889,7 @@ mod tests {
             layers: Vec::new(),
             style_layers: String::new(),
             hidden_layers: Vec::new(),
+            nearest: false,
         }
     }
 

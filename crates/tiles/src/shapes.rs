@@ -468,6 +468,7 @@ mod tests {
             layers: Vec::new(),
             style_layers: style.into(),
             hidden_layers: Vec::new(),
+            nearest: false,
         };
         (spec, dir)
     }

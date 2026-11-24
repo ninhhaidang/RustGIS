@@ -1865,6 +1865,12 @@ impl StyleLayer {
         [lo, MAX_STYLE_ZOOM].into_iter().chain(grid).chain(named).filter(shown).any(|z| expr.elevation_ramp(z).is_none())
     }
 
+    /// Whether `raster-resampling` is `nearest` (default `linear`): a raster layer's tile pictures
+    /// drawn at a size other than their own keep each pixel a block rather than blending them.
+    pub fn raster_resampling_nearest(&self, zoom: f32) -> bool {
+        self.pval("raster-resampling", &FeatureCtx::zoom_only(zoom)).as_str() == Some("nearest")
+    }
+
     /// `color-relief-opacity` (default 1).
     pub fn color_relief_opacity(&self, zoom: f32) -> f32 {
         self.opacity("color-relief-opacity", &FeatureCtx::zoom_only(zoom))

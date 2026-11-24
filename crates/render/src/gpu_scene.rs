@@ -177,6 +177,9 @@ pub struct TileQuad {
     /// The part of the picture in that square: left, top, right, bottom (0..1, top down).
     pub uv: [f32; 4],
     pub opacity: f32,
+    /// Each of the picture's pixels a block where it's drawn larger or smaller than its own size,
+    /// rather than blended (the layer's resampling, #2804).
+    pub nearest: bool,
 }
 
 impl TileQuad {

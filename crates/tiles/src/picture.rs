@@ -571,6 +571,7 @@ mod tests {
                 layers: Vec::new(),
                 style_layers: String::new(),
                 hidden_layers: Vec::new(),
+                nearest: false,
             };
             let f = frame(2.999, 1.0);
             let view = f.extent(64, 64);
@@ -946,6 +947,7 @@ mod tests {
             layers: Vec::new(),
             style_layers: style.into(),
             hidden_layers: Vec::new(),
+            nearest: false,
         };
         (spec, dir)
     }

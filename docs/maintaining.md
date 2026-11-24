@@ -181,6 +181,12 @@ A label class removing duplicates (`labels.placement` with a `removeDuplicates` 
 `label-duplicates`, in a layer, a saved style or a saved `labels.placement` step: an older reader
 would place and save every label, or run the step without it.
 
+Projects and map files with a tile layer drawn nearest (`map.setTiles` with `"resampling":
+"nearest"`) require `tile-resampling`, so an older reader refuses them instead of drawing the layer
+blended and saving it again without the setting. So do projects with a saved `map.addTiles` or
+`map.setTiles` step (in a task, a model or a script) that sets it: an older reader would run the
+step without it, saying nothing.
+
 Projects with an ink on a legend, colorbar, table or chart (`color` on those elements) require
 `layout-element-ink`, so an older reader refuses them instead of drawing those elements in dark
 grey and saving them again without it. Saved `layout.addElement` and `layout.update` commands

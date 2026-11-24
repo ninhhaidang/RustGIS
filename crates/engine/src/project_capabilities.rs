@@ -159,6 +159,7 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("label-weight", command_weighs_labels),
     ("label-clearance", command_clears_labels),
     ("label-duplicates", command_removes_duplicate_labels),
+    ("tile-resampling", command_resamples_tiles),
 ];
 
 /// A saved `labels.placement` that has a class remove duplicates, read as the command reads it
@@ -168,6 +169,19 @@ fn command_removes_duplicate_labels(id: &str, params: &Value) -> bool {
     match id {
         "labels.placement" => params.get("removeDuplicates").and_then(crate::cmd::labels::number).is_some(),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_removes_duplicate_labels)),
+        _ => false,
+    }
+}
+
+/// A saved `map.addTiles` or `map.setTiles` drawing a tile layer's pictures nearest (#2804), read as
+/// the command reads it: an older reader runs it without the key, saying nothing, so the layer would
+/// stay blended. `bilinear` is what an older reader keeps.
+fn command_resamples_tiles(id: &str, params: &Value) -> bool {
+    match id {
+        "map.addTiles" | "map.setTiles" => {
+            crate::cmd::tiles::resampling(params).ok().flatten() == Some(rustgis_map::raster::Resampling::Nearest)
+        }
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_resamples_tiles)),
         _ => false,
     }
 }
@@ -687,6 +701,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
     let (mut polygon, mut svg) = (false, false);
     let (mut offline_area_id, mut paper, mut native, mut guided, mut weighed, mut cleared, mut deduped) =
         (false, false, false, false, false, false, false);
+    let mut crisp = false;
     for map in maps {
         offline_area_id |= map.offline_area_id.is_some();
         // A blank basemap's paper colour (#2532), which an older reader would draw and save white.
@@ -695,6 +710,8 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         weighed |= map.layers.iter().any(label_weight);
         cleared |= map.layers.iter().any(label_clearance);
         deduped |= map.layers.iter().any(removes_duplicate_labels);
+        // A tile layer drawn nearest (#2804), which an older reader would draw and save blended.
+        crisp |= map.tiles.iter().any(|t| t.resampling != rustgis_map::raster::Resampling::Bilinear);
         // An older reader doesn't know the MGRS graticule (#1042 piece 8): it refuses the
         // project by name rather than failing to read the type.
         mgrs |= map.graticule_type == rustgis_map::graticule::GraticuleType::Mgrs;
@@ -745,6 +762,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         (weighed, "label-weight"),
         (cleared, "label-clearance"),
         (deduped, "label-duplicates"),
+        (crisp, "tile-resampling"),
         (offline_area_id, "offline-map-area-id"),
         (paper, "blank-paper"),
         (native, super::NATIVE_COORDINATES),
@@ -860,6 +878,24 @@ mod tests {
 
     fn json_bytes(bytes: &[u8]) -> Value {
         serde_json::from_slice(bytes).unwrap()
+    }
+
+    /// A tile layer drawn nearest (#2804) reads back as it was and saving names `tile-resampling`;
+    /// one drawn blended, as an older reader would, names nothing. So does a saved step setting it.
+    #[test]
+    fn tile_resampling_fixture_reads_its_setting() {
+        use rustgis_map::raster::Resampling;
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/tile_resampling.rgis")).unwrap();
+        let saved = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(saved["requires"], json!(["tile-resampling"]));
+        assert_eq!(fixture.maps[0].tiles[0].resampling, Resampling::Nearest);
+        let reopened = Project::from_json(&saved.to_string()).unwrap();
+        assert_eq!(serde_json::to_value(&reopened).unwrap(), saved);
+        let mut plain = fixture;
+        plain.maps[0].tiles[0].resampling = Resampling::Bilinear;
+        assert!(serde_json::to_value(&plain).unwrap().get("requires").is_none());
+        assert!(command_resamples_tiles("map.setTiles", &json!({"index": 0, "resampling": "nearest"})));
+        assert!(!command_resamples_tiles("map.setTiles", &json!({"index": 0, "resampling": "bilinear"})));
     }
 
     /// A saved MGRS graticule drawn on top in a color of its own (#1042 piece 8) reads back as it

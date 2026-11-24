@@ -306,7 +306,7 @@ layout.seriesRefresh layout?
 layout.update layout? element x? y? w? h? name? visible? locked? text? size? color? bold? italic? align? letterSpacing? rotation? wrap? font? fallback? title? allClasses? hideOther? showNoData? exclude? labels? columns? textSize? orientation? ticks? tickSide? reverse? style? fill? outline? radius? width? dash? dir? head? angle? length? units? divisions? map? scale? center? bearing? pitch? grid? extentIndicator? border? layer? field? label? group? statistic? order? bars? other? stack? values? decimals? barColor? classes? labelAlign? mirror? max? hideLabels? rows? background?
 locator.find locator? text limit? zoom?
 map.activate name
-map.addTiles url kind? name? bounds? attribution? minZoom? maxZoom? tileSize? singleImage? tms? subdomains? layers? styleLayers? opacity? blend? overlay? top? replace? id? view? start? end? unit? interval? dates? legend? connection?
+map.addTiles url kind? name? bounds? attribution? minZoom? maxZoom? tileSize? singleImage? tms? subdomains? layers? styleLayers? opacity? blend? resampling? overlay? top? replace? id? view? start? end? unit? interval? dates? legend? connection?
 map.basemap name keepTiles? color?
 map.bodies
 map.body name? basemap?
@@ -352,7 +352,7 @@ map.selectTiles name? index? id?
 map.setBearing bearing by
 map.setPitch pitch by
 map.setScale scale
-map.setTiles name? index? id? visible? opacity? blend? move? to? rename? bands? range? dequantize? legend? hiddenLayers? singleImage? tileSize?
+map.setTiles name? index? id? visible? opacity? blend? resampling? move? to? rename? bands? range? dequantize? legend? hiddenLayers? singleImage? tileSize?
 map.terrain layer? tiles? encoding? exaggeration? block? water? off?
 map.thumbnail create? image? path? clear?
 map.tiles

@@ -14,12 +14,12 @@ use crate::{CmdResult, CommandSpec as C, Session};
 pub fn commands() -> Vec<C> {
     vec![
         C::new("map.addTiles", "Add Tile Layer", "Home › Add", add).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r#"{"url": "https://…/{z}/{x}/{y}.png" | vector tiles ".pbf" or TileJSON | MapLibre style.json | a PMTiles archive (web address or file path) | an MBTiles file path, "kind"?: "raster"|"vector"|"style"|"pmtiles"|"mbtiles" (guessed from the url), "name"?: text, "bounds"?: [west, south, east, north] (longitude/latitude coverage, when known), "attribution"?: text, "minZoom"?: number, "maxZoom"?: number, "tileSize"?: 256|512 (1024 too for a WMS or map service asked for in Web Mercator by its tiles' box: their pictures are asked for that size), "singleImage"?: bool (a WMS or map service: one picture of the view instead of tiles, so symbols and labels aren't cut at tile edges; tiles on the globe, a tilted map or a projection the service doesn't offer; by default on for one, unless tileSize is given), "tms"?: bool, "subdomains"?: [text], "layers"?: [vector tile layer names, drawn in colours of their own], "styleLayers"?: [MapLibre style layers drawing vector tiles instead (their source is the tiles')], "opacity"?: 0–1, "blend"?: "normal"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"difference" (how it combines with what is beneath), "overlay"?: bool (on top of the map's layers, as every new layer goes; without it a basemap, under them; one with the same address and role is replaced when it has the same name or the same look), "top"?: bool (on top of the map's layers, as a layer added as data goes; by default an overlay's place), "replace"?: bool (removes the other tile basemaps, not overlays), "id"?: catalog id, "view"?: bool (a MapLibre style: go to the place, zoom, bearing and pitch its root properties give, once it loads), "start"?, "end"?: dates a url with date placeholders ({date:YYYY-MM-DD}, {YYYY}) spans, turning the time slider on (or, when it is on, setting its span), "unit"?, "interval"?, "dates"?: its steps (as in time.set), "legend"?: "the web address of its legend picture (PNG or JPEG)" | [address | {"url": address, "minScale"?: scale denominator, "maxScale"?: one (the scales it is for, from minScale up to below maxScale)}] (at most 16; the Layers pane shows the one for the map's scale under the layer; service.add gives a WMS or WMTS layer its service's), "connection"?: "the id of the saved web-service connection it comes from (as service.add): the tile layer records it, and its tiles are read with its login"}"#,
+            r#"{"url": "https://…/{z}/{x}/{y}.png" | vector tiles ".pbf" or TileJSON | MapLibre style.json | a PMTiles archive (web address or file path) | an MBTiles file path, "kind"?: "raster"|"vector"|"style"|"pmtiles"|"mbtiles" (guessed from the url), "name"?: text, "bounds"?: [west, south, east, north] (longitude/latitude coverage, when known), "attribution"?: text, "minZoom"?: number, "maxZoom"?: number, "tileSize"?: 256|512 (1024 too for a WMS or map service asked for in Web Mercator by its tiles' box: their pictures are asked for that size), "singleImage"?: bool (a WMS or map service: one picture of the view instead of tiles, so symbols and labels aren't cut at tile edges; tiles on the globe, a tilted map or a projection the service doesn't offer; by default on for one, unless tileSize is given), "tms"?: bool, "subdomains"?: [text], "layers"?: [vector tile layer names, drawn in colours of their own], "styleLayers"?: [MapLibre style layers drawing vector tiles instead (their source is the tiles')], "opacity"?: 0–1, "blend"?: "normal"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"difference" (how it combines with what is beneath), "resampling"?: "nearest"|"bilinear" (picture tiles drawn at a size other than their own: each pixel a block, or blended, the default), "overlay"?: bool (on top of the map's layers, as every new layer goes; without it a basemap, under them; one with the same address and role is replaced when it has the same name or the same look), "top"?: bool (on top of the map's layers, as a layer added as data goes; by default an overlay's place), "replace"?: bool (removes the other tile basemaps, not overlays), "id"?: catalog id, "view"?: bool (a MapLibre style: go to the place, zoom, bearing and pitch its root properties give, once it loads), "start"?, "end"?: dates a url with date placeholders ({date:YYYY-MM-DD}, {YYYY}) spans, turning the time slider on (or, when it is on, setting its span), "unit"?, "interval"?, "dates"?: its steps (as in time.set), "legend"?: "the web address of its legend picture (PNG or JPEG)" | [address | {"url": address, "minScale"?: scale denominator, "maxScale"?: one (the scales it is for, from minScale up to below maxScale)}] (at most 16; the Layers pane shows the one for the map's scale under the layer; service.add gives a WMS or WMTS layer its service's), "connection"?: "the id of the saved web-service connection it comes from (as service.add): the tile layer records it, and its tiles are read with its login"}"#,
         ),
         C::new("map.removeTiles", "Remove Tile Layer", "Home › Add", remove).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"name"?: text, "index"?: number, "id"?: catalog id} (removes every tile layer when none is given)"#),
         C::new("map.setTiles", "Tile Layer Properties", "Home › Add", set).inputs(set_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
-            r#"{"name"?: text | "index"?: number (0 = top) | "id"?: catalog id, "visible"?: bool, "opacity"?: 0–1, "blend"?: "normal"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"difference", "move"?: "up"|"down"|"top"|"bottom" (past the next layer in the drawing order of all the map's layers, a feature or raster layer too), "to"?: number (its place in that order among the other layers, 0 = top; the Layers pane lists it), "rename"?: text, "bands"?: [red, green, blue] | [band] (a cloud-optimised GeoTIFF's bands shown, from 1; [] for its own), "range"?: [low, high] (the values shown from black to full colour; null: each band's 2nd–98th percentile), "dequantize"?: "aef" (AlphaEarth's quantised embeddings) | "none", "legend"?: as map.addTiles's, or null for none, "hiddenLayers"?: [source layer name] (vector tiles' source layers not drawn or identified, as map.tiles's sourceLayers names them; replaces the list, [] or null for none), "singleImage"?: bool (as map.addTiles's), "tileSize"?: 256|512|1024 (a WMS or map service asked for in Web Mercator: its tiles' size)}"#,
+            r#"{"name"?: text | "index"?: number (0 = top) | "id"?: catalog id, "visible"?: bool, "opacity"?: 0–1, "blend"?: "normal"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"difference", "resampling"?: "nearest"|"bilinear" (how picture tiles are drawn at a size other than their own: each pixel a block, or blended, the default), "move"?: "up"|"down"|"top"|"bottom" (past the next layer in the drawing order of all the map's layers, a feature or raster layer too), "to"?: number (its place in that order among the other layers, 0 = top; the Layers pane lists it), "rename"?: text, "bands"?: [red, green, blue] | [band] (a cloud-optimised GeoTIFF's bands shown, from 1; [] for its own), "range"?: [low, high] (the values shown from black to full colour; null: each band's 2nd–98th percentile), "dequantize"?: "aef" (AlphaEarth's quantised embeddings) | "none", "legend"?: as map.addTiles's, or null for none, "hiddenLayers"?: [source layer name] (vector tiles' source layers not drawn or identified, as map.tiles's sourceLayers names them; replaces the list, [] or null for none), "singleImage"?: bool (as map.addTiles's), "tileSize"?: 256|512|1024 (a WMS or map service asked for in Web Mercator: its tiles' size)}"#,
         ),
         C::new("map.tiles", "Tile Layers", "Home › Add", |s, _| Ok(list(s, !s.policy_user()))).inputs(listing_inputs).roles(&[]).effects(crate::policy::Effects::NONE).view(),
         // As `layer.expand` for a layer's classes: what the pane shows, not an edit to undo.
@@ -109,7 +109,7 @@ pub(crate) fn list(s: &Session, redact: bool) -> Value {
             .map(|(i, t)| {
                 let url = shown(&t.url);
                 let mut o = json!({"index": i, "name": t.name, "id": t.id, "kind": t.kind.code(), "url": url, "visible": t.visible, "error": t.error,
-                    "opacity": t.opacity, "blend": t.blend.code(), "overlay": t.overlay, "attribution": t.attribution, "minZoom": t.min_zoom, "maxZoom": t.max_zoom});
+                    "opacity": t.opacity, "blend": t.blend.code(), "resampling": sampling_code(t.resampling), "overlay": t.overlay, "attribution": t.attribution, "minZoom": t.min_zoom, "maxZoom": t.max_zoom});
                 // Its place in the drawing order: over this map layer, or (none) under them all.
                 o["over"] = json!(s.map().tile_slot(t).and_then(|id| s.map().layer(id)).map(|l| l.name.clone()));
                 // A layer its service draws on request: one picture of the view, or tiles of a
@@ -226,6 +226,12 @@ pub(crate) fn add_with_metadata_wait(s: &mut Session, p: &Value, metadata_wait: 
     }
     if let Some(m) = blend(p)? {
         t.blend = m;
+    }
+    if let Some(r) = resampling(p)? {
+        // A local archive is read first (as it is below anyway), so a picture one takes it at once.
+        read_local_header(&t, metadata_wait);
+        takes_resampling(&t)?;
+        t.resampling = r;
     }
     // Vector tiles' layer names (an OGC API collection's), each drawn in a colour of its own.
     if let Some(names) = p.get("layers").and_then(Value::as_array) {
@@ -874,9 +880,67 @@ fn hidden_layers(p: &Value) -> Result<Option<Vec<String>>, String> {
     }
 }
 
+/// A resampling as the `resampling` parameter names it.
+fn sampling_code(r: rustgis_map::raster::Resampling) -> &'static str {
+    match r {
+        rustgis_map::raster::Resampling::Nearest => "nearest",
+        rustgis_map::raster::Resampling::Bilinear => "bilinear",
+    }
+}
+
+/// Refused for a layer that draws vector shapes: there are no pictures to resample.
+const NOT_PICTURES: &str = "resampling is for a layer of picture tiles, not vector tiles or a style";
+
+/// Refused for an archive whose header isn't read yet: it may hold vector tiles.
+const NOT_KNOWN_YET: &str = "this archive is still being read: set its resampling once it shows on the map";
+
+/// Refused unless `t` is known to draw pictures: a vector layer, style or archive draws shapes,
+/// and an archive not read yet might (a setting it would ignore isn't kept).
+fn takes_resampling(t: &TileLayer) -> Result<(), String> {
+    match rustgis_render::tile_draws_pictures(t) {
+        Ok(Some(true)) => Ok(()),
+        Ok(Some(false)) => Err(NOT_PICTURES.into()),
+        Ok(None) => Err(NOT_KNOWN_YET.into()),
+        Err(e) => Err(format!("resampling can't be set: the archive couldn't be read ({e})")),
+    }
+}
+
+/// Reads a local archive's header, waiting up to `wait`, so what it holds is known (natively; a
+/// web address and the browser's files are read as they draw).
+fn read_local_header(t: &TileLayer, wait: web_time::Duration) {
+    #[cfg(not(target_arch = "wasm32"))]
+    match t.kind {
+        TileKind::PmTiles if rustgis_render::rustgis_tiles::pmtiles::is_local(&t.url) => {
+            // Its error, if any, is reported when the setting is refused or the layer draws.
+            let _ = rustgis_render::rustgis_tiles::pmtiles::info_blocking(&t.url, wait);
+        }
+        TileKind::MbTiles => {
+            let _ = rustgis_render::rustgis_tiles::mbtiles::info_ready(&t.url, wait);
+        }
+        _ => {}
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (t, wait);
+}
+
+/// The `resampling` parameter: how the layer's pictures are drawn at a size other than their own.
+pub(crate) fn resampling(p: &Value) -> Result<Option<rustgis_map::raster::Resampling>, String> {
+    match p.get("resampling") {
+        None | Some(Value::Null) => Ok(None),
+        // A name with no letters (blank, or separators alone, which `from_name` drops) names none.
+        Some(Value::String(name)) => Some(name.trim())
+            .filter(|n| n.chars().any(char::is_alphanumeric))
+            .and_then(rustgis_map::raster::Resampling::from_name)
+            .map(Some)
+            .ok_or_else(|| format!("unknown resampling '{name}': nearest or bilinear")),
+        Some(_) => Err("resampling is \"nearest\" or \"bilinear\"".into()),
+    }
+}
+
 fn set(s: &mut Session, p: &Value) -> CmdResult {
     let i = find(s, p)?.ok_or("name or index is required")?;
     let mode = blend(p)?;
+    let sampling = resampling(p)?;
     let look = cog_look(p)?;
     // Before the legends are prepared: a refused name must leave no login activated.
     let rename = ps(p, "rename")
@@ -906,6 +970,9 @@ fn set(s: &mut Session, p: &Value) -> CmdResult {
     }
     if hidden.as_ref().is_some_and(|h| !h.is_empty()) && matches!(t.kind, TileKind::Raster | TileKind::Cog) {
         return Err("hiddenLayers is for vector tiles' source layers".into());
+    }
+    if sampling.is_some() {
+        takes_resampling(t)?;
     }
     let single = b(p, "singleImage");
     if single == Some(true) && !t.on_request() {
@@ -953,6 +1020,9 @@ fn set(s: &mut Session, p: &Value) -> CmdResult {
     }
     if let Some(m) = mode {
         t.blend = m;
+    }
+    if let Some(r) = sampling {
+        t.resampling = r;
     }
     if let Some(r) = rename {
         t.name = r;
@@ -1060,6 +1130,38 @@ mod tests {
         let p = Project::from_json(&text).unwrap();
         assert_eq!(p.map().tiles[0].blend, Blend::Multiply);
         assert_eq!(text.matches("\"blend\"").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn picture_tiles_can_be_drawn_crisp_and_vector_tiles_refuse_it() {
+        use rustgis_map::raster::Resampling;
+        let mut s = Session::new(Project::default());
+        let wms = json!({"url": "https://wms.example.com/{z}/{x}/{y}.png", "name": "Imagery", "resampling": "nearest"});
+        assert!(s.run("map.addTiles", &wms).is_ok());
+        assert!(s.run("map.addTiles", &json!({"url": "https://b.example.com/{z}/{x}/{y}.png", "name": "Base"})).is_ok());
+        let of = |s: &Session, name: &str| s.map().tiles.iter().find(|t| t.name == name).map(|t| t.resampling);
+        assert_eq!(of(&s, "Imagery"), Some(Resampling::Nearest));
+        // Blended as before unless asked.
+        assert_eq!(of(&s, "Base"), Some(Resampling::Bilinear));
+        let listed = s.run("map.tiles", &json!({})).unwrap();
+        let base = listed.as_array().and_then(|l| l.iter().find(|t| t["name"] == "Base")).cloned().unwrap_or_default();
+        assert_eq!(base["resampling"], "bilinear");
+        assert!(s.run("map.setTiles", &json!({"name": "Base", "resampling": "nearest"})).is_ok());
+        assert_eq!(of(&s, "Base"), Some(Resampling::Nearest));
+        assert!(s.run("edit.undo", &json!({})).is_ok());
+        assert_eq!(of(&s, "Base"), Some(Resampling::Bilinear));
+        assert!(s.run("map.setTiles", &json!({"name": "Base", "resampling": "cubic"})).is_err());
+        for blank in [" ", "-", "_"] {
+            assert!(s.run("map.setTiles", &json!({"name": "Base", "resampling": blank})).is_err(), "{blank:?}");
+        }
+        let vector = json!({"url": "https://v.example.com/{z}/{x}/{y}.pbf", "kind": "vector", "name": "Roads"});
+        assert!(s.run("map.addTiles", &vector).is_ok());
+        assert!(s.run("map.setTiles", &json!({"name": "Roads", "resampling": "nearest"})).is_err());
+        // Saved with the project; a blended layer saves none.
+        let text = serde_json::to_string(&s.project).unwrap();
+        let p = Project::from_json(&text).unwrap();
+        assert_eq!(p.map().tiles.iter().find(|t| t.name == "Imagery").map(|t| t.resampling), Some(Resampling::Nearest));
+        assert_eq!(text.matches("\"resampling\"").count(), 1, "{text}");
     }
 
     /// A refused legend's address is shortened for the error without cutting its omission

@@ -6261,6 +6261,7 @@ Connection: close
             layers: vec![],
             style_layers: String::new(),
             hidden_layers: vec![],
+            nearest: false,
         };
         let mut resolved = None;
         for _ in 0..200 {
@@ -6490,6 +6491,7 @@ Connection: close
                 layers: Vec::new(),
                 style_layers: String::new(),
                 hidden_layers: Vec::new(),
+                nearest: false,
             };
             let Resolve::Ready(resolved) = crate::source::resolve(&spec) else { panic!("the cached document must resolve") };
             if kind == Kind::Style {

@@ -359,14 +359,15 @@ pub(crate) fn draw(pm: &mut Pixmap, req: &Request, t: &TileLayer, view: &View, f
     let key = format!("{} {}", req.system.epsg, req.base);
     let opacity = t.opacity.clamp(0.0, 1.0);
     let blend = crate::blend_mode(t.blend);
+    let quality = crate::native_tiles::sampling(t);
     // In another system than the map's, warped into place piece by piece (one affine placing
     // would leave it off where the systems bend apart).
     let warped = req.warp;
     let paint = |pm: &mut Pixmap, img: &Pixmap, at: [f64; 4]| {
         if warped {
-            paint_warped(pm, img, at, opacity, blend, &place);
+            paint_warped(pm, img, at, opacity, blend, quality, &place);
         } else {
-            crate::native_tiles::paint_blended(pm, img, at, at, opacity, blend, &place);
+            crate::native_tiles::paint_blended(pm, img, at, at, opacity, blend, quality, &place);
         }
     };
     // The units a pixel of a picture at a logical pixel's detail, as on a standard screen.
@@ -562,9 +563,10 @@ fn paint_warped(
     at: [f64; 4],
     opacity: f32,
     blend: tiny_skia::BlendMode,
+    quality: tiny_skia::FilterQuality,
     place: &dyn Fn(Coord) -> Option<(f32, f32)>,
 ) {
-    use tiny_skia::{FillRule, FilterQuality, Paint, PathBuilder, Pattern, SpreadMode, Transform};
+    use tiny_skia::{FillRule, Paint, PathBuilder, Pattern, SpreadMode, Transform};
     let (iw, ih) = (img.width() as f32, img.height() as f32);
     if iw <= 0.0 || ih <= 0.0 {
         return;
@@ -618,7 +620,7 @@ fn paint_warped(
         path.line_to(d[2].0, d[2].1);
         path.close();
         let Some(path) = path.finish() else { return };
-        let shader = Pattern::new(img.as_ref(), SpreadMode::Pad, FilterQuality::Bilinear, opacity, transform);
+        let shader = Pattern::new(img.as_ref(), SpreadMode::Pad, quality, opacity, transform);
         // Without anti-aliasing, neighbouring triangles meet without a seam.
         let paint = Paint { shader, anti_alias: false, blend_mode: blend, ..Paint::default() };
         pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
@@ -654,8 +656,17 @@ mod tests {
         let at = [0.0, 0.0, 64.0, 64.0];
         let shift = |c: Coord| Some(((c.x + 10.0) as f32, (74.0 - c.y) as f32));
         let (mut a, mut b) = (Pixmap::new(100, 100).unwrap(), Pixmap::new(100, 100).unwrap());
-        paint_warped(&mut a, &img, at, 1.0, tiny_skia::BlendMode::SourceOver, &shift);
-        crate::native_tiles::paint_blended(&mut b, &img, at, at, 1.0, tiny_skia::BlendMode::SourceOver, &shift);
+        paint_warped(&mut a, &img, at, 1.0, tiny_skia::BlendMode::SourceOver, tiny_skia::FilterQuality::Bilinear, &shift);
+        crate::native_tiles::paint_blended(
+            &mut b,
+            &img,
+            at,
+            at,
+            1.0,
+            tiny_skia::BlendMode::SourceOver,
+            tiny_skia::FilterQuality::Bilinear,
+            &shift,
+        );
         let differ = a.pixels().iter().zip(b.pixels()).filter(|(p, q)| p != q).count();
         assert!(differ < 64, "{differ} pixels differ from one quad");
         // Bent with a cross term (x pushed right by x × y), so a cell's fourth corner is off any
@@ -668,7 +679,15 @@ mod tests {
         }
         let bend = |c: Coord| Some(((c.x + 10.0 + c.x * c.y / 64.0) as f32, (266.0 - c.y) as f32));
         let mut pm = Pixmap::new(1300, 280).unwrap();
-        paint_warped(&mut pm, &ramp, [0.0, 0.0, 256.0, 256.0], 1.0, tiny_skia::BlendMode::SourceOver, &bend);
+        paint_warped(
+            &mut pm,
+            &ramp,
+            [0.0, 0.0, 256.0, 256.0],
+            1.0,
+            tiny_skia::BlendMode::SourceOver,
+            tiny_skia::FilterQuality::Bilinear,
+            &bend,
+        );
         let (mut worst, mut seen) = (0.0f64, 0);
         for py in 0..pm.height() {
             for px in 0..pm.width() {
@@ -689,12 +708,20 @@ mod tests {
         // straddling it aren't drawn, so nothing is smeared between the two parts.
         let wrap = |c: Coord| Some(((if c.x > 200.0 { c.x + 1000.0 } else { c.x }) as f32, (256.0 - c.y) as f32));
         let mut pm = Pixmap::new(1400, 256).unwrap();
-        paint_warped(&mut pm, &ramp, [0.0, 0.0, 256.0, 256.0], 1.0, tiny_skia::BlendMode::SourceOver, &wrap);
+        paint_warped(
+            &mut pm,
+            &ramp,
+            [0.0, 0.0, 256.0, 256.0],
+            1.0,
+            tiny_skia::BlendMode::SourceOver,
+            tiny_skia::FilterQuality::Bilinear,
+            &wrap,
+        );
         assert!((0..256).all(|y| pm.pixel(600, y).unwrap().alpha() == 0), "smeared across the wrap");
         assert!(pm.pixel(100, 128).unwrap().alpha() == 255 && pm.pixel(1240, 128).unwrap().alpha() == 255);
         // Nothing drawn where `place` can't put the picture.
         let mut none = Pixmap::new(10, 10).unwrap();
-        paint_warped(&mut none, &img, at, 1.0, tiny_skia::BlendMode::SourceOver, &|_| None);
+        paint_warped(&mut none, &img, at, 1.0, tiny_skia::BlendMode::SourceOver, tiny_skia::FilterQuality::Bilinear, &|_| None);
         assert!(none.pixels().iter().all(|p| p.alpha() == 0));
     }
 

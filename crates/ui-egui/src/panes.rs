@@ -1770,6 +1770,22 @@ fn tile_row(app: &mut RustGisApp, ui: &mut Ui, i: usize, moves: [bool; 2], reord
             }
         })
         .on_hover_text(tl!("How the layer's colours combine with the tile layers and basemap beneath."));
+        // Picture tiles drawn larger or smaller than their own pixels: blended, or each a block (#2804).
+        // Only for pictures: not vector tiles, a style, or an archive holding vector tiles or not
+        // read yet.
+        if rustgis_engine::render::tile_draws_pictures(tile) == Ok(Some(true)) {
+            use rustgis_engine::map::raster::Resampling;
+            crate::widgets::submenu(ui, &crate::i18n::fmt("Resampling: {how}", &[("how", tl_raw!(tile.resampling.label()))]), |ui| {
+                for r in Resampling::ALL {
+                    if ui.radio(tile.resampling == r, tl!(r.label())).clicked() {
+                        let code = if r == Resampling::Nearest { "nearest" } else { "bilinear" };
+                        action = Some(("map.setTiles", json!({"index": i, "resampling": code})));
+                        ui.close();
+                    }
+                }
+            })
+            .on_hover_text(tl!("How the layer's pictures are drawn when zoomed past or short of their own pixels: each pixel a crisp block, or blended smooth."));
+        }
         // A layer its service draws on request: one picture of the view, or tiles (#1162).
         if tile.on_request() {
             let shown = if tile.single_image {

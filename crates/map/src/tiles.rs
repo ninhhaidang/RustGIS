@@ -134,6 +134,10 @@ pub struct TileLayer {
     /// hillshade).
     #[serde(default, skip_serializing_if = "is_normal")]
     pub blend: crate::effects::Blend,
+    /// How its pictures are drawn at a size other than their own: smooth (bilinear), as every
+    /// tile layer was before, or crisp, each of the picture's pixels a block (#2804).
+    #[serde(default = "smooth", skip_serializing_if = "is_smooth")]
+    pub resampling: crate::raster::Resampling,
     /// The catalog entry it came from (`osm`, `esri-imagery`), when it came from one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
@@ -335,6 +339,14 @@ fn one() -> f32 {
 fn is_false(b: &bool) -> bool {
     !*b
 }
+fn smooth() -> crate::raster::Resampling {
+    crate::raster::Resampling::Bilinear
+}
+
+fn is_smooth(r: &crate::raster::Resampling) -> bool {
+    *r == smooth()
+}
+
 fn is_normal(b: &crate::effects::Blend) -> bool {
     *b == crate::effects::Blend::Normal
 }
@@ -407,6 +419,7 @@ impl TileLayer {
             overlay: false,
             over: None,
             blend: crate::effects::Blend::Normal,
+            resampling: smooth(),
             id: String::new(),
             layers: Vec::new(),
             style_layers: String::new(),
@@ -702,6 +715,7 @@ impl TileLayer {
             overlay: _,
             over: _,
             blend: _,
+            resampling: _,
             id: _,
             layers: _,
             style_layers: _,

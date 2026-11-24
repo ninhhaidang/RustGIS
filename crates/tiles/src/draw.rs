@@ -174,7 +174,10 @@ pub fn draw(pm: &mut Pixmap, spec: &Spec, opacity: f32, frame: &Frame, labels: b
     // a map moving across them only puts them in place.
     if let Some(pictures) = crate::picture::cover(&r, frame, &frame.extent(w, h), None, &mut out.pending, &mut out.error) {
         for it in &pictures {
-            draw_raster(pm, it, frame, opacity);
+            // A picture already holds its raster layers as their `raster-resampling` drew them
+            // (crisp blocks for `nearest`): placed between its zoom levels it is blended as the
+            // style's shapes in it are, a picture of the map rather than of the source's pixels.
+            draw_raster(pm, it, frame, opacity, false);
         }
         if labels {
             draw_layers(None, (w, h), &frame.extent(w, h), &r, frame, Pass::Labels, &mut out);
@@ -300,8 +303,9 @@ pub(crate) fn draw_layers(
             LayerKind::Raster => {
                 let Some(t) = target.as_deref_mut() else { continue };
                 let o = layer.raster_opacity(zoom);
+                let nearest = layer.raster_resampling_nearest(zoom);
                 for it in list {
-                    draw_raster(t, it, frame, o);
+                    draw_raster(t, it, frame, o, nearest);
                 }
             }
             LayerKind::Fill | LayerKind::FillExtrusion | LayerKind::Line | LayerKind::Circle => {
@@ -355,6 +359,8 @@ pub struct Placement {
     /// for.
     pub clip: Extent,
     pub opacity: f32,
+    /// Each of its pixels a block where drawn at another size (`raster-resampling: nearest`).
+    pub nearest: bool,
 }
 
 /// A tile layer as placed tiles, bottom first, rather than drawn into a pixmap.
@@ -419,7 +425,8 @@ fn place_as(
         pictures.then(|| crate::picture::cover(&r, frame, view, Some(reach), &mut out.pending, &mut out.error)).flatten()
     {
         let opacity = opacity.clamp(0.0, 1.0);
-        out.tiles = pictures.into_iter().map(|it| Placement { picture: it.payload, at: it.at, clip: it.clip, opacity }).collect();
+        out.tiles =
+            pictures.into_iter().map(|it| Placement { picture: it.payload, at: it.at, clip: it.clip, opacity, nearest: false }).collect();
         if let Some(size) = labels {
             let mut d = Drawn::default();
             draw_layers(None, size, &frame.extent(size.0, size.1), &r, frame, Pass::Labels, &mut d);
@@ -447,9 +454,10 @@ fn place_as(
             items.insert(src_id, list.items);
         }
         let o = (layer.raster_opacity(zoom) * opacity).clamp(0.0, 1.0);
+        let nearest = layer.raster_resampling_nearest(zoom);
         for it in items.get(src_id).into_iter().flatten() {
             if matches!(*it.payload, Payload::Image(_)) {
-                out.tiles.push(Placement { picture: it.payload.clone(), at: it.at, clip: it.clip, opacity: o });
+                out.tiles.push(Placement { picture: it.payload.clone(), at: it.at, clip: it.clip, opacity: o, nearest });
             }
         }
     }
@@ -808,7 +816,9 @@ pub(crate) fn clip_rect(it: &Item, frame: &Frame) -> Option<Rect> {
     Rect::from_ltrb(x0.round(), y0.round(), x1.round(), y1.round())
 }
 
-fn draw_raster(pm: &mut Pixmap, it: &Item, frame: &Frame, opacity: f32) {
+/// Draws a picture tile in place: its pixels blended where it is drawn at another size, or each
+/// a block when `nearest`.
+fn draw_raster(pm: &mut Pixmap, it: &Item, frame: &Frame, opacity: f32, nearest: bool) {
     let Payload::Image(img) = &*it.payload else { return };
     let Some(clip) = clip_rect(it, frame) else { return };
     let (x0, y0) = frame.px(it.at.min_x, it.at.max_y);
@@ -821,7 +831,7 @@ fn draw_raster(pm: &mut Pixmap, it: &Item, frame: &Frame, opacity: f32) {
         copy_over(pm, img, clip, (x0, y0), k, opacity);
         return;
     }
-    let quality = FilterQuality::Bilinear;
+    let quality = if nearest { FilterQuality::Nearest } else { FilterQuality::Bilinear };
     let shader = Pattern::new(img.as_ref(), SpreadMode::Pad, quality, opacity.clamp(0.0, 1.0), Transform::from_row(k, 0.0, 0.0, k, x0, y0));
     // Without anti-aliasing, neighbouring tiles meet without a seam.
     let paint = Paint { shader, anti_alias: false, ..Paint::default() };
@@ -1583,6 +1593,7 @@ pub(crate) mod tests {
             layers: Vec::new(),
             style_layers: String::new(),
             hidden_layers: Vec::new(),
+            nearest: false,
         };
         // Zoom 0: one tile over the world, 4096 units across it.
         let half = 20_037_508.342_789_244;
@@ -1700,6 +1711,7 @@ pub(crate) mod tests {
             layers: Vec::new(),
             style_layers: String::new(),
             hidden_layers: Vec::new(),
+            nearest: false,
         };
         let half = 20_037_508.342_789_244;
         // Just inside zoom 1 (the archive has no other).
@@ -1823,6 +1835,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_picture_drawn_larger_is_blended_unless_asked_for_its_pixels() {
+        // Two pixels, black and white, drawn 16 times their size.
+        let mut img = Pixmap::new(2, 1).unwrap();
+        img.pixels_mut()[0] = tiny_skia::ColorU8::from_rgba(0, 0, 0, 255).premultiply();
+        img.pixels_mut()[1] = tiny_skia::ColorU8::from_rgba(255, 255, 255, 255).premultiply();
+        let id = TileId { z: 0, x: 0, y: 0 };
+        let it = Item { payload: Arc::new(Payload::Image(img)), at: id.extent(), z: 0, clip: id.extent() };
+        let half = crate::template::HALF_WORLD;
+        let frame = Frame { left: -half, top: half, m_per_px: 2.0 * half / 32.0, ppp: 1.0 };
+        // Each pixel's shades along the middle row: two, or a ramp between them.
+        let shades = |nearest: bool| {
+            let mut pm = Pixmap::new(32, 16).unwrap();
+            draw_raster(&mut pm, &it, &frame, 1.0, nearest);
+            let row: std::collections::BTreeSet<u8> = (0..32).filter_map(|x| pm.pixel(x, 8)).map(|p| p.red()).collect();
+            row.len()
+        };
+        assert_eq!(shades(true), 2);
+        assert!(shades(false) > 2);
+    }
+
+    #[test]
     fn copies_pictures_as_a_pattern_draws_them() {
         let mut img = Pixmap::new(8, 8).unwrap();
         for (i, p) in img.pixels_mut().iter_mut().enumerate() {
@@ -1843,7 +1876,7 @@ pub(crate) mod tests {
             let mut copied = Pixmap::new(12, 12).unwrap();
             copied.fill(tiny_skia::Color::from_rgba8(10, 200, 30, 255));
             let mut painted = copied.clone();
-            draw_raster(&mut copied, &it, &frame, opacity);
+            draw_raster(&mut copied, &it, &frame, opacity, false);
             // As a pattern fill would.
             let paint = Paint {
                 shader: Pattern::new(img.as_ref(), SpreadMode::Pad, FilterQuality::Nearest, opacity, Transform::from_translate(2.4, 1.6)),

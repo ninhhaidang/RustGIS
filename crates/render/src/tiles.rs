@@ -168,6 +168,7 @@ pub fn spec(t: &TileLayer) -> Spec {
         layers: t.layers.clone(),
         style_layers: t.style_layers.clone(),
         hidden_layers: t.hidden_layers.clone(),
+        nearest: t.resampling == rustgis_map::raster::Resampling::Nearest,
     }
 }
 
@@ -181,6 +182,19 @@ pub fn source_layers(t: &TileLayer) -> Option<Vec<String>> {
         _ => return None,
     };
     rustgis_tiles::source::source_layers(kind, &t.url)
+}
+
+/// Whether a tile layer draws pictures (`Some(true)`) rather than vector shapes (`Some(false)`):
+/// raster tiles and a cloud-optimised GeoTIFF do, vector tiles and a style don't, and an archive
+/// is known once its header is read (`None` until then; its error when it can't be).
+pub fn draws_pictures(t: &TileLayer) -> Result<Option<bool>, String> {
+    let archive = |kind| rustgis_tiles::source::archive_holds_vectors(kind, &t.url).map(|v| v.map(|vectors| !vectors));
+    match t.kind {
+        TileKind::Raster | TileKind::Cog => Ok(Some(true)),
+        TileKind::Vector | TileKind::Style => Ok(Some(false)),
+        TileKind::PmTiles => archive(Kind::PmTiles),
+        TileKind::MbTiles => archive(Kind::MbTiles),
+    }
 }
 
 /// Where a MapLibre style layer's root properties place the map; `Ok(None)` while the style is
@@ -628,6 +642,7 @@ fn quad(p: &rustgis_tiles::Placement, origin: [f64; 2]) -> TileQuad {
             ((p.at.max_y - c.min_y) / h) as f32,
         ],
         opacity: p.opacity,
+        nearest: p.nearest,
     }
 }
 

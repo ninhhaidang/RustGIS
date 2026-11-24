@@ -50,14 +50,16 @@ struct Instance {
     opacity: f32,
 }
 
-/// What a live layer draws in one frame: per chunk, its instances.
+/// What a live layer draws in one frame: per chunk and sampling (nearest or not), its instances.
 #[derive(Default, Clone)]
-struct Runs(Vec<(usize, Range<u32>)>);
+struct Runs(Vec<(usize, bool, Range<u32>)>);
 
 /// One texture array of a pool.
 struct Chunk {
     texture: wgpu::Texture,
     bind: wgpu::BindGroup,
+    /// The same, sampled nearest: a layer set to nearest-neighbour resampling (#2804).
+    nearest_bind: wgpu::BindGroup,
     #[cfg_attr(not(test), expect(dead_code, reason = "read by the tests only"))]
     layers: u32,
     /// Its pictures' side, and its bytes.
@@ -96,6 +98,7 @@ pub(crate) struct LiveTiles {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    nearest_sampler: wgpu::Sampler,
     uniforms: wgpu::Buffer,
     /// Every chunk, by the index an [`At`] names; `None` once given back to the budget.
     chunks: Vec<Option<Chunk>>,
@@ -215,6 +218,12 @@ impl LiveTiles {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("live_tiles_nearest"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("live_tiles_uniforms"),
             size: 16,
@@ -226,6 +235,7 @@ impl LiveTiles {
             pipeline,
             layout,
             sampler,
+            nearest_sampler,
             uniforms,
             chunks: Vec::new(),
             pools: HashMap::new(),
@@ -267,20 +277,21 @@ impl LiveTiles {
             }
         }
         for quads in layers {
-            let mut by_chunk: Vec<(usize, Vec<Instance>)> = Vec::new();
+            let mut by_chunk: Vec<((usize, bool), Vec<Instance>)> = Vec::new();
             for q in quads {
                 let Some(at) = self.slot(device, queue, q, &mut uploads, &mut backlog) else { continue };
                 let i = Instance { rect: q.rect, uv: q.uv, layer: at.layer, opacity: q.opacity };
-                match by_chunk.iter_mut().find(|(c, _)| *c == at.chunk) {
+                let run = (at.chunk, q.nearest);
+                match by_chunk.iter_mut().find(|(c, _)| *c == run) {
                     Some((_, v)) => v.push(i),
-                    None => by_chunk.push((at.chunk, vec![i])),
+                    None => by_chunk.push((run, vec![i])),
                 }
             }
             let mut runs = Runs::default();
-            for (chunk, v) in by_chunk {
+            for ((chunk, nearest), v) in by_chunk {
                 let first = instances.len() as u32;
                 instances.extend(v);
-                runs.0.push((chunk, first..instances.len() as u32));
+                runs.0.push((chunk, nearest, first..instances.len() as u32));
             }
             self.runs.push(runs);
         }
@@ -405,16 +416,19 @@ impl LiveTiles {
         });
         let view = texture
             .create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("live_tiles_chunk"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-            ],
-        });
-        let c = Chunk { texture, bind, layers, side, bytes: chunk_bytes };
+        let bind_with = |sampler: &wgpu::Sampler| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("live_tiles_chunk"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+                ],
+            })
+        };
+        let (bind, nearest_bind) = (bind_with(&self.sampler), bind_with(&self.nearest_sampler));
+        let c = Chunk { texture, bind, nearest_bind, layers, side, bytes: chunk_bytes };
         // A slot given back earlier is reused, so the list doesn't grow with every exchange.
         let chunk = match self.chunks.iter().position(Option::is_none) {
             Some(i) => {
@@ -473,9 +487,9 @@ impl LiveTiles {
         }
         rp.set_pipeline(&self.pipeline);
         rp.set_vertex_buffer(0, instances.slice(..));
-        for (chunk, range) in &runs.0 {
+        for (chunk, nearest, range) in &runs.0 {
             if let Some(Some(c)) = self.chunks.get(*chunk) {
-                rp.set_bind_group(0, &c.bind, &[]);
+                rp.set_bind_group(0, if *nearest { &c.nearest_bind } else { &c.bind }, &[]);
                 rp.draw(0..6, range.clone());
             }
         }
