@@ -483,9 +483,12 @@ pub struct Services {
     /// Offers bytes as a download named `file_name`; success means submission to the host's
     /// download mechanism. Browsers do not expose confirmation that the file was saved.
     pub download: Option<Box<dyn Fn(&str, Vec<u8>) -> Result<(), String>>>,
-    /// Starts saving a project through the phone's native picker. The shell reports the
-    /// eventual result through [`RustGisApp::complete_project_save`].
-    pub save_project: Option<Box<dyn Fn(&str, Vec<u8>) -> Result<(), String>>>,
+    /// Starts saving a project on a phone: written back to the document given (one the project
+    /// was opened from or last saved as, with leave to write it), or through the native picker
+    /// when there is none. The shell reports the eventual result through
+    /// [`RustGisApp::complete_project_save`], and a document a picker save may write back to later
+    /// through [`RustGisApp::project_document`] before it.
+    pub save_project: Option<Box<dyn Fn(&str, Vec<u8>, Option<&str>) -> Result<(), String>>>,
     pub inbox: Option<Inbox>,
     /// Reads a saved preference (`language`, …).
     pub load_pref: Option<Box<dyn Fn(&str) -> Option<String>>>,
@@ -4900,8 +4903,10 @@ impl RustGisApp {
                     return r;
                 }
             }
+            // Save writes back to the document the project came from, where the phone allows it;
+            // Save As, and a project with no such document, ask where.
             "ui.save" | "ui.saveAs" if self.services.save_project.is_some() => {
-                saveprompt::start_project_save(self)?;
+                saveprompt::start_project_save(self, id == "ui.save")?;
             }
             // The browser can't write a file in place: Save downloads the project again under the
             // file name it was saved or opened as, and Save As (or a first Save) asks for one.

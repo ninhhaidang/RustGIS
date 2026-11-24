@@ -72,9 +72,13 @@ Rust calls Java and never the other way: each frame the app collects what happen
   picker gives a document, not a path. Data and projects then open by path, so a GeoPackage is
   edited in place, in its copy: the original is not changed. Every other picker's file (a picture,
   a plugin, a delimited text file) goes to the dialog that asked, as in the browser.
-- **Saving.** Save, Save As and the exports offer their file through the picker, as the browser
-  offers a download. A project saved this way names its picked data by the copies' paths in the
-  app's storage.
+- **Saving.** Save As and the exports offer their file through the picker, as the browser offers
+  a download. Save writes a project (`.rgis`, `.rgisx`) back to the document it was opened from or
+  last saved as, where the provider lets the app write it: Open Project asks for leave to write,
+  for the session (after a restart, Save asks where). It writes a complete copy to `files/saved/…`
+  first, then writes over the document from its start, cuts it to length and syncs it; the copy
+  goes once that is done. A project saved on the phone names its picked data by the copies' paths
+  in the app's storage.
 - **Copies.** The copies of data and projects in `files/picked` stay (a dialog's file is removed
   once read): a project saved on the phone names its data by them. **Remove Unused Copies**, in
   the More sheet, removes the picks the project in the window names no file of, once the user has
@@ -393,7 +397,7 @@ cp parcels.gpkg "$(xcrun simctl get_app_container booted org.rustgis.mobile data
 | | On iOS |
 |---|---|
 | Opening | UIKit's document picker, any file, several at once (a Shapefile's parts). It gives the original documents, wherever they are (iCloud Drive, another app's folder): each is read inside its security scope, through a file coordinator (a document in iCloud Drive is downloaded first), and copied into `Library/Application Support/picked/…` off the main thread, a folder for each folder the documents came from, and opened from there as on Android. The original is not changed |
-| Saving | The bytes are written to the app's `tmp` folder under the name offered, off the main thread, and then the document picker exports a copy where the user chooses; then the file in `tmp` is removed. Cancelled, the app says the file wasn't saved |
+| Saving | The bytes are written to the app's `tmp` folder under the name offered, off the main thread, and then the document picker exports a copy where the user chooses (a project is moved there instead, so the app may write it again); then the file in `tmp` is removed. Cancelled, the app says the file wasn't saved. Save writes a project back to the document it was opened from or saved as, kept as a security-scoped bookmark: atomically, inside a coordinated write, off the main thread |
 | Position | Core Location, best accuracy. Asked the first time (`NSLocationWhenInUseUsageDescription`); positions start once the user allows them. Refused, now or later in Settings, the app says so and stops asking |
 | Out of sight | Recording a track turns on background location updates (the app's `location` background mode in `Info.plist`), with iOS's indicator that an app is using the location. Positions found out of sight wait, at most 200,000, as on Android |
 | Camera | `UIImagePickerController`: the photo is written as a JPEG to `Library/Application Support/photos`. A device without a camera (the Simulator) says so |

@@ -39,6 +39,19 @@ are never removed by themselves. **Remove Unused Copies**, in the More sheet, fi
 project in the window doesn't use, says how many there are and how much room they take, and
 removes them once you agree. A copy still being made is kept.
 
+A project (`.rgis`) opened with **Open Project** is different: **Save** writes it back to the file
+it was opened from, where the system lets the app write there (the device's storage, and storage
+apps that allow it). **Save As** asks where, and **Save** then writes to the file chosen. Where the
+app may not write the original (a read-only file, a field package, a project recovered after a
+restart), **Save** asks where, as Save As does.
+
+On an iPhone the project is written whole beside the original and then put in its place, so a
+failed save leaves the original as it was. Android has no way to swap a file in like that: the app
+first keeps a complete copy of the project in its own storage, then writes over the original. If
+that write fails partway, the original may be damaged; the message says so and names the copy,
+and the next **Save** asks where to save. If the app is ended while it writes, the next start says so
+in the same way.
+
 !!! warning
     Remove Unused Copies looks only at the project in the window. A copy that another project
     saved on the phone uses counts as unused, and removing it breaks that project. Open the project

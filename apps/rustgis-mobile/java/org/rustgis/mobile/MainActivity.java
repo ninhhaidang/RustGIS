@@ -18,11 +18,18 @@ import java.util.ArrayList;
  * is never called from here, so the library exports nothing but its entry point.
  *
  * An event is one string, its fields separated by tabs:
- *   picked    purpose  name  path    a chosen file, copied to the app's storage
+ *   picked    purpose  name  path  [document]
+ *                                    a chosen file, copied to the app's storage; a project file
+ *                                    RustGIS may write back to also gives its document's address
  *   ended     purpose               a request whose every file failed to be copied
  *   cancelled                        a picker closed without a choice
  *   saved     name                   an export written where the user chose
- *   project-saved        name        a project written where the user chose
+ *   project-document     document    the document a project save is about to report written,
+ *                                    which RustGIS may write back to later
+ *   project-saved        name        a project written where the user chose, or written back
+ *   write-back-failed    name  reason  [kept]
+ *                                    a project not written back: the document is as it was, or,
+ *                                    with kept, may be damaged and the project is kept there
  *   project-save-failed  reason      a project save that failed or was cancelled
  *   position  lon  lat  accuracy  time  elapsed   where the device is (accuracy in metres, or
  *                                        empty; time in milliseconds since 1970; elapsed in
@@ -85,11 +92,14 @@ public class MainActivity extends NativeActivity {
     private String saveName = "";
     private byte[] saveBytes;
     private boolean saveProject;
+    /** A project is being written back to its document (set on the main thread, cleared by its worker). */
+    private volatile boolean writing;
 
     @Override
     protected void onCreate(android.os.Bundle saved) {
         super.onCreate(saved);
         current = this;
+        reportUnfinishedWriteBacks();
         // A photo being taken when Android ended the app (the camera app in front): its file.
         if (saved != null && saved.getString("photo") != null) {
             photo = new File(saved.getString("photo"));
@@ -440,6 +450,10 @@ public class MainActivity extends NativeActivity {
             // Several files only where the front end takes several, as in the browser: two
             // projects would replace one another, and a dialog's options go with one file.
             intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, purpose.equals("data") || purpose.equals("shapefile"));
+            // A project is opened for writing too, for this session: Save writes it back.
+            if (purpose.equals("project")) {
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            }
             if (!start(intent, PICK)) {
                 picking = false;
             }
@@ -449,8 +463,13 @@ public class MainActivity extends NativeActivity {
     /** Asks where to write a file. Project saves return a distinct result to the save prompt. */
     public void save(final String name, final byte[] bytes, final boolean project) {
         runOnUiThread(() -> {
-            if (saveBytes != null || picking) {
-                saveFailed(project, name, "another file is being chosen.");
+            if (saveBytes != null || picking || writing) {
+                // A project's refusal is a code the Rust side words; an export's is as it was.
+                if (project) {
+                    add(writeBackFailed(name, new java.io.IOException(DocumentWrite.BUSY), null));
+                } else {
+                    saveFailed(false, name, writing ? "another file is being saved." : "another file is being chosen.");
+                }
                 return;
             }
             saveName = name;
@@ -471,6 +490,222 @@ public class MainActivity extends NativeActivity {
         });
     }
 
+    /**
+     * Writes a project back to the document it was opened from or last saved as, with no picker.
+     * A complete copy is written to the app's storage first: if the document can't be opened for
+     * writing, it is left as it was and the copy goes; if writing it fails partway, it may be
+     * damaged, and the copy is kept and named. The result is a project-saved or write-back-failed
+     * event (with the code DocumentWrite.BUSY when another save is under way).
+     */
+    public void writeBack(final String document, final String name, final byte[] bytes) {
+        // Counted before anything is posted: the Rust side keeps looking until the answer comes,
+        // as no picker will wake it.
+        synchronized (events) {
+            asked++;
+        }
+        runOnUiThread(() -> {
+            if (saveBytes != null || picking || writing) {
+                add(writeBackFailed(name, new java.io.IOException(DocumentWrite.BUSY), null));
+                answered();
+                return;
+            }
+            writing = true;
+            try {
+                new Thread(() -> {
+                    String result;
+                    // The copy kept when the document may be damaged, said with the result.
+                    File[] kept = new File[1];
+                    try {
+                        result = writeBackNow(Uri.parse(document), name, bytes, kept);
+                    } catch (Throwable e) {
+                        result = writeBackFailed(name, e, null);
+                    }
+                    // Free for the next save before it is told this one is done.
+                    writing = false;
+                    addKept(result, kept[0]);
+                    answered();
+                }).start();
+            } catch (Throwable e) {
+                writing = false;
+                add(writeBackFailed(name, e, null));
+                answered();
+            }
+        });
+    }
+
+    /** Writes the project back; returns the event that says how it went. */
+    private String writeBackNow(Uri uri, String name, byte[] bytes, File[] kept) {
+        // The complete copy, kept until the document holds the project.
+        File copy;
+        try {
+            File dir = new File(new File(getFilesDir(), "saved"), Long.toString(System.nanoTime()));
+            if (!dir.isDirectory() && !dir.mkdirs()) {
+                throw new java.io.IOException(DocumentWrite.STORAGE);
+            }
+            copy = new File(dir, displayName(uri));
+        } catch (Throwable e) {
+            return writeBackFailed(name, e, null);
+        }
+        // Written under a name of its own and given its name once whole: a later start never takes a
+        // half-written copy for the project as saved.
+        File part = new File(copy.getParentFile(), copy.getName() + DocumentWrite.PART);
+        try {
+            try (FileOutputStream out = new FileOutputStream(part)) {
+                out.write(bytes);
+                out.getFD().sync();
+            }
+            if (!part.renameTo(copy)) {
+                throw new java.io.IOException(DocumentWrite.STORAGE);
+            }
+        } catch (Throwable e) {
+            // Half a copy would only take room: nothing has touched the document yet.
+            part.delete();
+            removeWithFolder(copy);
+            return writeBackFailed(name, e, null);
+        }
+        android.os.ParcelFileDescriptor descriptor;
+        try {
+            // From here the document may be emptied: a later start says so if this doesn't finish.
+            new File(copy.getParentFile(), DocumentWrite.OPENED).createNewFile();
+            // "rwt": the mode Android documents as cut to nothing on opening, as some providers
+            // can't cut a file they have handed out; DocumentWrite cuts and checks it again.
+            descriptor = getContentResolver().openFileDescriptor(uri, "rwt");
+            if (descriptor == null) {
+                throw new java.io.IOException(DocumentWrite.UNWRITABLE);
+            }
+        } catch (Throwable e) {
+            // Nothing was written to it: it is as it was, and the copy isn't needed.
+            removeWithFolder(copy);
+            return writeBackFailed(name, e, null);
+        }
+        try {
+            // Not closed by the stream: a failure closes the descriptor with its error, below.
+            FileOutputStream out = new FileOutputStream(descriptor.getFileDescriptor());
+            DocumentWrite.overwrite(out.getChannel(), bytes);
+            // Closing hands the document back to its provider, which may store it only then (its
+            // size as the provider lists it can lag behind: the length was checked on the file).
+            descriptor.close();
+            descriptor = null;
+            removeWithFolder(copy);
+            return "project-saved\t" + name;
+        } catch (Throwable e) {
+            if (descriptor != null) {
+                // Its provider is told the write failed, so one that stores on close keeps the
+                // document it had.
+                try {
+                    descriptor.closeWithError(String.valueOf(e.getMessage()));
+                } catch (java.io.IOException closing) {
+                    // Said below: the write failed.
+                }
+            }
+            // Marked once the Rust side has taken the notice, so the next start doesn't say it again.
+            kept[0] = copy;
+            return writeBackFailed(name, e, copy);
+        }
+    }
+
+    /**
+     * A write-back-failed event: the document was left as it was ({@code kept} null), or may be
+     * damaged, with the complete project kept at {@code kept}. The Rust side words it: the
+     * reason is one of DocumentWrite's codes, or the system's own text.
+     */
+    private static String writeBackFailed(String name, Throwable e, File kept) {
+        String reason = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        return "write-back-failed\t" + oneField(name) + "\t" + oneField(reason)
+                + (kept == null ? "" : "\t" + kept.getAbsolutePath());
+    }
+
+    /** Text that fits in one field of an event: no tab or line break. */
+    private static String oneField(String text) {
+        return text.replaceAll("[\\t\\r\\n]", " ");
+    }
+
+    /** Whether this process has looked for write-backs an earlier one didn't finish. */
+    private static boolean unfinishedLooked;
+
+    /**
+     * Says, once a process, each write-back an earlier process didn't finish (the app ended while
+     * it wrote): its complete copy is still in files/saved, unmarked, and the document may be
+     * damaged (opened "rwt", it was emptied first). Each is marked once said.
+     */
+    private void reportUnfinishedWriteBacks() {
+        if (unfinishedLooked) {
+            return;
+        }
+        unfinishedLooked = true;
+        File[] dirs = new File(getFilesDir(), "saved").listFiles();
+        if (dirs == null) {
+            return;
+        }
+        for (File dir : dirs) {
+            File copy = DocumentWrite.unfinished(dir);
+            if (copy != null) {
+                addKept(writeBackFailed(copy.getName(), new java.io.IOException(DocumentWrite.UNFINISHED), copy), copy);
+            }
+        }
+    }
+
+    /** Kept copies whose notice waits to be taken by the Rust side (guarded by events). */
+    private final ArrayList<File> toMark = new ArrayList<>();
+
+    /**
+     * Adds {@code event}, and with it, under the same lock, the kept copy it names (if any), to be
+     * marked as said once takeEvents has handed the event over: never before.
+     */
+    private void addKept(String event, File copy) {
+        synchronized (events) {
+            add(event);
+            if (copy != null) {
+                toMark.add(copy);
+            }
+        }
+    }
+
+    private static void markReported(File copy) {
+        File folder = copy.getParentFile();
+        if (folder != null) {
+            try {
+                new File(folder, DocumentWrite.REPORTED).createNewFile();
+            } catch (java.io.IOException e) {
+                // Said again on a later start at worst.
+            }
+        }
+    }
+
+    /** Removes a file and its folder, once that is empty. */
+    private static void removeWithFolder(File file) {
+        file.delete();
+        File folder = file.getParentFile();
+        if (folder != null) {
+            // A staging folder's mark goes with it.
+            new File(folder, DocumentWrite.OPENED).delete();
+            folder.delete();
+        }
+    }
+
+    /**
+     * The document's address when RustGIS may write a project back to it: a project file
+     * ({@code .rgis}), granted for writing ({@code grants}), whose provider writes it. The grant
+     * lasts for this session: after a restart, Save asks where. Null otherwise.
+     */
+    private String writable(Uri uri, String name, int grants) {
+        // A project file, as the Rust side's is_project_file has it (.rgis, or the older .rgisx).
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        if (!(lower.endsWith(".rgis") || lower.endsWith(".rgisx")) || (grants & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) == 0) {
+            return null;
+        }
+        try (Cursor cursor = getContentResolver().query(uri,
+                new String[] {android.provider.DocumentsContract.Document.COLUMN_FLAGS}, null, null, null)) {
+            if (cursor == null || !cursor.moveToFirst()
+                    || (cursor.getInt(0) & android.provider.DocumentsContract.Document.FLAG_SUPPORTS_WRITE) == 0) {
+                return null;
+            }
+        } catch (RuntimeException e) {
+            return null;
+        }
+        return uri.toString();
+    }
+
     private void saveFailed(boolean project, String name, String reason) {
         add((project ? "project-save-failed\t" : "failed\t") + name + " wasn't saved: " + reason);
     }
@@ -483,7 +718,15 @@ public class MainActivity extends NativeActivity {
             add("failed\t" + why);
         }
         synchronized (events) {
-            return events.take();
+            String taken = events.take();
+            // Every notice waiting has been handed over: the copies they name are said.
+            if (events.isEmpty()) {
+                for (File copy : toMark) {
+                    markReported(copy);
+                }
+                toMark.clear();
+            }
+            return taken;
         }
     }
 
@@ -618,6 +861,7 @@ public class MainActivity extends NativeActivity {
                 return;
             }
             final String purpose = this.purpose;
+            final int grants = data == null ? 0 : data.getFlags();
             // Copied off the main thread: a document can be large, or come from the network.
             new Thread(() -> {
                 // One folder for what was picked together, and for nothing else, with a folder of
@@ -659,7 +903,7 @@ public class MainActivity extends NativeActivity {
                             sources.add(source);
                             k = sources.size() - 1;
                         }
-                        if (copyIn(purpose, uri, new File(dir, Integer.toString(k)))) {
+                        if (copyIn(purpose, uri, new File(dir, Integer.toString(k)), grants)) {
                             copies++;
                         }
                     }
@@ -677,6 +921,7 @@ public class MainActivity extends NativeActivity {
                 }
             }).start();
         } else if (request == SAVE) {
+            final int grants = data == null ? 0 : data.getFlags();
             final byte[] bytes = saveBytes;
             final String name = saveName;
             final boolean project = saveProject;
@@ -696,7 +941,12 @@ public class MainActivity extends NativeActivity {
                         }
                         out.write(bytes);
                     }
-                    // Said once the file is closed: a failure to close is a failure to save.
+                    // Said once the file is closed: a failure to close is a failure to save. A project
+                    // saved where RustGIS may write it back names its document first.
+                    String document = project ? writable(uri, displayName(uri), grants) : null;
+                    if (document != null) {
+                        add("project-document\t" + document);
+                    }
                     add((project ? "project-saved\t" : "saved\t") + name);
                 } catch (Throwable e) {
                     saveFailed(project, name, e.getMessage());
@@ -735,7 +985,7 @@ public class MainActivity extends NativeActivity {
      * Copies a picked document into the app's storage, where the Rust side can open it by path.
      * Returns whether it was copied.
      */
-    private boolean copyIn(String purpose, Uri uri, File dir) {
+    private boolean copyIn(String purpose, Uri uri, File dir, int grants) {
         String name = displayName(uri);
         File file = new File(dir, name);
         // Two documents of one name picked together (from two folders) both keep their bytes.
@@ -764,8 +1014,11 @@ public class MainActivity extends NativeActivity {
             if (!part.renameTo(file)) {
                 throw new java.io.IOException("the copy couldn't be given its name");
             }
-            // The copy's own name: a second document of one name is told from the first.
-            add("picked\t" + purpose + "\t" + file.getName() + "\t" + file.getAbsolutePath());
+            // The copy's own name: a second document of one name is told from the first. A project
+            // RustGIS may write back to names its document too.
+            String document = purpose.equals("project") ? writable(uri, name, grants) : null;
+            add("picked\t" + purpose + "\t" + file.getName() + "\t" + file.getAbsolutePath()
+                    + (document == null ? "" : "\t" + document));
             return true;
         } catch (Throwable e) {
             // Half a copy would only fill the storage: nothing reports its path to remove it later.

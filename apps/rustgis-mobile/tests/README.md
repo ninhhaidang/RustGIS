@@ -1,13 +1,14 @@
 # Phone contract checks
 
-The host-JVM tests exercise position retention, bounded frame batches, completion order and
-requested-provider state without an Android device:
+The host-JVM tests exercise position retention, bounded frame batches, completion order,
+requested-provider state and a project written over a longer document without an Android device:
 
 ```sh
 mkdir -p target/phone-contract-tests
 javac -d target/phone-contract-tests \
   apps/rustgis-mobile/java/org/rustgis/mobile/EventBuffer.java \
   apps/rustgis-mobile/java/org/rustgis/mobile/LocationProviders.java \
+  apps/rustgis-mobile/java/org/rustgis/mobile/DocumentWrite.java \
   apps/rustgis-mobile/tests/java/org/rustgis/mobile/PhoneContractsTest.java
 java -ea -cp target/phone-contract-tests org.rustgis.mobile.PhoneContractsTest
 ```

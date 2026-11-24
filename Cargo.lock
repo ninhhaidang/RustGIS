@@ -5363,6 +5363,7 @@ name = "rustgis-mobile"
 version = "0.8.0"
 dependencies = [
  "android_logger",
+ "base64 0.23.1",
  "block2 0.6.2",
  "eframe",
  "egui",

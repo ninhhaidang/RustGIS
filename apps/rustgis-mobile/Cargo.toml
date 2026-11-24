@@ -83,3 +83,5 @@ objc2-core-location = "0.3"
 objc2-uniform-type-identifiers = "0.3"
 # The file coordinator's reader (`NSFileCoordinator`): the version objc2-foundation uses.
 block2 = "0.6"
+# A project document's bookmark, kept as text for Save to write it back (`src/ios.rs`).
+base64 = { workspace = true }
