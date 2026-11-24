@@ -1067,14 +1067,28 @@ fn load(
                             Ok(to) => {
                                 ds.held_in = job.crs;
                                 ds.crs = Some(job.crs);
-                                // Every place the layer keeps has one in longitude/latitude, as when
-                                // it was converted there: a feature with one that hasn't is kept
-                                // without geometry. Each place is converted to be checked; the layer
-                                // keeps its own.
-                                let lost = convert_features(&mut ds, |c| to.point(c).filter(|l| l.is_finite()).map(|_| c));
-                                if lost > 0 {
+                                // A feature with a place that can't be given in longitude/latitude
+                                // is kept as read, and counted: it doesn't draw (#2032 C2f-4b). Each
+                                // place is converted to be checked; the layer keeps its own.
+                                let (mut lost, mut beyond) = (0usize, 0usize);
+                                for g in ds.features.rows().filter_map(|r| r.geometry()) {
+                                    match Dataset::converted_to_lonlat(&to, g) {
+                                        Some(l) => beyond += usize::from(l.extent().beyond_lonlat()),
+                                        None => lost += 1,
+                                    }
+                                }
+                                if beyond > 0 {
+                                    let have = if beyond == 1 { "feature has" } else { "features have" };
                                     messages.push(format!(
-                                        "{layer_name}: {lost} features couldn't be converted to longitude/latitude and have no geometry"
+                                        "{layer_name}: {beyond} {have} coordinates that come out beyond longitude/latitude once converted from {}: it may not be their coordinate system, and they may draw out of place",
+                                        job.crs.label()
+                                    ));
+                                }
+                                if lost > 0 {
+                                    let have = if lost == 1 { "feature has" } else { "features have" };
+                                    messages.push(format!(
+                                        "{layer_name}: {lost} {have} a place in {} that can't be given in longitude/latitude: kept as read, but not drawn",
+                                        job.crs.label()
                                     ));
                                 }
                             }

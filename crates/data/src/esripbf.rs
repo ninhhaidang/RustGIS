@@ -132,10 +132,13 @@ pub struct Losses {
     pub not_utf8: usize,
     /// Polygon rings without area.
     pub flat_rings: usize,
-    /// Features whose coordinates are outside their coordinate system.
+    /// Features with a place that can't be given in longitude/latitude (coordinates outside their
+    /// coordinate system): kept as the answer gives them, but not drawn.
     pub unprojected: usize,
     /// Features with Z or M values, dropped.
     pub with_zm: usize,
+    /// Places that convert to beyond longitude/latitude (the answer's system may not fit them).
+    pub beyond: usize,
 }
 
 impl Losses {
@@ -148,6 +151,7 @@ impl Losses {
         self.flat_rings = self.flat_rings.saturating_add(other.flat_rings);
         self.unprojected = self.unprojected.saturating_add(other.unprojected);
         self.with_zm = self.with_zm.saturating_add(other.with_zm);
+        self.beyond = self.beyond.saturating_add(other.beyond);
     }
 
     /// What they say, one message per kind (as [`read`] says them).
@@ -170,8 +174,18 @@ impl Losses {
         }
         if self.unprojected > 0 {
             out.push(format!(
-                "{} features have coordinates outside their coordinate system: they are kept without geometry",
+                "{} features have a place that can't be given in longitude/latitude (coordinates outside their coordinate system): they are kept as the answer gives them, but don't draw",
                 self.unprojected
+            ));
+        }
+        if self.beyond > 0 {
+            let (count, have, they) = if self.beyond == 1 {
+                ("one feature".to_string(), "has", "it")
+            } else {
+                (format!("{} features", self.beyond), "have", "they")
+            };
+            out.push(format!(
+                "{count} {have} coordinates that come out beyond longitude/latitude once converted from the answer's coordinate system: it may not be their coordinate system, and {they} may draw out of place"
             ));
         }
         if self.with_zm > 0 {
@@ -352,7 +366,7 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
     let shape = Shape { kind: shape_kind, transform: &transform, has_z, has_m };
     let mut ds = Dataset::new(name, GeometryType::None, fields);
     let width = ds.fields.len();
-    let (mut any_geometry, mut with_zm, mut unprojected) = (false, 0usize, 0usize);
+    let (mut any_geometry, mut with_zm, mut unprojected, mut beyond) = (false, 0usize, 0usize, 0usize);
     for (n, bytes) in features.into_iter().enumerate() {
         let (values, geometry) = feature(bytes, &columns, width, &shape, &mut tally).map_err(|e| match e {
             DataError::Format(m) => invalid(format!("feature {}: {}", n + 1, m.strip_prefix(PREFIX).unwrap_or(&m))),
@@ -360,16 +374,14 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
         })?;
         any_geometry |= geometry.is_some();
         with_zm += usize::from(geometry.is_some() && (has_z || has_m));
-        // Kept as the answer holds it, in its own system, when it has a place in longitude/latitude
-        // (as `geometry_to_lonlat` would give it).
-        let geometry = match (geometry, &to_lonlat) {
-            (Some(g), Some(t)) => {
-                let ok = crate::io::lonlat_box(&g, t).is_some();
-                unprojected += usize::from(!ok);
-                ok.then_some(g)
+        // Kept as the answer holds it, in its own system; counted when it has no place in
+        // longitude/latitude.
+        if let (Some(g), Some(t)) = (&geometry, &to_lonlat) {
+            match crate::io::places_lonlat_extent(g, t) {
+                Some(e) => beyond += usize::from(e.beyond_lonlat()),
+                None => unprojected += 1,
             }
-            (g, _) => g,
-        };
+        }
         ds.push_next(geometry, values);
     }
     if geometry_type.is_some() || any_geometry {
@@ -380,8 +392,6 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
     if let Some(c) = crs.filter(|_| to_lonlat.is_some()) {
         ds.held_in = c;
     }
-    // What couldn't be converted can't come back by defining the projection again.
-    ds.crs_incomplete = unprojected > 0;
     let losses = Losses {
         // Assumed, so said: an answer that names no coordinate system.
         no_crs: any_geometry && code.is_none() && wkt.is_none(),
@@ -390,6 +400,7 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
         not_utf8: tally.not_utf8,
         flat_rings: tally.flat_rings,
         unprojected,
+        beyond,
         with_zm,
     };
     ds.zm_dropped = with_zm > 0;

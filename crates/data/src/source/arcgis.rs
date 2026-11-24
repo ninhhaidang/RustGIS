@@ -399,7 +399,9 @@ impl ArcgisSource {
     /// Whether a feature, held in the layer's system, meets a view in longitude/latitude.
     fn meets(&self, g: &crate::Geometry, view: &Extent) -> bool {
         match &self.to_lonlat {
-            Some(t) => crate::io::lonlat_box(g, t).is_some_and(|b| b.intersects(view)),
+            // A place that converts beyond longitude/latitude meets the view where it draws, as a
+            // whole read keeps it (#2032 C2f-4b).
+            Some(t) => crate::io::places_lonlat_extent(g, t).is_some_and(|b| b.intersects(view)),
             None => g.extent().intersects(view),
         }
     }
@@ -656,6 +658,11 @@ impl ArcgisSource {
 }
 
 impl FeatureSource for ArcgisSource {
+    /// Its pages' notes count them ([`crate::esripbf::Losses`]).
+    fn says_unplaced_at_open(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &SourceInfo {
         &self.info
     }

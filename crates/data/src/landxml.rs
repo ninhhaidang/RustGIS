@@ -235,22 +235,21 @@ pub fn read(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Vec<(Data
         // What the file as a whole said goes with its first layer only.
         let mut rep = if out.is_empty() { report.clone() } else { ReadReport::default() };
         if let Some((t, c)) = &transformer {
-            // Kept as the file holds them, in its system, where they have a place in
+            // Kept as the file holds them, in its system; counted where they have no place in
             // longitude/latitude.
             ds.held_in = *c;
-            let mut lost = 0usize;
-            for f in &mut ds.features {
-                if let Some(g) = f.geometry.take() {
-                    if crate::io::places_in_lonlat(&g, t) {
-                        f.geometry = Some(g);
-                    } else {
-                        lost += 1;
+            let (mut lost, mut placed, mut beyond) = (0usize, 0usize, 0usize);
+            for g in ds.features.iter().filter_map(|f| f.geometry.as_ref()) {
+                match crate::io::places_lonlat_extent(g, t) {
+                    Some(e) => {
+                        placed += 1;
+                        beyond += usize::from(e.beyond_lonlat());
                     }
+                    None => lost += 1,
                 }
             }
-            if lost > 0 {
-                rep.messages.push(format!("{lost} features couldn't be converted from {}", c.label()));
-            }
+            rep.messages.extend(crate::io::kept_unplaced_note("features", lost, placed == 0, *c));
+            rep.messages.extend(crate::io::beyond_lonlat_note("features", beyond, *c));
         }
         out.push((ds, rep));
     }

@@ -84,22 +84,22 @@ fn wrong_prj_can_be_replaced_without_reprojecting_native_numbers() {
     paris(&s.map().layer(id).unwrap().dataset);
 }
 
+/// A `.prj` that gives the shapes no place in longitude/latitude keeps them as the file holds
+/// them (#2032 C2f-4b), so Define Projection places them; an override on import does as well.
 #[test]
-fn zip_override_precedes_wrong_prj_and_missing_geometry_requires_reimport() {
+fn zip_override_precedes_wrong_prj_and_define_projection_places_what_it_kept() {
     // This nonzero datum shift rejects projected numbers mislabelled as geographic.
     let wrong = Crs::parse("EPSG:4277").unwrap();
-    assert!(wrong.transformer().unwrap().to_lonlat(point(&native())).is_none(), "fixture must lose geometry with its wrong CRS");
+    assert!(wrong.transformer().unwrap().to_lonlat(point(&native())).is_none(), "fixture must have no place with its wrong CRS");
     let bytes = zip(Some(wrong));
     let mut s = Session::new(Project::default());
     let id = upload(&mut s, &bytes, None);
-    assert!(s.map().layer(id).unwrap().dataset.crs_incomplete);
-    let before = s.map().layer(id).unwrap().dataset.clone();
-    let error = s.run("layer.defineProjection", &json!({"layer": id, "crs": "EPSG:32631"})).unwrap_err();
-    assert!(error.contains("import the original file"), "{error}");
-    assert_eq!(s.map().layer(id).unwrap().dataset, before);
-    let saved = s.project.saved_text(None).unwrap().0;
-    let restored = Project::from_json(&saved).unwrap();
-    assert!(restored.maps[0].layers[0].dataset.crs_incomplete);
+    let ds = &s.map().layer(id).unwrap().dataset;
+    assert!(!ds.crs_incomplete);
+    let stored = ds.features.row(0).and_then(|r| r.geometry().cloned());
+    assert_eq!(stored, Some(Geometry::Point(Coord::new(451_219.33, 5_411_550.20))), "kept as the file holds it");
+    s.run("layer.defineProjection", &json!({"layer": id, "crs": "EPSG:32631"})).unwrap();
+    paris(&s.map().layer(id).unwrap().dataset);
     let repaired = upload(&mut s, &bytes, Some("EPSG:32631"));
     paris(&s.map().layer(repaired).unwrap().dataset);
     assert!(!s.map().layer(repaired).unwrap().dataset.crs_incomplete);

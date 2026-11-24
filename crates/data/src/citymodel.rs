@@ -148,7 +148,12 @@ pub(crate) struct Counts {
     pub(crate) tin_reliefs: usize,
     /// Implicit geometries inside a prototype (CityGML), which place nothing.
     pub(crate) nested_instances: usize,
+    /// Objects kept as the file holds them with a place that can't be given in longitude/latitude
+    /// from `crs`, which don't draw; `all_unconverted` when no object has one.
     pub(crate) unconverted: usize,
+    pub(crate) all_unconverted: bool,
+    pub(crate) beyond: Option<String>,
+    pub(crate) crs: Option<Crs>,
     pub(crate) bad_heights: usize,
     /// Objects whose lowest and highest Z, or lowest Z and ground, are too far apart for their
     /// difference to be a number.
@@ -567,18 +572,27 @@ pub(crate) fn finish(
     if crs != Crs::LonLat {
         let to_lonlat = crs.transformer().map_err(|e| DataError::Format(format!("{file_name}: {e}")))?;
         let mut objects = HashSet::new();
+        let mut beyond = HashSet::new();
         for row in &mut rows {
-            // Kept as the file holds it, in its system, when it has a place in longitude/latitude
-            // (as `geometry_to_lonlat` would give it).
-            if let Some(g) = row.geometry.take() {
-                row.geometry = crate::io::lonlat_box(&g, &to_lonlat).map(|_| g);
-                if row.geometry.is_none() {
-                    (row.unconverted, row.draws) = (true, false);
-                    objects.insert(row.object);
+            // Kept as the file holds it, in its system; marked, as it doesn't draw, when it has no
+            // place in longitude/latitude.
+            if let Some(g) = &row.geometry {
+                match crate::io::places_lonlat_extent(g, &to_lonlat) {
+                    Some(e) => {
+                        if e.beyond_lonlat() {
+                            beyond.insert(row.object);
+                        }
+                    }
+                    None => {
+                        (row.unconverted, row.draws) = (true, false);
+                        objects.insert(row.object);
+                    }
                 }
             }
         }
         counts.unconverted += objects.len();
+        // Those that convert, beyond longitude/latitude: they draw out of place, said.
+        counts.beyond = crate::io::beyond_lonlat_note("city objects", beyond.len(), crs);
     }
     counts.parent_rounds = raise_parents(&mut built, MAX_PARENT_VISITS).unwrap_or(0);
     counts.ground_rounds = set_grounds(&mut built, MAX_PARENT_VISITS).unwrap_or(0);
@@ -591,15 +605,13 @@ pub(crate) fn finish(
     let is_3d = |b: &Built| b.solid || b.z.is_some_and(|(lo, hi)| hi > lo);
     counts.footprints = rows
         .iter()
-        .filter(|r| r.family == Family::Polygon && r.geometry.is_some())
+        .filter(|r| r.family == Family::Polygon && r.geometry.is_some() && !r.unconverted)
         .filter(|r| built.get(r.object).is_some_and(is_3d))
         .count();
-    if counts.unconverted > 0 && rows.iter().all(|r| r.geometry.is_none()) {
-        return Err(DataError::Format(format!(
-            "{file_name}: no object could be converted from {} to longitude/latitude: that coordinate system doesn't seem to match the coordinates",
-            crs.label()
-        )));
-    }
+    // None of them has a place there: its system doesn't seem to match the coordinates, said so,
+    // and the objects kept, so Define Projection can set the one that does.
+    counts.all_unconverted = counts.unconverted > 0 && rows.iter().all(|r| r.geometry.is_none() || r.unconverted);
+    counts.crs = Some(crs);
 
     let mut out = layers(stem, rows, &built, crs, &mut counts);
     if out.is_empty() {
@@ -975,7 +987,7 @@ fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Co
     // (`raise_parents`), so standing too they would cover the lower parts with the tallest one.
     let carried: HashSet<&str> = rows
         .iter()
-        .filter(|r| r.family == Family::Polygon && r.geometry.is_some())
+        .filter(|r| r.family == Family::Polygon && r.geometry.is_some() && !r.unconverted)
         .filter_map(|r| built.get(r.object))
         .filter(|b| PARTS.contains(&b.ty.as_str()) && rises(b))
         .flat_map(|b| b.parent_ids.iter().map(String::as_str))
@@ -1013,7 +1025,8 @@ fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Co
     for (((ty, family), rows), name) in sorted.into_iter().zip(names) {
         // A layer of volumes stands on its base, when one of them has a height to stand by, unless
         // every one of them stands in its parts.
-        let drawn = || rows.iter().filter(|(r, _)| r.geometry.is_some());
+        // An object kept with no place in longitude/latitude draws nothing, so doesn't count.
+        let drawn = || rows.iter().filter(|(r, _)| r.geometry.is_some() && !r.unconverted);
         let standing = family == Family::Polygon
             && stands(&ty)
             && drawn().any(|(_, b)| rises(b))
@@ -1045,8 +1058,6 @@ fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Co
         }
         let mut ds = Dataset::new(&name, kind, order.iter().filter_map(|&i| fields.get(i).cloned()).collect());
         let z_dropped = rows.iter().filter(|(r, _)| r.z_dropped).count();
-        // What couldn't be converted can't come back by defining the projection again.
-        ds.crs_incomplete = rows.iter().any(|(r, _)| r.unconverted);
         for (row, b) in rows {
             let mut attrs = vec![Value::Null; fields.len()];
             for (k, v) in &properties(b, row.lod.as_deref(), &renames) {
@@ -1155,10 +1166,12 @@ pub(crate) fn messages(c: &Counts) -> Vec<String> {
     );
     say(c.nested_instances, format!("{} implicit geometries inside a prototype aren't placed", c.nested_instances));
     say(c.tin_reliefs, format!("{} TINRelief objects aren't drawn and are left out", c.tin_reliefs));
-    say(
-        c.unconverted,
-        format!("{} city objects have coordinates outside their coordinate system: they are kept without geometry", c.unconverted),
-    );
+    if let Some(note) = c.crs.and_then(|crs| crate::io::kept_unplaced_note("city objects", c.unconverted, c.all_unconverted, crs)) {
+        say(c.unconverted, note);
+    }
+    if let Some(note) = c.beyond.clone() {
+        say(1, note);
+    }
     say(
         c.bad_heights,
         format!("{} city objects have heights that aren't finite numbers, which z_min, z_max and height leave out", c.bad_heights),

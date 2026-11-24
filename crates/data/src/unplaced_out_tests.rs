@@ -147,3 +147,79 @@ fn an_infinite_coordinate_stays_as_it_is_and_isnt_placed() {
     assert_eq!(parts[0][2].y, f64::INFINITY);
     assert!(parts[0][0].is_finite() && parts[0][3].is_finite());
 }
+
+/// A Shapefile whose `.prj` gives a shape no place in longitude/latitude keeps it as the file holds
+/// it, says so, and leaves the layer whole (#2032 C2f-4b): nothing is lost, so Define Projection
+/// stays open. When no shape has one, its system is said not to fit.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_shapefile_keeps_a_shape_with_no_longitude_latitude_place() {
+    let d = dir("kept-shp");
+    for (far_only, file) in [(false, "some.shp"), (true, "all.shp")] {
+        let mut raw = Dataset::new("points", crate::GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        if !far_only {
+            raw.push(Some(Geometry::Point(Coord::new(451_000.0, 5_411_000.0))), vec![Value::Text("paris".into())]);
+        }
+        raw.push(Some(Geometry::Point(Coord::new(1e12, 1e12))), vec![Value::Text("far".into())]);
+        let path = d.join(file);
+        crate::io::write_path(&raw, &path).unwrap();
+        std::fs::write(path.with_extension("prj"), crate::raster::wkt::to_wkt(utm31()).unwrap()).unwrap();
+        let (ds, report) = crate::io::read_path(&path).unwrap();
+        assert_eq!(ds.coord_crs(), utm31());
+        assert!(!ds.crs_incomplete);
+        let far = ds.features.rows().last().and_then(|r| r.geometry().cloned());
+        assert_eq!(far, Some(Geometry::Point(Coord::new(1e12, 1e12))), "kept as the file holds it");
+        let said: Vec<&str> = report.messages.texts().collect();
+        let expected = if far_only {
+            "none of the shapes has a place in longitude/latitude from EPSG:32631"
+        } else {
+            "one of the shapes has a place in EPSG:32631"
+        };
+        assert!(said.iter().any(|m| m.contains(expected) && m.contains("kept as the file holds")), "{said:?}");
+        assert_eq!(ds.in_lonlat_leaving_out().unwrap().1, 1);
+    }
+}
+
+/// A delimited text file's rows with no place in longitude/latitude from the system given are
+/// kept as the file holds them, and said (#2032 C2f-4b).
+#[test]
+fn a_csv_keeps_a_row_with_no_longitude_latitude_place() {
+    let text = "name,x,y\nparis,451000,5411000\nfar,1e12,1e12\n";
+    let opts = crate::io::CsvOptions { x: Some("x".into()), y: Some("y".into()), crs: Some(utm31()), ..Default::default() };
+    let (ds, report) = crate::io::read_csv_with(text, "pts", &opts).unwrap();
+    assert_eq!(ds.features.len(), 2);
+    assert_eq!(ds.features.rows().last().and_then(|r| r.geometry().cloned()), Some(Geometry::Point(Coord::new(1e12, 1e12))));
+    let said: Vec<&str> = report.messages.texts().collect();
+    assert!(
+        said.iter().any(|m| m.contains("one of the rows has a place in EPSG:32631") && m.contains("kept as the file holds it")),
+        "{said:?}"
+    );
+    assert_eq!(report.skipped, 0);
+}
+
+/// A Shapefile read in place keeps a shape with no place in longitude/latitude as the file holds
+/// it, as one read whole does, and says so once (#2032 C2f-4b).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_streamed_shapefile_keeps_what_a_whole_read_keeps() {
+    crate::source::shp::use_temporary_index_dir();
+    let d = dir("kept-streamed-shp");
+    let mut raw = Dataset::new("points", crate::GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+    raw.push(Some(Geometry::Point(Coord::new(451_000.0, 5_411_000.0))), vec![Value::Text("paris".into())]);
+    raw.push(Some(Geometry::Point(Coord::new(1e12, 1e12))), vec![Value::Text("far".into())]);
+    let path = d.join("points.shp");
+    crate::io::write_path(&raw, &path).unwrap();
+    std::fs::write(path.with_extension("prj"), crate::raster::wkt::to_wkt(utm31()).unwrap()).unwrap();
+    let (whole, _) = crate::io::read_path(&path).unwrap();
+    let src = crate::source::shp::ShpSource::open_path(&path, "points").unwrap();
+    let (streamed, report) = crate::source::materialize(&src).unwrap();
+    assert_eq!(streamed.features, whole.features);
+    assert_eq!(streamed.coord_crs(), utm31());
+    assert!(!streamed.crs_incomplete);
+    let said: Vec<&str> = report.messages.texts().collect();
+    assert_eq!(said.iter().filter(|m| m.contains("one of the features has a place in EPSG:32631")).count(), 1, "{said:?}");
+    // A read of a box in longitude/latitude leaves it out; it meets none.
+    let paris = rustgis_geom::Extent { min_x: 2.0, min_y: 48.5, max_x: 2.7, max_y: 49.2 };
+    let view = crate::source::FeatureSource::read(&src, &crate::source::Request { extent: Some(paris), limit: 10, own: None }).unwrap();
+    assert_eq!(view.features.len(), 1);
+}

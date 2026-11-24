@@ -848,8 +848,13 @@ fn copy_stream(
     ];
     losses.extend(info.notes.iter().chain(&batch.notes).cloned().map(|note| note.prefixed(&layer.name)));
     losses.extend(counted.into_iter().flatten().map(|note| note.prefixed(&layer.name)));
-    dataset.crs_incomplete = src.lost_to_crs() || (info.format == "Shapefile" && batch.skipped > 0);
+    // A shape with no place in longitude/latitude is kept as the source holds it (#2032 C2f-4b),
+    // and said, as a whole read says it.
+    dataset.crs_incomplete = src.lost_to_crs();
     dataset.features = rows.into();
+    if !src.says_unplaced_at_open() {
+        losses.extend(dataset.kept_unplaced_notes()?.into_iter().map(|n| format!("{}: {n}", layer.name)));
+    }
     if dataset.geometry_type == rustgis_data::GeometryType::None
         && let Some(g) = dataset.features.geometry(0)
     {

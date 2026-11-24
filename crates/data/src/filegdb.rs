@@ -359,7 +359,7 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
         ds.held_in = c;
     }
     let geometry_at = table.fields.iter().position(|f| f.kind == Kind::Geometry);
-    let (mut curves, mut wall_hulls, mut unmerged, mut unprojected) = (0usize, 0usize, 0usize, 0usize);
+    let (mut curves, mut wall_hulls, mut unmerged, mut unprojected, mut beyond) = (0usize, 0usize, 0usize, 0usize, 0usize);
     // Multipatches with points but no footprint: too few, all on one line, or not finite numbers.
     let mut no_footprint = 0usize;
     // Shapes decoded, a multipatch's too (its M values go even when it has no footprint).
@@ -410,15 +410,14 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
                 Err(()) => report.skipped += 1,
             }
         }
-        // Kept as the file holds it, in its own system, when it has a place in longitude/latitude.
-        let geometry = match (geometry, &to_lonlat) {
-            (Some(g), Some(t)) => {
-                let ok = crate::io::places_in_lonlat(&g, t);
-                unprojected += usize::from(!ok);
-                ok.then_some(g)
+        // Kept as the file holds it, in its own system; counted when it has no place in
+        // longitude/latitude.
+        if let (Some(g), Some(t)) = (&geometry, &to_lonlat) {
+            match crate::io::places_lonlat_extent(g, t) {
+                Some(e) => beyond += usize::from(e.beyond_lonlat()),
+                None => unprojected += 1,
             }
-            (g, _) => g,
-        };
+        }
         ds.push_next(geometry, attrs);
     }
     let rounded: usize = rounded_dates.iter().sum();
@@ -436,10 +435,17 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
     if curves > 0 {
         report.messages.push(format!("{curves} curved segments are drawn as straight lines"));
     }
+    if let Some(c) = crs.filter(|_| to_lonlat.is_some()) {
+        report.messages.extend(crate::io::beyond_lonlat_note("features", beyond, c));
+    }
     if unprojected > 0 {
         report
             .messages
-            .push(format!("{unprojected} features have coordinates outside their coordinate system: they are kept without geometry"));
+            .push(if unprojected == 1 {
+                "one feature has a place that can't be given in longitude/latitude (coordinates outside its coordinate system): it is kept as the file holds it, but doesn't draw".to_string()
+            } else {
+                format!("{unprojected} features have a place that can't be given in longitude/latitude (coordinates outside their coordinate system): they are kept as the file holds them, but don't draw")
+            });
     }
     if zm {
         // The table declares them for every shape.

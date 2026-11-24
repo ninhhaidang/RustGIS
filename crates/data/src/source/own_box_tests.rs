@@ -125,8 +125,11 @@ fn a_box_in_its_own_system_is_tested_without_converting() {
     let r = Reproject::from_crs(utm31(), &mut notes);
     let (lonlat, utm) = around_paris();
     let far = Geometry::Line(vec![vec![Coord::new(451_500.0, 5_411_500.0), Coord::new(1e9, 5_411_500.0)]]);
-    // No place in longitude/latitude: left out as before without the box, kept with it.
-    assert!(r.place(far.clone(), &Request { extent: Some(lonlat), limit: 1, own: None }).is_none());
+    // No place in longitude/latitude: kept as the file holds it (#2032 C2f-4b), outside a box
+    // there, within a whole read, and tested by its own box with one in its own system.
+    let kept = r.place(far.clone(), &Request { extent: Some(lonlat), limit: 1, own: None }).unwrap();
+    assert!(!kept.inside && kept.geometry == far);
+    assert!(r.place(far.clone(), &Request { extent: None, limit: 1, own: None }).unwrap().inside);
     let fitted = r.place(far.clone(), &Request { extent: Some(lonlat), limit: 1, own: Some((utm31(), utm)) }).unwrap();
     assert!(fitted.inside);
     assert_eq!(fitted.geometry, far);

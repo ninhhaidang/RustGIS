@@ -426,16 +426,18 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
 /// holds its coordinates in ([`Dataset::coord_crs`]). Given the file as read and in its own
 /// coordinates (`as_held`, the same rows), a feature of a layer held in longitude/latitude whose
 /// shape is the one read takes the file's coordinates as they are; any other is projected. A native
-/// shape that failed conversion is refused: missing geometry cannot identify its source shape.
+/// shape the read left without geometry is refused: missing geometry cannot identify its source
+/// shape.
 fn in_file<'a>(ds: &'a Dataset, crs: Option<Crs>, as_held: Option<(&Dataset, &Dataset)>) -> Result<std::borrow::Cow<'a, Dataset>> {
-    // A native shape the read couldn't place (left without geometry) can't be told apart from a
-    // feature without one, whatever system the layer holds its coordinates in.
+    // A native shape the read left without geometry (a coordinate that isn't a number; one with
+    // no place in longitude/latitude is kept, #2032 C2f-4b) can't be told apart from a feature
+    // without one, whatever system the layer holds its coordinates in.
     if let Some((read, raw)) = as_held {
         for (i, (f, r)) in read.features.iter().zip(raw.features.iter()).enumerate() {
             crate::progress::check()?;
             if f.geometry.is_none() && r.geometry.is_some() {
                 return Err(DataError::Format(format!(
-                    "source shape {} couldn't be converted from the source projection when it was read, so its native geometry can't be matched safely; check the source projection and add the file again; nothing was written",
+                    "source shape {} was read without its geometry (a coordinate that isn't a number), so its native geometry can't be matched safely; add the file again; nothing was written",
                     i + 1
                 )));
             }
@@ -1517,9 +1519,10 @@ mod tests {
         }
     }
 
-    /// An unconverted source shape cannot supply geometry to a new geometry-less feature.
+    /// A source shape with no place in longitude/latitude is read as the file holds it (#2032
+    /// C2f-4b), so a publish of an attribute edit writes it back unchanged, to the bit.
     #[test]
-    fn an_unconverted_shape_cannot_be_copied_to_a_geometryless_feature() {
+    fn a_shape_with_no_longitude_latitude_place_is_written_back_unchanged() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("parcels.shp");
         let mut native = Dataset::new("parcels", GeometryType::Point, vec![Field::new("OWNER", FieldType::Text)]);
@@ -1529,11 +1532,15 @@ mod tests {
         let crs = Crs::parse("EPSG:32616").unwrap();
         std::fs::write(path.with_extension("prj"), crate::raster::wkt::to_wkt(crs).unwrap()).unwrap();
         let (mut ds, sync) = read(&path);
-        assert_eq!(ds.features.iter().filter(|f| f.geometry.is_none()).count(), 1);
-        ds.push(None, vec![Value::Text("new".into())]);
-        let error = shapefile(&ds, &path, &sync).err().expect("unconverted shapes must not be assigned to new features").to_string();
-        assert!(error.contains("source shape 1") && error.contains("converted") && error.contains("nothing was written"), "{error}");
-        assert!(sync.files.changed(&path).unwrap().is_empty());
+        assert_eq!(ds.features.iter().filter(|f| f.geometry.is_none()).count(), 0);
+        let mut rows: Vec<_> = ds.features.iter().cloned().collect();
+        rows[1].attrs[0] = Value::Text("edited".into());
+        ds.features = rows.into();
+        shapefile(&ds, &path, &sync).unwrap();
+        let (back, _) = read(&path);
+        let shapes: Vec<Option<Geometry>> = back.features.iter().map(|f| f.geometry.clone()).collect();
+        assert_eq!(shapes, [Some(Geometry::Point(Coord::new(1e30, 1e30))), Some(Geometry::Point(Coord::new(500_000.0, 0.0)))]);
+        assert_eq!(back.features.row(1).unwrap().value(0), &Value::Text("edited".into()));
     }
 
     /// After deletion, persistent layer ids differ from file row numbers. An attribute-only

@@ -2779,8 +2779,8 @@ fn geojson_paths(file: &str, text: &str) -> (Dataset, Vec<String>, String) {
     }
     let src = geojson::GeoJsonSource::open_with(&p, "x", crate::io::BYTES_FLOOR).unwrap();
     // In longitude/latitude, for the tests to say where its features are: it holds them in its
-    // declared system, as the file does.
-    (whole.in_lonlat().unwrap().into_owned(), report.messages.texts().map(str::to_string).collect(), src.info().crs.clone())
+    // declared system, as the file does. One with no place there is without geometry in this copy.
+    (whole.in_lonlat_leaving_out().unwrap().0.into_owned(), report.messages.texts().map(str::to_string).collect(), src.info().crs.clone())
 }
 
 fn in_arnhem(e: &Extent) -> bool {
@@ -2941,8 +2941,9 @@ fn geojson_crs_is_read_only_from_the_feature_collection() {
 #[test]
 fn geojson_features_that_cant_be_converted_are_skipped_and_counted() {
     // A coordinate the declared system can't convert (UTM 1e9 m east), or converts to beyond
-    // longitude/latitude (Web Mercator 1e9 m east is longitude 8983°): the feature is dropped, and
-    // its height with it (no Z notice for the 2D features kept).
+    // longitude/latitude (Web Mercator 1e9 m east is longitude 8983°): the feature is kept as the
+    // file holds it, said, and doesn't draw; nothing was lost, so a projection can still be
+    // defined (#2032 C2f-4b).
     for (crs, good, bad) in [("EPSG:32617", "[500000,4649776]", "[1e9,0,30]"), ("EPSG:3857", "[1000000,6000000]", "[1e9,0,30]")] {
         let text = format!(
             r#"{{"type":"FeatureCollection","crs":{},"features":[
@@ -2952,13 +2953,17 @@ fn geojson_features_that_cant_be_converted_are_skipped_and_counted() {
             named(crs)
         );
         let (ds, messages, info_crs) = geojson_paths("far.geojson", &text);
-        assert_eq!(ds.features.len(), 2, "{crs}");
-        assert_eq!(ds.features.iter().map(|f| f.id).collect::<Vec<_>>(), [1, 3], "{crs}: ids are the features' places in the file");
-        assert_eq!(messages.len(), 1, "{crs}: {messages:?}");
-        assert!(messages[0].contains(&format!("1 features couldn't be converted from {crs}")), "{}", messages[0]);
+        assert_eq!(ds.features.iter().map(|f| f.id).collect::<Vec<_>>(), [1, 2, 3], "{crs}: ids are the features' places in the file");
+        // UTM can't convert it; Web Mercator converts it to beyond longitude/latitude, where it
+        // draws out of place, and says that.
+        let expected = if crs == "EPSG:32617" {
+            format!("one of the features has a place in {crs} that can't be given in longitude/latitude: it is kept as the file holds it")
+        } else {
+            format!("coordinates that come out beyond longitude/latitude once converted from {crs}")
+        };
+        assert!(messages.iter().any(|m| m.contains(&expected)), "{crs}: {messages:?}");
         assert_eq!(info_crs, crs);
-        assert!(ds.crs_incomplete, "{crs}: a projection can't be defined again over lost features");
-        assert!(!ds.zm_dropped, "{crs}");
+        assert!(!ds.crs_incomplete, "{crs}: nothing was lost");
         let Some(Geometry::Point(c)) = ds.features.first().and_then(|f| f.geometry.clone()) else { panic!("a point") };
         assert!(c.x.abs() < 180.0 && c.y.abs() < 90.0, "{crs}: {c:?}");
         if crs == "EPSG:32617" {
@@ -2977,36 +2982,66 @@ fn merc_collection(features: &[&str]) -> String {
 }
 
 #[test]
-fn geojson_dropped_features_do_not_set_the_geometry_type() {
-    // Two points that can't be placed and one polygon that can: a polygon layer, as read whole.
+fn geojson_kept_unplaced_features_set_the_geometry_type() {
+    // Features kept with no place in longitude/latitude are the file's: they count toward its
+    // geometry type, the same both ways.
     let (ds, _, _) = geojson_paths("kinds.geojson", &merc_collection(&[MERC_BAD, MERC_POLY, MERC_BAD]));
-    assert_eq!(ds.geometry_type, GeometryType::Polygon);
-    assert_eq!(ds.features.len(), 1);
-    // Nothing that can be placed: no geometry type at all, both ways.
+    assert_eq!(ds.geometry_type, GeometryType::Point);
+    assert_eq!(ds.features.len(), 3);
+    // Nothing in its place: kept, said as coordinates its system puts beyond longitude/latitude,
+    // and a projection can still be defined.
     let (ds, messages, _) = geojson_paths("none.geojson", &merc_collection(&[MERC_BAD, MERC_BAD]));
-    assert_eq!(ds.geometry_type, GeometryType::None);
-    assert!(ds.features.is_empty() && ds.crs_incomplete);
+    assert_eq!(ds.geometry_type, GeometryType::Point);
+    assert!(ds.features.len() == 2 && !ds.crs_incomplete);
     assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].contains("coordinates that come out beyond longitude/latitude once converted from EPSG:3857"), "{}", messages[0]);
 }
 
 #[test]
-fn geojson_sampling_skips_dropped_features() {
-    // Unplaceable features at every other place must not use up the sample: a read asking for
-    // two of the three placeable ones gets two, and says it matched three.
+fn geojson_reads_in_longitude_latitude_leave_out_unplaced_features() {
+    // Unplaceable features at every other place are in a whole read; a read of a box in
+    // longitude/latitude leaves them out, as they meet none.
     let text = merc_collection(&[MERC_BAD, MERC_OK, MERC_BAD, MERC_OK, MERC_BAD, MERC_OK]);
     let p = dir().join("geojson-crs").join("alternating.geojson");
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
     std::fs::write(&p, &text).unwrap();
     for in_memory in [crate::io::BYTES_FLOOR, 0] {
         let src = geojson::GeoJsonSource::open_with(&p, "x", in_memory).unwrap();
-        assert_eq!(src.info().count, Some(3));
+        assert_eq!(src.info().count, Some(6));
         let all = src.read(&Request { extent: None, limit: 100, own: None }).unwrap();
-        assert_eq!((all.features.len(), all.matched, all.skipped, all.complete), (3, 3, 0, true));
-        let some = src.read(&Request { extent: None, limit: 2, own: None }).unwrap();
-        assert_eq!((some.features.len(), some.matched, some.skipped, some.complete), (2, 3, 0, false));
-        assert!(some.features.iter().all(|f| f.geometry.is_some()));
-        let ids: Vec<u64> = all.features.iter().map(|f| f.id).collect();
+        assert_eq!((all.features.len(), all.matched, all.skipped, all.complete), (6, 6, 0, true));
+        // Around the placeable ones (about 9°E, 47°N): those alone, and a sample of two of them
+        // says it matched three.
+        let around = Some(Extent { min_x: 8.0, min_y: 46.0, max_x: 10.0, max_y: 48.0 });
+        let near = src.read(&Request { extent: around, limit: 100, own: None }).unwrap();
+        assert_eq!((near.features.len(), near.matched, near.skipped, near.complete), (3, 3, 0, true));
+        let ids: Vec<u64> = near.features.iter().map(|f| f.id).collect();
         assert_eq!(ids, [2, 4, 6]);
+        let some = src.read(&Request { extent: around, limit: 2, own: None }).unwrap();
+        assert_eq!((some.features.len(), some.matched, some.skipped, some.complete), (2, 3, 0, false));
+    }
+}
+
+#[test]
+fn geojson_a_kept_unplaced_feature_does_not_use_up_a_sample() {
+    // A line with no place in longitude/latitude whose own box meets the view, ahead of a point
+    // in it: a read of one feature there gets the point, and counts one match (#2032 C2f-4b).
+    let text = format!(
+        r#"{{"type":"FeatureCollection","crs":{},"features":[
+        {{"type":"Feature","properties":{{}},"geometry":{{"type":"LineString","coordinates":[[451500,5411500],[1e9,5411500]]}}}},
+        {{"type":"Feature","properties":{{}},"geometry":{{"type":"Point","coordinates":[451500,5411500]}}}}]}}"#,
+        named("EPSG:32631")
+    );
+    let p = dir().join("geojson-crs").join("ahead.geojson");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, &text).unwrap();
+    let paris = Some(Extent { min_x: 2.0, min_y: 48.5, max_x: 2.7, max_y: 49.2 });
+    for in_memory in [crate::io::BYTES_FLOOR, 0] {
+        let src = geojson::GeoJsonSource::open_with(&p, "x", in_memory).unwrap();
+        let one = src.read(&Request { extent: paris, limit: 1, own: None }).unwrap();
+        assert_eq!((one.features.len(), one.matched), (1, 1));
+        assert!(matches!(one.features[0].geometry, Some(Geometry::Point(_))));
+        assert_eq!(src.read(&Request::all()).unwrap().features.len(), 2, "a whole read keeps both");
     }
 }
 

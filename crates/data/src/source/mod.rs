@@ -485,6 +485,12 @@ pub trait FeatureSource: Send + Sync {
     fn skipped_at_open(&self) -> usize {
         0
     }
+    /// Whether the source's notes ([`SourceInfo::notes`]) already count the features it keeps
+    /// with a place that can't be given in longitude/latitude, so a whole read doesn't count them
+    /// again.
+    fn says_unplaced_at_open(&self) -> bool {
+        false
+    }
     /// Reads the features a request asks for. A source read by its web address fails with
     /// [`remote::NEED`] until the bytes the read needs are fetched: run it with
     /// [`remote::drive`] (see [`FeatureSource::remote`]).
@@ -748,6 +754,10 @@ impl FeatureSource for Fetching {
         self.0.skipped_at_open()
     }
 
+    fn says_unplaced_at_open(&self) -> bool {
+        self.0.says_unplaced_at_open()
+    }
+
     fn read(&self, req: &Request) -> Result<Batch> {
         read_blocking(&self.0, req)
     }
@@ -776,9 +786,10 @@ fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, 
     let Batch { features, skipped, unread_dates, rounded_dates, null_text, notes, not_utf8, .. } = batch;
     let mut ds = Dataset::new(info.name.clone(), info.geometry_type, info.fields.clone());
     ds.crs = info.coordinate_system();
-    // A streamed Shapefile skips unconvertible shapes rather than retaining empty geometry.
-    // Once materialized, it must still direct CRS repairs back to the original file.
-    ds.crs_incomplete = (info.format == "Shapefile" && skipped > 0) || src.lost_to_crs();
+    // A shape with no place in longitude/latitude is kept as the source holds it
+    // ([`Reproject::place`]), so only a source that says it lost features to its system leaves
+    // Define Projection unable to place them.
+    ds.crs_incomplete = src.lost_to_crs();
     ds.zm_dropped = info.zm_dropped;
     ds.features = features.into();
     // Held as the source gives its features, in its own system.
@@ -802,6 +813,12 @@ fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, 
         && let Some(g) = ds.features.iter().find_map(|f| f.geometry.as_ref())
     {
         ds.geometry_type = g.kind();
+    }
+    // The features kept with a place that can't be given in longitude/latitude, said once, as a
+    // file read whole says them; a source that said them when it was opened isn't counted again.
+    if !src.says_unplaced_at_open() {
+        let notes = ds.kept_unplaced_notes().map_err(DataError::of_conversion)?;
+        report.messages.extend(notes.into_iter().map(|n| format!("{}: {n}", info.name)));
     }
     Ok((ds, report))
 }
@@ -1015,11 +1032,13 @@ impl Reproject {
         ok.then_some(out)
     }
 
-    /// A geometry as the file holds it, kept in the source's own coordinates
-    /// ([`Reproject::crs`]), with its box in longitude/latitude for a request's extent to test
-    /// ([`Reproject::place`]); `None` when a coordinate can't be converted to longitude/latitude,
-    /// as a feature that can't be placed is left out. Each coordinate is converted to be checked,
+    /// A geometry as the source holds it, kept in its own coordinates ([`Reproject::crs`]), with
+    /// its box in longitude/latitude for a request's extent to test, for a source read by its
+    /// rows (MySQL, SQL Server); `None` when a coordinate can't be converted to
+    /// longitude/latitude, as such a feature is left out there (the others keep it:
+    /// [`Reproject::place`]). Each coordinate is converted to be checked,
     /// none is kept converted.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn read(&self, g: Geometry) -> Option<Placed> {
         let Some(t) = &self.t else {
             let lonlat = g.extent();
@@ -1035,11 +1054,12 @@ impl Reproject {
     }
 
     /// A geometry as the file holds it, kept in the source's own coordinates, and whether it is
-    /// within `req`. Given the request's box in those coordinates ([`Request::own`]), its own box
-    /// is tested against it, converting nothing, so a geometry with no place in
-    /// longitude/latitude is kept too (`None` for one with a coordinate that isn't a number).
-    /// Otherwise as [`Reproject::read`]: `None` when a coordinate can't be converted to
-    /// longitude/latitude, and its box there tested against the extent.
+    /// within `req`; `None` for one with a coordinate that isn't a number, for the reader to
+    /// count. Given the request's box in those coordinates ([`Request::own`]), its own box is
+    /// tested against it, converting nothing. Otherwise its box in longitude/latitude
+    /// ([`Reproject::read`]) is tested against the extent; a geometry with a place that can't be
+    /// given there is kept as well (#2032 C2f-4b), within a read with no extent (a whole read)
+    /// and outside any extent.
     pub(crate) fn place(&self, g: Geometry, req: &Request) -> Option<Fitted> {
         if let Some(own) = self.own_box(req) {
             // A coordinate that isn't a number has no place here either: left out, as `read`
@@ -1051,9 +1071,23 @@ impl Reproject {
             let inside = own == whole_plane() || g.extent().intersects(&own);
             return Some(Fitted { geometry: g, inside });
         }
-        let Placed { geometry, lonlat } = self.read(g)?;
-        let inside = req.extent.is_none_or(|e| lonlat.intersects(&e));
-        Some(Fitted { geometry, inside })
+        if !g.is_finite() {
+            return None;
+        }
+        let Some(e) = req.extent else { return Some(Fitted { geometry: g, inside: true }) };
+        let lonlat = match &self.t {
+            None => Some(g.extent()),
+            Some(t) => {
+                let mut box_ = Some(Extent::EMPTY);
+                g.for_each_coord(|c| match (t.to_lonlat(c).filter(|l| l.is_finite()), &mut box_) {
+                    (Some(l), Some(b)) => b.expand(l),
+                    _ => box_ = None,
+                });
+                box_
+            }
+        };
+        let inside = lonlat.is_some_and(|l| l.intersects(&e));
+        Some(Fitted { geometry: g, inside })
     }
 
     /// The request's box in the source's own coordinates, when the asker gave it there
@@ -1409,6 +1443,7 @@ pub(crate) fn in_request(g: &Geometry, req: &Request) -> bool {
 
 /// A geometry a source read, in its own coordinates, and its box in longitude/latitude
 /// ([`Reproject::read`]).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct Placed {
     pub(crate) geometry: Geometry,
     pub(crate) lonlat: Extent,

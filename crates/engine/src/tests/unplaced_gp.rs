@@ -250,10 +250,13 @@ fn a_search_area_file_leaves_out_what_it_cant_place() {
         rustgis_data::io::write_path(&ds, &path).unwrap();
         std::fs::write(path.with_extension("prj"), rustgis_data::raster::wkt::to_wkt(robinson()).unwrap()).unwrap();
         let loaded = crate::cmd::stac_area::load_file(path.to_str().unwrap()).unwrap();
-        // Said by the reader while files are read into longitude/latitude (C2f-4b-2 keeps such a
-        // feature, and then the search area says it); a clean file says nothing of it.
+        // The reader keeps the far square as the file holds it and says so (#2032 C2f-4b), and the
+        // search area leaves it out; a clean file says nothing of it.
         let said = loaded.notices.iter().any(|n| n.contains("longitude/latitude"));
         assert_eq!(said, far, "{:?}", loaded.notices);
+        if far {
+            assert!(loaded.notices.iter().any(|n| n.contains("kept as the file holds it")), "{:?}", loaded.notices);
+        }
     }
     std::fs::remove_dir_all(&dir).ok();
 }
