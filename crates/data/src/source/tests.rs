@@ -5102,3 +5102,141 @@ fn write_projected_parquet_fixture(ds: &Dataset, path: &Path, rows: usize, dicti
     writer.write(&batch).unwrap();
     writer.close().unwrap();
 }
+
+/// The spatial index, loaded after the rows in Hilbert order, holds one entry with the box of
+/// each feature that has a place (none for one without), and the same layer gives the same index
+/// nodes each time.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn geopackage_index_holds_each_placed_feature_and_repeats() {
+    let folder = tempfile::tempdir().unwrap();
+    let mut ds = Dataset::new("scatter", GeometryType::Point, vec![]);
+    let mut seed = 12345u64;
+    let mut next = move || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 33) as f64 / f64::from(1u32 << 31)
+    };
+    let mut places = Vec::new();
+    for _ in 0..3000 {
+        let c = Coord::new(next() * 360.0 - 180.0, next() * 170.0 - 85.0);
+        places.push(c);
+        ds.push(Some(Geometry::Point(c)), vec![]);
+    }
+    ds.push(None, vec![]);
+    let mut nodes = Vec::new();
+    for name in ["a.gpkg", "b.gpkg"] {
+        let path = folder.path().join(name);
+        gpkg::write(&ds, &path).unwrap();
+        let c = rusqlite::Connection::open(&path).unwrap();
+        let mut st = c.prepare("SELECT id, minx, maxx, miny, maxy FROM rtree_scatter_geom ORDER BY id").unwrap();
+        let rows: Vec<(i64, [f64; 4])> =
+            st.query_map([], |r| Ok((r.get(0)?, [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?]))).unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(rows.len(), places.len(), "one entry for each feature with a place");
+        for ((id, [x0, x1, y0, y1]), p) in rows.iter().zip(&places) {
+            let sane = (*x0 as f32 as f64 - p.x).abs() < 1e-4 && (*x1 as f32 as f64 - p.x).abs() < 1e-4;
+            assert!(sane && (*y0 as f32 as f64 - p.y).abs() < 1e-4 && (*y1 as f32 as f64 - p.y).abs() < 1e-4, "box of {id}");
+        }
+        let nodes_of: Vec<(i64, Vec<u8>)> = c
+            .prepare("SELECT nodeno, data FROM rtree_scatter_geom_node ORDER BY nodeno")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        nodes.push(nodes_of);
+        let triggers: i64 = c
+            .query_row("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'rtree_scatter_geom_%'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(triggers, 7, "the index's triggers exist when the write ends");
+    }
+    assert_eq!(nodes[0], nodes[1], "the same layer builds the same index");
+}
+
+/// The spatial index of a GeoPackage lists exactly the features with a place, for a layer with
+/// none, one of only null and empty geometries, a table added to a file that has another, and one
+/// replaced there (and a point layer that turns out to hold multipoints, which restarts the export).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn geopackage_index_lists_only_features_with_a_place() {
+    use crate::io::{GpkgMode, GpkgTable};
+    let folder = tempfile::tempdir().unwrap();
+    let indexed = |path: &Path, table: &str| -> Vec<i64> {
+        let c = rusqlite::Connection::open(path).unwrap();
+        let mut st = c.prepare(&format!("SELECT id FROM rtree_{table}_geom ORDER BY id")).unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+    };
+    let layer = |name: &str, geoms: Vec<Option<Geometry>>| {
+        let mut ds = Dataset::new(name, GeometryType::Point, vec![]);
+        for g in geoms {
+            ds.push(g, vec![]);
+        }
+        ds
+    };
+    let at = |x: f64| Some(Geometry::Point(Coord::new(x, -x)));
+    for (name, geoms, want) in [
+        ("empty", vec![], vec![]),
+        ("none", vec![None, None], vec![]),
+        ("empty_multi", vec![None, Some(Geometry::MultiPoint(vec![]))], vec![]),
+        ("some", vec![at(3.0), None, at(1.0), Some(Geometry::MultiPoint(vec![])), at(2.0)], vec![1, 3, 5]),
+        (
+            "multi",
+            vec![at(3.0), None, Some(Geometry::MultiPoint(vec![Coord::new(1.0, 1.0), Coord::new(2.0, 2.0)])), at(2.0)],
+            vec![1, 3, 4],
+        ),
+    ] {
+        let path = folder.path().join(format!("{name}.gpkg"));
+        gpkg::write(&layer(name, geoms), &path).unwrap();
+        assert_eq!(indexed(&path, name), want, "{name}");
+    }
+    // A table added to a file that has another, then replaced by one with fewer features.
+    let path = folder.path().join("two.gpkg");
+    let to = |mode, name: &str| GpkgTable { mode, name: Some(name.into()) };
+    gpkg::write(&layer("first", vec![at(5.0), at(4.0)]), &path).unwrap();
+    gpkg::write_table_in(&layer("x", vec![at(9.0), None, at(8.0), at(7.0)]), &path, Crs::LonLat, &to(GpkgMode::AddTable, "second"))
+        .unwrap();
+    assert_eq!((indexed(&path, "first"), indexed(&path, "second")), (vec![1, 2], vec![1, 3, 4]));
+    gpkg::write_table_in(&layer("x", vec![None, at(6.0)]), &path, Crs::LonLat, &to(GpkgMode::ReplaceTable, "second")).unwrap();
+    assert_eq!((indexed(&path, "first"), indexed(&path, "second")), (vec![1, 2], vec![2]));
+}
+
+/// A streamed export loads the spatial index in several runs once it holds enough boxes: every
+/// feature with a place is still indexed with its box, and the same layer builds the same index.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_streamed_geopackage_loads_its_index_in_runs() {
+    let folder = tempfile::tempdir().unwrap();
+    let mut ds = Dataset::new("runs", GeometryType::Point, vec![]);
+    for i in 0..2500 {
+        let (x, y) = (f64::from((i * 7919) % 360) - 180.0, f64::from((i * 104_729) % 170) - 85.0);
+        ds.push((i % 10 != 0).then(|| Geometry::Point(Coord::new(x, y))), vec![]);
+    }
+    let mut files = Vec::new();
+    for name in ["a.gpkg", "b.gpkg"] {
+        let path = folder.path().join(name);
+        let mut feed = |put: &mut dyn FnMut(&[crate::Feature]) -> crate::Result<()>| ds.features.chunks(400).try_for_each(&mut *put);
+        gpkg::write_features_in("runs", GeometryType::Point, &[], &path, Crs::LonLat, &crate::io::GpkgTable::default(), &mut feed).unwrap();
+        files.push(path);
+    }
+    let read = |path: &Path| -> (Vec<(i64, [f64; 4])>, Vec<(i64, Vec<u8>)>) {
+        let c = rusqlite::Connection::open(path).unwrap();
+        let rows = c
+            .prepare("SELECT id, minx, maxx, miny, maxy FROM rtree_runs_geom ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?])))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        let nodes = c
+            .prepare("SELECT nodeno, data FROM rtree_runs_geom_node ORDER BY nodeno")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        (rows, nodes)
+    };
+    let (rows, nodes) = read(&files[0]);
+    let placed: Vec<i64> = (1..=2500).filter(|i| (i - 1) % 10 != 0).collect();
+    assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), placed, "one entry for each feature with a place");
+    assert_eq!(nodes, read(&files[1]).1, "the same layer builds the same index");
+}

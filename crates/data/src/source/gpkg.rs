@@ -813,6 +813,7 @@ fn fill(
     feed: &mut dyn FnMut(&mut dyn FnMut(&[crate::Feature]) -> Result<()>) -> Result<()>,
 ) -> Result<std::result::Result<(Layout, Extent), Redo>> {
     let (mut layout, mut extent, mut redo) = (None, Extent::EMPTY, None);
+    let mut boxes = Vec::new();
     let fed = feed(&mut |features| {
         if layout.is_none() {
             let multi = multi_points.unwrap_or_else(|| features.iter().any(|f| matches!(f.geometry, Some(crate::Geometry::MultiPoint(_)))));
@@ -822,7 +823,7 @@ fn fill(
         for g in features.iter().filter_map(|f| f.geometry.as_ref()) {
             extent = extent.union(&g.extent());
         }
-        redo = insert(conn, l, features, keep_ids)?;
+        redo = insert(conn, l, features, keep_ids, &mut boxes)?;
         match redo {
             // Stops the traversal; the export starts again.
             Some(_) => Err(DataError::Format("GeoPackage: starting again".into())),
@@ -837,6 +838,7 @@ fn fill(
                 Some(l) => l,
                 None => make(multi_points.unwrap_or(false), mixed)?,
             };
+            fill_index(conn, &layout, &mut boxes)?;
             Ok(Ok((layout, extent)))
         }
     }
@@ -913,9 +915,11 @@ fn build(conn: &Connection, ds: &crate::Dataset, name: &str, crs: Crs, pinned: O
     let keep_ids = ds.features.iter().all(|f| i64::try_from(f.id).is_ok() && seen.insert(f.id));
     // The table is made for the whole layer, so nothing should need doing again; should a
     // feature not fit after all, the export fails rather than leave it out.
-    if insert(conn, &layout, &ds.features, keep_ids)?.is_some() {
+    let mut boxes = Vec::new();
+    if insert(conn, &layout, &ds.features, keep_ids, &mut boxes)?.is_some() {
         return Err(DataError::Format("GeoPackage: a feature doesn't fit the table chosen for the layer".into()));
     }
+    fill_index(conn, &layout, &mut boxes)?;
     finish(conn, &layout, ds.extent(), pinned)?;
     Ok(layout.table)
 }
@@ -1092,23 +1096,28 @@ enum Redo {
     Renumber,
 }
 
-/// Inserts features into the table [`create`] made, and their boxes into its spatial index.
-/// With `keep_ids` each keeps its id; otherwise SQLite numbers it. Stops at the first feature
-/// the table as made can't hold as the whole layer would have it (a multipoint in a POINT
-/// table, geometry of another kind, an id that doesn't fit or is taken), saying what to
-/// [`Redo`].
-fn insert(conn: &Connection, layout: &Layout, features: &[crate::Feature], keep_ids: bool) -> Result<Option<Redo>> {
+/// Inserts features into the table [`create`] made, and puts the box of each one with a place in
+/// `boxes` for [`fill_index`] to load, loading them whenever [`INDEX_BATCH`] are waiting; the
+/// caller loads the rest at the end. With `keep_ids` each keeps its id;
+/// otherwise SQLite numbers it. Stops at the first feature the table as made can't hold as the
+/// whole layer would have it (a multipoint in a POINT table, geometry of another kind, an id
+/// that doesn't fit or is taken), saying what to [`Redo`].
+fn insert(
+    conn: &Connection,
+    layout: &Layout,
+    features: &[crate::Feature],
+    keep_ids: bool,
+    boxes: &mut Vec<IndexBox>,
+) -> Result<Option<Redo>> {
     use rusqlite::types::Value as Sql;
-    let Layout { columns, fields, has_geom, multi_points, srs_id, table_q: t, geom_q: g, fid_q: i, rtree_q: rt, .. } = layout;
+    let Layout { columns, fields, has_geom, multi_points, srs_id, table_q: t, geom_q: g, fid_q: i, .. } = layout;
     let (has_geom, multi_points, srs_id) = (*has_geom, *multi_points, *srs_id);
     let names: Vec<String> =
         std::iter::once(i.clone()).chain(has_geom.then(|| g.clone())).chain(columns.iter().map(|c| quote(c))).collect();
     let marks = vec!["?"; names.len()].join(", ");
     let mut st = conn.prepare_cached(&format!("INSERT INTO {t} ({}) VALUES ({marks})", names.join(", "))).map_err(err)?;
-    // The spatial index is filled here; its triggers (which call functions only GeoPackage
-    // software defines) are created after.
-    let mut index =
-        if has_geom { Some(conn.prepare_cached(&format!("INSERT INTO {rt} VALUES (?1, ?2, ?3, ?4, ?5)")).map_err(err)?) } else { None };
+    // The spatial index is filled after the rows ([`fill_index`]); its triggers (which call
+    // functions only GeoPackage software defines) are created after that.
     for f in features {
         crate::progress::step(1)?;
         if has_geom && !layout.mixed && other_kind(f, layout.kind) {
@@ -1142,11 +1151,98 @@ fn insert(conn: &Connection, layout: &Layout, features: &[crate::Feature], keep_
             Err(e) => return Err(err(e)),
         }
         let e = f.geometry.as_ref().map(|x| x.extent()).unwrap_or(Extent::EMPTY);
-        if let (Some(ix), false) = (index.as_mut(), e.is_empty()) {
-            ix.execute(rusqlite::params![conn.last_insert_rowid(), e.min_x, e.max_x, e.min_y, e.max_y]).map_err(err)?;
+        if has_geom && !e.is_empty() {
+            boxes.push(IndexBox { key: 0, id: conn.last_insert_rowid(), bounds: [e.min_x, e.max_x, e.min_y, e.max_y] });
+            // Loaded the moment a batch fills, so `boxes` never grows past one batch and a
+            // streamed export batches exactly as a whole-layer one does.
+            if boxes.len() == INDEX_BATCH {
+                fill_index(conn, layout, boxes)?;
+            }
         }
     }
     Ok(None)
+}
+
+/// A feature's box waiting to go into the spatial index, with its place along the Hilbert curve
+/// (`key`, 0 until [`fill_index`] works it out from the whole batch's extent).
+/// It holds 48 bytes per feature that has a place, until [`fill_index`] loads it.
+struct IndexBox {
+    key: u64,
+    id: i64,
+    /// `[min_x, max_x, min_y, max_y]`, the order of the index's columns.
+    bounds: [f64; 4],
+}
+
+/// How many boxes [`fill_index`] loads between looks at Cancel.
+const INDEX_CHECK_EVERY: usize = 8192;
+
+/// How many boxes an export keeps before it loads them (96 MB at 48 bytes each), so a layer of
+/// any size needs no more; a layer of fewer features is loaded in one go at the end.
+/// Each load is in Hilbert order within itself.
+/// (1,000 in this crate's tests, so they reach a second load.)
+const INDEX_BATCH: usize = if cfg!(test) { 1000 } else { 1 << 21 };
+
+/// The distance along a Hilbert curve of 2^16 by 2^16 cells at which the cell `(x, y)` lies.
+fn hilbert(mut x: u32, mut y: u32) -> u64 {
+    const SIDE: u32 = 1 << 16;
+    let mut d = 0u64;
+    let mut s = SIDE >> 1;
+    while s > 0 {
+        let (rx, ry) = (u32::from(x & s != 0), u32::from(y & s != 0));
+        d += u64::from(s) * u64::from(s) * u64::from((3 * rx) ^ ry);
+        if ry == 0 {
+            if rx == 1 {
+                x = SIDE - 1 - x;
+                y = SIDE - 1 - y;
+            }
+            std::mem::swap(&mut x, &mut y);
+        }
+        s >>= 1;
+    }
+    d
+}
+
+/// Fills the table's spatial index with `boxes`, one entry for each, in Hilbert order of their
+/// centres. SQLite's R-tree picks a leaf for each entry by walking down from the root, which costs
+/// far more when consecutive entries lie all over the map than when neighbours arrive together.
+/// Ties fall back to the row id, so the same layer gives the same file each time. Empties `boxes`.
+/// Looks at Cancel as it goes, but not within one SQLite insert, nor while it works out the
+/// Hilbert places and sorts them (one pass and one sort over at most [`INDEX_BATCH`] boxes).
+fn fill_index(conn: &Connection, layout: &Layout, boxes: &mut Vec<IndexBox>) -> Result<()> {
+    if !layout.has_geom || boxes.is_empty() {
+        return Ok(());
+    }
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for b in boxes.iter() {
+        for (axis, (a, z)) in [(0, 1), (2, 3)].into_iter().enumerate() {
+            let centre = (b.bounds[a] + b.bounds[z]) / 2.0;
+            if centre.is_finite() {
+                lo[axis] = lo[axis].min(centre);
+                hi[axis] = hi[axis].max(centre);
+            }
+        }
+    }
+    let cell = |v: f64, axis: usize| {
+        let span = hi[axis] - lo[axis];
+        // A NaN or an empty span lands in the first cell.
+        if span > 0.0 { (((v - lo[axis]) / span) * 65535.0).clamp(0.0, 65535.0) as u32 } else { 0 }
+    };
+    for b in boxes.iter_mut() {
+        let [x0, x1, y0, y1] = b.bounds;
+        b.key = hilbert(cell((x0 + x1) / 2.0, 0), cell((y0 + y1) / 2.0, 1));
+    }
+    crate::progress::check()?;
+    boxes.sort_unstable_by_key(|b| (b.key, b.id));
+    let mut index = conn.prepare_cached(&format!("INSERT INTO {} VALUES (?1, ?2, ?3, ?4, ?5)", layout.rtree_q)).map_err(err)?;
+    for (n, b) in boxes.iter().enumerate() {
+        if n % INDEX_CHECK_EVERY == 0 {
+            crate::progress::check()?;
+        }
+        let [min_x, max_x, min_y, max_y] = b.bounds;
+        index.execute(rusqlite::params![b.id, min_x, max_x, min_y, max_y]).map_err(err)?;
+    }
+    boxes.clear();
+    Ok(())
 }
 
 /// [`register`]s the table, in a new file, and commits.
