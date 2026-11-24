@@ -313,6 +313,16 @@ pub struct MapView {
     pub vertex_drag: Option<crate::vertexedit::VertexDrag>,
     /// Non-owning source identity for the held vertex gesture; never persisted with the project.
     pub(crate) vertex_drag_owner: Option<crate::vertexedit::DragOwner>,
+    /// The selected features Edit Vertices last said it can't give handles to (their place can't
+    /// be given in longitude/latitude), by map index, live layer ([`rustgis_engine::map::Layer::instance_id`])
+    /// and row, so it says so once per selection.
+    pub(crate) vertex_unplaced_said: Vec<(usize, u64, usize)>,
+    /// Whether there were more than those, the notice saying "at least" so many.
+    pub(crate) vertex_unplaced_more: bool,
+    /// How many of each layer's selected rows that scan went through, by live layer.
+    pub(crate) vertex_unplaced_visited: Vec<(u64, usize)>,
+    /// What those features were last looked for under, so they aren't looked for each frame.
+    pub(crate) vertex_unplaced_seen: Option<u64>,
     /// Session-only opt-in for coincident polygon moves; never saved with a project or preference.
     pub move_shared_vertices: bool,
     /// A sketch vertex clicked on an edge follows that edge from the previous vertex (Trace);
@@ -450,6 +460,10 @@ impl Default for MapView {
             vertex_owner: None,
             vertex_drag: None,
             vertex_drag_owner: None,
+            vertex_unplaced_said: Vec::new(),
+            vertex_unplaced_more: false,
+            vertex_unplaced_visited: Vec::new(),
+            vertex_unplaced_seen: None,
             move_shared_vertices: false,
             trace_edges: false,
             sketch_full_said: false,
@@ -523,6 +537,10 @@ impl MapView {
             self.split_gpu = None;
             self.live_rev = None;
             self.gpu_turn_declined = None;
+            self.vertex_unplaced_said.clear();
+            self.vertex_unplaced_more = false;
+            self.vertex_unplaced_visited.clear();
+            self.vertex_unplaced_seen = None;
             self.labels.clear();
             self.label_lonlat.clear();
             self.label_map.clear();
@@ -810,6 +828,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     crate::modelbuilder::follow_view(app);
     view_tabs(app, ui, &t);
     crate::vertexedit::cancel_stale_drag(app);
+    crate::vertexedit::say_unplaced(app);
     if app.mb.shown() {
         crate::modelbuilder::show(app, ui);
         return;

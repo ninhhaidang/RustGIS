@@ -133,7 +133,9 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
 - **Edit Vertices** (Edit › Features): reshape the selected features on the map. Their vertices
   show as square handles and each edge has a round midpoint handle. Drag a vertex to move it;
   drag a midpoint, or click an edge, to insert a vertex; click a vertex and press ++delete++ to
-  remove it (a line keeps at least two vertices, a polygon ring three). Clicking elsewhere
+  remove it (a line keeps at least two vertices, a polygon ring three). A selected feature with
+  a place that can't be given in longitude/latitude (see [Places with no longitude/latitude](data-formats.md#places-with-no-longitudelatitude))
+  gets no handles, and a notice says so once, naming it or counting them. Clicking elsewhere
   selects the feature there (++shift++ adds it). Multipart features and polygon holes work the
   same way, dragged vertices snap when snapping is on, and each move, insertion or deletion is
   one undo step. ++esc++ finishes. From scripts and the command line, `edit.vertex` does the

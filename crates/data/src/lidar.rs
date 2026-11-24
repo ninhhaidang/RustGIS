@@ -692,25 +692,27 @@ mod tests {
     /// the source, while missing records still prevent a whole read.
     #[test]
     fn source_materializes_with_counted_losses() {
-        let mut bytes = las(2, 0, &[(0.0, 0.0, 3.0, 2), (1.0, 0.0, 4.0, 2)], Some("EPSG:32632"));
-        // A finite scale overflows only the second point's X during coordinate decoding.
+        let mut bytes = las(2, 0, &[(0.0, 0.0, 3.0, 2), (1.0, 0.0, 4.0, 2), (0.0, 0.0, 5.0, 2)], Some("EPSG:32632"));
+        // A finite scale overflows only the second point's X during coordinate decoding: the one in
+        // the middle.
         bytes[131..139].copy_from_slice(&f64::MAX.to_le_bytes());
         let (direct, report) = read_bytes(&bytes, "lossy", None).unwrap();
-        assert_eq!(direct.features.len(), 1);
+        assert_eq!(direct.features.len(), 2);
         assert!(!direct.crs_incomplete);
         assert_eq!(report.skipped, 1);
         assert_eq!(report.messages, ["lossy: one point has a coordinate that isn't a number (NaN or infinite) and was left out"]);
         let src = crate::source::open_bytes("lossy.las", bytes.clone(), None).unwrap();
-        assert_eq!(src.info().count, Some(2));
+        assert_eq!(src.info().count, Some(3));
         let (ds, report) = crate::source::materialize(src.as_ref()).unwrap();
         assert_eq!(ds.features, direct.features);
         assert!(!ds.crs_incomplete);
         assert_eq!(report.skipped, 1);
         assert_eq!(report.messages.len(), 1, "{:?}", report.messages);
-        // The sample's places stay in step with its points past the one left out.
+        // The sample's places stay in step with its points past the one left out: the point after
+        // it is found by its own place.
         let around = Extent::new(4.0, -1.0, 5.0, 1.0);
         let batch = src.read(&crate::source::Request { extent: Some(around), limit: 10, own: None }).unwrap();
-        assert_eq!(batch.features.iter().map(|f| f.id).collect::<Vec<_>>(), [0]);
+        assert_eq!(batch.features.iter().map(|f| f.id).collect::<Vec<_>>(), [0, 2]);
         bytes.truncate(bytes.len() - usize::from(RECORD_LEN[0]));
         assert!(crate::io::read_bytes("truncated.las", &bytes).is_err());
         let truncated = crate::source::open_bytes("truncated.las", bytes, None).unwrap();

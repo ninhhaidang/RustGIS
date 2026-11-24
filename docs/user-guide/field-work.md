@@ -110,7 +110,9 @@ marked with a green ring, when adding and editing alike.
 **Edit**, beside **Add** at the top of the Capture sheet, changes shapes already on the map, again
 at the cross:
 
-- **Pick Feature at Cross** picks the feature under the cross and draws its vertices.
+- **Pick Feature at Cross** picks the feature under the cross and draws its vertices. A feature
+  with a place that can't be given in longitude/latitude can't be reshaped here: a notice names it
+  and the pick ends.
 - For a line or polygon, **Pick Vertex at Cross** picks the nearest vertex. Then **Move Here**
   moves it to the cross, **Add After** adds a vertex there after it, and **Delete Vertex** removes
   it.

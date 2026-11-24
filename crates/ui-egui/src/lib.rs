@@ -154,6 +154,7 @@ pub use chrome::{DoubleClick, TitlebarMetrics};
 pub use coordreadout::{CoordReadout, MapSystem};
 pub use rustgis_assistant;
 pub use rustgis_engine;
+pub use vertexedit::unplaced_feature_notice;
 pub use widgets::big_split_menu;
 
 /// Reconciles only command-result wrappers, not parameters or other arbitrary JSON.

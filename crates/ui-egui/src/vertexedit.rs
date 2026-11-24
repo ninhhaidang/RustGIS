@@ -6,7 +6,7 @@
 use std::borrow::Cow;
 
 use egui::{Color32, Painter, Pos2, Rect, Stroke, vec2};
-use rustgis_engine::data::{Feature, Geometry, VertexId};
+use rustgis_engine::data::{Dataset, Feature, Geometry, VertexId};
 use rustgis_engine::geom::Coord;
 use serde_json::json;
 
@@ -179,6 +179,152 @@ fn targets(app: &RustGisApp) -> Vec<(u32, usize, Cow<'_, Geometry>)> {
         }
     }
     out
+}
+
+/// The most selected features [`say_unplaced`] looks for with no place in longitude/latitude: past
+/// it, the notice says "at least" so many, and the scan stops.
+const MAX_UNPLACED: usize = 1000;
+
+/// The selected features [`targets`] leaves out, by layer and row, while Edit Vertices is on:
+/// those with a place that can't be given in longitude/latitude (#2032 C2f-4b), where handles are
+/// drawn and dragged. On a map in the layer's own system such a feature is drawn and selected.
+/// Up to [`MAX_UNPLACED`] of them.
+struct Unplaced {
+    rows: Vec<(u32, usize)>,
+    /// There are more than [`MAX_UNPLACED`].
+    more: bool,
+    /// How many of each layer's selected rows the scan went through, by live layer: past them,
+    /// nothing it says depends on the selection ([`unplaced_signature`]).
+    visited: Vec<(u64, usize)>,
+}
+
+fn unplaced_targets(app: &RustGisApp) -> Unplaced {
+    let m = app.session.map();
+    // The features `targets` looks at, in its order, until it has its cap of placed ones: a
+    // feature past that gets no handles either way, so isn't counted. Each layer's conversion is
+    // made once. A row without geometry counts towards neither bound.
+    let mut found = Unplaced { rows: Vec::new(), more: false, visited: Vec::new() };
+    let mut placed = 0usize;
+    for l in m.layers.iter().filter(|l| m.shows(l) && !l.selection.is_empty() && !l.is_raster() && !l.graphics && !l.is_streamed()) {
+        let to = l.dataset.shown_conversion();
+        let mut visited = 0;
+        for r in &l.selection {
+            if placed >= MAX_FEATURES {
+                break;
+            }
+            visited += 1;
+            if let Some(g) = l.dataset.features.geometry(*r) {
+                match to.as_ref().ok().and_then(|to| Dataset::converted_to_lonlat(to, g)) {
+                    Some(_) => placed += 1,
+                    None if found.rows.len() >= MAX_UNPLACED => {
+                        found.more = true;
+                        break;
+                    }
+                    None => found.rows.push((l.id, *r)),
+                }
+            }
+        }
+        found.visited.push((l.instance_id(), visited));
+        if placed >= MAX_FEATURES || found.more {
+            break;
+        }
+    }
+    found
+}
+
+/// What [`unplaced_targets`] depends on: the map and each layer it looks at (the live layer, its
+/// replacement and geometry revisions and rows' allocation, which any mutable row access renews,
+/// its system, the map system it is shown through, and its selection: its length and the rows the
+/// last scan went through, `visited`, so a large selection isn't hashed whole each frame). While
+/// those are unchanged, the scan would go through the same rows and stop where it did, so the
+/// selection isn't converted again.
+fn unplaced_signature(app: &RustGisApp) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let m = app.session.map();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    app.session.project.active_map.hash(&mut h);
+    for l in m.layers.iter().filter(|l| m.shows(l) && !l.selection.is_empty() && !l.is_raster() && !l.graphics && !l.is_streamed()) {
+        let rows = l.dataset.features.allocation_key().as_ptr() as usize;
+        let revisions = (l.instance_id(), l.replacement_revision(), l.geometry_rev, rows);
+        let visited = app.map.vertex_unplaced_visited.iter().find(|(id, _)| *id == l.instance_id()).map_or(0, |(_, n)| *n);
+        let reached = l.selection.get(..l.selection.len().min(visited)).unwrap_or_default();
+        (revisions, l.dataset.coord_crs(), l.dataset.shown_in, l.selection.len(), reached).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// The notice for a feature whose vertices can't be edited, as `layer` holds it in `system`: one of
+/// its places can't be given in longitude/latitude (#2032 C2f-4b). The desktop's Edit Vertices and
+/// the phone's shape editing say it alike.
+pub fn unplaced_feature_notice(layer: &str, id: u64, system: &str) -> String {
+    crate::i18n::fmt(
+        "{layer}: feature {id} has a place in {system} that can't be given in longitude/latitude, so its vertices can't be edited there",
+        &[("layer", layer), ("id", &id.to_string()), ("system", system)],
+    )
+}
+
+/// Says once per selection which selected features Edit Vertices gives no handles to, in one
+/// notice: one is named, several counted ([`unplaced_targets`]). Nothing is looked at while the
+/// tool or editing is off.
+pub(crate) fn say_unplaced(app: &mut RustGisApp) {
+    if app.session.tool != rustgis_engine::Tool::EditVertices || !app.session.map().editing.settings.enabled {
+        // Coming back to the tool says the selection again.
+        app.map.vertex_unplaced_said.clear();
+        app.map.vertex_unplaced_more = false;
+        app.map.vertex_unplaced_seen = None;
+        app.map.vertex_unplaced_visited.clear();
+        return;
+    }
+    let signature = unplaced_signature(app);
+    if app.map.vertex_unplaced_seen == Some(signature) {
+        return;
+    }
+    app.map.vertex_unplaced_seen = Some(signature);
+    // The map's index and the live layer go with the features: another map's layers, or a layer
+    // added in a removed one's place, may have the same ids.
+    let map = app.session.project.active_map;
+    let Unplaced { rows: found, more, visited } = unplaced_targets(app);
+    app.map.vertex_unplaced_visited = visited;
+    let m = app.session.map();
+    let live = |id: u32| m.layer(id).map_or(0, |l| l.instance_id());
+    let left: Vec<(usize, u64, usize)> = found.iter().map(|(l, r)| (map, live(*l), *r)).collect();
+    // Whether there were more goes with them: past the bound, the count turns to "at least".
+    if (&left, more) == (&app.map.vertex_unplaced_said, app.map.vertex_unplaced_more) {
+        return;
+    }
+    let text = match (found.as_slice(), more) {
+        ([], _) => None,
+        ([(layer, r)], false) => m
+            .layer(*layer)
+            .and_then(|l| Some(unplaced_feature_notice(&l.name, l.dataset.features.row(*r)?.id(), &l.dataset.coord_crs().label()))),
+        (several, more) => {
+            let mut layers: Vec<&str> = Vec::new();
+            for (id, _) in several {
+                if let Some(l) = m.layer(*id).filter(|l| !layers.contains(&l.name.as_str())) {
+                    layers.push(&l.name);
+                }
+            }
+            let count = several.len().to_string();
+            let args = [("layers", layers.join(", ")), ("count", count)];
+            let args: Vec<(&str, &str)> = args.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            Some(if more {
+                crate::i18n::fmt(
+                    "{layers}: at least {count} of the selected features have a place that can't be given in longitude/latitude, so their vertices can't be edited there",
+                    &args,
+                )
+            } else {
+                crate::i18n::fmt(
+                    "{layers}: {count} of the selected features have a place that can't be given in longitude/latitude, so their vertices can't be edited there",
+                    &args,
+                )
+            })
+        }
+    };
+    app.map.vertex_unplaced_said = left;
+    app.map.vertex_unplaced_more = more;
+    if let Some(text) = text {
+        app.session.notify(text, true);
+    }
 }
 
 /// The screen points of an edge's ends, when both are in view.
@@ -540,6 +686,154 @@ mod tests {
         app.run("ui.moveSharedVertices", json!({"on":true})).unwrap();
         app.session.clear_history();
         app
+    }
+
+    /// A selected feature with a place that can't be given in longitude/latitude gets no handles,
+    /// and that is said once for the selection, naming it (#2032 C2f-4b); several are counted.
+    #[test]
+    fn a_selected_feature_with_no_place_in_longitude_latitude_is_said_once() {
+        let mut app = app([square(0.), square(2.), square(4.)].into_iter());
+        let id = app.session.active_layer.unwrap();
+        let utm = rustgis_engine::data::raster::Crs::from_epsg(32631).unwrap();
+        app.session.map_mut().editing.settings.enabled = true;
+        app.session.map_mut().layer_mut(id).unwrap().dataset.hold_in(utm).unwrap();
+        // Placed features: nothing to say.
+        let mark = app.session.notice_mark();
+        say_unplaced(&mut app);
+        assert!(app.session.notices_since(mark).is_empty());
+        assert_eq!(targets(&app).len(), 1);
+        let layer = app.session.map_mut().layer_mut(id).unwrap();
+        let far =
+            |x: f64| Geometry::Polygon(vec![vec![vec![Coord::new(x, 0.), Coord::new(1e9, 0.), Coord::new(x, 1.), Coord::new(x, 0.)]]]);
+        layer.dataset.features[0].geometry = Some(far(500_000.));
+        layer.touch_geometry();
+        let mark = app.session.notice_mark();
+        say_unplaced(&mut app);
+        say_unplaced(&mut app);
+        let said: Vec<String> = app.session.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("feature 0 has a place") && said[0].contains("can't be edited there"), "{said:?}");
+        assert!(targets(&app).is_empty());
+        // Two of them, selected: counted, once.
+        let layer = app.session.map_mut().layer_mut(id).unwrap();
+        layer.dataset.features[1].geometry = Some(far(500_100.));
+        layer.touch_geometry();
+        layer.selection = vec![0, 1, 2];
+        let mark = app.session.notice_mark();
+        say_unplaced(&mut app);
+        say_unplaced(&mut app);
+        let said: Vec<String> = app.session.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("2 of the selected features"), "{said:?}");
+        assert_eq!(targets(&app).len(), 1);
+    }
+
+    /// The count stops where the handles do: at their cap of placed features. With 49 placed
+    /// ones selected first, the two unplaced after them are both counted; past 50 placed, one
+    /// isn't, as it gets no handles either way.
+    #[test]
+    fn the_unplaced_count_follows_the_handles_cap() {
+        let squares = (0..53).map(|i| square(f64::from(i) * 0.05));
+        let mut app = app(squares);
+        let id = app.session.active_layer.unwrap();
+        let utm = rustgis_engine::data::raster::Crs::from_epsg(32631).unwrap();
+        app.session.map_mut().editing.settings.enabled = true;
+        let layer = app.session.map_mut().layer_mut(id).unwrap();
+        layer.dataset.hold_in(utm).unwrap();
+        let far = Geometry::Polygon(vec![vec![vec![
+            Coord::new(500_000., 0.),
+            Coord::new(1e9, 0.),
+            Coord::new(500_000., 1.),
+            Coord::new(500_000., 0.),
+        ]]]);
+        for r in [49, 50, 52] {
+            layer.dataset.features.set_geometry(r, Some(far.clone()));
+        }
+        layer.selection = (0..53).collect();
+        // 49 placed, two unplaced (49, 50), the 50th placed (51): the cap; 52 is past it.
+        let found = unplaced_targets(&app);
+        assert_eq!((found.rows, found.more), (vec![(id, 49), (id, 50)], false));
+        assert_eq!(targets(&app).len(), MAX_FEATURES);
+        let mark = app.session.notice_mark();
+        say_unplaced(&mut app);
+        let said: Vec<String> = app.session.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert!(said.len() == 1 && said[0].contains("2 of the selected features"), "{said:?}");
+        // What was said is kept with its map, so another map's layer of the same id and rows is
+        // said for itself.
+        let (map, live) = (app.session.project.active_map, app.session.map().layer(id).unwrap().instance_id());
+        assert_eq!(app.map.vertex_unplaced_said, [(map, live, 49), (map, live, 50)]);
+        // Another tool forgets it, so coming back says it again.
+        app.run("tool.set", json!({"tool": "explore"})).unwrap();
+        say_unplaced(&mut app);
+        assert!(app.map.vertex_unplaced_said.is_empty());
+        app.run("tool.set", json!({"tool": "editVertices"})).unwrap();
+        let mark = app.session.notice_mark();
+        say_unplaced(&mut app);
+        assert_eq!(app.session.notices_since(mark).len(), 1);
+    }
+
+    /// The scan stops at [`MAX_UNPLACED`] features with no place, and the notice says "at least".
+    #[test]
+    fn a_selection_with_no_place_at_all_is_counted_up_to_a_bound() {
+        let far = Geometry::Polygon(vec![vec![vec![
+            Coord::new(500_000., 0.),
+            Coord::new(1e9, 0.),
+            Coord::new(500_000., 1.),
+            Coord::new(500_000., 0.),
+        ]]]);
+        let mut app = app(std::iter::repeat_n(far, MAX_UNPLACED + 5));
+        let id = app.session.active_layer.unwrap();
+        app.session.map_mut().editing.settings.enabled = true;
+        let layer = app.session.map_mut().layer_mut(id).unwrap();
+        layer.dataset.held_in = rustgis_engine::data::raster::Crs::from_epsg(32631).unwrap();
+        layer.touch_geometry();
+        layer.selection = (0..MAX_UNPLACED + 5).collect();
+        // Exactly the bound: counted as it is.
+        app.session.map_mut().layer_mut(id).unwrap().selection = (0..MAX_UNPLACED).collect();
+        let mark = app.session.notice_mark();
+        say_unplaced(&mut app);
+        let said: Vec<String> = app.session.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert!(said.len() == 1 && said[0].contains(&format!(": {MAX_UNPLACED} of the selected")), "{said:?}");
+        // One more: the same features found, and more, which is said.
+        app.session.map_mut().layer_mut(id).unwrap().selection = (0..MAX_UNPLACED + 5).collect();
+        let found = unplaced_targets(&app);
+        assert!(found.rows.len() == MAX_UNPLACED && found.more);
+        let mark = app.session.notice_mark();
+        say_unplaced(&mut app);
+        let said: Vec<String> = app.session.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert!(said.len() == 1 && said[0].contains(&format!("at least {MAX_UNPLACED} of the selected")), "{said:?}");
+    }
+
+    /// Rows without geometry count towards neither bound, so the scan goes past them, and a change
+    /// in the selection beyond them is looked at again: a different unplaced feature there is said.
+    #[test]
+    fn an_unplaced_feature_past_rows_without_geometry_is_said_when_it_changes() {
+        let far = Geometry::Polygon(vec![vec![vec![
+            Coord::new(500_000., 0.),
+            Coord::new(1e9, 0.),
+            Coord::new(500_000., 1.),
+            Coord::new(500_000., 0.),
+        ]]]);
+        let n = MAX_FEATURES + MAX_UNPLACED + 10;
+        let mut app = app(std::iter::repeat_n(far, n + 2));
+        let id = app.session.active_layer.unwrap();
+        app.session.map_mut().editing.settings.enabled = true;
+        let layer = app.session.map_mut().layer_mut(id).unwrap();
+        layer.dataset.held_in = rustgis_engine::data::raster::Crs::from_epsg(32631).unwrap();
+        for r in 0..n {
+            layer.dataset.features.set_geometry(r, None);
+        }
+        layer.touch_geometry();
+        let said = |app: &mut RustGisApp, rows: Vec<usize>| {
+            app.session.map_mut().layer_mut(id).unwrap().selection = rows;
+            let mark = app.session.notice_mark();
+            say_unplaced(app);
+            app.session.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>()
+        };
+        let first = said(&mut app, (0..n).chain([n]).collect());
+        assert!(first.len() == 1 && first[0].contains(&format!("feature {n} has a place")), "{first:?}");
+        let second = said(&mut app, (0..n).chain([n + 1]).collect());
+        assert!(second.len() == 1 && second[0].contains(&format!("feature {} has a place", n + 1)), "{second:?}");
     }
 
     /// A held gesture scans once, retains no rows, reprojects after camera changes, and drops
