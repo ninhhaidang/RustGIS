@@ -13,6 +13,7 @@ fn curved(line: &[(f32, f32)]) -> Candidate {
         weight: 5,
         priority: 1.0,
         row: 0,
+        remove_duplicates: None,
         key: (1, 0, 0, 0),
         alternatives: Vec::new(),
         line: Some(LinePlaces::default()),

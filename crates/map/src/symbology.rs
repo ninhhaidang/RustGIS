@@ -2675,6 +2675,11 @@ pub struct LabelClass {
         skip_serializing_if = "is_default_label_clearance"
     )]
     pub clearance: f32,
+    /// Duplicates removed (#2847): within this many points (within [`LABEL_DUPLICATES`]) of a
+    /// label of another feature of its layer and class with the same text, a label is left out;
+    /// the one placed first stays. None keeps every label.
+    #[serde(default, deserialize_with = "de_label_duplicates", skip_serializing_if = "Option::is_none")]
+    pub remove_duplicates: Option<f32>,
     /// Callouts: a label crowded off its spot moves to a free one nearby, a line drawn from its
     /// feature to it at most this long (points, within [`CALLOUT_REACH`]), as QGIS's callouts;
     /// none keeps every label in its spot. Labels along lines aren't moved.
@@ -3046,6 +3051,25 @@ fn default_label_clearance() -> f32 {
 
 fn is_default_label_clearance(c: &f32) -> bool {
     *c == DEFAULT_LABEL_CLEARANCE
+}
+
+/// How far apart (points) two labels of one text must be for neither to be removed as the
+/// other's duplicate (#2847).
+pub const LABEL_DUPLICATES: std::ops::RangeInclusive<f64> = 1.0..=2000.0;
+
+/// The distance a class removes duplicates within when it is turned on in the Labeling pane.
+pub const DEFAULT_LABEL_DUPLICATES: f32 = 200.0;
+
+/// A distance to remove duplicates within: held to [`LABEL_DUPLICATES`]; NaN or infinity (which no
+/// JSON number holds) is [`DEFAULT_LABEL_DUPLICATES`]. A file's value that isn't a number at all
+/// turns it off before it gets here ([`de_label_duplicates`]).
+pub fn label_duplicates(v: f64) -> f32 {
+    if v.is_finite() { v.clamp(*LABEL_DUPLICATES.start(), *LABEL_DUPLICATES.end()) as f32 } else { DEFAULT_LABEL_DUPLICATES }
+}
+
+/// Off when it isn't a number (or is null).
+fn de_label_duplicates<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
+    Ok(lenient::<D, f64>(d)?.map(label_duplicates))
 }
 
 fn is_no_offset(o: &[f32; 2]) -> bool {
@@ -3467,6 +3491,7 @@ impl LabelClass {
             show_all: false,
             weight: DEFAULT_LABEL_WEIGHT,
             clearance: DEFAULT_LABEL_CLEARANCE,
+            remove_duplicates: None,
             callout: None,
             square_to: None,
             guide: None,

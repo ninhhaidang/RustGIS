@@ -967,10 +967,14 @@ fn square_to(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
 
 /// Where labels crowd: every one shown, over the others, rather than some left out; the class's
 /// weight, the heavier winning where labels compete; its clearance, the room its labels keep free
-/// of others; and callouts, which move a crowded label to a free spot nearby with a line back to
-/// its feature, no longer than so far.
+/// of others; whether it removes duplicates, one label of a text where its features lie closer than
+/// so far (#2847); and callouts, which move a crowded label to a free spot nearby with a line back
+/// to its feature, no longer than so far.
 fn crowding(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
-    use rustgis_engine::map::symbology::{CALLOUT_REACH, LABEL_CLEARANCE, LABEL_WEIGHT, callout_reach, label_clearance, label_weight};
+    use rustgis_engine::map::symbology::{
+        CALLOUT_REACH, DEFAULT_LABEL_DUPLICATES, LABEL_CLEARANCE, LABEL_DUPLICATES, LABEL_WEIGHT, callout_reach, label_clearance,
+        label_duplicates, label_weight,
+    };
     let id = l.id;
     grid(ui, "crowding", |ui| {
         let input_label = ui.label(tl!("Show all labels"));
@@ -1018,6 +1022,42 @@ fn crowding(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
             if drag.settled(ui, &r, &mut v) && label_clearance(v) != c.it.clearance {
                 run(app, "labels.placement", c.params(json!({"clearance": label_clearance(v)})));
             }
+        });
+        ui.end_row();
+        let input_label = ui.label(tl!("Remove duplicates"));
+        ui.horizontal(|ui| {
+            let mut on = c.it.remove_duplicates.is_some();
+            let toggled = ui
+                .checkbox(&mut on, "")
+                .labelled_by(input_label.id)
+                .on_hover_text(tl!("Draw one label of a text where features of this class with the same text lie closer than this."))
+                .changed();
+            if toggled {
+                let within = if on { json!(DEFAULT_LABEL_DUPLICATES) } else { json!(false) };
+                run(app, "labels.placement", c.params(json!({"removeDuplicates": within})));
+            }
+            let Some(within) = c.it.remove_duplicates else { return };
+            // As the clearance: scoped to its layer and class, written when let go (#2847).
+            ui.push_id(("label_duplicates", l.instance_id(), c.name), |ui| {
+                let mut v = f64::from(within);
+                let drag = crate::widgets::Dragged::lend(ui, egui::Id::unique(("label_duplicates_drag", l.instance_id(), c.name)), &mut v);
+                let r = ui
+                    .add(
+                        egui::DragValue::new(&mut v)
+                            .update_while_editing(false)
+                            .range(LABEL_DUPLICATES)
+                            .speed(1.0)
+                            .max_decimals(0)
+                            .prefix(format!("{} ", tl!("within")))
+                            .suffix(" pt"),
+                    )
+                    .labelled_by(input_label.id)
+                    .on_hover_text(tl!("How close two labels of one text may be before the one placed later is left out."));
+                // An edit that ends in the frame the box changes yields to the box (#2847).
+                if drag.settled(ui, &r, &mut v) && !toggled && label_duplicates(v) != within {
+                    run(app, "labels.placement", c.params(json!({"removeDuplicates": label_duplicates(v)})));
+                }
+            });
         });
         ui.end_row();
         let input_label = ui.label(tl!("Callouts"));
@@ -1771,6 +1811,92 @@ mod tests {
         let m = h.state().session.map();
         assert_eq!((m.layer(cities).unwrap().labels.default.clearance, m.layer(rivers).unwrap().labels.default.clearance), (before, 2.0));
         assert_eq!(h.state().session.undo_depth(), steps, "nothing to undo");
+    }
+
+    /// A label class removes its duplicates from Position, under Clearance (#2847): ticked, within
+    /// 200 points; a distance typed, or dragged and let go in one step; unticked, off again.
+    #[test]
+    fn duplicate_labels_are_removed_from_the_pane() {
+        use egui::accesskit::Role;
+        let mut h = harness(with_cities());
+        h.run();
+        let cities = layer_id(h.state(), "Cities");
+        h.state_mut().session.run("layer.select", &json!({"layer": cities})).unwrap();
+        h.run();
+        open_tab(&mut h, "Position");
+        let within = |h: &egui_kittest::Harness<'_, RustGisApp>| {
+            h.state().session.map().layer_by_name("Cities").unwrap().labels.default.remove_duplicates
+        };
+        assert_eq!(within(&h), None);
+        assert!(h.query_by_role_and_label(Role::SpinButton, "Remove duplicates").is_none(), "no distance while off");
+        h.get_by_role_and_label(Role::CheckBox, "Remove duplicates").click();
+        h.run();
+        assert_eq!(within(&h), Some(200.0), "ticked: within 200 points");
+        h.get_by_role_and_label(Role::SpinButton, "Remove duplicates").focus();
+        h.run();
+        h.get_by_role_and_label(Role::SpinButton, "Remove duplicates").type_text("350");
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(within(&h), Some(350.0));
+        // Dragged right over several frames, then let go: more, in one step.
+        let steps = h.state().session.undo_depth();
+        let at = h.get_by_role_and_label(Role::SpinButton, "Remove duplicates").rect().center();
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.event(egui::Event::PointerMoved(at));
+        h.step();
+        h.event(button(at, true));
+        h.step();
+        for i in 1..=10 {
+            h.event(egui::Event::PointerMoved(at + egui::vec2(4.0 * i as f32, 0.0)));
+            h.step();
+        }
+        h.event(button(at + egui::vec2(40.0, 0.0), false));
+        h.step();
+        h.run();
+        assert!(within(&h).is_some_and(|d| d > 350.0), "dragged further: {:?}", within(&h));
+        assert_eq!(h.state().session.undo_depth(), steps + 1, "a drag is one step");
+        h.get_by_role_and_label(Role::CheckBox, "Remove duplicates").click();
+        h.run();
+        assert_eq!(within(&h), None, "unticked: off");
+    }
+
+    /// Unticked while a typed distance is still being edited (#2847): the click that ends the edit
+    /// leaves removal off, not back on at the typed distance.
+    #[test]
+    fn unticking_remove_duplicates_mid_edit_leaves_it_off() {
+        use egui::accesskit::Role;
+        let mut h = harness(with_cities());
+        h.run();
+        let cities = layer_id(h.state(), "Cities");
+        h.state_mut().session.run("layer.select", &json!({"layer": cities})).unwrap();
+        h.state_mut().session.run("labels.placement", &json!({"layer": cities, "removeDuplicates": 200})).unwrap();
+        h.run();
+        open_tab(&mut h, "Position");
+        h.get_by_role_and_label(Role::SpinButton, "Remove duplicates").focus();
+        h.run();
+        h.get_by_role_and_label(Role::SpinButton, "Remove duplicates").type_text("350");
+        h.run();
+        // The box pressed and let go in one frame: the edit ends in the frame the box changes.
+        let at = h.get_by_role_and_label(Role::CheckBox, "Remove duplicates").rect().center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.event(egui::Event::PointerMoved(at));
+        h.step();
+        h.event(button(true));
+        h.event(button(false));
+        h.step();
+        h.run();
+        let within = h.state().session.map().layer_by_name("Cities").unwrap().labels.default.remove_duplicates;
+        assert_eq!(within, None, "unticked: off");
     }
 
     /// A line layer's labels can try other places along the line (#1187): the box is there for a

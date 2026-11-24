@@ -659,6 +659,16 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   only, not an icon; vector tile labels keep their style's own padding
   (`labels.placement={"layer": "Rivers", "clearance": 10}`; a number past 0 or 100 is brought to
   it, with a notice; `null` is 2).
+- **Remove duplicates** (Labeling pane › Position): one label of a text where features of a class
+  with the same text lie closer than a distance, in points (1 to 2000, 200 when ticked). A street
+  split into many features gets one name in that distance rather than one per piece. The label
+  placed first stays (the heavier class's, then the layer above); the others take no room, so
+  other labels can use it, and View Unplaced doesn't show them. Only labels of the same layer and
+  class are compared, by their text as drawn (case counts); a line's repeated labels aren't
+  duplicates, and a label moved by hand always shows. With labels locked, the locked labels all
+  show again, also where zooming out brings two of them closer (`labels.placement={"layer": "Streets",
+  "removeDuplicates": 300}`; a number past 1 or 2000 is brought to it, with a notice; `false` or
+  `null` turns it off).
 - **Callouts** (Labeling pane › Position): a label crowded off its spot moves to the nearest free
   spot nearby, and a line is drawn from its feature to the text, as QGIS's callouts. **at most**
   sets how long the line may be (5 to 500 points, 40 to start with): a label with no free spot
@@ -679,7 +689,8 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   and undo restoration. Opening a project, importing a map or styles, or adding a layer file
   reports invalid, duplicate or excess moved-label entries that were ignored, callout lengths that
   were adjusted, label weights that were not a whole number from 0 to 10, label clearances that
-  were not a number from 0 to 100 points, and Show all labels settings that were not true or
+  were not a number from 0 to 100 points, label duplicate distances that were not a number from 1
+  to 2000 points, and Show all labels settings that were not true or
   false. A callout length given
   to `labels.placement` outside 5 to 500 points is brought within range with a notice. Clean
   settings give no such notice.

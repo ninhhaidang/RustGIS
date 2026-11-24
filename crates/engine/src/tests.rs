@@ -9490,6 +9490,133 @@ fn saved_label_clearances_are_required_by_name() {
     assert_eq!(serde_json::to_value(&s.project).unwrap()["requires"], json!(["label-clearance"]));
 }
 
+/// A label class removes its duplicates within some points (#2847), 1 to 2000, off by default. A
+/// fraction is kept; a number out of range is held and said, junk refused, false or null turns it
+/// off. It undoes in one step, keeps a lock, is saved only when on, and then requires
+/// `label-duplicates`, which an older reader refuses rather than drop.
+#[test]
+fn a_label_class_removes_duplicates_within_a_distance() {
+    let mut s = world();
+    let id = s.map().layer_by_name("Cities").unwrap().id;
+    let within = |s: &Session| {
+        let l = &s.map().layer(id).unwrap().labels;
+        (l.default.remove_duplicates, l.classes.first().map(|c| c.remove_duplicates))
+    };
+    let said = |s: &Session, mark| s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>();
+    assert_eq!(within(&s), (None, None));
+    let mark = s.notice_mark();
+    s.run("labels.placement", &json!({"layer": "Cities", "removeDuplicates": 200})).unwrap();
+    assert_eq!(within(&s), (Some(200.0), None));
+    assert!(said(&s, mark).is_empty(), "{:?}", said(&s, mark));
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(within(&s), (None, None), "undoes");
+    // A fraction is kept, as a text number is read.
+    s.run("labels.placement", &json!({"layer": "Cities", "removeDuplicates": 2.5})).unwrap();
+    assert_eq!(within(&s).0, Some(2.5));
+    s.run("labels.placement", &json!({"layer": "Cities", "removeDuplicates": "300"})).unwrap();
+    assert_eq!(within(&s).0, Some(300.0));
+    for (given, kept, note) in
+        [(json!(5000), 2000.0, "removeDuplicates 5000 adjusted to 2000"), (json!(0), 1.0, "removeDuplicates 0 adjusted to 1")]
+    {
+        let mark = s.notice_mark();
+        s.run("labels.placement", &json!({"layer": "Cities", "removeDuplicates": given})).unwrap();
+        assert_eq!(within(&s).0, Some(kept), "{given}");
+        let notes = said(&s, mark);
+        assert!(notes.iter().any(|n| n.contains(note)), "{given}: {notes:?}");
+    }
+    for bad in [json!("near"), json!(true), json!([1])] {
+        let err = s.run("labels.placement", &json!({"layer": "Cities", "removeDuplicates": bad})).unwrap_err();
+        assert!(err.contains("removeDuplicates must be a number of points from 1 to 2000 (false or null: off)"), "{bad}: {err}");
+    }
+    for off in [json!(false), json!(null)] {
+        s.run("labels.placement", &json!({"layer": "Cities", "removeDuplicates": 50})).unwrap();
+        s.run("labels.placement", &json!({"layer": "Cities", "removeDuplicates": off})).unwrap();
+        assert_eq!(within(&s), (None, None), "{off}: off");
+    }
+    // The class named, not Default.
+    s.run("labels.class.add", &json!({"layer": "Cities", "name": "Big"})).unwrap();
+    s.run("labels.placement", &json!({"layer": "Cities", "class": "Big", "removeDuplicates": 120})).unwrap();
+    assert_eq!(within(&s), (None, Some(Some(120.0))));
+    // A lock holds: the labels it keeps stay where they are.
+    let key = (id, 0, 0, 0);
+    s.map_mut().label_lock = Some(vec![(key, rustgis_map::LockedPlace { place: 0, callout: None })]);
+    s.run("labels.placement", &json!({"layer": "Cities", "class": "Big", "removeDuplicates": 150})).unwrap();
+    assert!(s.map().label_lock.is_some(), "removing duplicates keeps the lock");
+    // Saved, it requires `label-duplicates`, and reads back.
+    let saved = serde_json::to_value(&s.project).unwrap();
+    assert_eq!(saved["requires"], json!(["label-duplicates"]));
+    let read = Project::from_json(&saved.to_string()).unwrap();
+    let layer = read.maps[0].layers.iter().find(|l| l.id == id).unwrap();
+    assert_eq!(layer.labels.classes[0].remove_duplicates, Some(150.0));
+    // Off everywhere: nothing to require, and nothing saved.
+    s.run("labels.placement", &json!({"layer": "Cities", "class": "Big", "removeDuplicates": false})).unwrap();
+    let saved = serde_json::to_value(&s.project).unwrap();
+    assert!(saved.get("requires").is_none());
+    assert!(!saved.to_string().contains("remove_duplicates"), "off isn't written");
+    // The fixture (`label_duplicates.rgis`) reads back as saved, saying nothing.
+    let mut fixture = Project::from_json(include_str!("../../../schema/fixtures/label_duplicates.rgis")).unwrap();
+    assert_eq!(fixture.maps[0].layers[0].labels.default.remove_duplicates, Some(150.0));
+    assert!(fixture.take_read_notices(&crate::project::ALL_PARTS).is_empty());
+    assert_eq!(serde_json::to_value(&fixture).unwrap()["requires"], json!(["label-duplicates"]));
+    // A distance out of range or junk in a file is held or dropped, and said once.
+    let mut damaged = serde_json::to_value(&world().project).unwrap();
+    damaged["maps"][0]["layers"][0]["labels"]["remove_duplicates"] = json!(9999);
+    damaged["maps"][0]["layers"][1]["labels"]["remove_duplicates"] = json!("x");
+    // False is off, as the command has it: nothing to say.
+    damaged["maps"][0]["layers"][2]["labels"]["remove_duplicates"] = json!(false);
+    let read = Session::new(Project::from_json(&damaged.to_string()).unwrap());
+    assert_eq!(read.map().layers[0].labels.default.remove_duplicates, Some(2000.0));
+    assert_eq!(read.map().layers[1].labels.default.remove_duplicates, None);
+    assert_eq!(read.map().layers[2].labels.default.remove_duplicates, None);
+    let notes: Vec<_> = read.notices.iter().filter(|n| n.text.contains("duplicate")).map(|n| n.text.clone()).collect();
+    assert!(notes.len() == 1 && notes[0].contains("2 label duplicate distance(s)"), "{notes:?}");
+}
+
+/// Removing duplicates saved in a task, a model's step or a script, or in a saved style, also
+/// requires `label-duplicates`: an older reader would run the step, or apply the style, without
+/// it, saying nothing (#2847). False or null needs nothing: that is what an older reader keeps.
+#[test]
+fn saved_label_duplicate_removal_is_required_by_name() {
+    let s = world();
+    let with_task = |params: Value| {
+        let mut project = s.project.clone();
+        project.tasks = vec![
+            serde_json::from_value(
+                json!({"name": "Dedupe", "steps": [{"title": "Dedupe", "command": "labels.placement", "params": params}]}),
+            )
+            .unwrap(),
+        ];
+        serde_json::to_value(&project).unwrap().get("requires").cloned()
+    };
+    for within in [json!(200), json!("200"), json!(2.5), json!(0), json!(5000)] {
+        assert_eq!(
+            with_task(json!({"layer": "Cities", "position": "above", "removeDuplicates": within})),
+            Some(json!(["label-duplicates"])),
+            "{within}"
+        );
+    }
+    for nothing in [
+        json!({"layer": "Cities", "removeDuplicates": false}),
+        json!({"layer": "Cities", "removeDuplicates": null}),
+        json!({"layer": "Cities", "position": "above"}),
+    ] {
+        assert_eq!(with_task(nothing.clone()), None, "{nothing}");
+    }
+    // In a script, too.
+    let script = json!({"script": "labels.placement {\"layer\": \"Cities\", \"removeDuplicates\": 90}"});
+    let mut project = s.project.clone();
+    project.tasks = vec![
+        serde_json::from_value(json!({"name": "Script", "steps": [{"title": "Run", "command": "script.run", "params": script}]})).unwrap(),
+    ];
+    assert_eq!(serde_json::to_value(&project).unwrap()["requires"], json!(["label-duplicates"]));
+    // A saved style keeps the setting its layer had.
+    let mut s = world();
+    s.run("labels.placement", &json!({"layer": "Cities", "removeDuplicates": 200})).unwrap();
+    s.run("style.new", &json!({"layer": "Cities", "name": "Deduped"})).unwrap();
+    s.run("labels.placement", &json!({"layer": "Cities", "removeDuplicates": null})).unwrap();
+    assert_eq!(serde_json::to_value(&s.project).unwrap()["requires"], json!(["label-duplicates"]));
+}
+
 /// A label class takes an offset with its placement and a background with its text symbol; junk
 /// is refused, numbers kept within their ranges, and each change undoes.
 #[test]

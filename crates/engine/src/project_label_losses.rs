@@ -83,6 +83,8 @@ struct Class {
     #[serde(default)]
     clearance: Option<serde_json::Value>,
     #[serde(default)]
+    remove_duplicates: Option<serde_json::Value>,
+    #[serde(default)]
     stretch: Option<serde_json::Value>,
 }
 
@@ -103,6 +105,8 @@ struct Labels {
     weight: Option<serde_json::Value>,
     #[serde(default)]
     clearance: Option<serde_json::Value>,
+    #[serde(default)]
+    remove_duplicates: Option<serde_json::Value>,
     #[serde(default)]
     square_to: Option<serde_json::Value>,
     #[serde(default)]
@@ -170,6 +174,15 @@ fn adjusted_weight(value: Option<&serde_json::Value>) -> bool {
 /// number); null is 2.
 fn adjusted_clearance(value: Option<&serde_json::Value>) -> bool {
     value.is_some_and(|v| !v.is_null() && v.as_f64().is_none_or(|n| !rustgis_map::symbology::LABEL_CLEARANCE.contains(&n)))
+}
+
+/// A distance to remove duplicate labels within (#2847) that isn't a number from 1 to 2000 (held to
+/// it, or off when it isn't a number); null and false are off, as the command has them.
+fn adjusted_duplicates(value: Option<&serde_json::Value>) -> bool {
+    value.is_some_and(|v| {
+        !matches!(v, serde_json::Value::Null | serde_json::Value::Bool(false))
+            && v.as_f64().is_none_or(|n| !rustgis_map::symbology::LABEL_DUPLICATES.contains(&n))
+    })
 }
 
 /// How much of its line a fitted label is spread over (#2265) that isn't a number (read as the
@@ -266,7 +279,7 @@ fn count<'a>(
     let name = crate::project::short_name(name);
     let mut classes = ClassLosses::default();
     let (mut moves, mut callouts, mut offsets, mut flags, mut squares, mut stretches) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
-    let (mut guides, mut weights, mut clearances) = (0usize, 0usize, 0usize);
+    let (mut guides, mut weights, mut clearances, mut duplicates) = (0usize, 0usize, 0usize, 0usize);
     let mut diagrams = rustgis_map::diagram::DiagramAudit::default();
     for layer in raw {
         diagrams = diagrams.plus(layer.diagram);
@@ -278,6 +291,7 @@ fn count<'a>(
         flags = flags.saturating_add(usize::from(damaged_flag(labels.show_all.as_ref())));
         weights = weights.saturating_add(usize::from(adjusted_weight(labels.weight.as_ref())));
         clearances = clearances.saturating_add(usize::from(adjusted_clearance(labels.clearance.as_ref())));
+        duplicates = duplicates.saturating_add(usize::from(adjusted_duplicates(labels.remove_duplicates.as_ref())));
         squares = squares.saturating_add(usize::from(adjusted_square_to(labels.square_to.as_ref())));
         guides = guides.saturating_add(usize::from(dropped_guide(labels.guide.as_ref())));
         stretches = stretches.saturating_add(usize::from(adjusted_stretch(labels.stretch.as_ref())));
@@ -288,6 +302,7 @@ fn count<'a>(
             flags = flags.saturating_add(usize::from(damaged_flag(class.show_all.as_ref())));
             weights = weights.saturating_add(usize::from(adjusted_weight(class.weight.as_ref())));
             clearances = clearances.saturating_add(usize::from(adjusted_clearance(class.clearance.as_ref())));
+            duplicates = duplicates.saturating_add(usize::from(adjusted_duplicates(class.remove_duplicates.as_ref())));
             squares = squares.saturating_add(usize::from(adjusted_square_to(class.square_to.as_ref())));
             guides = guides.saturating_add(usize::from(dropped_guide(class.guide.as_ref())));
             stretches = stretches.saturating_add(usize::from(adjusted_stretch(class.stretch.as_ref())));
@@ -315,6 +330,11 @@ fn count<'a>(
     }
     if clearances > 0 {
         messages.push(format!("{name}: {clearances} label clearance(s) not a number from 0 to 100 points adjusted while opening {what}"));
+    }
+    if duplicates > 0 {
+        messages.push(format!(
+            "{name}: {duplicates} label duplicate distance(s) not a number from 1 to 2000 points adjusted or turned off while opening {what}"
+        ));
     }
     if squares > 0 {
         messages.push(format!(

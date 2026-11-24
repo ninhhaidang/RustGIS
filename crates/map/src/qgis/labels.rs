@@ -322,6 +322,7 @@ fn class(
         show_all: false,
         weight: crate::symbology::DEFAULT_LABEL_WEIGHT,
         clearance: crate::symbology::DEFAULT_LABEL_CLEARANCE,
+        remove_duplicates: None,
         callout: None,
         square_to: None,
         guide: None,

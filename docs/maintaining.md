@@ -176,6 +176,10 @@ Likewise a label class keeping other than 2 points free round its labels (`label
 step: an older reader would place the labels 2 points apart and save them again without the
 clearances, or run the step without it.
 
+A label class removing duplicates (`labels.placement` with a `removeDuplicates` distance) requires
+`label-duplicates`, in a layer, a saved style or a saved `labels.placement` step: an older reader
+would place and save every label, or run the step without it.
+
 Projects with an ink on a legend, colorbar, table or chart (`color` on those elements) require
 `layout-element-ink`, so an older reader refuses them instead of drawing those elements in dark
 grey and saving them again without it. Saved `layout.addElement` and `layout.update` commands
