@@ -52375,6 +52375,116 @@ fn calculate_field_bulk_edit_keeps_validation_archive_and_undo() {
     assert_eq!(values(&s), [V::Int(2), V::Int(2), V::Int(4)]);
 }
 
+/// Calculate Field's preview refuses a row exactly when Calculate on that row alone is refused,
+/// with its error word for word (#2837): a domain, an allowed combination and a constraint rule,
+/// checked after the calculation rules (a rule writing a field the domain then refuses), and a rule
+/// reading `@row_number`, which the preview's one-row copy reads as the layer's row. A field the
+/// calculation doesn't change isn't checked against its domain, so a layer with only such a domain
+/// refuses none.
+#[test]
+fn calculate_field_preview_refuses_what_calculate_refuses() {
+    let layer = || {
+        let mut s = Session::new(Project::default());
+        let features: Vec<Value> = [1, 2, 3]
+            .map(|n| {
+                json!({"type": "Feature", "properties": {"n": n, "m": 0, "kind": "a", "legacy": 9}, "geometry": {"type": "Point", "coordinates": [n, 0]}})
+            })
+            .to_vec();
+        let points = json!({"type": "FeatureCollection", "features": features});
+        s.run("layer.addDataText", &json!({"fileName": "calc.geojson", "text": points.to_string()})).unwrap();
+        // A value set before its domain: not checked while the calculation leaves it alone.
+        s.run("data.domain", &json!({"layer": "calc", "field": "legacy", "min": 1, "max": 5, "force": true})).unwrap();
+        s
+    };
+    // Each case: its check, the expression, and the row index (0 to 2) it refuses, if any.
+    let cases: Vec<(&str, Value, &str, Option<usize>)> = vec![
+        ("untouched domain", Value::Null, "n + 10", None),
+        ("domain", json!({"cmd": "data.domain", "p": {"layer": "calc", "field": "n", "min": 0, "max": 4}}), "n + 2", Some(2)),
+        (
+            "combination",
+            json!({"cmd": "data.contingentValues", "p": {"layer": "calc", "name": "N by kind", "fields": ["n", "kind"], "combos": [[2, "a"], [4, "a"]]}}),
+            "n + 1",
+            Some(1),
+        ),
+        (
+            "constraint",
+            json!({"cmd": "data.attributeRule", "p": {"layer": "calc", "name": "Not two", "kind": "constraint", "expression": "n <> 2"}}),
+            "n + 1",
+            Some(0),
+        ),
+        (
+            "row number",
+            json!({"cmd": "data.attributeRule", "p": {"layer": "calc", "name": "Second", "kind": "constraint", "expression": "@row_number <> 2"}}),
+            "n",
+            Some(1),
+        ),
+    ];
+    for (name, check, expression, refuses) in cases {
+        let mut s = layer();
+        if let Some(cmd) = check["cmd"].as_str() {
+            s.run(cmd, &check["p"]).unwrap();
+        }
+        let id = s.map().layer_by_name("calc").unwrap().id;
+        let l = s.map().layer(id).unwrap();
+        let n = l.dataset.field_index("n").unwrap();
+        let previewed = crate::cmd::edit::preview_calculation(expression, &l.dataset, n, &[0, 1, 2], Some(&l.design)).unwrap();
+        let refused: Vec<Option<String>> = previewed.into_iter().map(|p| p.refused).collect();
+        let ran: Vec<Option<String>> = (0..3)
+            .map(|row| {
+                let mut s = layer();
+                if let Some(cmd) = check["cmd"].as_str() {
+                    s.run(cmd, &check["p"]).unwrap();
+                }
+                s.run("select.rows", &json!({"layer": "calc", "rows": [row]})).unwrap();
+                s.run("edit.calculateField", &json!({"layer": "calc", "field": "n", "expression": expression})).err()
+            })
+            .collect();
+        assert_eq!(refused, ran, "{name}");
+        let refused_rows: Vec<usize> = (0..3).filter(|r| ran[*r].is_some()).collect();
+        assert_eq!(refused_rows, refuses.into_iter().collect::<Vec<usize>>(), "{name}: the row refused");
+    }
+    // A calculation rule writing a field whose domain then refuses it: checked after the rule.
+    let mut s = layer();
+    s.run("data.domain", &json!({"layer": "calc", "field": "m", "min": 0, "max": 25})).unwrap();
+    s.run("data.attributeRule", &json!({"layer": "calc", "name": "Tens", "kind": "calculation", "field": "m", "expression": "n * 10"}))
+        .unwrap();
+    let l = s.map().layer_by_name("calc").unwrap();
+    let n = l.dataset.field_index("n").unwrap();
+    let previewed = crate::cmd::edit::preview_calculation("n + 1", &l.dataset, n, &[0, 1], Some(&l.design)).unwrap();
+    assert_eq!(previewed[0].refused, None, "2 makes 20");
+    s.run("select.rows", &json!({"layer": "calc", "rows": [1]})).unwrap();
+    let ran = s.run("edit.calculateField", &json!({"layer": "calc", "field": "n", "expression": "n + 1"})).unwrap_err();
+    assert_eq!(previewed[1].refused.as_deref(), Some(ran.as_str()), "3 makes 30");
+    // A calculation rule reading `@row_number` reads the layer's row in the preview's copy too.
+    let ruled = || {
+        let mut s = layer();
+        s.run("data.domain", &json!({"layer": "calc", "field": "m", "min": 0, "max": 15})).unwrap();
+        s.run(
+            "data.attributeRule",
+            &json!({"layer": "calc", "name": "Place", "kind": "calculation", "field": "m", "expression": "@row_number * 10"}),
+        )
+        .unwrap();
+        s
+    };
+    let s = ruled();
+    let l = s.map().layer_by_name("calc").unwrap();
+    let n = l.dataset.field_index("n").unwrap();
+    let refused: Vec<Option<String>> = crate::cmd::edit::preview_calculation("n", &l.dataset, n, &[0, 1], Some(&l.design))
+        .unwrap()
+        .into_iter()
+        .map(|p| p.refused)
+        .collect();
+    let ran: Vec<Option<String>> = (0..2)
+        .map(|row| {
+            let mut s = ruled();
+            s.run("select.rows", &json!({"layer": "calc", "rows": [row]})).unwrap();
+            s.run("edit.calculateField", &json!({"layer": "calc", "field": "n", "expression": "n"})).err()
+        })
+        .collect();
+    assert_eq!(refused, ran, "the rule reads the row's place");
+    assert_eq!(ran.iter().map(Option::is_some).collect::<Vec<_>>(), [false, true], "row 1 makes 10, row 2 makes 20");
+}
+
 /// Calculate Field keeps a decimal result as it is in a decimal field, rather than rounding it to
 /// the six places its text shows, and says what a whole-number field cuts: a fraction, or a number
 /// past the 64-bit range (null). Results the field holds give no notice.

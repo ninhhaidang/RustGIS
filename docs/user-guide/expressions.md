@@ -244,9 +244,13 @@ invalid (`pop_x`: no field named 'pop_x'). Once it reads, a line under the box p
 expression gives in the first three selected rows, or the first three rows when none is selected,
 as the chosen field holds it and the attribute table shows it, with what writing it loses:
 `Preview: 2 (fraction dropped) · <Null> (a division by zero) · 6`. Only those rows are evaluated,
-and nothing changes until **Calculate** is clicked. The layer's checks (domains, allowed
-combinations of values, constraint rules) and its calculation rules still run then, so a value the
-preview shows can still be refused.
+and nothing changes until **Calculate** is clicked. On a layer, each previewed row also runs the
+layer's calculation rules and checks (domains, allowed combinations of values, constraint rules) as
+Calculate would, and a row they would refuse says so in Calculate's words:
+`Preview: 15 · 30 · 45 (refused: 45 isn't allowed in v (its domain))`. Calculate refuses the whole
+edit when any of its rows is refused, so rows the preview doesn't show can still refuse it. An area
+the edit reads that is ambiguous refuses it too, and the preview doesn't say so, even for a row it
+shows.
 
 A `(` typed closes itself, the cursor inside, unless text follows it or it's in a text or a field
 name; so does a `'` or `"` where a value can start (at the start, after a space, `(`, `,` or an

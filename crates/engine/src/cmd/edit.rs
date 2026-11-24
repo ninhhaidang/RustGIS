@@ -1778,32 +1778,67 @@ pub fn check_calculation(expr: &str, ds: &rustgis_data::Dataset) -> Result<(), S
     Calculation::parse(expr, ds).map(|_| ())
 }
 
-/// One row of a Calculate Field preview: the value the field would get, and what writing it
-/// loses, the kind the run's notices count.
+/// One row of a Calculate Field preview: the value the field would get, what writing it loses,
+/// the kind the run's notices count, and the layer's check that would refuse the edit (#2837).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CalculationPreview {
     pub row: usize,
     pub value: Value,
     pub lost: Option<PreviewLoss>,
+    /// What the run would refuse the edit with, when the layer's checks refuse this row: its
+    /// error, word for word, for the checks the preview runs. An edit whose area reads are
+    /// ambiguous is refused before them, with that error instead, which the preview doesn't give.
+    pub refused: Option<String>,
 }
 
 /// What Calculate Field would write with `expr` into field `field` of `rows` (rows past the end
-/// left out), parsed once as [`check_calculation`] reads it: the error is the same.
+/// left out), parsed once as [`check_calculation`] reads it: the error is the same. With a
+/// layer's `design`, each row also says which of its checks would refuse it: its calculation
+/// rules, then its domains, allowed combinations and constraint rules, run as an edit runs them
+/// (`apply_with`, in `design`) on a copy of that row alone, its value written, which reads
+/// `@row_number` as the layer's row. The copy holds that row alone, with the layer's fields and
+/// coordinate system: nothing else of the layer is copied. Not previewed: an edit refused because
+/// an area it reads is ambiguous, which needs the whole edit's geometry.
 pub fn preview_calculation(
     expr: &str,
     ds: &rustgis_data::Dataset,
     field: usize,
     rows: &[usize],
+    design: Option<&rustgis_map::design::Design>,
 ) -> Result<Vec<CalculationPreview>, String> {
+    use rustgis_map::design::RuleKind;
     let calc = Calculation::parse(expr, ds)?;
     let ty = ds.fields.get(field).map(|f| f.ty).ok_or("no field")?;
+    // Only these can refuse a row: a layer with calculation rules alone refuses none.
+    let layer_checks =
+        design.filter(|d| !d.domains.is_empty() || !d.contingent.is_empty() || d.rules.iter().any(|r| r.kind == RuleKind::Constraint));
+    // The layer's fields, which its rules are read against, and its constraint rules: only for a
+    // layer with checks.
+    let prepared = layer_checks.map(|d| {
+        let metadata = rustgis_data::Dataset::new(ds.name.clone(), ds.geometry_type, ds.fields.clone());
+        let constraints = super::design::constraint_rules(d, &metadata);
+        (d, metadata, constraints)
+    });
+    // What the layer's checks would refuse the edit of `row` with, `value` written.
+    let refusal_of = |row: usize, value: &Value| {
+        let (d, metadata, constraints) = prepared.as_ref()?;
+        let before = ds.features.row(row)?.to_feature();
+        // Shares the layer's rows (an `Arc`) until `one.features` is replaced on the next line, so
+        // no row of the layer is copied: keep that replacement before any change to `one`.
+        let mut one = ds.clone();
+        one.features = vec![before.clone()].into();
+        one.features.set_value(0, field, value.clone());
+        let _ = super::design::calculation_rules(d, &mut one, metadata, &[0], row);
+        super::design::refusal(d, &one, constraints, 0, Some(&before), row)
+    };
     Ok(rows
         .iter()
         .filter(|r| **r < ds.features.len())
         .map(|&row| {
             let Held { value, cut, other } = held(calc.eval_or_fault(ds, row), ty);
+            let refusal = refusal_of(row, &value);
             // The error is why the value is null; a cut alone says what it took.
-            CalculationPreview { row, value, lost: other.or(cut).and_then(Loss::previewed) }
+            CalculationPreview { row, value, lost: other.or(cut).and_then(Loss::previewed), refused: refusal }
         })
         .collect())
 }
@@ -1863,8 +1898,20 @@ impl Calculation {
 
     /// Row `r`'s result, with the error that made it null, if one did.
     pub(crate) fn eval_or_fault(&self, ds: &rustgis_data::Dataset, r: usize) -> (Value, Option<rustgis_data::query::Fault>) {
+        self.eval_or_fault_at(ds, r, 0)
+    }
+
+    /// [`Calculation::eval_or_fault`] for a row with `offset` rows before `ds`'s first in its
+    /// layer ([`rustgis_data::query::value_or_fault_at`]). `Calc` reads no row number, so it takes
+    /// no offset.
+    pub(crate) fn eval_or_fault_at(
+        &self,
+        ds: &rustgis_data::Dataset,
+        r: usize,
+        offset: usize,
+    ) -> (Value, Option<rustgis_data::query::Fault>) {
         match self {
-            Calculation::Expr(e) => rustgis_data::query::value_or_fault(e, ds, r, &rustgis_data::query::Env::default()),
+            Calculation::Expr(e) => rustgis_data::query::value_or_fault_at(e, ds, r, &rustgis_data::query::Env::default(), offset),
             Calculation::Calc(c) => c.eval_or_fault(ds, r),
         }
     }
@@ -2228,7 +2275,7 @@ mod tests {
         }
         let (n, whole, day) = (0, 1, 3);
         let preview = |e: &str, field: usize, rows: &[usize]| -> Vec<(usize, Value, Option<PreviewLoss>)> {
-            let previewed = preview_calculation(e, &ds, field, rows).unwrap_or_else(|e| panic!("{e}"));
+            let previewed = preview_calculation(e, &ds, field, rows, None).unwrap_or_else(|e| panic!("{e}"));
             previewed.into_iter().map(|p| (p.row, p.value, p.lost)).collect()
         };
         // The rows asked for, in their order; a clean result loses nothing.
@@ -2251,8 +2298,8 @@ mod tests {
         assert_eq!(preview("n", n, &[]), vec![]);
         assert_eq!(preview("n", n, &[3, 4, 99]), vec![(3, Value::Float(4.0), None)]);
         // An expression that doesn't read: the check's error.
-        assert_eq!(preview_calculation("nosuch * 2", &ds, n, &[0]), Err(check_calculation("nosuch * 2", &ds).unwrap_err()));
-        assert!(preview_calculation("n", &ds, 9, &[0]).is_err(), "no such field");
+        assert_eq!(preview_calculation("nosuch * 2", &ds, n, &[0], None), Err(check_calculation("nosuch * 2", &ds).unwrap_err()));
+        assert!(preview_calculation("n", &ds, 9, &[0], None).is_err(), "no such field");
     }
 
     /// The run's notices still count each loss as before the preview shared their reading: a

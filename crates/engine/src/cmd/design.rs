@@ -227,11 +227,6 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
         }
     }
     let rows: Vec<usize> = changes.iter().filter_map(|c| c.row).collect();
-    // What each calculation rule's whole-number field cut: the rule and the field's name. Each
-    // rule's cuts are said, even when a later rule writes the same field: it may read them.
-    // With them, per rule, the results its field couldn't hold and those an error made null
-    // (`WriteLosses`), and its type.
-    let mut cuts: Vec<(String, String, super::edit::WriteLosses, FieldType)> = Vec::new();
     // Parsing against the fields separates a measurement failure from a stale rule. The latter
     // may still be skipped below, but an ambiguous area must never disable a valid rule.
     let metadata = rustgis_data::Dataset::new(l.dataset.name.clone(), l.dataset.geometry_type, l.dataset.fields.clone());
@@ -253,43 +248,14 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
         return Err(format!("{}: {message}", l.dataset.name));
     }
     // Calculation rules, in order. Those that no longer read, by name, said once the edit is kept.
-    let mut unread: Vec<String> = Vec::new();
     let layer = l.dataset.name.clone();
-    for rule in l.design.rules.iter().filter(|r| r.kind == RuleKind::Calculation) {
-        let Some(fi) = l.dataset.field_index(&rule.field) else { continue };
-        let ty = l.dataset.fields.get(fi).map(|f| f.ty).unwrap_or(FieldType::Text);
-        // A rule that no longer reads (a hand-edited file, one past the length limit from an
-        // earlier version) is skipped rather than blocking every edit, and said.
-        let Ok(calc) = super::edit::Calculation::parse(&rule.expression, &metadata) else {
-            // Said only for an edit with rows: one with none (a deletion) computes nothing anyway.
-            if !rows.is_empty() {
-                unread.push(rule.name.clone());
-            }
-            continue;
-        };
-        // Counted as Calculate Field counts them.
-        // A change set may repeat a row: its losses are counted once.
-        let mut losses = super::edit::WriteLosses::once_per_row();
-        for r in &rows {
-            let v = losses.write(*r, calc.eval_or_fault(&l.dataset, *r), ty);
-            if let Some(cell) = l.dataset.features.get_mut(*r).and_then(|f| f.attrs.get_mut(fi)) {
-                *cell = v;
-            }
-        }
-        let name = l.dataset.fields.get(fi).map(|f| f.name.clone()).unwrap_or_default();
-        cuts.push((rule.name.clone(), name, losses, ty));
-    }
-    // Validation. Domains and contingent values are checked on the fields an edit changed (all
-    // of a new feature's), so a value set before the domain doesn't block unrelated edits.
-    let constraints: Vec<(String, String, rustgis_data::query::Expr)> = l
-        .design
-        .rules
-        .iter()
-        .filter(|r| r.kind == RuleKind::Constraint)
-        .filter_map(|rule| {
-            rustgis_data::query::parse(&rule.expression, &metadata).ok().map(|e| (rule.name.clone(), rule.expression.clone(), e))
-        })
-        .collect();
+    // What each calculation rule's whole-number field cut: the rule and the field's name. Each
+    // rule's cuts are said, even when a later rule writes the same field: it may read them.
+    // With them, per rule, the results its field couldn't hold and those an error made null
+    // (`WriteLosses`), and its type.
+    let (cuts, unread) = calculation_rules(&l.design, &mut l.dataset, &metadata, &rows, 0);
+    // Validation (`refusal`), against each row's state before the first edit.
+    let constraints = constraint_rules(&l.design, &metadata);
     let mut original = HashMap::new();
     if !l.design.domains.is_empty() || !l.design.contingent.is_empty() {
         // A row edited more than once still validates against its state before the first edit.
@@ -300,35 +266,8 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
         }
     }
     for r in &rows {
-        let before = original.get(r).copied().flatten().zip(l.dataset.features.get(*r));
-        let touched = |fi: usize| before.is_none_or(|(old, now)| old.attrs.get(fi) != now.attrs.get(fi));
-        for d in &l.design.domains {
-            if let Some(fi) = l.dataset.field_index(&d.field).filter(|fi| touched(*fi)) {
-                let v = l.dataset.value(*r, fi);
-                if !d.allows(v) {
-                    return Err(format!("{} isn't allowed in {} (its domain)", v, d.field));
-                }
-            }
-        }
-        for c in &l.design.contingent {
-            let vals: Vec<&Value> =
-                c.fields.iter().map(|f| l.dataset.field_index(f).map(|fi| l.dataset.value(*r, fi)).unwrap_or(&Value::Null)).collect();
-            let any_touched = c.fields.iter().any(|f| l.dataset.field_index(f).is_some_and(touched));
-            if !any_touched || vals.iter().all(|v| v.is_null()) {
-                continue;
-            }
-            let ok = c.combos.iter().any(|combo| {
-                combo.iter().zip(&vals).all(|(want, got)| want.is_null() || got.is_null() || want.to_string() == got.to_string())
-            });
-            if !ok {
-                let shown: Vec<String> = vals.iter().map(|v| v.to_string()).collect();
-                return Err(format!("{} isn't a valid combination of {} ({})", shown.join(", "), c.fields.join(", "), c.name));
-            }
-        }
-        for (name, expr, e) in &constraints {
-            if !rustgis_data::query::eval(e, &l.dataset, *r) {
-                return Err(format!("the edit breaks the rule {name} ({expr})"));
-            }
+        if let Some(refused) = refusal(&l.design, &l.dataset, &constraints, *r, original.get(r).copied().flatten(), 0) {
+            return Err(refused);
         }
     }
     // Archive and counts.
@@ -395,6 +334,111 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
         );
     }
     Ok(())
+}
+
+/// What each calculation rule of `design` cut, by rule: its name, its field's, what writing its
+/// results lost (counted once per row, as Calculate Field counts them) and the field's type.
+type RuleCuts = Vec<(String, String, super::edit::WriteLosses, FieldType)>;
+
+/// Runs `design`'s calculation rules, in order, on `rows` of `ds`, whose first row has `offset`
+/// rows before it in the layer (0 but for the Calculate Field preview's one-row copy, #2837):
+/// what each cut, and the names of the rules that no longer read against `metadata` (the
+/// layer's fields), skipped rather than blocking every edit.
+pub(crate) fn calculation_rules(
+    design: &rustgis_map::design::Design,
+    ds: &mut rustgis_data::Dataset,
+    metadata: &rustgis_data::Dataset,
+    rows: &[usize],
+    offset: usize,
+) -> (RuleCuts, Vec<String>) {
+    let (mut cuts, mut unread) = (Vec::new(), Vec::new());
+    for rule in design.rules.iter().filter(|r| r.kind == RuleKind::Calculation) {
+        let Some(fi) = ds.field_index(&rule.field) else { continue };
+        let ty = ds.fields.get(fi).map(|f| f.ty).unwrap_or(FieldType::Text);
+        // A rule that no longer reads (a hand-edited file, one past the length limit from an
+        // earlier version) is skipped rather than blocking every edit, and said.
+        let Ok(calc) = super::edit::Calculation::parse(&rule.expression, metadata) else {
+            // Said only for an edit with rows: one with none (a deletion) computes nothing anyway.
+            if !rows.is_empty() {
+                unread.push(rule.name.clone());
+            }
+            continue;
+        };
+        // Counted as Calculate Field counts them.
+        // A change set may repeat a row: its losses are counted once.
+        let mut losses = super::edit::WriteLosses::once_per_row();
+        for r in rows {
+            let v = losses.write(*r, calc.eval_or_fault_at(ds, *r, offset), ty);
+            if let Some(cell) = ds.features.get_mut(*r).and_then(|f| f.attrs.get_mut(fi)) {
+                *cell = v;
+            }
+        }
+        let name = ds.fields.get(fi).map(|f| f.name.clone()).unwrap_or_default();
+        cuts.push((rule.name.clone(), name, losses, ty));
+    }
+    (cuts, unread)
+}
+
+/// `design`'s constraint rules that read against `metadata` (the layer's fields): name,
+/// expression as written, and parsed.
+pub(crate) fn constraint_rules(
+    design: &rustgis_map::design::Design,
+    metadata: &rustgis_data::Dataset,
+) -> Vec<(String, String, rustgis_data::query::Expr)> {
+    design
+        .rules
+        .iter()
+        .filter(|r| r.kind == RuleKind::Constraint)
+        .filter_map(|rule| {
+            rustgis_data::query::parse(&rule.expression, metadata).ok().map(|e| (rule.name.clone(), rule.expression.clone(), e))
+        })
+        .collect()
+}
+
+/// The error an edit of row `r` of `ds` is refused with, by the first of `design`'s checks it
+/// breaks: a domain or an allowed combination of values, on the fields the edit changed from
+/// `before` (all of a new feature's), so a value set before the domain doesn't block unrelated
+/// edits, then the `constraints` ([`constraint_rules`]). `offset` as [`calculation_rules`] reads
+/// it.
+pub(crate) fn refusal(
+    design: &rustgis_map::design::Design,
+    ds: &rustgis_data::Dataset,
+    constraints: &[(String, String, rustgis_data::query::Expr)],
+    r: usize,
+    before: Option<&Feature>,
+    offset: usize,
+) -> Option<String> {
+    let before = before.zip(ds.features.get(r));
+    let touched = |fi: usize| before.is_none_or(|(old, now)| old.attrs.get(fi) != now.attrs.get(fi));
+    for d in &design.domains {
+        if let Some(fi) = ds.field_index(&d.field).filter(|fi| touched(*fi)) {
+            let v = ds.value(r, fi);
+            if !d.allows(v) {
+                return Some(format!("{} isn't allowed in {} (its domain)", v, d.field));
+            }
+        }
+    }
+    for c in &design.contingent {
+        let vals: Vec<&Value> = c.fields.iter().map(|f| ds.field_index(f).map(|fi| ds.value(r, fi)).unwrap_or(&Value::Null)).collect();
+        let any_touched = c.fields.iter().any(|f| ds.field_index(f).is_some_and(touched));
+        if !any_touched || vals.iter().all(|v| v.is_null()) {
+            continue;
+        }
+        let ok = c
+            .combos
+            .iter()
+            .any(|combo| combo.iter().zip(&vals).all(|(want, got)| want.is_null() || got.is_null() || want.to_string() == got.to_string()));
+        if !ok {
+            let shown: Vec<String> = vals.iter().map(|v| v.to_string()).collect();
+            return Some(format!("{} isn't a valid combination of {} ({})", shown.join(", "), c.fields.join(", "), c.name));
+        }
+    }
+    for (name, expr, e) in constraints {
+        if !rustgis_data::query::matches_at(e, ds, r, &rustgis_data::query::Env::default(), offset) {
+            return Some(format!("the edit breaks the rule {name} ({expr})"));
+        }
+    }
+    None
 }
 
 /// Registers data-design and editing commands, including opt-in exact-coordinate polygon moves.

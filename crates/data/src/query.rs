@@ -1616,10 +1616,24 @@ pub fn matches(e: &Expr, ds: &Dataset, row: usize, env: &Env) -> bool {
 
 /// Tests a row in a chunk whose first row has `offset` preceding rows in the source.
 pub(crate) fn eval_in_chunk(e: &Expr, ds: &Dataset, row: usize, offset: usize) -> bool {
-    let env = Env::default();
-    let mut eval = Eval::new(ds, row, &env);
+    matches_at(e, ds, row, &Env::default(), offset)
+}
+
+/// [`matches`] for a row of `ds` that has `offset` rows before `ds`'s first in its layer, so
+/// `@row_number` reads its place there: a chunk of a source, or a copy of one row (#2837).
+pub fn matches_at(e: &Expr, ds: &Dataset, row: usize, env: &Env, offset: usize) -> bool {
+    let mut eval = Eval::new(ds, row, env);
     eval.row_offset = offset;
     eval.cond(e) == Some(true)
+}
+
+/// [`value_or_fault`] at `offset`, as [`matches_at`] reads a row.
+pub fn value_or_fault_at(e: &Expr, ds: &Dataset, row: usize, env: &Env, offset: usize) -> (Value, Option<Fault>) {
+    let mut eval = Eval::new(ds, row, env);
+    eval.row_offset = offset;
+    let v = eval.value(e).into_owned();
+    let fault = if v.is_null() { eval.fault.get() } else { None };
+    (v, fault)
 }
 
 /// The expression's value for one row.
@@ -1632,10 +1646,7 @@ pub fn value(e: &Expr, ds: &Dataset, row: usize, env: &Env) -> Value {
 /// or `CASE` condition only picks the branch, so it isn't the result's. Where several errors
 /// reach the result, the first one met is given.
 pub fn value_or_fault(e: &Expr, ds: &Dataset, row: usize, env: &Env) -> (Value, Option<Fault>) {
-    let eval = Eval::new(ds, row, env);
-    let v = eval.value(e).into_owned();
-    let fault = if v.is_null() { eval.fault.get() } else { None };
-    (v, fault)
+    value_or_fault_at(e, ds, row, env, 0)
 }
 
 /// Whether a value counts as true: a non-zero number, non-empty text; null is unknown.

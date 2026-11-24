@@ -892,10 +892,14 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                 let text = app.dialogs.text.trim();
                 // Once it reads, what it would write in the rows Calculate writes first (#2817): the
                 // first three of the selection, in the order Calculate takes it, else the first three.
-                let selected = match app.dialogs.table {
-                    Some(_) => &[][..],
-                    None => app.session.active_layer.and_then(|id| app.session.map().layer(id)).map_or(&[][..], |l| &l.selection[..]),
+                // A layer's checks too, which say which rows the edit would be refused for (#2837);
+                // a standalone table has none.
+                let layer = match app.dialogs.table {
+                    Some(_) => None,
+                    None => app.session.active_layer.and_then(|id| app.session.map().layer(id)),
                 };
+                let selected = layer.map_or(&[][..], |l| &l.selection[..]);
+                let design = layer.map(|l| &l.design);
                 let field = Some(&app.dialogs.a).filter(|a| fields.contains(a));
                 let reads = data(app).filter(|_| !text.is_empty() && !crate::exprcomplete::offering(ui, id)).map(|d| {
                     // A selected row the layer no longer has gets nothing written: it takes no place.
@@ -905,7 +909,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                         selected.iter().copied().filter(|r| *r < d.features.len()).take(PREVIEW_ROWS).collect()
                     };
                     match field.and_then(|f| d.field_index(f)) {
-                        Some(fi) => rustgis_engine::cmd::edit::preview_calculation(text, d, fi, &rows).map(Some),
+                        Some(fi) => rustgis_engine::cmd::edit::preview_calculation(text, d, fi, &rows, design).map(Some),
                         None => rustgis_engine::cmd::edit::check_calculation(text, d).map(|()| None),
                     }
                 });
@@ -3382,50 +3386,84 @@ fn calculation_fields(dataset: &rustgis_engine::data::Dataset) -> impl Iterator<
 const PREVIEW_ROWS: usize = 3;
 
 /// Calculate Field's preview line: each row's value as the field would hold it, its text cut at
-/// forty characters and with no line break of its own, with what writing it loses
-/// (`Preview: 2 (fraction dropped) · 4`). The line wraps in the dialog rather than cut a loss off.
+/// forty characters and with no line break of its own, with what writing it loses and what the
+/// layer's checks would refuse it with, also on one line (`Preview: 2 (fraction dropped) · 4`).
+/// The line wraps in the dialog rather than cut a loss off.
 fn calculation_preview(rows: &[rustgis_engine::cmd::edit::CalculationPreview]) -> String {
     use rustgis_engine::cmd::edit::PreviewLoss;
     use std::fmt::Write as _;
     const LONGEST: usize = 40;
-    /// A value's text on one line, written no further than one character past `LONGEST`.
-    struct OneLine(String, usize);
+    /// A refusal quotes a value and may give a rule's expression: room for both, still one line.
+    /// Past it, a refusal is cut in its middle (`refusal_line`).
+    const LONGEST_REFUSAL: usize = 120;
+    /// Text on one line, written no further than one character past its cut.
+    struct OneLine {
+        text: String,
+        written: usize,
+        longest: usize,
+    }
     impl std::fmt::Write for OneLine {
         fn write_str(&mut self, s: &str) -> std::fmt::Result {
             for c in s.chars() {
-                if self.1 > LONGEST {
+                if self.written > self.longest {
                     return Err(std::fmt::Error);
                 }
-                self.0.push(if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') { ' ' } else { c });
-                self.1 += 1;
+                self.text.push(if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') { ' ' } else { c });
+                self.written += 1;
             }
             Ok(())
         }
     }
+    /// `text` on one line, cut at `longest` characters.
+    fn one_line(text: impl std::fmt::Display, longest: usize) -> String {
+        let mut line = OneLine { text: String::new(), written: 0, longest };
+        // An error only stops the writing past the cut.
+        let _ = write!(line, "{text}");
+        let mut text = line.text;
+        if let Some((cut, _)) = text.char_indices().nth(longest) {
+            text.truncate(cut);
+            text.push('…');
+        }
+        text
+    }
+    /// `why` on one line, a long one cut in its middle: a refusal quotes the value first and names
+    /// the check that refuses it last, and both stay (#2837).
+    fn refusal_line(why: &str) -> String {
+        let line = one_line(why, usize::MAX);
+        let count = line.chars().count();
+        if count <= LONGEST_REFUSAL {
+            return line;
+        }
+        let head = LONGEST_REFUSAL / 3;
+        let tail = LONGEST_REFUSAL - head - 1;
+        let start: String = line.chars().take(head).collect();
+        let end: String = line.chars().skip(count - tail).collect();
+        format!("{start}…{end}")
+    }
     let values: Vec<String> = rows
         .iter()
         .map(|p| {
-            let mut line = OneLine(String::new(), 0);
-            // An error only stops the writing past the cut.
-            let _ = write!(line, "{}", p.value);
-            let mut value = line.0;
-            if let Some((cut, _)) = value.char_indices().nth(LONGEST) {
-                value.truncate(cut);
-                value.push('…');
-            }
+            let value = one_line(&p.value, LONGEST);
             // In logical order: the line as a whole is put in display form once, below.
-            let loss = match p.lost {
-                None => return value,
-                Some(PreviewLoss::Fraction) => tl_raw!("fraction dropped"),
-                Some(PreviewLoss::Range) => tl_raw!("past the 64-bit integer range"),
-                Some(PreviewLoss::NotANumber) => tl_raw!("not a number"),
-                Some(PreviewLoss::NotFinite) => tl_raw!("not a finite number"),
-                Some(PreviewLoss::Time) => tl_raw!("time dropped"),
-                Some(PreviewLoss::Unheld) => tl_raw!("not a value the field holds"),
+            let loss = p.lost.map(|lost| match lost {
+                PreviewLoss::Fraction => tl_raw!("fraction dropped"),
+                PreviewLoss::Range => tl_raw!("past the 64-bit integer range"),
+                PreviewLoss::NotANumber => tl_raw!("not a number"),
+                PreviewLoss::NotFinite => tl_raw!("not a finite number"),
+                PreviewLoss::Time => tl_raw!("time dropped"),
+                PreviewLoss::Unheld => tl_raw!("not a value the field holds"),
                 // The phrases the run's notices give for the same errors.
-                Some(PreviewLoss::Error(fault)) => tl_raw!(fault.describe()),
+                PreviewLoss::Error(fault) => tl_raw!(fault.describe()),
+            });
+            let shown = match loss {
+                Some(loss) => crate::i18n::fmt_raw("{value} ({loss})", &[("value", &value), ("loss", loss)]),
+                None => value,
             };
-            crate::i18n::fmt_raw("{value} ({loss})", &[("value", &value), ("loss", loss)])
+            // The check that would refuse the edit, in the run's words (#2837).
+            match &p.refused {
+                Some(why) => crate::i18n::fmt_raw("{value} (refused: {why})", &[("value", &shown), ("why", &refusal_line(why))]),
+                None => shown,
+            }
         })
         .collect();
     crate::i18n::fmt("Preview: {values}", &[("values", &values.join(" · "))])
@@ -4422,6 +4460,48 @@ mod tests {
         assert!(h.query_by_label_contains("Preview:").is_none(), "no rows, no preview");
     }
 
+    /// On a layer with checks, the preview says which rows the edit would be refused for, in the
+    /// run's words (#2837): here the field's domain, 0 to 30.
+    #[test]
+    fn calculate_field_preview_says_the_rows_a_layers_checks_refuse() {
+        use egui_kittest::kittest::Queryable;
+        let point = |v: i64| json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [v, v]}, "properties": {"v": v}});
+        let points = json!({"type": "FeatureCollection", "features": (1..=3).map(point).collect::<Vec<_>>()});
+        let mut app = RustGisApp::new(Session::new(rustgis_engine::Project::default()));
+        app.run("layer.addDataText", json!({"fileName": "points.geojson", "text": points.to_string()})).unwrap();
+        app.run("data.domain", json!({"layer": "points", "field": "v", "min": 0, "max": 30})).unwrap();
+        app.run("ui.dialog", json!({"name": "calculateField"})).unwrap();
+        app.dialogs.a = "v".into();
+        app.dialogs.text = "v * 15".into();
+        let mut h = app_harness(app);
+        h.run_steps(3);
+        assert!(h.query_by_label("Preview: 15 · 30 · 45 (refused: 45 isn't allowed in v (its domain))").is_some(), "the third refused");
+    }
+
+    /// A refused row's value is followed by what refuses it, after what writing it loses.
+    #[test]
+    fn a_calculation_preview_says_a_refusal_after_a_loss() {
+        use rustgis_engine::cmd::edit::{CalculationPreview, PreviewLoss};
+        use rustgis_engine::data::Value;
+        let refused = Some("the edit breaks the rule Even (v % 2 = 0)".to_string());
+        let rows = [
+            CalculationPreview { row: 0, value: Value::Int(2), lost: Some(PreviewLoss::Fraction), refused: refused.clone() },
+            CalculationPreview { row: 1, value: Value::Int(4), lost: None, refused: None },
+        ];
+        assert_eq!(
+            super::calculation_preview(&rows),
+            "Preview: 2 (fraction dropped) (refused: the edit breaks the rule Even (v % 2 = 0)) · 4"
+        );
+        // A refusal quoting a value keeps to one line too, and a long one is cut in its middle, so
+        // the check that refuses it, at its end, stays (#2837).
+        let quoted = format!("a\nb{} isn't allowed in v (its domain)", "x".repeat(10_000));
+        let row = CalculationPreview { row: 0, value: Value::Int(1), lost: None, refused: Some(quoted) };
+        let line = super::calculation_preview(&[row]);
+        assert!(line.starts_with("Preview: 1 (refused: a b"), "{line}");
+        assert!(line.ends_with("x isn't allowed in v (its domain))") && line.contains('…'), "{line}");
+        assert!(!line.contains('\n') && line.chars().count() < 200, "{line}");
+    }
+
     /// A text value in the preview breaks no line (#2817): a line break (Unicode's line and
     /// paragraph separators too) or tab in it reads as a space, and a long one is cut at forty
     /// characters.
@@ -4429,7 +4509,7 @@ mod tests {
     fn a_calculation_preview_stays_on_one_line() {
         use rustgis_engine::cmd::edit::CalculationPreview;
         use rustgis_engine::data::Value;
-        let row = |value: Value| CalculationPreview { row: 0, value, lost: None };
+        let row = |value: Value| CalculationPreview { row: 0, value, lost: None, refused: None };
         assert_eq!(
             super::calculation_preview(&[row(Value::Text("a\nb\tc\u{2028}d\u{2029}e".into())), row(Value::Int(7))]),
             "Preview: a b c d e · 7"
