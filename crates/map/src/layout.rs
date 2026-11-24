@@ -2368,9 +2368,39 @@ pub struct Layout {
     pub decimal_comma: bool,
     #[serde(default)]
     next_id: u32,
+    /// Process-local identity, kept by undo snapshots but never stored in a project.
+    #[serde(skip)]
+    instance: Instance,
+}
+
+/// Identifies a live layout, whatever its name or place among the project's layouts (#2802). Not
+/// part of the layout's value: layouts that differ only by it are equal.
+#[derive(Clone, Copy, Debug)]
+struct Instance(u64);
+
+impl Default for Instance {
+    fn default() -> Self {
+        Instance(crate::next_layer_instance())
+    }
+}
+
+impl PartialEq for Instance {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl Layout {
+    /// Identifies this live layout, whatever its name or place among the project's layouts.
+    pub fn instance_id(&self) -> u64 {
+        self.instance.0
+    }
+
+    /// Starts a distinct live layout after copying one. Undo snapshots keep the original identity.
+    pub fn renew_instance_id(&mut self) {
+        self.instance = Instance::default();
+    }
+
     /// Resolves a series' index layer from its frame and the optional page-name column.
     pub fn series_index<'a>(&self, maps: &'a [Map]) -> Option<(&'a Layer, Option<usize>)> {
         let series = self.series.as_ref()?;
@@ -2389,6 +2419,7 @@ impl Layout {
             guides: Guides::default(),
             decimal_comma: false,
             next_id: 1,
+            instance: Instance::default(),
         }
     }
 

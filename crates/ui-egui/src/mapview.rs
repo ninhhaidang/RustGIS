@@ -4759,11 +4759,14 @@ fn view_tab_row(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, follow: bool) -> 
     let active = if app.session.active_layout.is_some() || app.mb.shown() { usize::MAX } else { app.session.project.active_map };
     // A tab's close button asks to delete its map or layout.
     let mut close: Option<Deletion> = None;
+    let mut map_tabs = Vec::with_capacity(names.len());
     for (i, n) in names.iter().enumerate() {
         let tr = next_view_tab(ui, view_tab_w(ui, n));
-        let resp = ui.interact(tr, egui::Id::unique(("maptab", i)), Sense::click());
+        let resp = ui.interact(tr, egui::Id::unique(("maptab", i)), Sense::click_and_drag());
         // Painted, so named for screen readers (and tests).
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, n));
+        let dragging = drag_tab(ui, &resp, false, n);
+        map_tabs.push(tr);
         let is = i == active;
         if is && follow {
             crate::ribbon::scroll_tab_into_view(ui, tr);
@@ -4778,7 +4781,7 @@ fn view_tab_row(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, follow: bool) -> 
                 CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 },
                 t.accent,
             );
-        } else if resp.contains_pointer() {
+        } else if resp.contains_pointer() || dragging {
             ui.painter().rect_filled(tr, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, t.hover);
         }
         icons::paint(ui.painter(), Rect::from_center_size(pos2(tr.min.x + 15.0, tr.center().y), vec2(15.0, 15.0)), "map", t.icon, t.accent);
@@ -4807,10 +4810,13 @@ fn view_tab_row(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, follow: bool) -> 
     }
     // Layouts, after the maps.
     let layouts: Vec<String> = app.session.project.layouts.iter().map(|l| l.name.clone()).collect();
+    let mut layout_tabs = Vec::with_capacity(layouts.len());
     for (i, n) in layouts.iter().enumerate() {
         let tr = next_view_tab(ui, view_tab_w(ui, n));
-        let resp = ui.interact(tr, egui::Id::unique(("layouttab", i)), Sense::click());
+        let resp = ui.interact(tr, egui::Id::unique(("layouttab", i)), Sense::click_and_drag());
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, n));
+        let dragging = drag_tab(ui, &resp, true, n);
+        layout_tabs.push(tr);
         let is = app.session.active_layout == Some(i) && !app.mb.shown();
         if is && follow {
             crate::ribbon::scroll_tab_into_view(ui, tr);
@@ -4822,7 +4828,7 @@ fn view_tab_row(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, follow: bool) -> 
                 CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 },
                 t.accent,
             );
-        } else if resp.contains_pointer() {
+        } else if resp.contains_pointer() || dragging {
             ui.painter().rect_filled(tr, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, t.hover);
         }
         icons::paint(
@@ -4893,7 +4899,57 @@ fn view_tab_row(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, follow: bool) -> 
             let _ = app.run("ui.modelBuilder", Value::Null);
         }
     }
+    let (tabs, names, cmd) = match egui::DragAndDrop::payload::<DraggedTab>(ui.ctx()) {
+        Some(d) if d.layout => (layout_tabs, layouts, "layout.move"),
+        _ => (map_tabs, names, "map.move"),
+    };
+    tab_drop(app, ui, t, &tabs, &names, cmd);
     close
+}
+
+/// A map or layout tab being dragged to another place in the row (#2802): which of the two, and
+/// its name, so a list that changes during the drag (an undo, a script) moves the same one.
+struct DraggedTab {
+    layout: bool,
+    name: String,
+}
+
+/// Starts dragging the map or layout tab `name` when `resp` starts a drag; whether that tab is
+/// the one being dragged.
+fn drag_tab(ui: &Ui, resp: &egui::Response, layout: bool, name: &str) -> bool {
+    if resp.drag_started_by(egui::PointerButton::Primary) {
+        egui::DragAndDrop::set_payload(ui.ctx(), DraggedTab { layout, name: name.to_string() });
+    }
+    egui::DragAndDrop::payload::<DraggedTab>(ui.ctx()).is_some_and(|d| d.layout == layout && d.name == name)
+}
+
+/// While a map or layout tab is dragged over the strip: a mark where it would land among the
+/// others of its kind (`tabs`, named `names`), which `cmd` takes it to when let go. A map dragged
+/// past the maps lands last among them, a layout dragged before the layouts first. Near the
+/// strip's ends the tabs scroll, faster the closer the pointer is, as the Layers pane does.
+fn tab_drop(app: &mut RustGisApp, ui: &Ui, t: &Tokens, tabs: &[Rect], names: &[String], cmd: &str) {
+    let Some(dragged) = egui::DragAndDrop::payload::<DraggedTab>(ui.ctx()) else { return };
+    let view = ui.clip_rect();
+    let Some(pointer) = ui.ctx().pointer_interact_pos().filter(|p| view.contains(*p)) else { return };
+    let edge = 28.0;
+    let push = ((view.min.x + edge - pointer.x).max(0.0) - (pointer.x - (view.max.x - edge)).max(0.0)) / edge;
+    if push != 0.0 {
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        ui.scroll_with_delta_animation(vec2(push * 600.0 * dt, 0.0), egui::style::ScrollAnimation::none());
+        ui.ctx().request_repaint();
+    }
+    let (Some(from), Some(last)) = (names.iter().position(|n| *n == dragged.name), tabs.last()) else { return };
+    // The tabs whose middle is left of the pointer go before it.
+    let slot = tabs.iter().filter(|r| r.center().x < pointer.x).count();
+    let to = if slot > from { slot - 1 } else { slot };
+    if to == from {
+        return;
+    }
+    let x = tabs.get(slot).map_or(last.max.x + 1.0, |r| r.min.x - 1.0);
+    ui.painter().line_segment([pos2(x, last.min.y + 2.0), pos2(x, last.max.y - 2.0)], Stroke::new(2.0, t.accent));
+    if ui.input(|i| i.pointer.primary_released()) {
+        let _ = app.run(cmd, json!({"name": dragged.name, "to": to}));
+    }
 }
 
 /// A map or a layout, by name, to delete once the user confirms ([`confirm_delete`]).

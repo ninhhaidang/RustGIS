@@ -7826,6 +7826,8 @@ pub(crate) fn map_menu(app: &mut RustGisApp, ui: &mut Ui, m: &str) {
         let _ = app.run("layer.paste", json!({"map": m}));
         ui.close();
     }
+    let at = app.session.project.maps.iter().position(|x| x.name == m);
+    move_buttons(app, ui, "map.move", m, at, app.session.project.maps.len());
     // A project keeps at least one map (`map.remove` refuses the last).
     let delete = ui.add_enabled(app.session.project.maps.len() > 1, egui::Button::new(tl!("Delete")));
     if delete.on_disabled_hover_text(tl!("A project keeps at least one map")).clicked() {
@@ -7834,7 +7836,22 @@ pub(crate) fn map_menu(app: &mut RustGisApp, ui: &mut Ui, m: &str) {
     }
 }
 
-/// A layout's menu, in the Browser and on its view tab: rename, duplicate, delete.
+/// Move Up and Move Down, between separators, for the map or layout `name` at `at` of `count`:
+/// one place in the project's order (`cmd`, `map.move` or `layout.move`), as its tabs and the
+/// Browser show it (#2802).
+fn move_buttons(app: &mut RustGisApp, ui: &mut Ui, cmd: &str, name: &str, at: Option<usize>, count: usize) {
+    let Some(at) = at else { return };
+    ui.separator();
+    for (label, to, can) in [(tl!("Move Up"), at.saturating_sub(1), at > 0), (tl!("Move Down"), at + 1, at + 1 < count)] {
+        if ui.add_enabled(can, egui::Button::new(label)).clicked() {
+            let _ = app.run(cmd, json!({"name": name, "to": to}));
+            ui.close();
+        }
+    }
+    ui.separator();
+}
+
+/// A layout's menu, in the Browser and on its view tab: rename, duplicate, move, delete.
 pub(crate) fn layout_menu(app: &mut RustGisApp, ui: &mut Ui, n: &str) {
     if ui.button(tl!("Rename…")).clicked() {
         let _ = app.run("ui.dialog", json!({"name": "renameLayout", "target": n}));
@@ -7847,6 +7864,8 @@ pub(crate) fn layout_menu(app: &mut RustGisApp, ui: &mut Ui, n: &str) {
         }
         ui.close();
     }
+    let at = app.session.project.layouts.iter().position(|x| x.name == n);
+    move_buttons(app, ui, "layout.move", n, at, app.session.project.layouts.len());
     if ui.button(tl!("Delete")).clicked() {
         app.map.deleting = Some(crate::mapview::Deletion::Layout(n.to_string()));
         ui.close();

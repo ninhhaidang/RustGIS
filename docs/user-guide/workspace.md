@@ -474,8 +474,13 @@ such as **Tools**, **Symbology**, **Labeling**, **Format** and **AI Assistant** 
 tabs: select a tab to bring it forward, or its × to close it. Right-click a tab to close it,
 the other panes or all panes; an overflow menu lists tabs that do not fit.
 
-Right-click a map or layout tab (or its entry in Browser) to **Rename**, **Duplicate** or
-**Delete** it. Deletion asks for confirmation; a project must keep at least one map.
+Right-click a map or layout tab (or its entry in Browser) to **Rename**, **Duplicate**,
+**Move Up**, **Move Down** or **Delete** it. Deletion asks for confirmation; a project must keep
+at least one map. Drag a map or layout tab to another place to change the order of the maps or
+the layouts (maps stay before layouts); near the ends of a strip whose tabs don't all fit, the
+tabs scroll. The map or layout in view stays in view, each move is one undo step, and the order is
+saved with the project. From scripts: `map.move` and `layout.move`, with the name and the new
+place (`"to"`: 0 for the first).
 
 Click **Command Search** at the right of the title bar or on the Help tab, or press ++ctrl+k++
 (++cmd+k++ on macOS). Search by command name, ID or ribbon location; analysis tools, workflow

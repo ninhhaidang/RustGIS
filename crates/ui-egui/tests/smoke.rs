@@ -1195,6 +1195,215 @@ fn view_tabs_lose_their_arrows_when_they_fit_and_the_wheel_moves_them_freely() {
     assert!(view_tab_in_sight(&h, &active_view(&h)));
 }
 
+/// The row of the view tabs: the strip's New Map button, the narrow "+" (the ribbon has its own).
+fn strip_row(h: &egui_kittest::Harness<'_, RustGisApp>) -> f32 {
+    h.query_all_by_label("New Map").map(|n| n.rect()).find(|r| r.width() < 30.0).expect("the strip's New Map").center().y
+}
+
+/// The view tab named `name` on the strip (the Browser can list the same name), while the tabs fit.
+fn strip_tab<'a>(h: &'a egui_kittest::Harness<'_, RustGisApp>, name: &'a str) -> egui_kittest::Node<'a> {
+    let row = strip_row(h);
+    h.query_all_by_label(name).find(|n| (n.rect().center().y - row).abs() < 8.0).unwrap_or_else(|| panic!("no view tab {name}"))
+}
+
+/// Presses at `from`, moves to `to` over a few frames, holds there `hold` frames and lets go.
+fn drag(h: &mut egui_kittest::Harness<'_, RustGisApp>, from: egui::Pos2, to: egui::Pos2, hold: usize) {
+    let button =
+        |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    h.event(egui::Event::PointerMoved(from));
+    h.event(button(from, true));
+    h.step();
+    for i in 1..=6 {
+        h.event(egui::Event::PointerMoved(from + (to - from) * (i as f32 / 6.0)));
+        h.step();
+    }
+    for _ in 0..hold {
+        h.event(egui::Event::PointerMoved(to));
+        h.step();
+    }
+    h.event(button(to, false));
+    settle(h);
+}
+
+fn map_names(h: &egui_kittest::Harness<'_, RustGisApp>) -> Vec<String> {
+    h.state().session.project.maps.iter().map(|m| m.name.clone()).collect()
+}
+
+fn layout_names(h: &egui_kittest::Harness<'_, RustGisApp>) -> Vec<String> {
+    h.state().session.project.layouts.iter().map(|l| l.name.clone()).collect()
+}
+
+/// Dragging a map or layout tab to another place changes the project's order in one undo step;
+/// maps stay among maps and layouts among layouts, ModelBuilder's tab doesn't move, and a click
+/// still opens a tab (#2802).
+#[test]
+fn dragging_a_view_tab_reorders_maps_or_layouts_in_one_undo_step() {
+    let mut h = harness();
+    for n in ["M2", "M3"] {
+        h.state_mut().run("map.new", json!({"name": n})).unwrap();
+    }
+    for n in ["L1", "L2"] {
+        h.state_mut().run("layout.new", json!({"name": n})).unwrap();
+    }
+    activate_world(&mut h);
+    let depth = h.state().session.undo_depth();
+    // M3 onto the left half of World: first.
+    let (from, onto) = (strip_tab(&h, "M3").rect().center(), strip_tab(&h, "World").rect());
+    drag(&mut h, from, egui::pos2(onto.min.x + 6.0, onto.center().y), 0);
+    assert_eq!(map_names(&h), ["M3", "World", "M2"]);
+    assert_eq!(h.state().session.undo_depth(), depth + 1);
+    assert_eq!(active_view(&h), "World", "the map in view stays in view");
+    // Let go where it started, or away from the strip: nothing.
+    let at = strip_tab(&h, "M2").rect().center();
+    drag(&mut h, at, at + egui::vec2(3.0, 0.0), 0);
+    drag(&mut h, at, at + egui::vec2(0.0, 300.0), 0);
+    assert_eq!((map_names(&h), h.state().session.undo_depth()), (vec!["M3".to_string(), "World".into(), "M2".into()], depth + 1));
+    // A map dragged over the layouts goes last among the maps; a layout over the maps, first
+    // among the layouts.
+    let (from, onto) = (strip_tab(&h, "World").rect().center(), strip_tab(&h, "L2").rect().center());
+    drag(&mut h, from, onto, 0);
+    assert_eq!(
+        (map_names(&h), layout_names(&h)),
+        (vec!["M3".to_string(), "M2".into(), "World".into()], vec!["L1".to_string(), "L2".into()])
+    );
+    let (from, onto) = (strip_tab(&h, "L2").rect().center(), strip_tab(&h, "M3").rect().center());
+    drag(&mut h, from, onto, 0);
+    assert_eq!(
+        (map_names(&h), layout_names(&h)),
+        (vec!["M3".to_string(), "M2".into(), "World".into()], vec!["L2".to_string(), "L1".into()])
+    );
+    assert_eq!(h.state().session.undo_depth(), depth + 3);
+    h.state_mut().run("edit.undo", json!(null)).unwrap();
+    settle(&mut h);
+    assert_eq!(layout_names(&h), ["L1", "L2"]);
+    // A click still opens a tab.
+    strip_tab(&h, "M2").click();
+    settle(&mut h);
+    assert_eq!(active_view(&h), "M2");
+    // ModelBuilder's tab doesn't move.
+    h.state_mut().run("ui.modelBuilder", json!(null)).unwrap();
+    settle(&mut h);
+    let model = h.state().mb.name.clone();
+    let depth = h.state().session.undo_depth();
+    let (from, onto) = (strip_tab(&h, &model).rect().center(), strip_tab(&h, "M3").rect().center());
+    drag(&mut h, from, onto, 0);
+    assert_eq!(
+        (map_names(&h), layout_names(&h)),
+        (vec!["M3".to_string(), "M2".into(), "World".into()], vec!["L1".to_string(), "L2".into()])
+    );
+    assert_eq!(h.state().session.undo_depth(), depth);
+}
+
+/// Held near the strip's edge, a dragged tab scrolls the tabs past it, and the tab in view,
+/// dropped there, is in sight (#2802).
+#[test]
+fn a_tab_dragged_to_the_edge_of_a_crowded_strip_scrolls_it() {
+    let mut h = crowded_view_tabs();
+    activate_world(&mut h);
+    assert!(h.query_by_label("Scroll the map tabs left").is_none());
+    let right = h.get_by_label("Scroll the map tabs right").rect();
+    let from = view_tab(&h, "World").center();
+    // Held at the right end until the strip has scrolled all the way, then let go there, over
+    // the layouts: last among the maps.
+    drag(&mut h, from, right.center(), 400);
+    assert!(h.query_by_label("Scroll the map tabs left").is_some(), "the strip scrolled");
+    assert!(h.query_by_label("Scroll the map tabs right").is_none(), "to the end");
+    let mut maps: Vec<String> = (1..=9).map(|i| format!("Tab Map {i}")).collect();
+    maps.push("World".into());
+    assert_eq!(map_names(&h), maps);
+    assert_eq!(active_view(&h), "World");
+    assert!(view_tab_in_sight(&h, "World"));
+}
+
+/// The tab dropped is the one dragged, by name, even when the list changes during the drag (an
+/// undo, a script); a right-click during the drag cancels it, as egui ends a drag on any
+/// button's release, so letting go afterwards moves nothing (#2802).
+#[test]
+fn a_dragged_tab_drops_by_name_and_a_right_click_cancels_it() {
+    let mut h = harness();
+    for n in ["M2", "M3"] {
+        h.state_mut().run("map.new", json!({"name": n})).unwrap();
+    }
+    activate_world(&mut h);
+    let button = |pos, button, pressed| egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE };
+    let primary = egui::PointerButton::Primary;
+    // M3 picked up; a script moves it to the front meanwhile.
+    let from = strip_tab(&h, "M3").rect().center();
+    h.event(egui::Event::PointerMoved(from));
+    h.event(button(from, primary, true));
+    h.step();
+    h.event(egui::Event::PointerMoved(from - egui::vec2(20.0, 0.0)));
+    h.step();
+    h.state_mut().run("map.move", json!({"name": "M3", "to": 0})).unwrap();
+    settle(&mut h);
+    assert_eq!(map_names(&h), ["M3", "World", "M2"]);
+    // Let go on the left half of M2: M3, not the tab now where M3 was, lands before M2.
+    let onto = strip_tab(&h, "M2").rect();
+    let at = egui::pos2(onto.min.x + 6.0, onto.center().y);
+    h.event(egui::Event::PointerMoved(at));
+    h.step();
+    h.event(button(at, primary, false));
+    settle(&mut h);
+    assert_eq!(map_names(&h), ["World", "M3", "M2"]);
+    // A right-click over World's left half during the drag: no drop there, and the drag ends, so
+    // letting go there afterwards moves nothing either.
+    let from = strip_tab(&h, "M2").rect().center();
+    let onto = strip_tab(&h, "World").rect();
+    let at = egui::pos2(onto.min.x + 6.0, onto.center().y);
+    h.event(egui::Event::PointerMoved(from));
+    h.event(button(from, primary, true));
+    h.step();
+    for i in 1..=6 {
+        h.event(egui::Event::PointerMoved(from + (at - from) * (i as f32 / 6.0)));
+        h.step();
+    }
+    h.event(button(at, egui::PointerButton::Secondary, true));
+    h.step();
+    h.event(button(at, egui::PointerButton::Secondary, false));
+    h.step();
+    assert_eq!(map_names(&h), ["World", "M3", "M2"], "not on the right button");
+    h.event(button(at, primary, false));
+    settle(&mut h);
+    assert_eq!(map_names(&h), ["World", "M3", "M2"], "the drag ended");
+}
+
+/// Move Up and Move Down in a map's or layout's menu, on its tab or in the Browser, move it one
+/// place; the first can't go up nor the last down (#2802).
+#[test]
+fn move_up_and_down_in_the_map_and_layout_menus_reorder_them() {
+    let mut h = harness();
+    h.state_mut().run("map.new", json!({"name": "M2"})).unwrap();
+    for n in ["L1", "L2"] {
+        h.state_mut().run("layout.new", json!({"name": n})).unwrap();
+    }
+    activate_world(&mut h);
+    // On a tab.
+    strip_tab(&h, "World").click_secondary();
+    settle(&mut h);
+    h.get_by_label("Move Up").click();
+    settle(&mut h);
+    assert_eq!(map_names(&h), ["World", "M2"], "the first can't go up");
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+    strip_tab(&h, "World").click_secondary();
+    settle(&mut h);
+    h.get_by_label("Move Down").click();
+    settle(&mut h);
+    assert_eq!(map_names(&h), ["M2", "World"]);
+    assert_eq!(active_view(&h), "World");
+    // In the Browser.
+    h.state_mut().run("ui.pane.catalog", json!(null)).unwrap();
+    settle(&mut h);
+    let row = strip_row(&h);
+    h.query_all_by_label("L2").find(|n| (n.rect().center().y - row).abs() > 8.0).expect("L2 in the Browser").click_secondary();
+    settle(&mut h);
+    h.get_by_label("Move Up").click();
+    settle(&mut h);
+    assert_eq!(layout_names(&h), ["L2", "L1"]);
+    h.state_mut().run("edit.undo", json!(null)).unwrap();
+    assert_eq!(layout_names(&h), ["L1", "L2"]);
+}
+
 #[test]
 fn plugins_install_from_a_file_after_a_prompt() {
     let _turn = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());

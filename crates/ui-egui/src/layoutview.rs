@@ -158,6 +158,9 @@ pub struct LayoutView {
     /// Text being typed into the element properties, by (layout, element, field): kept here so
     /// keystrokes survive the frame, and saved when the field loses focus or stops being shown.
     typing: std::collections::HashMap<(usize, u32, &'static str), String>,
+    /// The layouts (their [`Layout::instance_id`]), in their order, when `typing` last followed
+    /// them ([`follow_project`]).
+    typing_order: Vec<u64>,
     /// The layout shown, shared between frames until the project changes (layouts can hold
     /// megabytes of pictures, too much to copy every frame), keyed by layout and revision.
     shown: Option<(usize, u64, std::rc::Rc<Layout>)>,
@@ -228,6 +231,18 @@ pub(crate) fn follow_project(app: &mut RustGisApp) {
     app.layout.views.retain(|name, _| named(name));
     if app.layout.viewed.as_deref().is_some_and(|name| !named(name)) {
         app.layout.viewed = None;
+    }
+    // Text being typed is kept by its layout's place: when the layouts change places (a move, a
+    // removal, a copy, an undo, from the app, an agent or a script), it follows its layout, renamed
+    // or not (#2802). With its layout gone it goes too, even for a new layout given its name.
+    if !app.layout.typing_order.iter().copied().eq(layouts.iter().map(Layout::instance_id)) {
+        let was = std::mem::replace(&mut app.layout.typing_order, layouts.iter().map(Layout::instance_id).collect());
+        let now = &app.layout.typing_order;
+        let typing = std::mem::take(&mut app.layout.typing);
+        app.layout.typing = typing
+            .into_iter()
+            .filter_map(|((l, id, field), text)| Some(((now.iter().position(|m| Some(m) == was.get(l))?, id, field), text)))
+            .collect();
     }
 }
 
@@ -4372,6 +4387,99 @@ mod tests {
             _ => String::new(),
         };
         assert_eq!(text, "Typed");
+    }
+
+    /// Text being typed for a layout's element stays that layout's when the layouts change places
+    /// (a move, a removal, a copy, an undo), however that came (the app, an agent through the
+    /// session itself, a script): it never reaches the element of the same id in the layout now
+    /// at its old place (#2802).
+    #[test]
+    fn a_draft_follows_its_layout_when_the_layouts_change_places() {
+        let title_of = |app: &RustGisApp, name: &str| {
+            let l = app.session.project.layouts.iter().find(|l| l.name == name).unwrap();
+            let e = l.elements.iter().find(|e| e.name == "Title").unwrap();
+            match &e.kind {
+                super::ElementKind::Text { text, .. } => (e.id, text.clone()),
+                _ => (e.id, String::new()),
+            }
+        };
+        let place = |app: &RustGisApp, name: &str| app.session.project.layouts.iter().position(|l| l.name == name).unwrap();
+        for by_agent in [false, true] {
+            let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+            for n in ["A", "B", "C"] {
+                app.run("layout.new", json!({"name": n})).unwrap();
+            }
+            let (title, before) = title_of(&app, "A");
+            assert_eq!(title, title_of(&app, "C").0, "the same id in both layouts");
+            super::follow_project(&mut app);
+            app.layout.typing.insert((place(&app, "A"), title, "text"), "Typed for A".into());
+            let to_front = json!({"name": "C", "to": 0});
+            if by_agent {
+                app.session.run("layout.move", &to_front).unwrap();
+            } else {
+                app.run("layout.move", to_front).unwrap();
+            }
+            // The end of the frame: the pane no longer shows the field.
+            super::save_drafts(&mut app);
+            assert_eq!(title_of(&app, "A").1, "Typed for A", "agent: {by_agent}");
+            assert_eq!(title_of(&app, "C").1, before, "agent: {by_agent}");
+        }
+        // A layout removed with its draft: the draft goes with it.
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        for n in ["A", "B"] {
+            app.run("layout.new", json!({"name": n})).unwrap();
+        }
+        let (title, before) = title_of(&app, "B");
+        super::follow_project(&mut app);
+        app.layout.typing.insert((place(&app, "A"), title, "text"), "Typed for A".into());
+        app.session.run("layout.remove", &json!({"name": "A"})).unwrap();
+        super::save_drafts(&mut app);
+        assert_eq!(title_of(&app, "B").1, before);
+        assert!(app.layout.typing.is_empty());
+        // Removed and another made in its stead within one frame (an agent's two commands): as
+        // many layouts as before, but the draft's is gone, and so is the draft.
+        app.run("layout.new", json!({"name": "C"})).unwrap();
+        let (_, before_c) = title_of(&app, "C");
+        super::follow_project(&mut app);
+        app.layout.typing.insert((place(&app, "B"), title, "text"), "Typed for B".into());
+        app.session.run("layout.remove", &json!({"name": "B"})).unwrap();
+        app.session.run("layout.new", &json!({"name": "D"})).unwrap();
+        super::save_drafts(&mut app);
+        assert_eq!((title_of(&app, "C").1, title_of(&app, "D").1), (before_c.clone(), before_c.clone()));
+        assert!(app.layout.typing.is_empty());
+        // Removed and another made at its place within one frame, under another name or its own:
+        // the draft is dropped, never written into the new layout.
+        for name in ["F", "E"] {
+            app.run("layout.new", json!({"name": "E"})).unwrap();
+            super::follow_project(&mut app);
+            app.layout.typing.insert((place(&app, "E"), title, "text"), "Typed for E".into());
+            app.session.run("layout.remove", &json!({"name": "E"})).unwrap();
+            app.session.run("layout.new", &json!({"name": name})).unwrap();
+            super::save_drafts(&mut app);
+            assert_eq!(title_of(&app, name).1, before_c, "{name}");
+            assert!(app.layout.typing.is_empty(), "{name}");
+            app.session.run("layout.remove", &json!({"name": name})).unwrap();
+        }
+        // Renamed, by an agent between frames: the draft stays with it.
+        super::follow_project(&mut app);
+        app.layout.typing.insert((place(&app, "C"), title, "text"), "Typed for C".into());
+        app.session.run("layout.rename", &json!({"name": "C", "newName": "X"})).unwrap();
+        super::save_drafts(&mut app);
+        assert_eq!(title_of(&app, "X").1, "Typed for C");
+        // Renamed, and its old name given to another, in one go: the draft stays with its own
+        // layout, not the one now called what it was.
+        super::follow_project(&mut app);
+        app.layout.typing.insert((place(&app, "D"), title, "text"), "Typed for D".into());
+        app.session.run("layout.rename", &json!({"name": "D", "newName": "Q"})).unwrap();
+        app.session.run("layout.rename", &json!({"name": "X", "newName": "D"})).unwrap();
+        super::save_drafts(&mut app);
+        assert_eq!((title_of(&app, "Q").1, title_of(&app, "D").1), ("Typed for D".to_string(), "Typed for C".to_string()));
+        // Copied: the draft is the original's, not the copy's.
+        super::follow_project(&mut app);
+        app.layout.typing.insert((place(&app, "Q"), title, "text"), "Typed again".into());
+        app.session.run("layout.duplicate", &json!({"name": "Q", "newName": "Q2"})).unwrap();
+        super::save_drafts(&mut app);
+        assert_eq!((title_of(&app, "Q").1, title_of(&app, "Q2").1), ("Typed again".to_string(), "Typed for D".to_string()));
     }
 
     /// Text being typed when another project opens is for the old one: it never reaches the

@@ -210,6 +210,35 @@ pub(crate) fn uint(p: &Value, k: &str) -> Option<u64> {
     f(p, k).filter(|x| *x >= 0.0 && x.fract() == 0.0 && *x <= u64::MAX as f64).map(|x| x as u64)
 }
 
+/// Moves item `from` of `items` to `p`'s `to` (0: first; past the end: last) for `map.move` and
+/// `layout.move`, and gives where it went. A move to where the item is changes nothing and leaves
+/// no undo step.
+pub(crate) fn move_item<T>(s: &mut Session, items: impl Fn(&mut Session) -> &mut Vec<T>, from: usize, p: &Value) -> Result<usize, String> {
+    let to = uint(p, "to").ok_or("to is required (an index)")?;
+    let v = items(s);
+    if from >= v.len() {
+        return Err("no such item".into());
+    }
+    let to = usize::try_from(to).unwrap_or(usize::MAX).min(v.len() - 1);
+    if to == from {
+        s.request_only = true;
+    } else {
+        let item = v.remove(from);
+        v.insert(to, item);
+    }
+    Ok(to)
+}
+
+/// Where the item at `at` is after [`move_item`] took the one at `from` to `to`.
+pub(crate) fn after_move(at: usize, from: usize, to: usize) -> usize {
+    match at {
+        a if a == from => to,
+        a if from < a && a <= to => a - 1,
+        a if to <= a && a < from => a + 1,
+        a => a,
+    }
+}
+
 /// The longest name a map or a layout keeps.
 pub(crate) const MAX_NAME: usize = 200;
 

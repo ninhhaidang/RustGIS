@@ -292,6 +292,7 @@ layout.export layout? path dpi? allPages? georeference? pdf?
 layout.frameZoom layout? element? frame? to? layer?
 layout.guides layout? x? y? clear?
 layout.import path? text?
+layout.move name? layout? to
 layout.new name? page? orientation? width? height? template?
 layout.page layout? page? orientation? width? height? decimal?
 layout.publication profile? extent? name? title? subtitle? sources? reference? note? author? headings? locator? decimal? colorbar? veil? contextInLegend? northArrow? legendBox? style? accent? arrangement? coverage?
@@ -327,6 +328,7 @@ map.goToXY lon x lat y crs? position? scale? bearing? pitch?
 map.graticule on? type? crs? onTop? color?
 map.import path text data
 map.link
+map.move name to
 map.navigation mode
 map.navigator on?
 map.new name?

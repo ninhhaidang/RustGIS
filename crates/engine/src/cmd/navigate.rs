@@ -227,6 +227,14 @@ pub fn commands() -> Vec<C> {
             Ok(Value::Null)
         }).transition(unmodelled_transition).inputs(required_map_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string}"#),
+        // The order of the map tabs and the Browser's maps (#2802); the map in view stays in view.
+        C::new("map.move", "Move Map", "Browser", |s, p| {
+            let from = required_map_at(s, p)?;
+            let to = super::move_item(s, |s| &mut s.project.maps, from, p)?;
+            s.project.active_map = super::after_move(s.project.active_map, from, to);
+            Ok(Value::Null)
+        }).transition(unmodelled_transition).inputs(required_map_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
+        .params(r#"{"name": string, "to": index (0: first; past the end: last)}"#),
     ]
 }
 

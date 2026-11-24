@@ -1228,10 +1228,12 @@ fn strip_windows(p: &mut Project) {
 }
 
 /// The first streamed layer whose features or fields differ between two versions of a project
-/// for a reason other than a read of its source.
+/// for a reason other than a read of its source. Each map is compared with its own earlier
+/// version, wherever it now is among the maps (`map.move`, #2802).
 fn edited_streamed(before: &Project, after: &Project) -> Option<String> {
     let schema = |l: &rustgis_map::Layer| l.dataset.fields.iter().map(|f| (f.name.clone(), f.ty)).collect::<Vec<_>>();
-    for (mb, ma) in before.maps.iter().zip(&after.maps) {
+    let earlier = |ma: &rustgis_map::Map| before.maps.iter().find(|mb| mb.instance_id() == ma.instance_id());
+    for (mb, ma) in after.maps.iter().filter_map(|ma| Some((earlier(ma)?, ma))) {
         for la in ma.layers.iter().filter(|l| l.is_streamed()) {
             let Some(lb) = mb.layers.iter().find(|l| l.id == la.id && l.is_streamed()) else { continue };
             let reads = |l: &rustgis_map::Layer| l.source.as_ref().map(|s| s.reads);
@@ -1249,8 +1251,10 @@ fn edited_streamed(before: &Project, after: &Project) -> Option<String> {
 /// the command (their versions replaced) are left alone. Session-only constructions follow the
 /// final ID; a full destination cache shard rejects the command through the usual rollback.
 fn fresh_source_ids(before: &Project, after: &mut Project, constructions: &mut construction::Cache) -> Result<(), String> {
-    for (mb, ma) in before.maps.iter().zip(after.maps.iter_mut()) {
+    // Each map with its own earlier version, wherever it now is (`map.move`, #2802).
+    for ma in after.maps.iter_mut() {
         let map = ma.instance_id();
+        let Some(mb) = before.maps.iter().find(|mb| mb.instance_id() == map) else { continue };
         for la in ma.layers.iter_mut() {
             let Some(versions) = la.edit_versions() else { continue };
             let Some(lb) = mb.layers.iter().find(|l| l.id == la.id) else { continue };

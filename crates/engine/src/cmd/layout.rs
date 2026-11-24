@@ -64,6 +64,14 @@ pub fn commands() -> Vec<C> {
             Ok(Value::Null)
         }).inputs(named_object_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name"?: string, "layout"?: name|index (instead of name; default: the open layout)}"#),
+        // The order of the layout tabs and the Browser's layouts (#2802); the open one stays open.
+        C::new("layout.move", "Move Layout", "Browser", |s, p| {
+            let from = index(s, &by_name(p))?;
+            let to = super::move_item(s, |s| &mut s.project.layouts, from, p)?;
+            s.active_layout = s.active_layout.map(|a| super::after_move(a, from, to));
+            Ok(Value::Null)
+        }).inputs(named_object_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
+        .params(r#"{"name"?: string, "layout"?: name|index (instead of name; default: the open layout), "to": index (0: first; past the end: last)}"#),
         C::new("layout.rename", "Rename Layout", "Browser", |s, p| {
             let name = ps(p, "newName").map(str::trim).filter(|n| !n.is_empty()).ok_or("newName is required")?;
             let i = index(s, &by_name(p))?;
@@ -89,6 +97,7 @@ pub fn commands() -> Vec<C> {
                 s.project.layouts.iter().any(|x| x.name.eq_ignore_ascii_case(n))
             });
             l.name = name.clone();
+            l.renew_instance_id();
             if s.project.layouts.len() >= crate::project::MAX_LAYOUTS {
                 return Err(format!("a project holds at most {} layouts; remove one first", crate::project::MAX_LAYOUTS));
             }
