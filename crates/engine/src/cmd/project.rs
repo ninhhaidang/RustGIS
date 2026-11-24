@@ -663,20 +663,25 @@ fn open(s: &mut Session, p: &Value) -> CmdResult {
     let origin = if is_package { path.canonicalize() } else { std::path::absolute(&path) }
         .map_err(|error| format!("{}: {error}", path.display()))?;
     super::connections::clear_active();
+    // What it names is held within this as it is read, before anything it names is read.
+    let reach = s.file_reach(p);
     let proj = (|| -> Result<_, String> {
         if is_field {
             let bytes = crate::project::read_file(&path, MAX_PACKAGE)?;
             let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             let (dir, text, notes) = super::field::unpack(&bytes, &stem)?;
-            Ok((super::field::project_in(&text, &dir)?, notes))
+            let (proj, named) = super::field::project_in_within(&text, &dir, reach)?;
+            Ok((proj, named, notes))
         } else if is_package {
             let bytes = crate::project::read_file(&path, MAX_PACKAGE)?;
-            Ok((Project::from_import_json(&super::items::package_text(&bytes)?, None)?, Vec::new()))
+            let (proj, named) = Project::from_import_json_within(&super::items::package_text(&bytes)?, None, reach)?;
+            Ok((proj, named, Vec::new()))
         } else {
-            Ok((Project::load(&path)?, Vec::new()))
+            let (proj, named) = Project::load_within(&path, Some(reach))?;
+            Ok((proj, named, Vec::new()))
         }
     })();
-    let (proj, notes) = match proj {
+    let (proj, named, notes) = match proj {
         Ok(proj) => proj,
         Err(error) => {
             super::connections::restore_active(s);
@@ -709,6 +714,7 @@ fn open(s: &mut Session, p: &Value) -> CmdResult {
         s.path = Some(origin);
     }
     s.notify(format!("Opened {}", s.project.name), false);
+    named.say(s, &format!("the project '{}'", s.project.name));
     for note in notes {
         s.warn(note);
     }
@@ -747,8 +753,10 @@ fn open_text(s: &mut Session, p: &Value) -> CmdResult {
     let text = super::ps(p, "text").ok_or("text is required")?;
     let package = super::b(p, "package").unwrap_or(false);
     super::connections::clear_active();
-    let proj = if package { Project::from_import_json(text, None) } else { Project::from_json(text) };
-    let proj = match proj {
+    // What it names is held within this as it is read, before anything it names is read.
+    let reach = s.file_reach(p);
+    let proj = if package { Project::from_import_json_within(text, None, reach) } else { Project::from_json_within(text, reach) };
+    let (proj, named) = match proj {
         Ok(proj) => proj,
         Err(error) => {
             super::connections::restore_active(s);
@@ -764,6 +772,7 @@ fn open_text(s: &mut Session, p: &Value) -> CmdResult {
     }
     s.path = None;
     s.notify(format!("Opened {}", s.project.name), false);
+    named.say(s, &format!("the project '{}'", s.project.name));
     super::connections::resolve_project(s);
     super::connections::note_waiting(s);
     Ok(Value::Null)

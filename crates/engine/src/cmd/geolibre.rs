@@ -1,5 +1,6 @@
 //! Opens a GeoLibre project as a new map, resolving sources through existing commands.
 use super::ps;
+use crate::render::rustgis_tiles::address::Reach;
 use crate::{CmdResult, CommandSpec as C, Session};
 use rustgis_map::geolibre::{self, Report, array, boolean, number, string};
 use serde_json::{Value, json};
@@ -11,9 +12,14 @@ pub fn commands() -> Vec<C> {
     )]
 }
 
-/// Reads at most 64 MiB, before decoding or parsing hostile project data.
-fn project_text(p: &Value) -> Result<String, String> {
+/// Reads at most 64 MiB, before decoding or parsing hostile project data. Returns the text and,
+/// for one downloaded from `url`, the reach it was read at.
+fn project_text(p: &Value) -> Result<(String, Option<Reach>), String> {
     use std::io::Read;
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut read_at = None;
+    #[cfg(target_arch = "wasm32")]
+    let read_at = None;
     let bytes = if let Some(data) = ps(p, "data") {
         if data.len() > geolibre::MAX_TEXT / 3 * 4 + 4 {
             return Err("GeoLibre data exceeds 64 MiB".into());
@@ -24,14 +30,25 @@ fn project_text(p: &Value) -> Result<String, String> {
         if text.len() > geolibre::MAX_TEXT {
             return Err("GeoLibre text exceeds 64 MiB".into());
         }
-        return Ok(text.into());
+        return Ok((text.into(), None));
     } else if let Some(url) = ps(p, "url") {
         if !rustgis_map::tiles::is_web(url) {
             return Err("url must be http:// or https://".into());
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            crate::render::rustgis_tiles::cache::download_blocking_limited(&geolibre::download_url(url), geolibre::MAX_TEXT)?
+            use crate::render::rustgis_tiles::cache;
+            let url = geolibre::download_url(url);
+            let fetched = cache::download_blocking_with_origin_within(
+                &url,
+                geolibre::MAX_TEXT,
+                cache::BLOCKING_TIMEOUT,
+                &[],
+                cache::ceiling_for(&url),
+            )
+            .map_err(cache::large_file_hint)?;
+            read_at = Some(fetched.origin.reach());
+            fetched.bytes
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -51,7 +68,8 @@ fn project_text(p: &Value) -> Result<String, String> {
     if bytes.len() > geolibre::MAX_TEXT {
         return Err("GeoLibre project exceeds 64 MiB".into());
     }
-    String::from_utf8(bytes).map_err(|_| "GeoLibre project must be UTF-8 JSON".into())
+    let text = String::from_utf8(bytes).map_err(|_| "GeoLibre project must be UTF-8 JSON".to_string())?;
+    Ok((text, read_at))
 }
 
 /// Parses before mutating the session; an unreadable layer is noted and the others continue.
@@ -68,9 +86,15 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
         }
         return s.request_import_url(&q);
     }
-    let text = project_text(p)?;
+    let (text, read_at) = project_text(p)?;
     let mut report = Report::default();
     let project = geolibre::read_project(&text, &mut report)?;
+    // What it names reaches no wider than where it came from ([`Session::file_reach`]): held
+    // before any of it is read.
+    let reach = read_at.map_or_else(|| s.file_reach(p), |read| s.file_reach(p).min(read));
+    let held = reach == Reach::Public;
+    let addresses = std::iter::once(project.basemap.as_str()).chain(project.layers.iter().map(source_address));
+    let named = crate::received::hold(addresses, reach);
     if cfg!(target_arch = "wasm32") || s.leave_downloads {
         ensure_download_capacity(s, &project.layers, cfg!(target_arch = "wasm32"))?;
     }
@@ -112,7 +136,7 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
         let requests = s.url_requests.len();
         let folder = group_look(&group_index, string(record, "groupId"));
         let mut layer_report = Report::default();
-        let completed = match add_layer(s, record, dir.as_deref(), &mut layer_report, folder) {
+        let completed = match add_layer(s, record, dir.as_deref(), &mut layer_report, folder, held) {
             Ok(Added::Feature(id)) => {
                 added.push(name.to_string());
                 order.push(id);
@@ -171,6 +195,7 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
     s.map_mut().camera = project.camera;
     s.map_mut().bookmarks = project.bookmarks;
     let skipped = project.layers.len().saturating_sub(added.len());
+    named.say(s, &format!("the GeoLibre project '{}'", project.name));
     s.notify(
         format!(
             "Imported {} of {} GeoLibre layers; {} drawn differently, {skipped} left out (see the import's notes)",
@@ -259,7 +284,10 @@ enum Added {
 
 /// Adds data or tiles, retaining the original layer's presentation. Tile layers have their own
 /// order in RustGIS, so mixing them with features is explicitly reported.
-fn add_layer(s: &mut Session, r: &Value, dir: Option<&str>, report: &mut Report, folder: (bool, f64)) -> Result<Added, String> {
+/// `held`: what the project names reaches only the internet, as a document read from there
+/// ([`crate::received::hold`] recorded its addresses so), and a URL layer is added as one such a
+/// document names.
+fn add_layer(s: &mut Session, r: &Value, dir: Option<&str>, report: &mut Report, folder: (bool, f64), held: bool) -> Result<Added, String> {
     #[cfg(not(target_arch = "wasm32"))]
     let _ = folder;
     let name = string(r, "name");
@@ -309,7 +337,11 @@ fn add_layer(s: &mut Session, r: &Value, dir: Option<&str>, report: &mut Report,
                 let mut saved = r.clone();
                 saved["visible"] = json!(boolean(r, "visible", true) && folder.0);
                 saved["opacity"] = json!(number(r, "opacity", 1.0).clamp(0.0, 1.0) * folder.1);
-                s.request_import_url(&json!({"url":address,"whole":true,"name":name,"geolibreLayer":{"token":token,"record":saved}}))?;
+                let mut q = json!({"url":address,"whole":true,"name":name,"geolibreLayer":{"token":token,"record":saved}});
+                if held {
+                    q["fromDocument"] = json!(true);
+                }
+                s.request_import_url(&q)?;
                 report.approximated(name, "MBTiles archive is downloading; wait before saving");
             }
             report.approximated(name, "tile overlays draw above feature layers; tile vector styling uses RustGIS defaults");
@@ -381,6 +413,11 @@ fn add_layer(s: &mut Session, r: &Value, dir: Option<&str>, report: &mut Report,
                 }
             }
             q["geolibreLayer"] = json!({"token":token,"record":r});
+            // Added, when it lands, as an address a document read from the internet named: never
+            // taken as the user's own, which would lift the hold.
+            if held {
+                q["fromDocument"] = json!(true);
+            }
             s.request_import_url(&q)?;
             report.approximated(name, "URL data is downloading; its saved style is applied when the download completes");
             return Ok(Added::Feature(id));
@@ -396,6 +433,11 @@ fn add_layer(s: &mut Session, r: &Value, dir: Option<&str>, report: &mut Report,
             }
             s.run_part("layer.addZarr", &q)?
         } else {
+            // Added as an address a document read from the internet named: never taken as the
+            // user's own, which would lift the hold.
+            if remote && held {
+                q["fromDocument"] = json!(true);
+            }
             s.run_part(if remote { "layer.addUrl" } else { "layer.addData" }, &q)?
         }
     };

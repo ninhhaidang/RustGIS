@@ -131,6 +131,13 @@ fn fetch_items(root: &str, keys: &[(String, String)]) -> Result<(HashMap<String,
     let next = std::sync::atomic::AtomicUsize::new(0);
     let capture = rustgis_data::diagnostics::Capture::current();
     let still = crate::render::rustgis_tiles::cache::current_still();
+    // Each file is fetched within the store's reach: a store a document read from the internet
+    // named ([`crate::received::hold`]) is held there, and so are its files, whose own addresses
+    // the hold never saw.
+    let store = {
+        use crate::render::rustgis_tiles::cache::ceiling_for;
+        ceiling_for(root).min(ceiling_for(&format!("{root}/")))
+    };
     let work = || {
         crate::render::rustgis_tiles::cache::with_optional_still(still.clone(), || {
             let _diagnostic_scope = capture.enter();
@@ -142,7 +149,7 @@ fn fetch_items(root: &str, keys: &[(String, String)]) -> Result<(HashMap<String,
                 }
                 // A missing file is an expected answer here (see `is_absent`), not a failure:
                 // one omission note replaces its 404/403 diagnostics; real failures still say why.
-                let got = crate::render::rustgis_tiles::cache::download_blocking_omitting(&format!("{root}/{k}"), &[404, 403]);
+                let got = crate::render::rustgis_tiles::cache::download_blocking_omitting_at(&format!("{root}/{k}"), &[404, 403], store);
                 match got {
                     Ok(b) => {
                         let len = b.len() as u64;
@@ -239,6 +246,21 @@ mod transport_tests {
         assert!(result.unwrap_err().contains("cancelled"));
         assert_eq!(sends, 0);
         assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+    }
+
+    /// The files of a store a document read from the internet named are fetched within the
+    /// store's hold, though the hold never saw their own addresses: one on this computer isn't
+    /// asked for.
+    #[test]
+    fn a_held_stores_files_are_held_too() {
+        use crate::render::rustgis_tiles::cache;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let root = format!("http://{}/held.zarr", listener.local_addr().unwrap());
+        cache::restrict_to_public(&root);
+        let result = super::fetch(&root, &["zarr.json".into()]);
+        assert_eq!(listener.accept().map(|_| ()).unwrap_err().kind(), std::io::ErrorKind::WouldBlock, "a file of the store was asked for");
+        assert!(result.is_err(), "{result:?}");
     }
 }
 

@@ -38,6 +38,13 @@ longitude/latitude are saved as before and don't need it.
 command line. A package opens as a new, unsaved project; Save writes a plain `.rgis` file.
 Opening or creating a project clears undo history; saving does not.
 
+A project, package, template, map, layer or style file, or a field package brought back, received
+from the internet reaches only the internet: one opened by its web address (`?project=`), or given
+as text by the AI Assistant, MCP or a plugin. An address it names on this computer or the local network isn't read. A file you
+open from your own disk reaches your own servers as before. Either way, opening a file that names
+such addresses says how many, and names the first three. One that something received from the
+internet named earlier in the session stays held, and the notice says so.
+
 This version already reads format 2, a newer `.rgis` format
 ([#1853](https://github.com/opengeos/RustGIS/issues/1853)), when the file needs nothing this
 version lacks, and saves it in the format it writes today. A project, package, template, map,
@@ -223,6 +230,8 @@ An absolute data path is tried first, then its filename under `dir` (the project
 default). A desktop project may reference files outside that folder; import projects you trust
 to select those files. Browser imports can use inline GeoJSON and web addresses; local paths need desktop.
 A web app link such as `?project=https://example.org/watershed.geolibre` imports the same map.
+A GeoLibre project read from the internet (by `url`, a link, or JSON the AI Assistant, MCP or a
+plugin gives) reaches only the internet, as other [received projects](#projects) do.
 This startup link takes precedence over other data/style links so download timing cannot change
 which map receives them.
 

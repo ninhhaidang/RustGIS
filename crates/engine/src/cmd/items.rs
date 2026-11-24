@@ -75,7 +75,8 @@ pub fn commands() -> Vec<C> {
         .params(r#"{"layer"?, "path": "*.rgislyr"}"#),
         C::new("layer.addLayerFile", "Add Layer File", "Home › Add", |s, p| {
             let text = read_text(p)?;
-            super::layer::add_layer_text(s, &text)
+            let reach = s.file_reach(p);
+            super::layer::add_layer_text_within(s, &text, reach)
         }).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(r#"{"path"?: "*.rgislyr", "text"?: layer file JSON, "data"?: base64 file}"#),
         // Styles.
@@ -225,7 +226,9 @@ pub fn commands() -> Vec<C> {
             let name = super::within("name", "a project's name", name, 200)?;
             let text = read_text(p)?;
             super::connections::clear_active();
-            let mut proj = match Project::from_import_json(&text, None) {
+            // What it names is held within this as it is read, before anything it names is read.
+            let reach = s.file_reach(p);
+            let (mut proj, named) = match Project::from_import_json_within(&text, None, reach) {
                 Ok(proj) => proj,
                 Err(error) => {
                     super::connections::restore_active(s);
@@ -234,6 +237,7 @@ pub fn commands() -> Vec<C> {
             };
             proj.name = name;
             super::project::reset_to(s, proj);
+            named.say(s, "the template");
             s.path = None;
             super::connections::resolve_project(s);
             super::connections::note_waiting(s);
@@ -526,7 +530,10 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
     crate::project::check_format(&text, "map file, project or package")?;
     let dir = ps(p, "path").and_then(|path| std::path::absolute(path).ok()).and_then(|p| p.parent().map(Path::to_path_buf));
     super::connections::clear_active();
-    let maps: Vec<Map> = match serde_json::from_str::<Map>(&text) {
+    // What they name is held within this before anything they name is read: a map file's before
+    // its maps are added, a project's as it is read.
+    let reach = s.file_reach(p);
+    let (maps, named): (Vec<Map>, _) = match serde_json::from_str::<Map>(&text) {
         Ok(mut m) => {
             if crate::project::ensure_map_imports_complete(&m).is_err() {
                 super::connections::restore_active(s);
@@ -544,10 +551,11 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
             for notice in crate::project::picture_notices(&m.layers, []) {
                 s.notify_text(notice, false);
             }
-            vec![m]
+            let named = crate::received::hold(m.addresses_mut(), reach);
+            (vec![m], named)
         }
-        Err(_) => match Project::from_import_maps_json(&text, dir.as_deref(), MAX_IMPORTED_MAPS) {
-            Ok(mut project) => {
+        Err(_) => match Project::from_import_maps_json_within(&text, dir.as_deref(), MAX_IMPORTED_MAPS, reach) {
+            Ok((mut project, named)) => {
                 let parts = [crate::project::ReadPart::Labels, crate::project::ReadPart::Diagrams, crate::project::ReadPart::Maps];
                 for notice in project.take_read_notices(&parts) {
                     s.notify_text(notice, false);
@@ -557,7 +565,7 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
                 for (_, notice) in crate::project::label_losses::hidden(imported) {
                     s.notify(notice, false);
                 }
-                project.maps
+                (project.maps, named)
             }
             Err(error) => {
                 super::connections::restore_active(s);
@@ -565,6 +573,7 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
             }
         },
     };
+    named.say(s, "the map file");
     let mut names = Vec::new();
     let first_map = s.project.maps.len();
     let mut detached_offline = 0;
@@ -706,11 +715,13 @@ fn import_styles(s: &mut Session, p: &Value) -> CmdResult {
         }
         m.layers
     } else {
-        // A project parse opens sources even though this import only takes their styles.
+        // A project parse opens sources even though this import only takes their styles: held
+        // within where the file came from first ([`Session::file_reach`]).
         super::connections::clear_active();
-        let project = Project::from_import_json(&text, None);
+        let project = Project::from_import_json_within(&text, None, s.file_reach(p));
         super::connections::restore_active(s);
-        let mut project = project.map_err(|e| not_a(e, "layer file, map file or project"))?;
+        let (mut project, named) = project.map_err(|e| not_a(e, "layer file, map file or project"))?;
+        named.say(s, "the style file");
         // Styles take the layers' renderers and labels, not their diagrams or the layouts.
         for notice in project.take_read_notices(&[crate::project::ReadPart::Labels]) {
             s.notify_text(notice, false);

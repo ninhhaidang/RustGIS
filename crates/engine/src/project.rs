@@ -7,6 +7,8 @@ use rustgis_map::Map;
 use serde::{Deserialize, Serialize};
 
 use crate::GpRecord;
+use crate::received::Named;
+use crate::render::rustgis_tiles::address::Reach;
 
 #[path = "project_capabilities.rs"]
 mod capabilities;
@@ -1905,28 +1907,69 @@ impl Project {
 
     /// Reads a project from its JSON text (a browser upload).
     pub fn from_json(text: &str) -> Result<Project, String> {
-        Self::read_json(text, true, None, true, None)
+        Self::read_json(text, true, None, true, None, None).map(|(p, _)| p)
+    }
+
+    /// [`Project::from_json`] for a file whose addresses reach no wider than `reach`
+    /// ([`crate::Session::file_reach`]), held so before anything it names is read.
+    pub(crate) fn from_json_within(text: &str, reach: Reach) -> Result<(Project, Named), String> {
+        Self::read_json(text, true, None, true, None, Some(reach))
     }
 
     /// Reads imported JSON (including package contents) without restoring a saved file's secrets.
+    /// A command reads through [`Project::from_import_json_within`], which holds what it names.
+    #[cfg(test)]
     pub(crate) fn from_import_json(text: &str, dir: Option<&Path>) -> Result<Project, String> {
-        Self::read_json(text, false, dir, true, None)
+        Self::read_json(text, false, dir, true, None, None).map(|(p, _)| p)
+    }
+
+    /// Whether imported JSON reads as a project, refused as [`Project::from_import_json`] refuses
+    /// it, without its repair: nothing it names is read.
+    pub(crate) fn check_import_json(text: &str, dir: Option<&Path>) -> Result<(), String> {
+        Self::read_json(text, false, dir, false, None, None).map(|_| ())
+    }
+
+    /// [`Project::from_import_json`] within `reach`, as [`Project::from_json_within`].
+    pub(crate) fn from_import_json_within(text: &str, dir: Option<&Path>, reach: Reach) -> Result<(Project, Named), String> {
+        Self::read_json(text, false, dir, true, None, Some(reach))
     }
 
     /// Repairs only the maps the import will retain, so excluded maps produce no notices.
+    #[cfg(test)]
     pub(crate) fn from_import_maps_json(text: &str, dir: Option<&Path>, limit: usize) -> Result<Project, String> {
-        Self::read_json(text, false, dir, true, Some(limit))
+        Self::read_json(text, false, dir, true, Some(limit), None).map(|(p, _)| p)
+    }
+
+    /// Repairs only the maps the import will retain, so excluded maps produce no notices, holding
+    /// their addresses within `reach`, as [`Project::from_json_within`].
+    pub(crate) fn from_import_maps_json_within(
+        text: &str,
+        dir: Option<&Path>,
+        limit: usize,
+        reach: Reach,
+    ) -> Result<(Project, Named), String> {
+        Self::read_json(text, false, dir, true, Some(limit), Some(reach))
     }
 
     /// Peer census must precede normalization: duplicate ids cannot become proof of a unique
     /// matching slot after the normalizer renumbers or drops them. Saved-text restore is absent.
     pub(crate) fn from_peer_raw(text: &str) -> Result<Project, String> {
-        Self::read_json(text, false, None, false, None)
+        Self::read_json(text, false, None, false, None, None).map(|(p, _)| p)
     }
 
     /// Validates compatibility before typed decoding. Saved files may restore exact fields;
     /// peer input stays unnormalized until its slot census has rejected ambiguous identities.
-    fn read_json(text: &str, restore: bool, dir: Option<&Path>, normalize: bool, map_limit: Option<usize>) -> Result<Project, String> {
+    /// With `held`, every address the project keeps is held within that reach
+    /// ([`crate::received::hold`]) before its repair reads anything it names (rasters read in
+    /// place, streamed sources).
+    fn read_json(
+        text: &str,
+        restore: bool,
+        dir: Option<&Path>,
+        normalize: bool,
+        map_limit: Option<usize>,
+        held: Option<Reach>,
+    ) -> Result<(Project, Named), String> {
         check_format(text, "project")?;
         let refused = |e: serde_json::Error| {
             let msg = e.to_string();
@@ -1982,6 +2025,7 @@ impl Project {
         if let Some(limit) = map_limit {
             p.maps.truncate(limit);
         }
+        let named = held.map(|reach| crate::received::hold(p.addresses_mut(), reach)).unwrap_or_default();
         // Maps imported from a project are read as it opens, and said as imported.
         let repair_notices = match (normalize, map_limit) {
             (false, _) => Vec::new(),
@@ -2053,12 +2097,18 @@ impl Project {
             ));
         }
         p.read_notices.extend(unknown.notices(map_limit));
-        Ok(p)
+        Ok((p, named))
     }
 
     /// Opens a project file (a regular file within [`max_bytes`]; see `read_file`), resolving
     /// its relative paths against its folder.
     pub fn load(path: &Path) -> Result<Project, String> {
+        Self::load_within(path, None).map(|(p, _)| p)
+    }
+
+    /// [`Project::load`], holding what the file names within `held`, as
+    /// [`Project::from_json_within`].
+    pub(crate) fn load_within(path: &Path, held: Option<Reach>) -> Result<(Project, Named), String> {
         let max = max_bytes();
         // Past the limit: said with its size and the limit here, before anything is read.
         if let Ok(meta) = std::fs::metadata(path)
@@ -2089,7 +2139,7 @@ impl Project {
         let bytes = read_file(path, max)?;
         let text = String::from_utf8(bytes).map_err(|_| format!("{} isn't a RustGIS project", path.display()))?;
         let dir = std::path::absolute(path).ok().and_then(|p| p.parent().map(Path::to_path_buf));
-        Self::read_json(&text, true, dir.as_deref(), true, None)
+        Self::read_json(&text, true, dir.as_deref(), true, None, held)
     }
 }
 

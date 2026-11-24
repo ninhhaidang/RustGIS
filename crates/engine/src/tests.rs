@@ -20673,6 +20673,28 @@ fn local_data_server() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>
     serve_files(vec![("/points.geojson".into(), points.to_vec()), ("/stac/collections".into(), collections.to_vec())])
 }
 
+/// Project text a plugin gives is held by both holds: what it names is held to the internet as a
+/// received file's is, said, and nothing it names is read from this computer, a raster read in
+/// place among them.
+#[test]
+fn project_text_a_plugin_gives_reads_nothing_from_this_computer() {
+    use crate::render::rustgis_tiles::{address::Reach, cache};
+    let mut s = world();
+    let id = "eng-received-text";
+    plugin(id, &["network", "edit", "files"]);
+    let (base, asked) = local_data_server();
+    let scene = format!("{base}/received/scene.tif");
+    let mut given = Session::new(Project::default());
+    given.map_mut().add_raster("Scene".to_string(), rustgis_map::raster::RasterLayer::unread_in_place(scene.clone()));
+    let (text, _) = given.project.saved_text(None).unwrap();
+    cache::allow_named(&scene);
+    forward(&mut s, id, "map.import", json!({"text": text})).unwrap();
+    s.wait_in_place_reads();
+    assert_eq!(cache::ceiling_for(&scene), Reach::Public);
+    assert_eq!(asked.lock().unwrap().as_slice(), &[] as &[String], "nothing was read from this computer");
+    assert!(s.notices.iter().any(|n| n.text.starts_with("the map file came from the internet, so the 1 address(es)")));
+}
+
 /// Plugins reach only the internet, and so does every command a plugin runs that connects: an
 /// address it gives on this computer or the local network is refused before anything is read,
 /// naming it and why (the STAC, open data portal, web file, tile and OpenStreetMap commands

@@ -493,67 +493,69 @@ fn canonical_resource(url: &str) -> &str {
 /// Marks `url` as document-derived so range reads, headers, tiles and downloads of it connect
 /// only to public internet addresses, and forgets any earlier local read of it.
 pub fn restrict_to_public(url: &str) {
-    let base = canonical_resource(url);
-    if base.is_empty() {
-        return;
-    }
-    let added = {
-        let mut p = public_only().lock().unwrap_or_else(|e| e.into_inner());
-        let removed_named = p.named_local.remove(base);
-        if removed_named {
-            p.named_order.retain(|item| item != base);
-        }
-        let mut changed = removed_named;
-        if let Some(tpl) = PublicTemplate::parse(base)
-            && !p.templates.contains(&tpl)
-        {
-            if p.templates.len() < MAX_PUBLIC_TEMPLATES {
-                p.templates.push(tpl);
-                changed = true;
-            } else if !p.saturated {
-                p.saturated = true;
-                changed = true;
-            }
-        }
-        if !p.exact.contains(base) {
-            if p.exact.len() < MAX_PUBLIC_ONLY {
-                p.exact.insert(base.to_string());
-                changed = true;
-            } else if !p.saturated {
-                p.saturated = true;
-                changed = true;
-            }
-        }
-        changed
-    };
-    if added {
-        let aliases: Vec<String> =
-            lock().slots.keys().filter(|key| canonical_resource(key) == base).map(|key| resource_of(key).to_string()).collect();
-        forget(base);
-        if base != url {
-            forget(url);
-        }
-        for alias in aliases {
-            forget(&alias);
-        }
-        forget_restricted_aliases(base);
-    }
+    restrict_all_to_public([url]);
 }
 
-/// Forgets the cached answers of every address whose canonical resource is `base`: the plain
-/// spelling, the anonymous one and the login-wrapped ones alike ([`forget`] compares the spelling
-/// it was given). Reads under way are kept, as [`forget`] keeps them, and [`request`] and
-/// [`peek_from`] refuse what they complete under a wider reach.
-fn forget_restricted_aliases(base: &str) {
-    let mut c = lock();
-    c.slots.retain(|key, slot| {
-        if canonical_resource(key) != base {
-            return true;
+/// [`restrict_to_public`] for every address of `urls` (a received file's): each is recorded,
+/// then their earlier reads are forgotten ([`forget_resources`]), the cached answers gone through
+/// once for all of them rather than once for each.
+pub fn restrict_all_to_public<'a>(urls: impl IntoIterator<Item = &'a str>) {
+    let mut bases = std::collections::HashSet::new();
+    let mut spellings = std::collections::HashSet::new();
+    for url in urls {
+        let base = canonical_resource(url);
+        if base.is_empty() || !record_public(base) {
+            continue;
         }
-        slot.other = None;
-        matches!(slot.entry, Entry::Pending) && !crate::mbtiles::is_tile(key)
-    });
-    c.bytes = c.slots.values().map(Slot::bytes).sum();
+        bases.insert(base.to_string());
+        spellings.insert(forgotten_as(base).to_string());
+        spellings.insert(forgotten_as(url).to_string());
+    }
+    if bases.is_empty() {
+        return;
+    }
+    // Every spelling cached of the same resource: the plain one, the anonymous one and the
+    // login-wrapped ones alike ([`forget`] compares the spelling it was given).
+    let aliases: Vec<String> = lock()
+        .slots
+        .keys()
+        .filter(|key| bases.contains(canonical_resource(key)))
+        .map(|key| forgotten_as(resource_of(key)).to_string())
+        .collect();
+    spellings.extend(aliases);
+    forget_resources(&spellings, &bases);
+}
+
+/// Records `base` (a canonical resource) as held to public internet addresses. Whether that
+/// changed what is held, so its earlier reads must be forgotten.
+fn record_public(base: &str) -> bool {
+    let mut p = public_only().lock().unwrap_or_else(|e| e.into_inner());
+    let removed_named = p.named_local.remove(base);
+    if removed_named {
+        p.named_order.retain(|item| item != base);
+    }
+    let mut changed = removed_named;
+    if let Some(tpl) = PublicTemplate::parse(base)
+        && !p.templates.contains(&tpl)
+    {
+        if p.templates.len() < MAX_PUBLIC_TEMPLATES {
+            p.templates.push(tpl);
+            changed = true;
+        } else if !p.saturated {
+            p.saturated = true;
+            changed = true;
+        }
+    }
+    if !p.exact.contains(base) {
+        if p.exact.len() < MAX_PUBLIC_ONLY {
+            p.exact.insert(base.to_string());
+            changed = true;
+        } else if !p.saturated {
+            p.saturated = true;
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// The origin a direct warp address's base is asked under. The restriction recorded for the warp
@@ -1166,15 +1168,30 @@ fn resource_of(key: &str) -> &str {
 /// whose address stays the same, read again with other keys). Reads under way are kept, except an
 /// MBTiles file's tiles: it is forgotten when it may be replaced, and its old tiles mustn't stay.
 pub fn forget(url: &str) {
+    forget_resources(&std::collections::HashSet::from([forgotten_as(url).to_string()]), &std::collections::HashSet::new());
+}
+
+/// The resource [`forget`] forgets for `url`: without a download limit, and without a COG's look.
+fn forgotten_as(url: &str) -> &str {
     let url = split_download_limit(url).0;
     // PMTiles and MBTiles paths are taken whole (see `resource_of`), even with a look-like name.
     let pmtiles = url.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("pmtiles"));
-    let url = if pmtiles || crate::mbtiles::check(url).is_ok() { url } else { crate::cog::split(url).0 };
+    if pmtiles || crate::mbtiles::check(url).is_ok() { url } else { crate::cog::split(url).0 }
+}
+
+/// Forgets every resource of `resources` ([`forgotten_as`]) as [`forget`] does, and every cached
+/// answer whose canonical resource is one of `bases`. The cached answers are gone through once for
+/// all of them; the archives, COG tiles and remote files of each resource are forgotten one
+/// resource at a time, each going through its own cache. Reads under way are kept, and [`request`]
+/// and [`peek_from`] refuse what they complete under a wider reach.
+fn forget_resources(resources: &std::collections::HashSet<String>, bases: &std::collections::HashSet<String>) {
     // First: a tile answered from here on is dropped, and one answered before goes with the rest.
-    crate::mbtiles::forget_archive(url);
+    for url in resources {
+        crate::mbtiles::forget_archive(url);
+    }
     let mut c = lock();
     c.slots.retain(|k, s| {
-        if resource_of(k) != url {
+        if !resources.contains(resource_of(k)) && !bases.contains(canonical_resource(k)) {
             return true;
         }
         s.other = None;
@@ -1182,12 +1199,14 @@ pub fn forget(url: &str) {
     });
     c.bytes = c.slots.values().map(Slot::bytes).sum();
     drop(c);
-    crate::pmtiles::forget_archive(url);
-    crate::cog::forget_file(url);
+    for url in resources {
+        crate::pmtiles::forget_archive(url);
+        crate::cog::forget_file(url);
+        rustgis_data::source::remote::forget_file(url);
+    }
     // Map tiles made from a service's pictures, kept only while one is missing or on its way,
     // and their plans: all are made again (those kept in the cache stay till `clear`).
     crate::warp::forget();
-    rustgis_data::source::remote::forget_file(url);
     GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -1946,6 +1965,13 @@ pub fn download_blocking_limited(url: &str, max: usize) -> Result<Vec<u8>, Strin
 #[cfg(not(target_arch = "wasm32"))]
 pub fn download_blocking_omitting(url: &str, omit: &'static [u16]) -> Result<Vec<u8>, String> {
     download_blocking_omitting_within(url, MAX_DOWNLOAD, BLOCKING_TIMEOUT, omit).map_err(large_file_hint)
+}
+
+/// [`download_blocking_omitting`] reaching no wider than `ceiling` (a file of a store, within the
+/// store's reach), nor than [`ceiling_for`] its own address.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn download_blocking_omitting_at(url: &str, omit: &'static [u16], ceiling: crate::address::Reach) -> Result<Vec<u8>, String> {
+    download_blocking_with_origin_within(url, MAX_DOWNLOAD, BLOCKING_TIMEOUT, omit, ceiling).map(|f| f.bytes).map_err(large_file_hint)
 }
 
 /// A waited-for download's error, with where a large file goes instead when it timed out.
