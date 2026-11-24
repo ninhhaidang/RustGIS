@@ -29,6 +29,19 @@ pub(crate) fn cache_dir(env: &str, sub: &str) -> Option<PathBuf> {
     crate::dirs::cache_dir().map(|b| b.join(sub))
 }
 
+/// Whether a test that needs a program runs (`here`: it is installed). Where it isn't, the test is
+/// skipped, unless the environment variable `require` is set, as in CI's job that installs the
+/// programs: then the `Err` says what is missing, and the test fails instead of passing unrun.
+pub(crate) fn test_runs(require: &str, what: &str, here: bool) -> std::result::Result<bool, String> {
+    if here {
+        Ok(true)
+    } else if std::env::var_os(require).is_some_and(|v| !v.is_empty()) {
+        Err(format!("{require} is set, but {what} wasn't found"))
+    } else {
+        Ok(false)
+    }
+}
+
 const RELOAD_PREFIX: &str = "reload-";
 const RELOAD_OWNER_MARKER: &[u8] = b"RustGIS reload workspace v1\n";
 

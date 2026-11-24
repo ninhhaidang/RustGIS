@@ -32,7 +32,7 @@ fn first_point(s: &Session, id: u32) -> rustgis_geom::Coord {
 #[test]
 fn files_gdal_reads_are_held_in_their_own_system() {
     use rustgis_data::source::gdal;
-    if !gdal::available() {
+    if !gdal::test_runs().unwrap() {
         return;
     }
     let d = dir("gdal");
@@ -72,7 +72,7 @@ fn files_gdal_reads_are_held_in_their_own_system() {
 /// coordinates as the query gives them.
 #[test]
 fn duckdb_results_are_held_in_their_own_system() {
-    if !rustgis_data::source::duckdb::available() {
+    if !rustgis_data::source::duckdb::test_runs().unwrap() {
         return;
     }
     let lv95 = Crs::from_epsg(2056).unwrap();

@@ -278,6 +278,12 @@ pub fn available() -> bool {
     program().is_some()
 }
 
+/// Whether a test that needs DuckDB runs: skipped without it, unless `RUSTGIS_REQUIRE_DUCKDB` is
+/// set, when it fails on the `Err` instead.
+pub fn test_runs() -> std::result::Result<bool, String> {
+    external::test_runs("RUSTGIS_REQUIRE_DUCKDB", "DuckDB (the duckdb program)", available())
+}
+
 /// A live-only database named for a query: add its tables instead.
 fn live_not_here() -> DataError {
     DataError::Unsupported(
@@ -1605,7 +1611,7 @@ mod tests {
     #[test]
     fn previews_rows() {
         assert!(checked("  ;").is_err() && checked("SELECT 1\0").is_err());
-        if !available() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = std::env::temp_dir().join(format!("rustgis-duckdb-preview-{}", std::process::id()));
@@ -1642,7 +1648,7 @@ mod tests {
     /// Queries and a database through DuckDB when it is installed (skipped otherwise).
     #[test]
     fn runs_queries_when_duckdb_is_installed() {
-        if !available() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = std::env::temp_dir().join(format!("rustgis-duckdb-test-{}", std::process::id()));

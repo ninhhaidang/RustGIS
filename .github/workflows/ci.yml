@@ -94,11 +94,8 @@ jobs:
   # added, not straight away (ci-label.yml runs test-rust.yml only).
   ios:
     name: iOS app
-    if: >-
-      github.event_name == 'push'
-      || (github.event_name == 'workflow_dispatch' && inputs.platforms != 'linux')
-      || contains(github.event.pull_request.labels.*.name, 'ci:macos')
-      || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    needs: plan
+    if: needs.plan.outputs.ios == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -121,10 +118,8 @@ jobs:
   # platform, a pull request labelled `ci:full`), from the next push after the label is added.
   android:
     name: Android app
-    if: >-
-      github.event_name == 'push'
-      || (github.event_name == 'workflow_dispatch' && inputs.platforms != 'linux')
-      || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    needs: plan
+    if: needs.plan.outputs.android == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -375,6 +370,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       os: ${{ steps.os.outputs.os }}
+      ios: ${{ steps.apps.outputs.ios }}
+      android: ${{ steps.apps.outputs.android }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -386,6 +383,22 @@ jobs:
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           PLATFORMS: ${{ inputs.platforms }}
         run: echo "os=$(.github/scripts/platforms.sh)" >> "$GITHUB_OUTPUT"
+      # Whether the `ios` and `android` jobs run: they read it, and so does `Tests pass`, to tell a
+      # job meant to skip from one that should have run.
+      - id: apps
+        env:
+          IOS: >-
+            ${{ github.event_name == 'push'
+            || (github.event_name == 'workflow_dispatch' && inputs.platforms != 'linux')
+            || contains(github.event.pull_request.labels.*.name, 'ci:macos')
+            || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          ANDROID: >-
+            ${{ github.event_name == 'push'
+            || (github.event_name == 'workflow_dispatch' && inputs.platforms != 'linux')
+            || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+        run: |
+          echo "ios=$IOS" >> "$GITHUB_OUTPUT"
+          echo "android=$ANDROID" >> "$GITHUB_OUTPUT"
 
   test:
     needs: [plan, select]
@@ -396,19 +409,114 @@ jobs:
       # The release build runs nightly; `ci:full` asks for it before merging.
       release-build: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
 
+  # The tests that run GDAL or DuckDB, with both installed (#2644). Elsewhere they skip without the
+  # program, so here RUSTGIS_REQUIRE_GDAL and RUSTGIS_REQUIRE_DUCKDB make a missing one fail them
+  # instead (`test_runs` in rustgis-data). The `test` job installs neither and keeps covering what a
+  # user without them sees. It runs the whole of rustgis-data and rustgis-engine, which hold those
+  # tests, when the run tests either; otherwise its steps skip and it passes. Whole on purpose: a
+  # filter on test names would miss a new test named otherwise, and with the programs installed
+  # other tests take the paths a user with them gets (a geodatabase read through GDAL when the
+  # built-in reader can't). It runs beside `test`, so it costs runner time, not the run's length.
+  programs:
+    name: GDAL and DuckDB
+    needs: select
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings -C linker=clang -C link-arg=-fuse-ld=mold
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      RUSTGIS_REQUIRE_GDAL: "1"
+      RUSTGIS_REQUIRE_DUCKDB: "1"
+      # GDAL comes from the runner's packages (RustGIS needs 3.8 or later; the install step prints
+      # the version). DuckDB's command line program is pinned by checksum.
+      DUCKDB_VERSION: 2.0.1
+      DUCKDB_SHA256: b676268be4d39e4e41a904442c9796c9914e645cc085c7505f048f2c992b5eca
+    steps:
+      - id: scope
+        env:
+          PACKAGES: ${{ needs.select.outputs.packages }}
+        run: |
+          if [ "$PACKAGES" = --workspace ] || grep -qE '(^| )-p rustgis-(data|engine)( |$)' <<<"$PACKAGES"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Neither rustgis-data nor rustgis-engine is tested in this run; skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: steps.scope.outputs.run == 'true'
+        with:
+          persist-credentials: false
+      - name: Install GDAL and DuckDB
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends mold gdal-bin
+          curl -fsSLo "$RUNNER_TEMP/duckdb.tar.gz" \
+            "https://github.com/duckdb/duckdb/releases/download/v$DUCKDB_VERSION/duckdb-cli-linux-amd64.tar.gz"
+          echo "$DUCKDB_SHA256  $RUNNER_TEMP/duckdb.tar.gz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/duckdb"
+          tar -xzf "$RUNNER_TEMP/duckdb.tar.gz" -C "$RUNNER_TEMP/duckdb" duckdb
+          echo "$RUNNER_TEMP/duckdb" >> "$GITHUB_PATH"
+          # DuckDB Spatial, which every query loads, installed now so a download that fails says so here.
+          "$RUNNER_TEMP/duckdb/duckdb" -c "INSTALL spatial; LOAD spatial;"
+          ogrinfo --version
+          "$RUNNER_TEMP/duckdb/duckdb" --version
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: steps.scope.outputs.run == 'true'
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        if: steps.scope.outputs.run == 'true'
+        with:
+          # Only main saves the cache (see test-rust.yml).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
+        if: steps.scope.outputs.run == 'true'
+        with:
+          tool: cargo-nextest@0.9.151
+      - name: Clear the previous test report
+        if: steps.scope.outputs.run == 'true'
+        run: rm -f target/nextest/ci/junit.xml
+      - name: Tests
+        if: steps.scope.outputs.run == 'true'
+        run: cargo nextest run -p rustgis-data -p rustgis-engine --locked --profile ci
+      # As in test-rust.yml: a test that passed only on a retry goes in the summary, and on a push to
+      # main to the `flaky` job. `test` skips these tests, so only this job can see them.
+      - name: Flaky tests
+        id: flaky
+        if: ${{ !cancelled() && steps.scope.outputs.run == 'true' }}
+        run: |
+          .github/scripts/flaky-tests.sh target/nextest/ci/junit.xml > flaky-programs.txt
+          if [ -s flaky-programs.txt ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Tests that passed only on a retry with GDAL and DuckDB: see the job summary."
+            {
+              echo "### Flaky tests (GDAL and DuckDB)"
+              echo
+              echo "These failed and then passed on a retry, so the run did not fail. Each is a bug to fix."
+              echo
+              sed 's/^/- `/; s/$/`/' flaky-programs.txt
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Keep the flaky tests' names
+        if: ${{ !cancelled() && steps.flaky.outputs.found == 'true' && github.event_name == 'push' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: flaky-programs
+          path: flaky-programs.txt
+          retention-days: 1
+
   # A test that failed and then passed on a retry (.config/nextest.toml) on a push to main gets an
   # issue, or a comment on its open one: a retry hides a flaky test from the run, not from us. A
   # pull request only lists them in the test jobs' summaries. Like nightly.yml's report, it writes
   # issues and runs none of the repository's code.
   flaky:
     name: Flaky tests
-    needs: test
+    needs: [test, programs]
     if: ${{ !cancelled() && github.event_name == 'push' && github.repository == 'opengeos/RustGIS' }}
     runs-on: ubuntu-latest
     permissions:
       issues: write
     steps:
-      # One file a runner, flaky-<runner>.txt, each line a test ("<binary> <test>").
+      # One file a runner (and flaky-programs.txt from `programs`), each line a test ("<binary> <test>").
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: flaky-*
@@ -439,24 +547,17 @@ jobs:
   # The check to require before merging, so the list of required checks needn't follow the jobs
   # above (a runner that only a label adds, a job added later). It fails if any of them failed or
   # was cancelled. A skipped job passes only when it was meant to skip: `ios` and `android` skip
-  # unless their conditions below hold (the same as on the jobs), and every other job always runs.
+  # unless `plan` says they run, and every other job always runs.
   tests_pass:
     name: Tests pass
-    needs: [lint, wasm, ios, android, licenses, schema, rows, deferrals, ratchets, plan, select, test]
+    needs: [lint, wasm, ios, android, licenses, schema, rows, deferrals, ratchets, plan, select, test, programs]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - env:
           NEEDS: ${{ toJSON(needs) }}
-          RUNS_IOS: >-
-            ${{ github.event_name == 'push'
-            || (github.event_name == 'workflow_dispatch' && inputs.platforms != 'linux')
-            || contains(github.event.pull_request.labels.*.name, 'ci:macos')
-            || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
-          RUNS_ANDROID: >-
-            ${{ github.event_name == 'push'
-            || (github.event_name == 'workflow_dispatch' && inputs.platforms != 'linux')
-            || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          RUNS_IOS: ${{ needs.plan.outputs.ios }}
+          RUNS_ANDROID: ${{ needs.plan.outputs.android }}
         run: |
           set -euo pipefail
           meant_to_run() {

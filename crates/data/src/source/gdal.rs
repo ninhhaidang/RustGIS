@@ -115,6 +115,12 @@ pub fn usable() -> bool {
     available() && program("ogrinfo").is_some_and(|p| check_version(&p).is_ok())
 }
 
+/// Whether a test that needs GDAL runs: skipped without a [`usable`] GDAL, unless
+/// `RUSTGIS_REQUIRE_GDAL` is set, when it fails on the `Err` instead.
+pub fn test_runs() -> std::result::Result<bool, String> {
+    external::test_runs("RUSTGIS_REQUIRE_GDAL", "GDAL 3.8 or later (ogr2ogr and ogrinfo)", usable())
+}
+
 fn missing() -> DataError {
     DataError::Unsupported(missing_text(crate::no_programs_here()))
 }
@@ -984,7 +990,7 @@ mod tests {
     /// layer was before, and said. A conversion made before is not reused for one in its own.
     #[test]
     fn layers_are_converted_in_their_own_system_when_gdal_is_installed() {
-        if !available() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1077,7 +1083,7 @@ mod tests {
     /// A VRT renamed `.tab` isn't opened as a VRT, so the file it names isn't read.
     #[test]
     fn a_renamed_vrt_isnt_read_when_gdal_is_installed() {
-        if !available() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1125,7 +1131,7 @@ mod tests {
     /// keeps all five: the surfaces, the curves and the collection were left out before.
     #[test]
     fn keeps_surfaces_curves_and_collections_when_gdal_is_installed() {
-        if !usable() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = std::env::temp_dir().join(format!("rustgis-gdal-surfaces-{}", std::process::id()));
@@ -1166,7 +1172,7 @@ mod tests {
     #[test]
     fn converts_a_mixed_kml_with_source_provenance_when_gdal_is_installed() {
         use crate::source::FeatureSource;
-        if !usable() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = std::env::temp_dir().join(format!("rustgis-gdal-test-{}", std::process::id()));
@@ -1231,7 +1237,7 @@ mod tests {
     /// Both a new conversion and a cache hit must say how many source features were lost.
     #[test]
     fn conversion_reports_empty_polygons_left_out_but_not_clean_input() {
-        if !usable() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1281,7 +1287,7 @@ mod tests {
     /// the conversion cache trusts while making the source unreadable by its allowed driver.
     #[test]
     fn reused_conversion_skips_listing_and_keeps_the_source_count() {
-        if !usable() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1332,7 +1338,7 @@ mod tests {
 
     #[test]
     fn fresh_conversion_reports_dropped_dimensions_but_not_for_clean_xy_data() {
-        if !usable() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = std::env::temp_dir().join(format!("rustgis-gdal-fresh-dimensions-{}", std::process::id()));
@@ -1389,7 +1395,7 @@ mod tests {
 
     #[test]
     fn fresh_csv_diagnostics_count_repeated_overflows_without_claiming_feature_loss() {
-        if !usable() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1425,7 +1431,7 @@ mod tests {
 
     #[test]
     fn fresh_selected_family_reports_other_geometries_but_not_missing_or_matching_geometries() {
-        if !usable() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1518,7 +1524,7 @@ mod tests {
 
     #[test]
     fn fresh_generic_layer_reports_only_selected_features_with_dropped_dimensions() {
-        if !usable() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1553,7 +1559,7 @@ mod tests {
 
     #[test]
     fn generic_dimension_count_includes_measures_and_quotes_layer_names() {
-        if !usable() {
+        if !test_runs().unwrap() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();

@@ -337,6 +337,16 @@ it locally, download the files listed there into one folder, check them with `sh
 the checksums beside them, and run
 `RUSTGIS_WORKFLOW_DATA=<folder> cargo test -p rustgis-engine --test integration workflows:: -- --ignored`.
 
+### Tests that need GDAL or DuckDB
+
+A test that runs GDAL or DuckDB is skipped where the program isn't installed. It starts with
+`if !gdal::test_runs().unwrap() { return; }` (or `duckdb::test_runs()`, or `raster::gdal::test_runs()`
+for GDAL's raster programs), not with `available()` or `usable()`. CI's `GDAL and DuckDB` job
+installs both and sets `RUSTGIS_REQUIRE_GDAL` and `RUSTGIS_REQUIRE_DUCKDB`, so there a missing
+program fails the test instead of skipping it. The usual test jobs install neither, so they keep
+covering what a user without them sees. To run them the same way locally:
+`RUSTGIS_REQUIRE_GDAL=1 RUSTGIS_REQUIRE_DUCKDB=1 cargo test -p rustgis-data -p rustgis-engine`.
+
 ### Performance regressions
 
 When changing a large-data path, add a work budget to an ordinary test. Count what the operation

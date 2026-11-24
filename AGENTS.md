@@ -159,6 +159,9 @@ the pull request which of these it reaches and why the rest don't apply:
 `cargo xtask test-hygiene` (also in CI) requires `// test-wait: reason` on timer waits in tests and
 `#[ignore = "reason"]` on ignored tests, and refuses an `assert_eq!` or `assert_ne!` (or `debug_assert_*`)
 whose two sides are the same tokens; prefer completion or progress signals, and a fixed expected value.
+A test that needs GDAL or DuckDB skips with `if !gdal::test_runs().unwrap() { return; }` (`duckdb::`,
+`raster::gdal::`), never on `available()` or `usable()`: CI's `GDAL and DuckDB` job installs both and
+sets `RUSTGIS_REQUIRE_GDAL` and `RUSTGIS_REQUIRE_DUCKDB`, so only then does a missing program fail it.
 `clippy.toml` refuses the four sphere measures in `rustgis-geom` (`haversine_m`, `geodesic_length_m`,
 `geodesic_ring_perimeter_m`, `geodesic_ring_area_m2`): the Earth measures on the WGS 84 ellipsoid
 (`wgs84_distance_m`, `wgs84_length_m`, `wgs84_step_m`, `wgs84_ring_perimeter_area_m2`), and a call kept on

@@ -626,7 +626,7 @@ fn hostile_bytes_never_panic() {
 /// fields, and a TIN, which GDAL stores as a multipatch (a triangle fan).
 #[test]
 fn reads_what_gdal_writes_when_gdal_is_installed() {
-    if !crate::source::gdal::available() {
+    if !crate::source::gdal::test_runs().unwrap() {
         return;
     }
     let dir = std::env::temp_dir().join(format!("rustgis-filegdb-{}", std::process::id()));
@@ -647,7 +647,7 @@ fn reads_what_gdal_writes_when_gdal_is_installed() {
     .unwrap();
     let (gdb_s, points_s, tins_s) = (gdb.display().to_string(), points.display().to_string(), tins.display().to_string());
     run(&["-f", "OpenFileGDB", "-a_srs", "EPSG:4326", "-nlt", "POINT", "-nln", "places", "-oo", "AUTODETECT_TYPE=YES", &gdb_s, &points_s]);
-    run(&["-f", "OpenFileGDB", "-update", "-a_srs", "EPSG:2056", "-nlt", "TINZ", "-nln", "blocks", &gdb_s, &tins_s]);
+    run(&["-f", "OpenFileGDB", "-update", "-a_srs", "EPSG:2056", "-nlt", "GEOMETRYCOLLECTIONZ", "-nln", "blocks", &gdb_s, &tins_s]);
     assert!(is_geodatabase(&gdb));
     assert_eq!(layers(&gdb).unwrap(), ["places", "blocks"]);
     let read = read_dir(&gdb, None).unwrap().layers;

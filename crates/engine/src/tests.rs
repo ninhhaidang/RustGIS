@@ -6397,7 +6397,7 @@ fn a_file_inside_a_geodatabase_adds_the_geodatabase() {
     let gdb = dir.join("roads.gdb");
     let table = gdb.join("a00000001.gdbtable").display().to_string();
     let mut s = Session::new(Project::default());
-    if rustgis_data::source::gdal::available() {
+    if rustgis_data::source::gdal::test_runs().unwrap() {
         let geojson = dir.join("cities.geojson");
         std::fs::write(
             &geojson,
@@ -23101,7 +23101,7 @@ fn any_command_editing_a_streamed_layer_is_undone() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn gdal_formats_open_when_gdal_is_installed() {
-    if !rustgis_data::source::gdal::available() {
+    if !rustgis_data::source::gdal::test_runs().unwrap() {
         return;
     }
     let dir = std::env::temp_dir().join(format!("rustgis-engine-gdal-{}", std::process::id()));
@@ -23198,7 +23198,7 @@ fn kml_and_gpx_add_as_layers() {
 fn duckdb_queries_and_databases() {
     let mut s = Session::new(Project::default());
     let query = "SELECT 'a' AS name, ST_Point(7, 45) AS geom UNION ALL SELECT 'b', ST_GeomFromText('LINESTRING(7 45, 8 46)')";
-    if !rustgis_data::source::duckdb::available() {
+    if !rustgis_data::source::duckdb::test_runs().unwrap() {
         let e = s.run("layer.addSql", &json!({"sql": query})).unwrap_err();
         assert!(e.contains("need DuckDB"), "{e}");
         let e = s.run("layer.addData", &json!({"path": "/nowhere/x.duckdb"})).unwrap_err();
@@ -23450,7 +23450,7 @@ fn split_sources_keep_their_points_on_top() {
 #[test]
 fn postgres_databases() {
     let Ok(conn) = std::env::var("RUSTGIS_TEST_POSTGRES") else { return };
-    if !rustgis_data::source::duckdb::available() {
+    if !rustgis_data::source::duckdb::test_runs().unwrap() {
         return;
     }
     let mut s = Session::new(Project::default());
@@ -24537,7 +24537,7 @@ fn jpeg2000_from_a_web_address() {
     assert_eq!(named("https://x.org/api/tile?f=jp2", jp2_box).unwrap(), "tile.jp2");
     assert_eq!(named("https://x.org/", &codestream).unwrap(), "data.j2k");
     assert!(named("https://x.org/api/tile", br#"<VRTDataset></VRTDataset>"#).unwrap_err().contains("not a data format"));
-    if !rustgis_data::raster::gdal::available() {
+    if !rustgis_data::raster::gdal::test_runs().unwrap() {
         let jp2 = serve(jp2_box, 4);
         for path in ["TCI.jp2", "api/tile"] {
             let e = s.run("layer.addUrl", &json!({"url": format!("{jp2}/{path}")})).unwrap_err();
@@ -25116,7 +25116,10 @@ fn spreadsheets_feeds_landxml_and_polylines() {
 #[test]
 fn gdal_rasters_reopen_with_their_choices() {
     // Found as the app finds it (the PATH, or RUSTGIS_GDAL_BIN).
-    let Some(translate) = rustgis_data::source::gdal::program("gdal_translate") else { return };
+    if !rustgis_data::raster::gdal::test_runs().unwrap() {
+        return;
+    }
+    let translate = rustgis_data::source::gdal::program("gdal_translate").unwrap();
     let dir = std::env::temp_dir().join(format!("rustgis-gdal-reopen-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -31062,7 +31065,7 @@ fn geocoding_skips_addresses_too_long_for_the_server() {
 fn sql_workspace_rows_and_schema() {
     let mut s = Session::new(Project::default());
     assert!(s.run("sql.query", &json!({})).is_err());
-    if !rustgis_data::source::duckdb::available() {
+    if !rustgis_data::source::duckdb::test_runs().unwrap() {
         assert!(s.run("sql.query", &json!({"sql": "SELECT 1"})).unwrap_err().contains("need DuckDB"));
         return;
     }
@@ -59657,7 +59660,7 @@ fn a_save_names_a_layer_and_its_table_once_when_they_are_the_same() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_duckdb_result_names_its_layer_in_its_date_notices() {
-    if !rustgis_data::source::duckdb::available() {
+    if !rustgis_data::source::duckdb::test_runs().unwrap() {
         eprintln!("skipped: DuckDB isn't installed");
         return;
     }

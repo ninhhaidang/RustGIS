@@ -71,6 +71,12 @@ pub fn available() -> bool {
     program("gdal_translate").is_some() && program("gdalinfo").is_some()
 }
 
+/// Whether a test that needs GDAL's raster programs runs: skipped without them, unless
+/// `RUSTGIS_REQUIRE_GDAL` is set, when it fails on the `Err` instead.
+pub fn test_runs() -> std::result::Result<bool, String> {
+    external::test_runs("RUSTGIS_REQUIRE_GDAL", "GDAL's raster programs (gdal_translate and gdalinfo)", available())
+}
+
 /// What converting a file's contents made: the GeoTIFF's bytes, and whether the raster was taken
 /// as WGS 84 (see [`Converted::assumed_lonlat`]).
 pub struct ConvertedBytes {
@@ -935,10 +941,10 @@ mod tests {
     /// A VRT renamed `.img` isn't opened as a VRT, so the raster it names isn't read.
     #[test]
     fn a_renamed_vrt_isnt_read_when_gdal_is_installed() {
-        let Some(translate) = program("gdal_translate") else { return };
-        if program("gdalinfo").is_none() {
+        if !test_runs().unwrap() {
             return;
         }
+        let translate = program("gdal_translate").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let asc = dir.path().join("private.asc");
         std::fs::write(&asc, "ncols 1\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n7\n").unwrap();
@@ -963,10 +969,10 @@ mod tests {
     /// Runs only where GDAL is installed: a NetCDF file's variables.
     #[test]
     fn raster_conversion_provenance_excludes_cache_files_when_gdal_is_installed() {
-        let Some(translate) = program("gdal_translate") else { return };
-        if program("gdalinfo").is_none() {
+        if !test_runs().unwrap() {
             return;
         }
+        let translate = program("gdal_translate").unwrap();
         let dir = std::env::temp_dir().join(format!("rustgis-gdal-raster-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -984,9 +990,7 @@ mod tests {
             .arg(&img)
             .status()
             .is_ok_and(|s| s.success());
-        if !ok {
-            return;
-        }
+        assert!(ok, "gdal_translate couldn't make the ERDAS Imagine fixture");
         let cache = dir.join("cache");
         let captured = crate::provenance::Capture::start();
         let c = convert_in(&cache, &img, None, None, None).unwrap();
