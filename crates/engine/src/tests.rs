@@ -3334,6 +3334,50 @@ fn a_script_runs_a_line_with_its_parameters_after_an_equals_sign() {
     assert!(refused.contains("can't run in a script"), "{refused}");
 }
 
+/// Where a script run stopped (#2815), read from each error a run can stop with: its line, and for
+/// JSON that doesn't read, the column in that line (1-based, in characters).
+#[test]
+fn a_scripts_error_says_where_it_stopped() {
+    use crate::cmd::workflows::script_error_at;
+    let stop = |s: &mut Session, script: &str, starts: &str| {
+        let e = s.run("script.run", &json!({"script": script})).unwrap_err();
+        assert!(e.starts_with(starts), "{e}");
+        script_error_at(script, &e)
+    };
+    let mut s = numbered_points(&[1]);
+    // An unknown command, on the last line.
+    assert_eq!(stop(&mut s, "map.zoomFull\nno.such {}", "line 2: unknown command"), Some((2, None)));
+    // A command its conditions refuse, on the first line.
+    assert_eq!(stop(&mut s, "edit.delete {}\nmap.zoomFull", "line 1: edit.delete: "), Some((1, None)));
+    // A command its extension refuses (`line N (id)`).
+    let script = "extension.disable {\"id\": \"imagery\"}\nimagery.workspace {}";
+    assert_eq!(stop(&mut s, script, "line 2 (imagery.workspace): "), Some((2, None)));
+    // A command that fails as it runs.
+    let script = "map.zoomFull\n\nlayer.rename {\"layer\": \"Nope\", \"name\": \"x\"}";
+    assert_eq!(stop(&mut s, script, "line 3: layer.rename: "), Some((3, None)));
+    // A command that can't run in a script: its JSON reads, so no column.
+    assert_eq!(stop(&mut s, "script.run {}", "line 1: "), Some((1, None)));
+    // JSON that doesn't read: the column of its error in the line, after indentation and `id=`.
+    assert_eq!(stop(&mut s, "map.zoomFull\n  layer.rename= {\"layer\": }", "line 2: "), Some((2, Some(27))));
+    // Counted in characters: `á` is two bytes.
+    assert_eq!(stop(&mut s, "layer.rename {\"name\": \"Bogotá\", }", "line 1: "), Some((1, Some(33))));
+    // JSON cut short: its last character, never past the line.
+    assert_eq!(stop(&mut s, "layer.rename {\"name\": ", "line 1: "), Some((1, Some(21))));
+    // An edit to a layer read in place.
+    let path = grid_fgb("script-stopped-at", 4);
+    let mut streamed = with_streamed(&path);
+    let script = "edit.enable {\"on\": true}\nedit.addFeature {\"layer\": \"Streamed\", \"geometry\": {\"type\": \"Point\", \"coordinates\": [1, 2]}}";
+    assert_eq!(stop(&mut streamed, script, "line 2: "), Some((2, None)));
+    let _ = std::fs::remove_file(path);
+    // Errors that name no line of the script.
+    let long = "map.zoomFull\n".repeat(crate::cmd::workflows::MAX_SCRIPT_LINES + 1);
+    let e = s.run("script.run", &json!({"script": long})).unwrap_err();
+    assert_eq!(script_error_at(&long, &e), None, "{e}");
+    for e in ["line 3: past the end", "line 0: none", "line : no number", "lines 1: no", "line 1x: no"] {
+        assert_eq!(script_error_at("a {}\nb {}", e), None, "{e}");
+    }
+}
+
 /// A notebook from a file reads a cell's `id={json}` line as a script does (#2794): one that
 /// stays in the session runs, and one that writes a file is still refused.
 #[test]

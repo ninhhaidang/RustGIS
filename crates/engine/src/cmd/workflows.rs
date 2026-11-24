@@ -1290,6 +1290,43 @@ pub fn script_commands(script: &str) -> Result<Vec<(usize, String, Value)>, Stri
     Ok(out)
 }
 
+/// Where in `script` a run stopped, from its `error`: the line (1-based) and, when that line's JSON
+/// doesn't read, the column of its error in the line (1-based, in characters, as an editor counts).
+/// `None` for an error that names no line of `script`. The Script pane marks the line and goes to
+/// it (#2815). It reads the `line {n}` that `run_script`'s and [`script_commands`]' stops at a line
+/// start with (the line cap and a run ahead's refusal name none, so they leave no mark), rather
+/// than the run returning the line apart, which would change the error type every caller of a
+/// command shares; `a_scripts_error_says_where_it_stopped` pins each message.
+pub fn script_error_at(script: &str, error: &str) -> Option<(usize, Option<usize>)> {
+    let rest = error.strip_prefix("line ")?;
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if !rest[digits..].starts_with([':', ' ']) {
+        return None;
+    }
+    let n: usize = rest[..digits].parse().ok()?;
+    let line = script.lines().nth(n.checked_sub(1)?)?;
+    Some((n, json_error_column(line)))
+}
+
+/// The column (1-based, in characters) where `line`'s JSON stops reading, read as
+/// [`crate::script_line`] reads it; `None` when it reads or there is none. serde counts its column
+/// in bytes from the JSON's start.
+fn json_error_column(line: &str) -> Option<usize> {
+    let (_, rest) = crate::parameters::split_script_id(line.trim());
+    let json = rest.trim();
+    if json.is_empty() {
+        return None;
+    }
+    let e = serde_json::from_str::<Value>(json).err()?;
+    // `rest` ends where the trimmed line does.
+    let start = line.trim_end().len() - rest.trim_start().len();
+    let mut at = (start + e.column().saturating_sub(1)).min(line.len());
+    while !line.is_char_boundary(at) {
+        at -= 1;
+    }
+    Some(line[..at].chars().count() + 1)
+}
+
 /// One raster function's output pixels on `r`'s grid, or a resample's on `target`'s (from
 /// [`resample_target`]). A remap adds its ranges that match nothing to `remaps`, and whether it
 /// left any cell with a value.
