@@ -497,17 +497,19 @@ pub fn commands() -> Vec<C> {
             if !(dx.is_finite() && dy.is_finite()) || dx.abs() > 4e7 || dy.abs() > 4e7 {
                 return Err("dx and dy must be finite distances in the command's units (limit: 40,000 km per axis after ground-to-grid)".into());
             }
-            // In Web Mercator, as always, while a feature and its result stay within its square
-            // (each moved once, and kept for the move); one that doesn't, and those sharing a
-            // vertex with it, move on the ground (#1033), or for a move of no distance stay as
-            // they are.
+            // A layer held in a projected system moves along its own grid (#2032 C2f-6). Any
+            // other in Web Mercator, as always, while a feature and its result stay within its
+            // square (each moved once, and kept for the move); one that doesn't, and those
+            // sharing a vertex with it, move on the ground (#1033), or for a move of no distance
+            // stay as they are.
+            let own = one_grid(s, dx == 0.0 && dy == 0.0);
             let mut shifted: HashMap<(u32, usize), Geometry> = HashMap::new();
-            for l in s.map().layers.iter().filter(|l| !l.is_raster() && !l.selection.is_empty()) {
+            for l in s.map().layers.iter().filter(|l| !l.is_raster() && !l.selection.is_empty() && !own.contains_key(&l.id)) {
                 let to = l.dataset.shown_conversion()?;
                 for r in &l.selection {
-                    // Moved in longitude/latitude, from the layer's own coordinates (`modify` writes
+                    // Moved in longitude/latitude, from the layer's own coordinates (`modify_in` writes
                     // it back in them). A feature with a place that can't be given there stays
-                    // as it is (`modify` counts it).
+                    // as it is (`modify_in` counts it).
                     let Some(own) = l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref()) else { continue };
                     let Some(g) = rustgis_data::Dataset::converted_to_lonlat(&to, own) else { continue };
                     if !within_square(&g) {
@@ -527,14 +529,21 @@ pub fn commands() -> Vec<C> {
             let (planes, ground, coarse) = if still {
                 (HashMap::new(), 0, 0)
             } else {
-                move_planes(s, |key| shifted.contains_key(&key), dx.hypot(dy))?
+                move_planes(s, &own, |key| shifted.contains_key(&key), dx.hypot(dy))?
             };
             let mut placed = HashMap::new();
             placed.try_reserve(ground).map_err(|_| "not enough memory to move the selection on the ground")?;
             // Each group's move, worked out once: its planes and its turn's sine and cosine.
             let mut moves: HashMap<(i64, i64), (Aeqd, Aeqd, f64, f64)> = HashMap::new();
-            let done = move_features(s, |key, g| match planes.get(&key) {
-                Some(center) => {
+            let done = move_features(s, &own, |key, g| match (own.get(&key.0), planes.get(&key)) {
+                // A move of no distance (with other layers' features in Web Mercator) leaves
+                // these as they are, with no edit of them recorded.
+                (Some(_), _) if still => Ok(None),
+                (Some(grid), _) => {
+                    let d = grid.step(dx, dy);
+                    OwnGrid::map(g, |c| Coord::new(c.x + d.x, c.y + d.y)).map(Some)
+                }
+                (None, Some(center)) => {
                     let (from, to, sin, cos) = *moves.entry(vertex_key(*center)).or_insert_with(|| {
                         let (from, to, turn) = ground_move(*center, dx, dy);
                         let (sin, cos) = turn.sin_cos();
@@ -543,7 +552,7 @@ pub fn commands() -> Vec<C> {
                     polar_transform(g, (&from, &to), Some(&mut placed), |p| Coord::new(p.x * cos + p.y * sin, p.y * cos - p.x * sin))
                         .map(Some)
                 }
-                None => Ok(shifted.remove(&key)),
+                (None, None) => Ok(shifted.remove(&key)),
             })?;
             center_notice(s, coarse);
             Ok(done)
@@ -553,12 +562,16 @@ pub fn commands() -> Vec<C> {
         C::new("edit.rotate", "Rotate", "Edit › Features › Modify", |s, p| {
             let deg = f(p, "angle").ok_or("angle is required")?;
             let mut steps = CenterSteps::new();
-            let done = move_features(s, |_, g| {
+            let own = own_grids(s);
+            let done = move_features(s, &own, |key, g| {
                 // Any point, a feature's or a text graphic's, turns on itself: left out, so a
                 // selection of points alone fails rather than recording an edit that changes
                 // nothing (and an undo step).
                 if matches!(g, Geometry::Point(_)) {
                     return Ok(None);
+                }
+                if let Some(grid) = own.get(&key.0) {
+                    return grid.rotate(g, deg).map(Some);
                 }
                 let (sin, cos) = (-deg.to_radians()).sin_cos();
                 about_center(
@@ -579,10 +592,14 @@ pub fn commands() -> Vec<C> {
         C::new("edit.scale", "Scale", "Edit › Features › Modify", |s, p| {
             let k = f(p, "factor").filter(|k| *k > 0.0 && *k < 1e6).ok_or("factor must be a positive number")?;
             let mut steps = CenterSteps::new();
-            let done = move_features(s, |_, g| {
+            let own = own_grids(s);
+            let done = move_features(s, &own, |key, g| {
                 // Any point, a feature's or a text graphic's, scales on itself: left out, as above.
                 if matches!(g, Geometry::Point(_)) {
                     return Ok(None);
+                }
+                if own.contains_key(&key.0) {
+                    return OwnGrid::scale(g, k).map(Some);
                 }
                 let merc = |c: Coord, m: Coord| Coord::new(c.x + (m.x - c.x) * k, c.y + (m.y - c.y) * k);
                 about_center(g, merc, |p| Coord::new(p.x * k, p.y * k), &mut steps)
@@ -594,7 +611,7 @@ pub fn commands() -> Vec<C> {
         .params(r#"{"factor": number}"#),
         C::new("edit.flip", "Flip Line", "Edit › Features › Modify", |s, _| {
             // Only the vertices' order changes, so in the layer's own coordinates, as stored.
-            modify_in(s, Space::Own, |_, g| match g {
+            modify_in(s, |_| Space::Own, |_, g| match g {
                 Geometry::Line(parts) => Ok(Some(Geometry::Line(parts.iter().rev().map(|p| p.iter().rev().copied().collect()).collect()))),
                 _ => Ok(None),
             })
@@ -680,6 +697,120 @@ fn distance_unit_metres(p: &Json) -> Result<f64, String> {
     };
     let unit = if units.is_empty() { "Meters" } else { units };
     rustgis_geom::distance_unit_metres(&unit.to_ascii_lowercase()).ok_or_else(|| "units must be Meters, Feet, Kilometers or Miles".into())
+}
+
+/// The grid of a layer held in a projected system, which Move, Rotate, Scale and Traverse work in
+/// (#2032 C2f-6), as the analysis tools do ([`rustgis_analysis::works_in`]): distances flat in its
+/// unit, directions from its grid north, by the order and direction of its axes. A layer in
+/// longitude/latitude, Web Mercator, another world projection or a geographic system has none,
+/// and is edited in Web Mercator or on the ground, as before.
+#[derive(Clone, Copy)]
+struct OwnGrid {
+    /// The system.
+    crs: rustgis_data::raster::Crs,
+    /// Metres per unit of its coordinates.
+    unit_m: f64,
+    /// The (east, north) of a step of one along x, then along y.
+    axes: [(f64, f64); 2],
+}
+
+impl OwnGrid {
+    /// The grid layer `l` is edited in, if any.
+    fn of(l: &rustgis_map::Layer) -> Option<Self> {
+        let crs = l.dataset.coord_crs();
+        // Graphics are edited as before: their shapes share no places with features.
+        if l.is_raster() || l.graphics || !rustgis_analysis::works_in(crs) {
+            return None;
+        }
+        let (unit_m, axes) = crs.unit_and_axes();
+        let [(xe, xn), (ye, yn)] = axes;
+        // Axes along one line give no plane to step in.
+        ((xe * yn - ye * xn).abs() > 1e-9).then_some(Self { crs, unit_m, axes })
+    }
+
+    /// A step `(e, n)` east and north of the grid, in its units, as a step of its coordinates.
+    fn coords_of(self, e: f64, n: f64) -> Coord {
+        let [(xe, xn), (ye, yn)] = self.axes;
+        let det = xe * yn - ye * xn;
+        Coord::new((e * yn - n * ye) / det, (xe * n - xn * e) / det)
+    }
+
+    /// A step of its coordinates as (east, north) of the grid, in its units.
+    fn east_north(self, d: Coord) -> (f64, f64) {
+        let [(xe, xn), (ye, yn)] = self.axes;
+        (d.x * xe + d.y * ye, d.x * xn + d.y * yn)
+    }
+
+    /// A step of `dx` and `dy` metres east and north of the grid, in its coordinates.
+    fn step(self, dx: f64, dy: f64) -> Coord {
+        self.coords_of(dx / self.unit_m, dy / self.unit_m)
+    }
+
+    /// `g` with each vertex `f` gives for it (one missing a coordinate, or with an infinite one,
+    /// stays as it was, as in longitude/latitude); refused when a vertex would get none.
+    fn map(g: &Geometry, f: impl Fn(Coord) -> Coord) -> Result<Geometry, String> {
+        let lost = std::cell::Cell::new(false);
+        let done = g.map_coords(&|c: Coord| {
+            if !c.is_finite() {
+                return c;
+            }
+            let p = f(c);
+            lost.set(lost.get() || !p.is_finite());
+            p
+        });
+        if lost.get() {
+            return Err("that would carry a vertex past any coordinate its layer's system can hold".into());
+        }
+        Ok(done)
+    }
+
+    /// `g` turned clockwise by `deg` (grid north up) about the middle of its extent.
+    fn rotate(self, g: &Geometry, deg: f64) -> Result<Geometry, String> {
+        let (sin, cos) = (-deg.to_radians()).sin_cos();
+        let c = g.extent().center();
+        Self::map(g, |p| {
+            let (e, n) = self.east_north(Coord::new(p.x - c.x, p.y - c.y));
+            let d = self.coords_of(e * cos - n * sin, e * sin + n * cos);
+            Coord::new(c.x + d.x, c.y + d.y)
+        })
+    }
+
+    /// `g` scaled by `k` about the middle of its extent.
+    fn scale(g: &Geometry, k: f64) -> Result<Geometry, String> {
+        let c = g.extent().center();
+        Self::map(g, |p| Coord::new(c.x + (p.x - c.x) * k, c.y + (p.y - c.y) * k))
+    }
+}
+
+/// The grid each layer with a selection is edited in ([`OwnGrid`]), by layer id.
+fn own_grids(s: &Session) -> HashMap<u32, OwnGrid> {
+    s.map().layers.iter().filter(|l| !l.selection.is_empty()).filter_map(|l| Some((l.id, OwnGrid::of(l)?))).collect()
+}
+
+/// The grid a Move takes for its selection: [`own_grids`] while every layer with a selection is
+/// held in one projected system; none when they are in more than one (or some in one and some
+/// not), since a feature of one may share a place with a feature of another that a step on
+/// another grid, or in Web Mercator, would tear from it. That selection moves in Web Mercator or
+/// on the ground, as before, and says so (a move of no distance, refused, says nothing). Graphics
+/// layers, whose shapes share no places with features, don't count.
+fn one_grid(s: &mut Session, still: bool) -> HashMap<u32, OwnGrid> {
+    let own = own_grids(s);
+    let selected: Vec<&rustgis_map::Layer> =
+        s.map().layers.iter().filter(|l| !l.is_raster() && !l.graphics && !l.selection.is_empty()).collect();
+    let first = own.values().next().map(|g| g.crs);
+    let one = selected.iter().all(|l| own.get(&l.id).is_some_and(|g| Some(g.crs) == first));
+    if own.is_empty() || one {
+        return own;
+    }
+    if still {
+        return HashMap::new();
+    }
+    let names = selected.iter().filter(|l| own.contains_key(&l.id)).map(|l| format!("'{}'", l.name)).collect::<Vec<_>>().join(", ");
+    s.warn(format!(
+        "the selection spans layers in more than one coordinate system, so {names} moved the same way as \
+         the rest, in Web Mercator (or on the ground), not along its own grid, to keep places the layers share together: select one system's layers to move along its grid"
+    ));
+    HashMap::new()
 }
 
 /// A point moved by metres east and north (Web Mercator stretched to the point's latitude).
@@ -888,13 +1019,15 @@ fn about_center(
 /// ([`ground_movable`]). With the map, how many vertices move on the ground.
 fn move_planes(
     s: &Session,
+    own: &HashMap<u32, OwnGrid>,
     stays: impl Fn((u32, usize)) -> bool,
     reach_m: f64,
 ) -> Result<(HashMap<(u32, usize), Coord>, usize, usize), String> {
     // In longitude/latitude, from each layer's own coordinates.
     let mut selected: Vec<((u32, usize), std::borrow::Cow<'_, Geometry>)> = Vec::new();
-    // A feature with a place that can't be given there isn't moved ([`modify`] counts it).
-    for l in s.map().layers.iter().filter(|l| !l.is_raster() && !l.selection.is_empty()) {
+    // A feature with a place that can't be given there isn't moved ([`modify_in`] counts it), nor
+    // one of a layer moved along its own grid (`own`).
+    for l in s.map().layers.iter().filter(|l| !l.is_raster() && !l.selection.is_empty() && !own.contains_key(&l.id)) {
         let to = l.dataset.shown_conversion()?;
         for r in &l.selection {
             let Some(g) = l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref()) else { continue };
@@ -1117,11 +1250,17 @@ fn polar_transform(
     })
 }
 
-/// [`modify`] for a move, turn or scale, which leaves a vertex missing a coordinate (or with an
-/// infinite one) where it was: says how many of the features it changed have one.
-fn move_features(s: &mut Session, mut change: impl FnMut((u32, usize), &Geometry) -> Result<Option<Geometry>, String>) -> CmdResult {
+/// [`modify_in`] for a move, turn or scale, which leaves a vertex missing a coordinate (or with an
+/// infinite one) where it was: says how many of the features it changed have one. A layer in
+/// `own` gives its geometry in its own coordinates, to be changed in its grid.
+fn move_features(
+    s: &mut Session,
+    own: &HashMap<u32, OwnGrid>,
+    mut change: impl FnMut((u32, usize), &Geometry) -> Result<Option<Geometry>, String>,
+) -> CmdResult {
     let mut missing = 0usize;
-    let done = modify(s, |key, g| {
+    let space = |id: u32| if own.contains_key(&id) { Space::Own } else { Space::LonLat };
+    let done = modify_in(s, space, |key, g| {
         let moved = change(key, g)?;
         if moved.is_some() {
             let mut has = false;
@@ -1136,14 +1275,6 @@ fn move_features(s: &mut Session, mut change: impl FnMut((u32, usize), &Geometry
     Ok(done)
 }
 
-/// Applies a geometry change to every selected feature of every layer (in the selection's layers),
-/// in longitude/latitude ([`Space::LonLat`]). A feature with a place that can't be given there is
-/// left as it is, and said with a count per layer; when every changeable feature is such a
-/// feature, the edit is refused saying why.
-fn modify(s: &mut Session, change: impl FnMut((u32, usize), &Geometry) -> Result<Option<Geometry>, String>) -> CmdResult {
-    modify_in(s, Space::LonLat, change)
-}
-
 /// Where [`modify_in`] gives each geometry to a change.
 #[derive(Clone, Copy, PartialEq)]
 enum Space {
@@ -1151,13 +1282,19 @@ enum Space {
     /// change left as stored.
     LonLat,
     /// In the layer's own coordinates, as stored: for a change that only reorders vertices (a
-    /// flip), so a feature with a place that can't be given in longitude/latitude changes too.
+    /// flip), or one made in the layer's own grid ([`OwnGrid`]), so a feature with a place that
+    /// can't be given in longitude/latitude changes too.
     Own,
 }
 
+/// Applies a geometry change to every selected feature of every layer (in the selection's layers),
+/// each layer's geometry given in the [`Space`] `space` gives for its id. In longitude/latitude
+/// ([`Space::LonLat`]), a feature with a place that can't be given there is left as it is, and
+/// said with a count per layer; when every changeable feature is such a feature, the edit is
+/// refused saying why.
 fn modify_in(
     s: &mut Session,
-    space: Space,
+    space: impl Fn(u32) -> Space,
     mut change: impl FnMut((u32, usize), &Geometry) -> Result<Option<Geometry>, String>,
 ) -> CmdResult {
     let mut n = 0;
@@ -1167,7 +1304,7 @@ fn modify_in(
         let mut changes = Vec::new();
         let l = s.map().layer(id).ok_or("no such layer")?;
         let selection = l.selection.clone();
-        let to = match space {
+        let to = match space(id) {
             Space::LonLat => Some(l.dataset.shown_conversion()?),
             Space::Own => None,
         };
@@ -1772,7 +1909,25 @@ fn traverse(s: &mut Session, p: &Json) -> CmdResult {
     }
     let unit = distance_unit_metres(p)?;
     let g2g = s.map().editing.settings.ground_to_grid;
-    let mut pts = vec![start];
+    let id = s.layer_id(p)?;
+    let l = s.map().layer(id).ok_or("no such layer")?;
+    let gt = l.geometry_type();
+    // A layer held in a projected system is drawn on its own grid (#2032 C2f-6): the start in its
+    // coordinates, each leg flat in its unit from its grid north.
+    let grid = OwnGrid::of(l);
+    // The start converted, or a stored place that reads exactly as it (a traverse begun at a
+    // corner), as an added feature keeps it.
+    let start_own = match grid {
+        Some(_) => Some(match held_places(s, id, &[], &[&Geometry::Point(start)]).get(start) {
+            Some(stored) => stored,
+            None => rustgis_data::raster::Crs::LonLat
+                .to(l.dataset.coord_crs())?
+                .point(start)
+                .ok_or_else(|| format!("the start can't be given in the system '{}' is held in", l.name))?,
+        }),
+        None => None,
+    };
+    let mut pts = vec![start_own.unwrap_or(start)];
     for leg in legs {
         let d = leg
             .get("distance")
@@ -1786,11 +1941,26 @@ fn traverse(s: &mut Session, p: &Json) -> CmdResult {
             (dx, dy) = ground_to_grid(dx, dy, k, rot);
         }
         let last = pts.last().copied().unwrap_or(start);
-        pts.push(shift(last, dx, dy));
+        pts.push(match grid {
+            Some(grid) => {
+                let d = grid.step(dx, dy);
+                Coord::new(last.x + d.x, last.y + d.y)
+            }
+            None => shift(last, dx, dy),
+        });
     }
-    let id = s.layer_id(p)?;
-    let gt = s.map().layer(id).map(|l| l.geometry_type()).ok_or("no such layer")?;
     // The layer decides: a polygon layer gets a closed traverse, a line layer an open one.
+    if let Some(first) = start_own {
+        let g = match gt {
+            GeometryType::Polygon => {
+                pts.push(first);
+                Geometry::Polygon(vec![vec![pts]])
+            }
+            GeometryType::Polyline => Geometry::Line(vec![pts]),
+            _ => return Err("traverses go into a line or polygon layer".into()),
+        };
+        return super::edit::add_feature_own(s, id, &json!({"layer": id}), g);
+    }
     let g = match gt {
         GeometryType::Polygon => {
             pts.push(start);

@@ -321,8 +321,8 @@ fn a_held_layer_is_analysed_alike() {
     }
 }
 
-/// A geometry set, a move in metres and an undo leave the same places, and a held layer keeps
-/// its system through them.
+/// A geometry set and an undo leave the same places, a move in metres steps along the held
+/// layer's grid, and a held layer keeps its system through them.
 #[test]
 fn a_held_layer_is_edited_alike() {
     let mut ss = both();
@@ -330,19 +330,15 @@ fn a_held_layer_is_edited_alike() {
     run_both(&mut ss, "edit.setGeometry", &json!({"layer": "Wells", "row": 0, "geometry": g}));
     assert_close(&lonlat(&ss[0], "Wells"), &lonlat(&ss[1], "Wells"), "setGeometry");
     run_both(&mut ss, "select.rows", &json!({"layer": "Parcels", "rows": [4]}));
+    let was = stored(&ss[1], "Parcels");
     run_both(&mut ss, "edit.move", &json!({"dx": 250.0, "dy": -100.0}));
-    let [a, b] = [lonlat(&ss[0], "Parcels"), lonlat(&ss[1], "Parcels")];
-    // A move in metres on the map: the two agree to well within a centimetre.
-    assert_eq!(a.len(), b.len(), "move: feature count");
-    for (p, q) in a.iter().zip(&b) {
-        assert_eq!(shape(p), shape(q), "move: shape");
-        let (mut ca, mut cb) = (Vec::new(), Vec::new());
-        p.as_ref().unwrap().for_each_coord(|c| ca.push(c));
-        q.as_ref().unwrap().for_each_coord(|c| cb.push(c));
-        for (p, q) in ca.iter().zip(&cb) {
-            assert!((p.x - q.x).abs() < 1e-7 && (p.y - q.y).abs() < 1e-7, "move: {p:?} vs {q:?}");
-        }
+    // A move in metres goes along the held layer's own grid (#2032 C2f-6): every stored
+    // coordinate of the moved parcel steps by exactly that, the rest stay as stored.
+    for (i, (p, q)) in stored(&ss[1], "Parcels").iter().zip(&was).enumerate() {
+        let want = if i == 4 { q.as_ref().unwrap().map_coords(&|c| Coord::new(c.x + 250.0, c.y - 100.0)) } else { q.clone().unwrap() };
+        assert_eq!(p.as_ref(), Some(&want), "move: parcel {i}");
     }
+    assert_eq!(shape(&lonlat(&ss[0], "Parcels")[4]), shape(&lonlat(&ss[1], "Parcels")[4]), "move: shape");
     run_both(&mut ss, "edit.undo", &Value::Null);
     assert_close(&lonlat(&ss[0], "Parcels"), &lonlat(&ss[1], "Parcels"), "undo");
     assert_eq!(ss[1].map().layer_by_name("Parcels").unwrap().dataset.coord_crs(), UTM);

@@ -143,19 +143,36 @@ pub(crate) fn add_feature(s: &mut Session, p: &Json) -> CmdResult {
     add_geometry(s, id, p, g)
 }
 
+/// [`add_feature`] with `g` in layer `id`'s own coordinates, written as it is: for a shape made
+/// in its own grid (a traverse, #2032 C2f-6).
+pub(crate) fn add_feature_own(s: &mut Session, id: u32, p: &Json, g: Geometry) -> CmdResult {
+    fits(s, id, &g)?;
+    insert(s, id, p, g)
+}
+
+/// Refuses `g` where layer `id` can't take it: of another kind, or too few vertices.
+fn fits(s: &Session, id: u32, g: &Geometry) -> Result<(), String> {
+    let want = s.map().layer(id).ok_or("no layer")?.geometry_type();
+    if want != g.kind() && want != GeometryType::None {
+        return Err(format!("{} can't go in a {} layer", g.kind().label(), want.label()));
+    }
+    validate(g)
+}
+
 /// Inserts an already validated construction through the same attributes, templates and rules.
 pub(crate) fn add_geometry(s: &mut Session, id: u32, p: &Json, g: Geometry) -> CmdResult {
     // A place snapped to a stored one stays as stored.
     let held = super::design::held_places(s, id, &[], &[&g]);
-    let l = s.map_mut().layer_mut(id).ok_or("no layer")?;
-    let want = l.geometry_type();
-    let ok = want == g.kind() || want == GeometryType::None;
-    if !ok {
-        return Err(format!("{} can't go in a {} layer", g.kind().label(), want.label()));
-    }
-    validate(&g)?;
+    fits(s, id, &g)?;
     // Given in longitude/latitude, written in the layer's own coordinates.
-    let g = l.dataset.edit_from_lonlat(g, &held)?;
+    let g = s.map().layer(id).ok_or("no layer")?.dataset.edit_from_lonlat(g, &held)?;
+    insert(s, id, p, g)
+}
+
+/// Inserts `g`, in layer `id`'s own coordinates, with a feature template's defaults and the given
+/// attributes, as one edit.
+fn insert(s: &mut Session, id: u32, p: &Json, g: Geometry) -> CmdResult {
+    let l = s.map_mut().layer_mut(id).ok_or("no layer")?;
     // A feature template's defaults, then the given attributes.
     let template = match ps(p, "template") {
         Some(t) => {

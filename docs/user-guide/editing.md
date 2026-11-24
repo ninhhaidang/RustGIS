@@ -68,8 +68,20 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
   and flip line direction. A single point turns and scales on itself, so Rotate and Scale leave
   points (text graphics included) as they are: with only points selected they change nothing,
   say so, and add no undo step. Edit › Tools lists every editing tool.
+  In a layer held in a projected system (UTM, a national grid; not Web Mercator, another world
+  projection or a geographic system), Move, Rotate and Scale work in the layer's own coordinates,
+  as the analysis tools do: Move steps the distances east and north along its grid, measured flat
+  in its unit (so in UTM a kilometre on the grid is between about 0.999 and 1.0004 km on the
+  ground, and its north is grid north; Ground to grid below corrects ground distances and
+  directions to it), following the system's axes when they point west, south or north first; Rotate turns clockwise
+  with grid north up, and Scale scales, about the middle of the feature's extent there. A Move
+  whose selection spans layers in more than one system (or some in one and some in
+  longitude/latitude; graphics don't count) moves them all as below, so places they share stay
+  together, and says so. The rest of this paragraph, about Web Mercator and the ground, is for
+  the other layers.
   A selected feature with a place that can't be given in longitude/latitude (one far past where
-  its layer's own system reaches) is left as it is by Move, Rotate, Scale, Split and Cut Polygon,
+  its layer's own system reaches) is left as it is by Move, Rotate and Scale (except in a layer
+  edited in its own grid, where it changes with the rest), Split and Cut Polygon,
   and a notice counts them by layer; Flip Line flips it in the layer's own coordinates. An edit
   of that one feature (a vertex, Reshape, Trace, Merge with it, a shape conversion) is refused,
   naming the layer and the feature; Set Geometry gives it a new shape, and Delete removes it.
@@ -159,7 +171,10 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
   between the two systems; this is not a change to its geometry's coordinates. An edit whose
   label point the surface's system can't give is refused.
 - **Ground to grid**: a scale factor and rotation applied to entered distances and directions
-  (Move, and `edit.traverse`, which draws a line or polygon from distances and bearings).
+  (Move, and `edit.traverse`, which draws a line or polygon from distances and bearings). Into a
+  layer held in a projected system, a traverse starts at the given longitude/latitude converted
+  into that system and steps each leg on its grid, flat in its unit from grid north, as Move does;
+  into any other layer, each leg goes east and north in Web Mercator stretched to the latitude.
 - **Topology**: rules (must not overlap, must not have gaps, must not self-intersect, must not
   have dangles, must be covered by); Validate lists the errors, and clicking one zooms to it.
   Primary rows follow the layer's definition query, independently of selection, time windows
