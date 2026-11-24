@@ -2214,14 +2214,20 @@ fn loading_a_streamed_layer_whole_says_the_date_times_it_rounded() {
 /// to dates: values read as empty and date-times rounded; a clean read says nothing.
 #[test]
 fn an_export_says_what_its_whole_read_did_to_dates() {
+    use rustgis_data::loss::{LossCode, Note};
     let lost = rustgis_map::Unreadable {
         rows: 0,
-        dates: Some("1 value isn't a date and was read as empty, in 'day'".into()),
-        rounded: Some("1 date-time was rounded to the microsecond, as more digits than that aren't kept, in 'at'".into()),
+        dates: Some(Note::loss(LossCode::DroppedValue, "1 value isn't a date and was read as empty, in 'day'")),
+        rounded: Some(Note::loss(
+            LossCode::ChangedRounded,
+            "1 date-time was rounded to the microsecond, as more digits than that aren't kept, in 'at'",
+        )),
         ..Default::default()
     };
+    let notes = crate::cmd::share::read_date_notes("out.geojson", "Sites", &lost);
+    assert_eq!(notes.iter().map(|n| n.loss).collect::<Vec<_>>(), [Some(LossCode::DroppedValue), Some(LossCode::ChangedRounded)]);
     assert_eq!(
-        crate::cmd::share::read_date_notes("out.geojson", "Sites", &lost),
+        notes.iter().map(Note::as_str).collect::<Vec<_>>(),
         [
             "out.geojson: Sites: 1 value isn't a date and was read as empty, in 'day' (empty in the export)",
             "out.geojson: Sites: 1 date-time was rounded to the microsecond, as more digits than that aren't kept, in 'at' when read for the export",
@@ -45352,7 +45358,7 @@ fn postgis_dates_live() {
         let src = postgis::PostgisSource::open(conn, t, None, None).unwrap();
         let b = src.read(&Request { extent: None, limit: 100, own: None }).unwrap();
         let note = rustgis_data::source::unread_dates_note(&src.info().fields, &b.unread_dates);
-        assert_eq!(note.as_deref(), Some("2 values aren't dates and were read as empty, in 'd', 'ts'"));
+        assert_eq!(note.as_ref().map(rustgis_data::loss::Note::as_str), Some("2 values aren't dates and were read as empty, in 'd', 'ts'"));
         let f = b.features.iter().find(|f| f.id == 1).unwrap();
         assert_eq!(f.attrs.get(3).map(ToString::to_string).as_deref(), Some("2026-03-05T12:30:00Z"));
     }

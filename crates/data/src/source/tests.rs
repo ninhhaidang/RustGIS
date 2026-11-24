@@ -2480,8 +2480,16 @@ fn shapefile_text_keeps_its_leading_spaces_and_counts_null_markers() {
     assert_eq!(values, [Value::Text(" 2535".into()), Value::Null, Value::Text("plain".into()), Value::Null]);
     assert_eq!(inplace.features, whole.features);
     let said = "codes: 2 values written as Null were read as empty, in 'code'";
-    assert!(whole_report.messages.iter().any(|m| m == said), "{:?}", whole_report.messages);
-    assert!(report.messages.iter().any(|m| m == said), "{:?}", report.messages);
+    assert!(
+        whole_report.messages.iter().any(|m| m.as_str() == said && m.loss == Some(crate::loss::LossCode::AssumedNullMarker)),
+        "{:?}",
+        whole_report.messages
+    );
+    assert!(
+        report.messages.iter().any(|m| m.as_str() == said && m.loss == Some(crate::loss::LossCode::AssumedNullMarker)),
+        "{:?}",
+        report.messages
+    );
 
     // Text without the marker says nothing.
     let mut clean = Dataset::new("clean", GeometryType::Point, vec![Field::new("code", FieldType::Text)]);
@@ -4300,7 +4308,9 @@ fn flatgeobuf_classifies_local_dates_and_preserves_remote_text() {
     assert_eq!(batch.unread_dates, [1, 1]);
     assert!(batch.features.iter().any(|f| f.attrs[2].to_string() == "12:30:00.123456789"));
     let (_, report) = materialize(local.as_ref()).unwrap();
-    assert!(report.unread_dates.unwrap().contains("2 values"));
+    let note = report.unread_dates.unwrap();
+    assert!(note.contains("2 values"));
+    assert_eq!(note.loss, Some(crate::loss::LossCode::DroppedValue));
     let mut rows = Vec::new();
     let streamed = local
         .visit_chunks(None, 256, &mut |chunk| {

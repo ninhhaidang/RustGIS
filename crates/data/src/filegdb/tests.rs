@@ -947,6 +947,7 @@ fn filegdb_temporal_fields_keep_days_offsets_and_null_notices() {
         assert_eq!(notices.len(), usize::from(rounded), "{serial}: {report:?}");
         if rounded {
             assert!(notices[0].contains("1 serial date") && notices[0].contains("moment"));
+            assert_eq!(notices[0].loss, Some(crate::loss::LossCode::ChangedRounded));
         }
     }
 }

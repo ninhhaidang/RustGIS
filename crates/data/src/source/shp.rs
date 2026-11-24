@@ -236,6 +236,7 @@ impl ShpSource {
             notes.push("coordinates are not longitude/latitude; RustGIS reads them as WGS 84 and they may draw out of place".into());
         }
         let (names, not_utf8) = read_names(&dbf, table.columns.len(), &encoding)?;
+        let mut notes = crate::loss::Notes::from(notes);
         notes.extend(crate::dbf::not_utf8_names_note(&not_utf8, encoding.name()));
         let fields = table.columns.iter().zip(names).map(|(c, n)| Field::new(n, c.out)).collect();
         let mut info = SourceInfo {
@@ -249,7 +250,7 @@ impl ShpSource {
             // (`SourceInfo::coordinate_system`) as a whole read does.
             crs: reproject.crs.definition_text(),
             indexed: index.indexed(),
-            notes: notes.into(),
+            notes,
             zm_dropped: false,
         };
         // PointZ … MultiPointM: the header's type says every shape carries Z or M values.

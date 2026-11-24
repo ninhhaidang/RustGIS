@@ -194,7 +194,7 @@ pub(crate) fn cause(encoding: &str) -> String {
 
 /// What opening a `.dbf` says of its field names that aren't valid in its `encoding` ([`not_utf8`]),
 /// naming the first five by their column (from 1). `None` when there are none.
-pub(crate) fn not_utf8_names_note(columns: &[usize], encoding: &str) -> Option<String> {
+pub(crate) fn not_utf8_names_note(columns: &[usize], encoding: &str) -> Option<crate::loss::Note> {
     let (what, label) = match columns.len() {
         0 => return None,
         1 => (format!("1 field name isn't valid {encoding} and was"), "field"),
@@ -202,11 +202,12 @@ pub(crate) fn not_utf8_names_note(columns: &[usize], encoding: &str) -> Option<S
     };
     let named: Vec<String> = columns.iter().take(5).map(usize::to_string).collect();
     let more = if columns.len() > 5 { format!(" and {} more", columns.len() - 5) } else { String::new() };
-    Some(format!(
+    let text = format!(
         "Shapefile: {what} read with U+FFFD in place of the bytes that can't be read, in {label} {}{more}; {}",
         named.join(", "),
         cause(encoding)
-    ))
+    );
+    Some(crate::loss::Note::loss(crate::loss::LossCode::ChangedEncoding, text))
 }
 
 /// What a `.dbf` holds that isn't valid in its `encoding`: which of its field names (by column, from
@@ -670,17 +671,21 @@ mod tests {
     fn field_names_that_arent_utf8_are_said_with_their_columns() {
         assert_eq!(not_utf8_names_note(&[], "UTF-8"), None);
         let one = not_utf8_names_note(&[3], "UTF-8").unwrap();
+        assert_eq!(one.loss, Some(crate::loss::LossCode::ChangedEncoding));
+        let one = one.as_str();
         assert!(one.starts_with("Shapefile: 1 field name isn't valid UTF-8 and was read with U+FFFD"), "{one}");
         assert!(one.contains("in field 3;"), "{one}");
         let two = not_utf8_names_note(&[3, 7], "UTF-8").unwrap();
+        let two = two.as_str();
         assert!(two.starts_with("Shapefile: 2 field names aren't valid UTF-8 and were read with U+FFFD"), "{two}");
         assert!(two.contains("in fields 3, 7;"), "{two}");
         assert!(two.ends_with(NO_OTHER_ENCODING), "{two}");
         let many = not_utf8_names_note(&[1, 2, 3, 4, 5, 6, 7], "UTF-8").unwrap();
+        let many = many.as_str();
         assert!(many.contains("in fields 1, 2, 3, 4, 5 and 2 more;"), "{many}");
         // A declared code page is named, as what the file declares.
         assert_eq!(
-            not_utf8_names_note(&[1], "Big5").as_deref(),
+            not_utf8_names_note(&[1], "Big5").as_ref().map(crate::loss::Note::as_str),
             Some(
                 "Shapefile: 1 field name isn't valid Big5 and was read with U+FFFD in place of the bytes that can't be read, in field 1; the .cpg or the .dbf's language driver declares Big5"
             )

@@ -423,9 +423,12 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
     }
     let rounded: usize = rounded_dates.iter().sum();
     if rounded > 0 {
-        report.messages.push(format!(
-            "{rounded} serial date values were rounded to the nearest microsecond, in {}",
-            crate::io::named_fields(&ds.fields, &rounded_dates)
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::ChangedRounded,
+            format!(
+                "{rounded} serial date values were rounded to the nearest microsecond, in {}",
+                crate::io::named_fields(&ds.fields, &rounded_dates)
+            ),
         ));
     }
     report.unread_dates = crate::source::unread_dates_note(&ds.fields, &unread_dates);

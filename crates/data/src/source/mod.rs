@@ -327,31 +327,33 @@ pub fn add_unread_dates(counts: &mut Vec<usize>, more: &[usize]) {
 
 /// What a read says of values in date fields that weren't dates ([`Batch::unread_dates`]), naming
 /// the first five fields. `None` when there were none.
-pub fn unread_dates_note(fields: &[crate::Field], counts: &[usize]) -> Option<String> {
+pub fn unread_dates_note(fields: &[crate::Field], counts: &[usize]) -> Option<crate::loss::Note> {
     let total: usize = counts.iter().sum();
     if total == 0 {
         return None;
     }
     let what = if total == 1 { "1 value isn't a date and was".to_string() } else { format!("{total} values aren't dates and were") };
-    Some(format!("{what} read as empty, in {}", crate::io::named_fields(fields, counts)))
+    let text = format!("{what} read as empty, in {}", crate::io::named_fields(fields, counts));
+    Some(crate::loss::Note::loss(crate::loss::LossCode::DroppedValue, text))
 }
 
 /// What a read says of text values `<Null>` it read as null ([`crate::Value::is_null_marker`],
 /// [`Batch::null_text`]), naming the first five fields. `None` when there were none. It names the
 /// marker as `Null`, without its brackets: notices are redacted, which takes `<Null>` for a tag.
-pub fn null_text_note(fields: &[crate::Field], counts: &[usize]) -> Option<String> {
+pub fn null_text_note(fields: &[crate::Field], counts: &[usize]) -> Option<crate::loss::Note> {
     let total: usize = counts.iter().sum();
     if total == 0 {
         return None;
     }
     let what = if total == 1 { "1 value written as Null was".to_string() } else { format!("{total} values written as Null were") };
-    Some(format!("{what} read as empty, in {}", crate::io::named_fields(fields, counts)))
+    let text = format!("{what} read as empty, in {}", crate::io::named_fields(fields, counts));
+    Some(crate::loss::Note::loss(crate::loss::LossCode::AssumedNullMarker, text))
 }
 
 /// What a read says of a `.dbf`'s text values that aren't valid in the `encoding` they were read in
 /// ([`Batch::not_utf8`], [`FeatureSource::text_encoding`]): how many, in which fields (the first five
 /// named), and why they were read in it. `None` when there were none.
-pub fn not_utf8_note(fields: &[crate::Field], counts: &[usize], encoding: &str) -> Option<String> {
+pub fn not_utf8_note(fields: &[crate::Field], counts: &[usize], encoding: &str) -> Option<crate::loss::Note> {
     let total: usize = counts.iter().sum();
     if total == 0 {
         return None;
@@ -361,22 +363,25 @@ pub fn not_utf8_note(fields: &[crate::Field], counts: &[usize], encoding: &str) 
     } else {
         format!("{total} text values aren't valid {encoding} and were")
     };
-    Some(format!(
+    let text = format!(
         "{what} read with U+FFFD in place of the bytes that can't be read, in {}; {}",
         crate::io::named_fields(fields, counts),
         crate::dbf::cause(encoding)
-    ))
+    );
+    Some(crate::loss::Note::loss(crate::loss::LossCode::ChangedEncoding, text))
 }
 
 /// What a read says of date-times it rounded to the microsecond ([`Batch::rounded_dates`]), naming
 /// the first five fields. `None` when there were none.
-pub fn rounded_dates_note(fields: &[crate::Field], counts: &[usize]) -> Option<String> {
+pub fn rounded_dates_note(fields: &[crate::Field], counts: &[usize]) -> Option<crate::loss::Note> {
     let total: usize = counts.iter().sum();
     if total == 0 {
         return None;
     }
     let what = if total == 1 { "1 date-time was".to_string() } else { format!("{total} date-times were") };
-    Some(format!("{what} rounded to the microsecond, as more digits than that aren't kept, in {}", crate::io::named_fields(fields, counts)))
+    let text =
+        format!("{what} rounded to the microsecond, as more digits than that aren't kept, in {}", crate::io::named_fields(fields, counts));
+    Some(crate::loss::Note::loss(crate::loss::LossCode::ChangedRounded, text))
 }
 
 /// A vector data source read in place.
@@ -790,9 +795,9 @@ fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, 
     };
     let null_text = null_text_note(&info.fields, &null_text);
     let not_utf8 = not_utf8_note(&info.fields, &not_utf8, src.text_encoding());
-    report.messages.extend(unread_dates.into_iter().chain(rounded).chain(null_text).map(|n| format!("{}: {n}", info.name)));
+    report.messages.extend(unread_dates.into_iter().chain(rounded).chain(null_text).map(|n| n.prefixed(&info.name)));
     report.messages.extend(notes.prefixed(&info.name));
-    report.messages.extend(not_utf8.into_iter().map(|n| format!("{}: {n}", info.name)));
+    report.messages.extend(not_utf8.into_iter().map(|n| n.prefixed(&info.name)));
     if ds.geometry_type == GeometryType::None
         && let Some(g) = ds.features.iter().find_map(|f| f.geometry.as_ref())
     {

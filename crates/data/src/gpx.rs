@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(ds.fields[k].ty, FieldType::DateTime);
         assert!(ds.value(0, k).is_null() && ds.value(2, k).is_null());
         assert_eq!(ds.value(1, k).to_string(), "2026-03-05T14:30:00.123456+02:00");
-        assert!(report.unread_dates.as_deref().unwrap().starts_with("1 value"));
+        assert!(report.unread_dates.as_ref().map(crate::loss::Note::as_str).unwrap().starts_with("1 value"));
         assert!(read("clean.gpx", GPX.as_bytes()).unwrap().iter().all(|(_, r)| r.unread_dates.is_none()));
     }
 

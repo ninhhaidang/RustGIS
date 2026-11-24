@@ -29,8 +29,8 @@ enum Rows {
 pub(crate) struct Unread {
     layer: String,
     rows: usize,
-    dates: Option<String>,
-    rounded: Option<String>,
+    dates: Option<rustgis_data::loss::Note>,
+    rounded: Option<rustgis_data::loss::Note>,
     messages: rustgis_data::loss::Notes,
 }
 
@@ -83,11 +83,8 @@ impl Unread {
         if self.rows > 0 {
             s.warn(unread_notice(&self.layer, self.rows));
         }
-        if let Some(dates) = &self.dates {
-            s.notify(format!("{}: {dates}", self.layer), false);
-        }
-        if let Some(rounded) = &self.rounded {
-            s.notify(format!("{}: {rounded}", self.layer), false);
+        for note in [&self.dates, &self.rounded].into_iter().flatten() {
+            s.say(note.clone().prefixed(&self.layer));
         }
         for message in &self.messages {
             s.say(message.clone());
@@ -96,8 +93,8 @@ impl Unread {
 
     /// What [`Unread::say`] says, as lines: for a tool's messages.
     pub(crate) fn lines(&self) -> rustgis_data::loss::Notes {
-        let rows = (self.rows > 0).then(|| unread_notice(&self.layer, self.rows));
-        let dates = [&self.dates, &self.rounded].into_iter().flatten().map(|n| format!("{}: {n}", self.layer));
+        let rows = (self.rows > 0).then(|| rustgis_data::loss::Note::plain(unread_notice(&self.layer, self.rows)));
+        let dates = [&self.dates, &self.rounded].into_iter().flatten().map(|n| n.clone().prefixed(&self.layer));
         let mut lines: rustgis_data::loss::Notes = rows.into_iter().chain(dates).collect();
         lines.extend(self.messages.iter().cloned());
         lines

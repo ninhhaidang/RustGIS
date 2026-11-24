@@ -730,10 +730,10 @@ pub struct ReadReport {
     pub synced: Option<sync::Synced>,
     /// What a read of a source says of values in date fields that weren't dates
     /// ([`source::unread_dates_note`]), also in `messages`: for a caller that says only this.
-    pub unread_dates: Option<String>,
+    pub unread_dates: Option<loss::Note>,
     /// What it says of date-times it rounded to the microsecond ([`source::rounded_dates_note`]),
     /// also in `messages`.
-    pub rounded_dates: Option<String>,
+    pub rounded_dates: Option<loss::Note>,
     /// The extrusion the reader suggests for the layer (a city model's volumes): applied when the
     /// layer is added, and only then; a reload keeps the layer's own.
     pub extrusion: Option<SuggestedExtrusion>,

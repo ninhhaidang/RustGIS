@@ -759,7 +759,7 @@ fn copy_stream(
         source::null_text_note(&info.fields, &batch.null_text),
     ];
     losses.extend(info.notes.iter().chain(&batch.notes).cloned().map(|note| note.prefixed(&layer.name)));
-    losses.extend(counted.iter().flatten().map(|note| format!("{}: {note}", layer.name)));
+    losses.extend(counted.into_iter().flatten().map(|note| note.prefixed(&layer.name)));
     dataset.crs_incomplete = src.lost_to_crs() || (info.format == "Shapefile" && batch.skipped > 0);
     dataset.features = rows.into();
     if dataset.geometry_type == rustgis_data::GeometryType::None

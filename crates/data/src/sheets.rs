@@ -79,9 +79,12 @@ pub fn read(bytes: &[u8], name: &str, sheet: Option<&str>, opts: &CsvOptions) ->
         report.messages.push(message);
     }
     if rounded > 0 {
-        report.messages.push(format!(
-            "{rounded} serial date values were rounded to the nearest microsecond, in {}",
-            crate::io::named_fields(&fields, &g.rounded_dates)
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::ChangedRounded,
+            format!(
+                "{rounded} serial date values were rounded to the nearest microsecond, in {}",
+                crate::io::named_fields(&fields, &g.rounded_dates)
+            ),
         ));
     }
     let others: Vec<&str> = g.names.iter().filter(|n| **n != g.pick).map(String::as_str).take(20).collect();
@@ -741,6 +744,7 @@ mod tests {
             assert_eq!(notices.len(), usize::from(rounded), "{serial}: {report:?}");
             if rounded {
                 assert!(notices[0].contains("1 serial date") && notices[0].contains("moment"));
+                assert_eq!(notices[0].loss, Some(crate::loss::LossCode::ChangedRounded));
             }
             if serial == "0.500001" {
                 assert_eq!(ds.fields[0].ty, FieldType::Text);
@@ -769,14 +773,14 @@ mod tests {
         let (ds, report) = book(["45000", "60", "45002"]);
         assert_eq!(ds.fields[0].ty, FieldType::Date);
         assert!(ds.value(1, 0).is_null());
-        assert_eq!(report.unread_dates.as_deref(), Some("1 value isn't a date and was read as empty, in 'a'"));
+        assert_eq!(report.unread_dates.as_ref().map(crate::loss::Note::as_str), Some("1 value isn't a date and was read as empty, in 'a'"));
         // A mixed column (text among the dates) says the same, and keeps the rest as text.
         let (ds, report) = book(["45000", "60", "x"]);
         assert_eq!(ds.fields[0].ty, FieldType::Text);
         // (A row left with nothing in it is skipped, as any empty row is.)
         let seen: Vec<String> = (0..ds.features.len()).map(|r| ds.value(r, 0).to_string()).collect();
         assert_eq!(seen, ["2023-03-15", "x"], "{seen:?}");
-        assert_eq!(report.unread_dates.as_deref(), Some("1 value isn't a date and was read as empty, in 'a'"));
+        assert_eq!(report.unread_dates.as_ref().map(crate::loss::Note::as_str), Some("1 value isn't a date and was read as empty, in 'a'"));
         // Without it, nothing is said.
         let (_, report) = book(["45000", "61", "x"]);
         assert_eq!(report.unread_dates, None);

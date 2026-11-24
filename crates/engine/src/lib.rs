@@ -2781,28 +2781,35 @@ impl Session {
                 // Values in date fields that weren't dates, once for a layer read in place.
                 let (unread, rounded) = layer.source.as_mut().map(|source| source.take_unread_dates()).unwrap_or_default();
                 if let Some(note) = unread {
-                    dates.push(rustgis_data::loss::Note::plain(format!(
-                        "{}: some values in its date fields aren't dates and show as empty (Load All Features counts them all); so far, {note}",
-                        layer.name
-                    )));
+                    dates.push(note.map_text(|note| {
+                        format!(
+                            "{}: some values in its date fields aren't dates and show as empty (Load All Features counts them all); so far, {note}",
+                            layer.name
+                        )
+                    }));
                 }
                 if let Some(note) = rounded {
-                    dates.push(rustgis_data::loss::Note::plain(format!(
-                        "{}: some date-times in it have digits past the microsecond and are rounded (Load All Features counts them all); so far, {note}",
-                        layer.name
-                    )));
+                    dates.push(note.map_text(|note| {
+                        format!(
+                            "{}: some date-times in it have digits past the microsecond and are rounded (Load All Features counts them all); so far, {note}",
+                            layer.name
+                        )
+                    }));
                 }
                 if let Some(note) = layer.source.as_mut().and_then(|source| source.take_null_text()) {
-                    dates.push(rustgis_data::loss::Note::plain(format!(
-                        "{}: some text values written as Null in it show as empty (Load All Features counts them all); so far, {note}",
-                        layer.name
-                    )));
+                    dates.push(note.map_text(|note| {
+                        format!(
+                            "{}: some text values written as Null in it show as empty (Load All Features counts them all); so far, {note}",
+                            layer.name
+                        )
+                    }));
                 }
                 if let Some(note) = layer.source.as_mut().and_then(|source| source.take_not_utf8()) {
-                    not_utf8.push(notice_text::NoticeText::format(
+                    let text = notice_text::NoticeText::format(
                         "{name}: so far, {note} (Load All Features counts them all)",
-                        [("name", layer.name.clone().into()), ("note", note.into())],
-                    ));
+                        [("name", layer.name.clone().into()), ("note", note.text.into())],
+                    );
+                    not_utf8.push((note.loss, text));
                 }
                 // What else the map's reads of it lost or assumed, each kind once for its opening.
                 for note in layer.source.as_mut().map(|source| source.take_read_notes()).unwrap_or_default() {
@@ -2819,8 +2826,11 @@ impl Session {
         for note in dates {
             self.say(note);
         }
-        for note in not_utf8 {
-            self.notify_text(note, false);
+        for (loss, note) in not_utf8 {
+            match loss {
+                Some(code) => self.notify_loss(code, note),
+                None => self.notify_text(note, false),
+            }
         }
         if let Some(message) = notice_text::NoticeText::source_errors(source_error_count, source_errors, source_error_count) {
             self.notify_text(message, true);

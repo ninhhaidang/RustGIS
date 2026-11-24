@@ -641,9 +641,9 @@ pub(crate) fn layer_work(s: &Session, p: &Value) -> Result<Work, String> {
 /// empty because they weren't dates, and date-times rounded to the microsecond
 /// ([`rustgis_map::Unreadable`]). Every export of a layer read in place says them, the browser's
 /// download too.
-pub fn read_date_notes(file: &str, layer: &str, lost: &rustgis_map::Unreadable) -> Vec<String> {
-    let empty = lost.dates.iter().map(|n| format!("{file}: {layer}: {n} (empty in the export)"));
-    empty.chain(lost.rounded.iter().map(|n| format!("{file}: {layer}: {n} when read for the export"))).collect()
+pub fn read_date_notes(file: &str, layer: &str, lost: &rustgis_map::Unreadable) -> Vec<rustgis_data::loss::Note> {
+    let empty = lost.dates.iter().map(|n| n.clone().map_text(|n| format!("{file}: {layer}: {n} (empty in the export)")));
+    empty.chain(lost.rounded.iter().map(|n| n.clone().map_text(|n| format!("{file}: {layer}: {n} when read for the export")))).collect()
 }
 
 /// The complete diagnostics from a whole read made for an export, including metadata losses
@@ -732,20 +732,20 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, project: 
             let unfit = rustgis_data::source::parquet::unfit_note(&layer.fields, &e.unfit, path);
             let moved = rustgis_data::web_mercator_moved_note(path, &layer.name, e.beyond_web_mercator);
             let mut dates: rustgis_data::loss::Notes = rustgis_data::source::unread_dates_note(&layer.fields, &e.unread_dates)
-                .map(|n| format!("{path}: {}: {n} (empty in the export)", layer.name))
+                .map(|n| n.map_text(|n| format!("{path}: {}: {n} (empty in the export)", layer.name)))
                 .into_iter()
                 .collect();
             dates.extend(
                 rustgis_data::source::rounded_dates_note(&layer.fields, &e.rounded_dates)
-                    .map(|n| format!("{path}: {}: {n} when read for the export", layer.name)),
+                    .map(|n| n.map_text(|n| format!("{path}: {}: {n} when read for the export", layer.name))),
             );
             dates.extend(
                 rustgis_data::source::null_text_note(&layer.fields, &e.null_text)
-                    .map(|n| format!("{path}: {}: {n} (empty in the export)", layer.name)),
+                    .map(|n| n.map_text(|n| format!("{path}: {}: {n} (empty in the export)", layer.name))),
             );
             dates.extend(
                 rustgis_data::source::not_utf8_note(&layer.fields, &e.not_utf8, e.not_utf8_in)
-                    .map(|n| format!("{path}: {}: {n}", layer.name)),
+                    .map(|n| n.prefixed(&format!("{path}: {}", layer.name))),
             );
             dates.extend(rustgis_data::io::utc_dates_note(&layer.fields, &e.utc_dates, path));
             dates.extend(rustgis_data::io::fine_dates_note(&layer.fields, &e.fine_dates, path));

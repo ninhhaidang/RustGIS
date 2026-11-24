@@ -751,7 +751,7 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
             ));
         }
         if let Some(n) = crate::source::null_text_note(&ds.fields, &null_text) {
-            rep.messages.push(format!("{}: {n}", ds.name));
+            rep.messages.push(n.prefixed(&ds.name));
         }
         if parts > 0 {
             let what = if parts == 1 { "part" } else { "parts" };
@@ -875,7 +875,12 @@ mod tests {
         assert_eq!(ds.value(0, code), &Value::Text(" R-1".into()));
         assert_eq!(ds.value(1, code), &Value::Null);
         assert_eq!(ds.value(2, code), &Value::Text("Laid out".into()), "an indented value loses its layout");
-        assert!(report.messages.iter().any(|m| m == "s: 1 value written as Null was read as empty, in 'code'"), "{:?}", report.messages);
+        assert!(
+            report.messages.iter().any(|m| m.as_str() == "s: 1 value written as Null was read as empty, in 'code'"
+                && m.loss == Some(crate::loss::LossCode::AssumedNullMarker)),
+            "{:?}",
+            report.messages
+        );
         let clean = gml.replace("&lt;Null&gt;", "B-2");
         let layers = read("s.gml", clean.as_bytes()).unwrap();
         assert!(layers[0].1.messages.iter().all(|m| !m.contains("written as Null")), "no marker, no notice: {:?}", layers[0].1.messages);

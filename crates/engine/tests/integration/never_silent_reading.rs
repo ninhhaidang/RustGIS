@@ -966,7 +966,9 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
             check_dbf_date(&native, dbf_invalid)?;
         }
         let expected = if csv_extra { &extra_messages } else { &dbf_messages };
-        if report.skipped != 0 || &report.messages != expected {
+        // The invalid date is said as `dropped.value`; the extra cell isn't coded yet.
+        let coded = report.messages.iter().all(|m| (m.loss == Some(LossCode::DroppedValue)) == dbf_invalid);
+        if report.skipped != 0 || report.messages.texts().collect::<Vec<_>>() != *expected || !coded {
             return Err(std::io::Error::other(format!("tabular native report: {report:?}")));
         }
     }

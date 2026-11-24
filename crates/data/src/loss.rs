@@ -85,6 +85,16 @@ loss_codes! {
     ),
     ChangedTruncated => ("changed.truncated", Changed, "Use a decimal field to keep the fractional part."),
     ChangedBody => ("changed.body", Changed, "Export in the layer's own coordinate system, which keeps its body."),
+    ChangedEncoding => (
+        "changed.encoding",
+        Changed,
+        "Put a .cpg file naming the file's own encoding beside it."
+    ),
+    ChangedRounded => (
+        "changed.rounded",
+        Changed,
+        "Keep the source file where times finer than a microsecond matter."
+    ),
     ChangedPosition => (
         "changed.position",
         Changed,
@@ -94,6 +104,11 @@ loss_codes! {
         "approximated.datum",
         Approximated,
         "Export in the layer's own coordinate system, or give that system with a known transformation to WGS 84."
+    ),
+    AssumedNullMarker => (
+        "assumed.null-marker",
+        Assumed,
+        "Write the value another way if the text Null is meant as text, not as an empty value."
     ),
 }
 

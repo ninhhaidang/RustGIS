@@ -895,7 +895,7 @@ impl SourceLayer {
     /// What view reads found of values in date fields that weren't dates
     /// ([`rustgis_data::source::unread_dates_note`]) and of date-times rounded to the microsecond
     /// ([`rustgis_data::source::rounded_dates_note`]), once for the source.
-    pub fn take_unread_dates(&mut self) -> (Option<String>, Option<String>) {
+    pub fn take_unread_dates(&mut self) -> (Option<rustgis_data::loss::Note>, Option<rustgis_data::loss::Note>) {
         let Some(fields) = self.info().map(|i| i.fields.clone()) else { return (None, None) };
         let (unread, rounded) = (std::mem::take(&mut self.unread_dates).total(), std::mem::take(&mut self.rounded_dates).total());
         if unread.is_none() && rounded.is_none() {
@@ -919,7 +919,7 @@ impl SourceLayer {
 
     /// What view reads found of text values `<Null>` read as null
     /// ([`rustgis_data::source::null_text_note`]), once for the source.
-    pub fn take_null_text(&mut self) -> Option<String> {
+    pub fn take_null_text(&mut self) -> Option<rustgis_data::loss::Note> {
         let fields = self.info().map(|i| i.fields.clone())?;
         let counts = std::mem::take(&mut self.null_text).total()?;
         self.null_text_said = true;
@@ -942,7 +942,7 @@ impl SourceLayer {
 
     /// What view reads found of text values that aren't UTF-8
     /// ([`rustgis_data::source::not_utf8_note`]), once for the source.
-    pub fn take_not_utf8(&mut self) -> Option<String> {
+    pub fn take_not_utf8(&mut self) -> Option<rustgis_data::loss::Note> {
         // Checked first: this runs every frame for each layer with a source, and most have nothing pending.
         if self.not_utf8.is_empty() {
             return None;

@@ -2,6 +2,15 @@
 
 use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value, io};
 
+/// The notes' texts, each read with U+FFFD in place of bytes said as `changed.encoding` and no
+/// other with that code.
+fn texts(notes: &rustgis_data::loss::Notes) -> Vec<&str> {
+    for note in notes.iter() {
+        assert_eq!(note.contains("U+FFFD"), note.loss == Some(rustgis_data::loss::LossCode::ChangedEncoding), "{note:?}");
+    }
+    notes.texts().collect()
+}
+
 /// Opens a Shapefile in place, with its index in this process's own temporary cache rather than
 /// the user's (#1230).
 #[cfg(not(target_arch = "wasm32"))]
@@ -151,12 +160,12 @@ fn text_that_isnt_utf8_is_counted_by_field_when_no_encoding_is_named() {
     let said = [not_utf8_note(2, "name")];
     let layers = io::read_zip("places.zip", &rustgis_data::zip::write(&files).unwrap()).unwrap();
     assert_eq!(names(&layers[0].0), read);
-    assert_eq!(layers[0].1.messages, said, "zipped");
+    assert_eq!(texts(&layers[0].1.messages), said, "zipped");
     // The `.dbf` on its own, a table.
     let dbf = &files.iter().find(|(n, _)| n.ends_with(".dbf")).unwrap().1;
     let (table, report) = io::read_bytes("places.dbf", dbf).unwrap();
     assert_eq!(names(&table), read);
-    assert_eq!(report.messages, said, "the .dbf alone");
+    assert_eq!(texts(&report.messages), said, "the .dbf alone");
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rustgis_data::source::FeatureSource;
@@ -167,13 +176,13 @@ fn text_that_isnt_utf8_is_counted_by_field_when_no_encoding_is_named() {
         let path = dir.path().join("places.shp");
         let (ds, report) = io::read_path(&path).unwrap();
         assert_eq!(names(&ds), read);
-        assert_eq!(report.messages, said, "loose files");
+        assert_eq!(texts(&report.messages), said, "loose files");
         // Read in place: the field names are fine, so opening says nothing; a whole read counts.
         let src = open_shp(&path, "places").unwrap();
         assert!(src.info().notes.is_empty(), "{:?}", src.info().notes);
         let (ds, report) = rustgis_data::source::materialize(&src).unwrap();
         assert_eq!(names(&ds), read);
-        assert_eq!(report.messages, said, "read in place");
+        assert_eq!(texts(&report.messages), said, "read in place");
     }
 }
 
@@ -512,7 +521,7 @@ fn dos_support_preserves_other_encodings_and_lossy_utf8_fallback() {
         let layers = io::read_zip("places.zip", &rustgis_data::zip::write(&files).unwrap()).unwrap();
         assert_eq!(layers[0].0.value(0, 0), &Value::Text(expected.into()));
         let said = if replaced { vec![not_utf8_note(1, "name")] } else { Vec::new() };
-        assert_eq!(layers[0].1.messages, said, "{expected}");
+        assert_eq!(texts(&layers[0].1.messages), said, "{expected}");
     }
 }
 
@@ -531,7 +540,7 @@ fn utf8_metadata_preserves_leading_bom_in_fields_and_values() {
         let layers = io::read_zip("places.zip", &rustgis_data::zip::write(&files).unwrap()).unwrap();
         assert_eq!(layers[0].0.fields[0].name, "\u{feff}name");
         assert_eq!(layers[0].0.value(0, 0), &Value::Text("\u{feff}Caf�".into()));
-        assert_eq!(layers[0].1.messages, said);
+        assert_eq!(texts(&layers[0].1.messages), said);
         let dir = tempfile::tempdir().unwrap();
         for (name, bytes) in files {
             std::fs::write(dir.path().join(name), bytes).unwrap();
@@ -540,7 +549,7 @@ fn utf8_metadata_preserves_leading_bom_in_fields_and_values() {
         let (ds, report) = io::read_path(&path).unwrap();
         assert_eq!(ds.fields[0].name, "\u{feff}name");
         assert_eq!(ds.value(0, 0), &Value::Text("\u{feff}Caf�".into()));
-        assert_eq!(report.messages, said);
+        assert_eq!(texts(&report.messages), said);
         let src = open_shp(&path, "places").unwrap();
         assert_eq!(src.info().fields[0].name, "\u{feff}name");
         assert_eq!(src.read(&Request::all()).unwrap().features[0].attrs, [Value::Text("\u{feff}Caf�".into())]);
@@ -634,7 +643,7 @@ fn check_ldid_readers(ldid: u8, text: &[u8], expected: &str, cpg: Option<&[u8]>,
     assert_eq!(layers.len(), 1);
     check(&layers[0].0, 3);
     assert_eq!(layers[0].1.skipped, 0);
-    assert_eq!(layers[0].1.messages, notes, "LDID {ldid:02X} ZIP notes");
+    assert_eq!(texts(&layers[0].1.messages), notes, "LDID {ldid:02X} ZIP notes");
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rustgis_data::source::{FeatureSource, Request};
@@ -646,14 +655,14 @@ fn check_ldid_readers(ldid: u8, text: &[u8], expected: &str, cpg: Option<&[u8]>,
         let (ds, report) = io::read_path(&path).unwrap();
         check(&ds, 3);
         assert_eq!(report.skipped, 0);
-        assert_eq!(report.messages, notes, "LDID {ldid:02X} loose-file notes");
+        assert_eq!(texts(&report.messages), notes, "LDID {ldid:02X} loose-file notes");
         let src = open_shp(&path, "places").unwrap();
         assert_eq!(src.info().fields[0].name, expected, "LDID {ldid:02X} streamed field name");
         let opening: Vec<&str> = notes.iter().copied().filter(|n| !n.starts_with("places: ")).collect();
-        assert_eq!(src.info().notes, opening, "LDID {ldid:02X} streamed notes");
+        assert_eq!(texts(&src.info().notes), opening, "LDID {ldid:02X} streamed notes");
         let whole: Vec<String> =
             notes.iter().map(|n| if n.starts_with("places: ") { n.to_string() } else { format!("places: {n}") }).collect();
-        assert_eq!(rustgis_data::source::materialize(&src).unwrap().1.messages, whole, "LDID {ldid:02X} whole read in place");
+        assert_eq!(texts(&rustgis_data::source::materialize(&src).unwrap().1.messages), whole, "LDID {ldid:02X} whole read in place");
         for (request, rows, complete) in [(Request { extent: None, limit: 1, own: None }, 1, false), (Request::all(), 3, true)] {
             let batch = src.read(&request).unwrap();
             assert_eq!(batch.matched, 3);
@@ -754,13 +763,13 @@ fn malformed_values_are_counted_per_value_and_clean_text_says_nothing() {
     let files = two_field_parts(b"\x93\x8c\x8b\x9e", b"Y\x82", 0x13, None);
     let (ds, report) = io::read_zip("places.zip", &rustgis_data::zip::write(&files).unwrap()).unwrap().remove(0);
     assert_eq!(names(&ds), [Value::Text("東京".into()), Value::Text("Y\u{FFFD}".into()), Value::Text("Tainan".into())]);
-    assert_eq!(report.messages, [invalid_note(1, "name", "Shift_JIS")]);
+    assert_eq!(texts(&report.messages), [invalid_note(1, "name", "Shift_JIS")]);
     // A value that fills its 32 bytes and ends in a lead byte is one malformed value.
     let mut full = vec![b'A'; 31];
     full.push(0x82);
     let files = parts(&full, 0x13, None);
     let (_, report) = io::read_zip("places.zip", &rustgis_data::zip::write(&files).unwrap()).unwrap().remove(0);
-    assert_eq!(report.messages, [invalid_note(1, "name", "Shift_JIS")]);
+    assert_eq!(texts(&report.messages), [invalid_note(1, "name", "Shift_JIS")]);
     // The same through a standalone `.dbf` and a read in place.
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -769,8 +778,8 @@ fn malformed_values_are_counted_per_value_and_clean_text_says_nothing() {
             std::fs::write(dir.path().join(name), bytes).unwrap();
         }
         let (_, report) = io::read_path(&dir.path().join("places.dbf")).unwrap();
-        assert_eq!(report.messages, [invalid_note(1, "name", "Shift_JIS")]);
+        assert_eq!(texts(&report.messages), [invalid_note(1, "name", "Shift_JIS")]);
         let src = open_shp(&dir.path().join("places.shp"), "places").unwrap();
-        assert_eq!(rustgis_data::source::materialize(&src).unwrap().1.messages, [invalid_note(1, "name", "Shift_JIS")]);
+        assert_eq!(texts(&rustgis_data::source::materialize(&src).unwrap().1.messages), [invalid_note(1, "name", "Shift_JIS")]);
     }
 }

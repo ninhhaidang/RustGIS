@@ -154,10 +154,10 @@ pub struct Unreadable {
     pub rows: usize,
     /// What it says of values in date fields that weren't dates, read as null
     /// ([`rustgis_data::source::unread_dates_note`]).
-    pub dates: Option<String>,
+    pub dates: Option<rustgis_data::loss::Note>,
     /// What it says of date-times rounded to the microsecond
     /// ([`rustgis_data::source::rounded_dates_note`]).
-    pub rounded: Option<String>,
+    pub rounded: Option<rustgis_data::loss::Note>,
     /// Other reader diagnostics, already qualified by their source. Date diagnostics stay in
     /// their typed fields above so consumers can describe what an export did to them once.
     pub messages: rustgis_data::loss::Notes,
@@ -873,7 +873,7 @@ impl Layer {
         let (ds, report) = self.load_all_with_notices()?;
         // materialize also puts the typed date diagnostics in messages. Existing consumers
         // give them their own export wording, so preserve only the other messages here.
-        let date_notes: Vec<_> = report.unread_dates.iter().chain(&report.rounded_dates).map(|n| format!(": {n}")).collect();
+        let date_notes: Vec<_> = report.unread_dates.iter().chain(&report.rounded_dates).map(|n| format!(": {}", n.as_str())).collect();
         let mut seen = std::collections::HashSet::new();
         let messages: rustgis_data::loss::Notes = report
             .messages

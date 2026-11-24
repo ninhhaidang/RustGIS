@@ -2237,22 +2237,22 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
             notes.extend(rustgis_data::io::unplaced_export_note(&path, &ds.name, result.unplaced, rustgis_data::raster::Crs::LonLat));
             notes.extend(
                 rustgis_data::source::unread_dates_note(&ds.fields, &result.unread_dates)
-                    .map(|n| format!("{path}: {}: {n} (empty in the export)", ds.name)),
+                    .map(|n| n.map_text(|n| format!("{path}: {}: {n} (empty in the export)", ds.name))),
             );
             notes.extend(
                 rustgis_data::source::rounded_dates_note(&ds.fields, &result.rounded_dates)
-                    .map(|n| format!("{path}: {}: {n} when read for the export", ds.name)),
+                    .map(|n| n.map_text(|n| format!("{path}: {}: {n} when read for the export", ds.name))),
             );
             notes.extend(
                 rustgis_data::source::null_text_note(&ds.fields, &result.null_text)
-                    .map(|n| format!("{path}: {}: {n} (empty in the export)", ds.name)),
+                    .map(|n| n.map_text(|n| format!("{path}: {}: {n} (empty in the export)", ds.name))),
             );
             notes.extend(
                 result.read_notes.iter().map(|n| n.clone().map_text(|t| format!("{path}: {}: {t} when read for the export", ds.name))),
             );
             notes.extend(
                 rustgis_data::source::not_utf8_note(&ds.fields, &result.not_utf8, result.not_utf8_in)
-                    .map(|n| format!("{path}: {}: {n}", ds.name)),
+                    .map(|n| n.prefixed(&format!("{path}: {}", ds.name))),
             );
             (notes, result.null_numbers, result.query)
         } else {

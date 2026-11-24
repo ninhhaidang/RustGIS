@@ -229,7 +229,7 @@ fn discard_edits(s: &mut Session, p: &Value) -> CmdResult {
         }
         s.notify(format!("{name}: edits discarded; {n} rows loaded again from {}", edit.origin.table), false);
         if let Some(note) = unread {
-            s.notify(format!("{name}: {note}"), false);
+            s.say(note.prefixed(&name));
         }
         Ok(json!({"features": n, "matched": editable.matched}))
     }
@@ -412,7 +412,7 @@ fn add_layer(s: &mut Session, p: &Value) -> CmdResult {
                 );
             }
             if let Some(note) = rustgis_data::source::unread_dates_note(&info.fields, &editable.unread_dates) {
-                s.notify(format!("{layer_name}: {note}"), false);
+                s.say(note.prefixed(&layer_name));
             }
             if !editable.writable {
                 s.notify(format!("{layer_name}: this user can't insert, update or delete its rows, so edits can't be saved to it"), false);
