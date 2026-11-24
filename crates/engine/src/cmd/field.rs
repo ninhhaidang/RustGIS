@@ -352,7 +352,9 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut rustgis_data::loss::Not
                 }
                 Ok(None) => losses.push(WHOLE_MAP.replace("{why}", "this device doesn't keep the rows the package was given")),
                 Err(e) if e == rustgis_data::DataError::Cancelled.to_string() => return Err(e),
-                Err(e) => losses.push(WHOLE_MAP.replace("{why}", &format!("the rows the package was given couldn't be read ({e})"))),
+                Err(e) => losses.push(
+                    WHOLE_MAP.replace("{why}", &format!("the rows the package was given couldn't be read or compared with the map ({e})")),
+                ),
             }
         }
     }

@@ -217,7 +217,12 @@ Where a change meets one made on the computer since the package was made:
   given in longitude/latitude (one far past where that system reaches) stays as stored when it
   lies outside the area when the area is synced (**Sync**, or a package that goes back as a whole
   map); one the area holds can't be compared with the phone's, and the sync is refused, naming it.
-  A return by the list of changes is refused for any such feature of the layer, naming it.
+  Send Field Package can't list the changes of a layer holding such a feature the package gave:
+  the package goes back as a whole map, and the phone says why, naming it. Bring Back of a list of changes refuses
+  only for such a feature that the list changes, naming it: one of the computer's features that
+  the list edits or deletes, or one of the package's features that it adds or edits. The others
+  stay as stored. A change that would keep among the conflicts a version with such a place
+  refuses it too, naming the feature, as conflicts are kept in longitude/latitude.
 
 Each of these keeps the version that lost on the offline area: the computer's values and shape
 the phone's replaced, the phone's edits to a feature deleted on the computer, the computer's feature

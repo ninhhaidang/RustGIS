@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use rustgis_data::raster::Crs;
 use rustgis_data::{Geometry, RowRef, Value};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -36,14 +37,41 @@ pub(crate) const ENTRY: &str = "changes.v1.json";
 /// given. A returned package keeps the identity but never has it, so a device opening a return
 /// never takes its edited rows for those home gave.
 pub(crate) const GIVEN: &str = "given.v1.json";
-/// The version of the list this RustGIS writes and reads.
-const VERSION: u32 = 1;
+/// The newest version of the list this RustGIS writes and reads. Version 2 gives each layer's
+/// shapes in its own system ([`LayerChanges::crs`]); a list in which every layer's are in
+/// longitude/latitude is written as version 1, which releases before it read too.
+const VERSION: u32 = 2;
 /// The bytes of one index record: id, place in the rows file, length, fingerprint.
 const RECORD: usize = 8 + 8 + 4 + 16;
 /// The longest row read back from a given copy, in bytes.
 const MAX_ROW: u32 = 256 << 20;
 /// The file listing a given copy's layers, written last: a folder without it is incomplete.
 const LAYERS: &str = "layers.json";
+/// [`LAYERS`] for a copy with a layer in its own system ([`BaseLayer::crs`]), which a release
+/// before #2032 C2f-4b-5 doesn't look for: it would read that layer's rows as longitude/latitude,
+/// so it finds no copy instead, and the package goes back as a whole map, which it says.
+const LAYERS_V2: &str = "layers.v2.json";
+
+/// Whether a copy keeps a layer held in its own system in that system ([`BaseLayer::crs`]), so its
+/// list of changes is of version 2. Off until a release that reads version 2 has shipped
+/// (`docs/maintaining.md`: a new version is read a release before anything writes it): copies are
+/// kept, and lists written, in longitude/latitude as before. A test turns it on for itself
+/// ([`test_bases::write_own_systems`]).
+fn writes_own_systems() -> bool {
+    #[cfg(test)]
+    {
+        test_bases::OWN_SYSTEMS.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+/// The file listing the copy in `dir`, when it is complete.
+fn layers_file(dir: &Path) -> Option<PathBuf> {
+    [LAYERS_V2, LAYERS].into_iter().map(|name| dir.join(name)).find(|p| p.is_file())
+}
 
 /// The changes of one returning package.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -80,6 +108,12 @@ pub(crate) struct LayerChanges {
     /// to the home layer, so a field removed at home meanwhile isn't added back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<rustgis_data::Field>,
+    /// The system the shapes given here are in: the layer's own when the package gave it held in
+    /// one ([`rustgis_data::Dataset::held_in`]), so a feature whose place can't be given in
+    /// longitude/latitude comes back exact (#2032 C2f-4b). `None` for longitude/latitude, as
+    /// every list of version 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crs: Option<Crs>,
 }
 
 /// A feature's values as the package gave them.
@@ -112,13 +146,16 @@ impl Changes {
         if header.version > VERSION {
             return Err("the field package's list of changes was made by a newer RustGIS: update RustGIS to bring it back".into());
         }
-        if header.version != VERSION {
+        if header.version == 0 {
             return Err(format!(
                 "the field package's list of changes is of version {}, which no RustGIS writes: it is damaged",
                 header.version
             ));
         }
         let changes: Changes = serde_json::from_slice(bytes).map_err(damaged)?;
+        if changes.version == 1 && changes.layers.iter().any(|l| l.crs.is_some()) {
+            return Err("the field package's list of changes gives a layer's system in a version that has none: it is damaged".into());
+        }
         if changes.package != package {
             return Err("the field package's list of changes is of another package: make a new field package".into());
         }
@@ -169,6 +206,10 @@ struct BaseLayer {
     /// Its fields' names, in the order the rows hold their values.
     fields: Vec<String>,
     rows: usize,
+    /// The system the rows' shapes are in: the layer's own, as it was given held in it. `None`
+    /// for longitude/latitude, as every copy written before #2032 C2f-4b.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    crs: Option<Crs>,
 }
 
 /// A row as the rows file holds it.
@@ -182,7 +223,8 @@ struct BaseRow {
 /// holds the copy's field `i` (`None`: Null).
 struct Print<'a> {
     row: RowRef<'a>,
-    /// The row's shape in longitude/latitude (converted one row at a time, never the layer).
+    /// The row's shape in the copy's system ([`BaseLayer::crs`]; converted one row at a time when
+    /// the layer is held in another, never the layer).
     geometry: Option<&'a Geometry>,
     fields: &'a [Option<usize>],
 }
@@ -223,7 +265,7 @@ impl Write for Fnv {
 /// FNV-1a's 128-bit offset basis.
 const FNV_BASIS: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
 
-/// The fingerprint of a row as [`Print`] writes it, in longitude/latitude. Rows are fingerprinted
+/// The fingerprint of a row as [`Print`] writes it, in the copy's system. Rows are fingerprinted
 /// as they are held once read, given and sent alike, so a value that reads back as it was saved
 /// (as every one does) can't make an unedited row look edited.
 fn fingerprint(print: &Print<'_>) -> Result<[u8; 16], String> {
@@ -275,7 +317,7 @@ impl GivenRows {
 
     /// Whether this device keeps them already.
     pub(crate) fn kept(&self) -> bool {
-        base_dir(&self.package).is_some_and(|d| d.join(LAYERS).is_file())
+        base_dir(&self.package).is_some_and(|d| layers_file(&d).is_some())
     }
 }
 
@@ -408,12 +450,12 @@ pub(crate) fn keep_rows(s: &mut Session, _p: &serde_json::Value) -> crate::CmdRe
 /// Keeps the rows `given` holds on this device under its package's identity, unless it keeps them
 /// already. The files are written beside the folder and moved into place once complete, so a copy
 /// cut short (cancelled, or failed) is never read and the next open of the package writes it anew.
-/// Reads each row once and writes it once, in longitude/latitude as a returning map is compared;
+/// Reads each row once and writes it once, in its layer's own system as a returning map is compared;
 /// Cancel is looked at between rows, and progress counts them.
 pub(crate) fn keep_base(given: &GivenRows) -> Kept {
     rustgis_data::progress::check().map_err(|e| e.to_string())?;
     let dir = base_dir(&given.package).ok_or("this device gives RustGIS no folder of its own to keep the field package's rows in")?;
-    if dir.join(LAYERS).is_file() {
+    if layers_file(&dir).is_some() {
         return Ok(Vec::new());
     }
     // Its return sent before it was opened again, maybe in an earlier run: nothing is kept.
@@ -423,7 +465,7 @@ pub(crate) fn keep_base(given: &GivenRows) -> Kept {
     let parent = dir.parent().ok_or("no folder for the field package's rows")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     let part = parent.join(format!("{}.{}.part", given.package, crate::project::field_id()?));
-    let written = write_base(given, &part).and_then(|()| publish(&part, &dir));
+    let written = write_base(given, &part, writes_own_systems()).and_then(|()| publish(&part, &dir));
     let mut notes = Vec::new();
     if part.exists() {
         notes.extend(let_go(&part, "a copy of the field package's rows cut short"));
@@ -467,21 +509,23 @@ fn publish(part: &Path, dir: &Path) -> Result<(), String> {
     }
     match std::fs::rename(part, dir) {
         Ok(()) => Ok(()),
-        Err(_) if dir.join(LAYERS).is_file() => Ok(()),
+        Err(_) if layers_file(dir).is_some() => Ok(()),
         Err(e) => Err(format!("{}: {e}", dir.display())),
     }
 }
 
 /// Writes the rows `given` holds into `dir`: see [`keep_base`].
-fn write_base(given: &GivenRows, dir: &Path) -> Result<(), String> {
+fn write_base(given: &GivenRows, dir: &Path, own_systems: bool) -> Result<(), String> {
     use rustgis_data::progress;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     progress::begin(given.layers.iter().map(|(_, _, d)| d.features.len()).sum());
     let mut layers = Vec::new();
     for (id, name, dataset) in &given.layers {
-        // Each row's shape is put in longitude/latitude as it is written: a layer held in another
-        // system isn't copied whole.
-        let to = dataset.lonlat_conversion().map_err(|e| format!("{name}: {e}"))?;
+        // Each row's shape is kept in the layer's own system, as it is held, so a feature whose
+        // place can't be given in longitude/latitude comes back exact too ([`writes_own_systems`]);
+        // else in longitude/latitude, as before.
+        let crs = if own_systems { dataset.coord_crs() } else { Crs::LonLat };
+        let to = dataset.coord_crs().to(crs).map_err(|e| format!("{name}: {e}"))?;
         let ds = dataset;
         let fields: Vec<Option<usize>> = (0..ds.fields.len()).map(Some).collect();
         let rows_path = dir.join(format!("{id}.rows"));
@@ -491,7 +535,7 @@ fn write_base(given: &GivenRows, dir: &Path) -> Result<(), String> {
         for row in ds.features.rows() {
             progress::step(1).map_err(|e| e.to_string())?;
             line.clear();
-            let geometry = in_lonlat(&to, row, name)?;
+            let geometry = in_system(&to, row, name)?;
             serde_json::to_writer(&mut line, &Print { row, geometry: geometry.as_deref(), fields: &fields }).map_err(|e| e.to_string())?;
             let len = u32::try_from(line.len())
                 .ok()
@@ -523,16 +567,18 @@ fn write_base(given: &GivenRows, dir: &Path) -> Result<(), String> {
             name: name.clone(),
             fields: ds.fields.iter().map(|f| f.name.clone()).collect(),
             rows: index.len(),
+            crs: (crs != Crs::LonLat).then_some(crs),
         });
     }
     progress::check().map_err(|e| e.to_string())?;
-    let list = dir.join(LAYERS);
+    let list = dir.join(if layers.iter().any(|l| l.crs.is_some()) { LAYERS_V2 } else { LAYERS });
     std::fs::write(&list, serde_json::to_vec(&layers).map_err(|e| e.to_string())?).map_err(io(&list))
 }
 
-/// `row`'s shape in longitude/latitude by `to` (the layer's conversion, made once): borrowed when it
-/// is held there already; refused, naming the feature, when one of its places can't be.
-fn in_lonlat<'a>(
+/// `row`'s shape by `to` (the layer's conversion to the copy's system, made once): borrowed when it
+/// is held there already; refused, naming the feature, when one of its places can't be given there.
+/// (`Dataset::converted_to_lonlat` converts into `to`'s target, whatever system that is.)
+fn in_system<'a>(
     to: &rustgis_data::raster::Reprojection,
     row: RowRef<'a>,
     layer: &str,
@@ -540,9 +586,14 @@ fn in_lonlat<'a>(
     row.geometry()
         .map(|g| {
             rustgis_data::Dataset::converted_to_lonlat(to, g)
-                .ok_or_else(|| format!("{layer}: feature {} has a place that can't be given in longitude/latitude", row.id()))
+                .ok_or_else(|| format!("{layer}: feature {} has a place that can't be given in {}", row.id(), system_name(to.target())))
         })
         .transpose()
+}
+
+/// A system as a notice names it: longitude/latitude by that name.
+fn system_name(crs: Crs) -> String {
+    if crs == Crs::LonLat { "longitude/latitude".into() } else { crs.label() }
 }
 
 /// A file error, named by the file.
@@ -592,8 +643,8 @@ fn read_row(file: &mut std::fs::File, e: &Entry, fields: usize) -> Result<BaseRo
 /// left out, as a sync leaves it, and named in [`Changes::gone`]. Cancel is looked at between rows.
 pub(crate) fn list(map: &rustgis_map::Map, package: &str) -> Result<Option<Changes>, String> {
     use rustgis_data::progress;
-    let Some(dir) = base_dir(package).filter(|d| d.join(LAYERS).is_file()) else { return Ok(None) };
-    let list_path = dir.join(LAYERS);
+    let Some(dir) = base_dir(package) else { return Ok(None) };
+    let Some(list_path) = layers_file(&dir) else { return Ok(None) };
     let text = std::fs::read(&list_path).map_err(|e| format!("{}: {e}", list_path.display()))?;
     let given: Vec<BaseLayer> = serde_json::from_slice(&text).map_err(|e| format!("{}: {e}", list_path.display()))?;
     let mut changes = Changes { version: VERSION, package: package.to_string(), layers: Vec::new(), gone: Vec::new() };
@@ -603,8 +654,9 @@ pub(crate) fn list(map: &rustgis_map::Map, package: &str) -> Result<Option<Chang
             changes.gone.push(if g.name.is_empty() { format!("#{}", g.layer) } else { g.name.clone() });
             continue;
         };
-        // Each row's shape is compared in longitude/latitude, converted one row at a time.
-        let to = layer.dataset.lonlat_conversion()?;
+        // Each row's shape is compared in the copy's system: as it is held, when the layer still is
+        // in it; else converted one row at a time.
+        let to = layer.dataset.coord_crs().to(g.crs.unwrap_or(Crs::LonLat))?;
         let ds = &layer.dataset;
         // Where the map holds each of the copy's fields, by name, and the fields added since.
         let fields: Vec<Option<usize>> = g.fields.iter().map(|n| ds.field_index(n)).collect();
@@ -619,7 +671,7 @@ pub(crate) fn list(map: &rustgis_map::Map, package: &str) -> Result<Option<Chang
                     if let Some(s) = seen.get_mut(k) {
                         *s = true;
                     }
-                    let geometry = in_lonlat(&to, row, &layer.name)?;
+                    let geometry = in_system(&to, row, &layer.name)?;
                     let print = fingerprint(&Print { row, geometry: geometry.as_deref(), fields: &fields })?;
                     if index.get(k).is_none_or(|e| e.print != print) || added_fields.iter().any(|j| !row.value(*j).is_null()) {
                         changed.push((k, row));
@@ -647,7 +699,7 @@ pub(crate) fn list(map: &rustgis_map::Map, package: &str) -> Result<Option<Chang
                     values.push((f.name.clone(), Value::Null));
                 }
             }
-            let now = in_lonlat(&to, row, &layer.name)?;
+            let now = in_system(&to, row, &layer.name)?;
             let geometry = (now.as_deref() != base.geometry.as_ref()).then_some(base.geometry);
             if !values.is_empty() || geometry.is_some() {
                 edited.push(Given { id: e.id, values, geometry });
@@ -663,9 +715,12 @@ pub(crate) fn list(map: &rustgis_map::Map, package: &str) -> Result<Option<Chang
         let removed: Vec<String> = g.fields.iter().zip(&fields).filter(|(_, j)| j.is_none()).map(|(n, _)| n.clone()).collect();
         if !(added.is_empty() && deleted.is_empty() && edited.is_empty() && removed.is_empty() && added_fields.is_empty()) {
             let fields = added_fields.iter().filter_map(|j| ds.fields.get(*j)).cloned().collect();
-            changes.layers.push(LayerChanges { layer: g.layer, added, deleted, edited, removed, fields });
+            changes.layers.push(LayerChanges { layer: g.layer, added, deleted, edited, removed, fields, crs: g.crs });
         }
     }
+    // Version 1 while every layer's shapes are in longitude/latitude, so a release before 2 reads
+    // the list; one with a layer's own system refuses version 2, saying a newer RustGIS made it.
+    changes.version = if changes.layers.iter().any(|l| l.crs.is_some()) { VERSION } else { 1 };
     Ok(Some(changes))
 }
 
@@ -760,13 +815,60 @@ pub(crate) fn apply(s: &mut Session, ai: usize, edited: &rustgis_map::Map, chang
         };
         let name = sl.name.clone();
         let error = |e: String| super::workspace::sync_error(&ol.name, e);
-        let theirs = ol.dataset.in_lonlat().map_err(error)?;
-        // The source is changed in longitude/latitude, as the package holds its features, and its
-        // own coordinates put back after, those it left as they were as stored.
-        let held = (sl.dataset.coord_crs() != rustgis_data::raster::Crs::LonLat).then(|| sl.dataset.clone());
-        if held.is_some() {
-            sl.dataset = sl.dataset.in_lonlat().map_err(error)?.into_owned();
+        // The list's shapes are in its layer's system ([`LayerChanges::crs`]). While the home layer
+        // and the package's are held in it too, the changes go in as they are held, converting
+        // nothing, so a feature whose place can't be given in longitude/latitude comes back exact
+        // (#2032 C2f-4b). Otherwise the list's shapes are put in longitude/latitude, and the source
+        // is changed there, its own coordinates put back after: those it left as they were.
+        let listed = lc.crs.unwrap_or(Crs::LonLat);
+        let native = listed != Crs::LonLat && sl.dataset.coord_crs() == listed && ol.dataset.coord_crs() == listed;
+        let converted;
+        let lc = if native || listed == Crs::LonLat {
+            lc
+        } else {
+            converted = given_in_lonlat(lc, listed).map_err(error)?;
+            &converted
+        };
+        // Converted, a feature with a place that can't be given in longitude/latitude loses its
+        // shape there: one the list doesn't touch stays as it is (at home as stored, by
+        // `merged_from_lonlat`); one it touches refuses the return, naming it.
+        // Home's features the list replaces or removes; a field addition whose id home uses takes
+        // a new one, leaving home's feature as it is, so it counts only in the package's map.
+        let changed: HashSet<u64> = lc.deleted.iter().map(|g| g.id).chain(lc.edited.iter().map(|g| g.id)).collect();
+        let touched: HashSet<u64> = changed.iter().copied().chain(lc.added.iter().copied()).collect();
+        let theirs = if native {
+            std::borrow::Cow::Borrowed(&ol.dataset)
+        } else {
+            let (lonlat, _) = ol.dataset.in_lonlat_leaving_out().map_err(error)?;
+            unplaced_touched(&ol.dataset, &lonlat, &touched).map_err(error)?;
+            lonlat
+        };
+        let held = (!native && sl.dataset.coord_crs() != Crs::LonLat).then(|| sl.dataset.clone());
+        if let Some(own) = &held {
+            let (lonlat, _) = own.in_lonlat_leaving_out().map_err(error)?;
+            unplaced_touched(own, &lonlat, &changed).map_err(error)?;
+            sl.dataset = lonlat.into_owned();
         }
+        // A shape that lost is kept in longitude/latitude ([`AreaConflict::geometry`], which a
+        // saved project holds finite): from the layer's own system when it is changed there. One
+        // with a place that can't be given there can't be kept, so it refuses the return, naming
+        // the feature, and nothing changes (the command puts the project back).
+        let to_lonlat = if native { Some(listed.to(Crs::LonLat).map_err(error)?) } else { None };
+        let kept_shape = |id: u64, g: Option<Option<Geometry>>| -> Result<Option<Option<Geometry>>, String> {
+            let Some(to) = &to_lonlat else { return Ok(g) };
+            g.map(|g| {
+                g.map(|g| {
+                    rustgis_data::Dataset::converted_to_lonlat(to, &g).map(std::borrow::Cow::into_owned).ok_or_else(|| {
+                        error(format!(
+                            "feature {id}: the version a conflict would keep has a place in {} that can't be given in longitude/latitude, where conflicts are kept, so nothing was changed",
+                            listed.label()
+                        ))
+                    })
+                })
+                .transpose()
+            })
+            .transpose()
+        };
         // Every id the layer had, or kept new ones above, before this return.
         let home_top = sl.dataset.features.highest_id();
         let wanted: HashSet<u64> =
@@ -786,7 +888,9 @@ pub(crate) fn apply(s: &mut Session, ai: usize, edited: &rustgis_map::Map, chang
         let field_value =
             |row: usize, field: &str| theirs.field_index(field).map_or(&Value::Null, |i| theirs.features.value(row, i)).clone();
         let mut written = HashSet::new();
-        let lost = |kind, id, values, shape| super::workspace::conflict(&changes.package, lc.layer, &name, id, kind, values, shape);
+        let lost = |kind, id, values, shape| -> Result<_, String> {
+            Ok(super::workspace::conflict(&changes.package, lc.layer, &name, id, kind, values, kept_shape(id, shape)?))
+        };
         for g in &lc.edited {
             // An edit naming a feature the package's map hasn't has no values to bring back or keep.
             let Some(&p) = at_field.get(&g.id) else {
@@ -799,7 +903,7 @@ pub(crate) fn apply(s: &mut Session, ai: usize, edited: &rustgis_map::Map, chang
                 // The field's edits lost: the values and shape it changed.
                 let values = g.values.iter().map(|(field, _)| (field.clone(), field_value(p, field))).collect();
                 let shape = g.geometry.as_ref().map(|_| theirs.features.geometry(p).cloned());
-                done.lost.push(lost(ConflictKind::Dropped, g.id, values, shape));
+                done.lost.push(lost(ConflictKind::Dropped, g.id, values, shape)?);
                 continue;
             };
             let (mut changed, mut values, mut shape) = (false, Vec::new(), None);
@@ -833,7 +937,7 @@ pub(crate) fn apply(s: &mut Session, ai: usize, edited: &rustgis_map::Map, chang
             }
             if !values.is_empty() || shape.is_some() {
                 done.conflicts.push(tag(&name, g.id));
-                done.lost.push(lost(ConflictKind::Replaced, g.id, values, shape));
+                done.lost.push(lost(ConflictKind::Replaced, g.id, values, shape)?);
             }
         }
         // A deletion goes in while the feature is as it was given; one changed at home stays.
@@ -857,7 +961,7 @@ pub(crate) fn apply(s: &mut Session, ai: usize, edited: &rustgis_map::Map, chang
                 gone.insert(g.id);
             } else {
                 done.kept.push(tag(&name, g.id));
-                done.lost.push(lost(ConflictKind::Kept, g.id, Vec::new(), None));
+                done.lost.push(lost(ConflictKind::Kept, g.id, Vec::new(), None)?);
             }
         }
         if !gone.is_empty() {
@@ -903,6 +1007,55 @@ pub(crate) fn apply(s: &mut Session, ai: usize, edited: &rustgis_map::Map, chang
         "conflicts": done.conflicts.len() + done.kept.len(),
         "renumbered": done.renumbered,
     }))
+}
+
+/// Refuses, naming it, a feature `touched` names whose shape `own` holds but its conversion to
+/// longitude/latitude, `lonlat` (row for row), left out: one of its places can't be given there.
+fn unplaced_touched(own: &rustgis_data::Dataset, lonlat: &rustgis_data::Dataset, touched: &HashSet<u64>) -> Result<(), String> {
+    match own
+        .features
+        .rows()
+        .zip(lonlat.features.rows())
+        .find(|(o, l)| touched.contains(&o.id()) && o.geometry().is_some() && l.geometry().is_none())
+    {
+        Some((o, _)) => {
+            Err(format!("feature {} has a place in {} that can't be given in longitude/latitude", o.id(), own.coord_crs().label()))
+        }
+        None => Ok(()),
+    }
+}
+
+/// `lc` with the shapes it gives put in longitude/latitude from `crs`, the system it gives them in,
+/// for a layer changed there; refused, naming the feature, when one of its places can't be.
+fn given_in_lonlat(lc: &LayerChanges, crs: Crs) -> Result<LayerChanges, String> {
+    let to = crs.to(Crs::LonLat)?;
+    let convert = |given: &[Given]| -> Result<Vec<Given>, String> {
+        given
+            .iter()
+            .map(|g| {
+                let geometry = match &g.geometry {
+                    Some(Some(shape)) => Some(Some(
+                        rustgis_data::Dataset::converted_to_lonlat(&to, shape)
+                            .ok_or_else(|| {
+                                format!("feature {} has a place in {} that can't be given in longitude/latitude", g.id, crs.label())
+                            })?
+                            .into_owned(),
+                    )),
+                    other => other.clone(),
+                };
+                Ok(Given { id: g.id, values: g.values.clone(), geometry })
+            })
+            .collect()
+    };
+    Ok(LayerChanges {
+        layer: lc.layer,
+        added: lc.added.clone(),
+        deleted: convert(&lc.deleted)?,
+        edited: convert(&lc.edited)?,
+        removed: lc.removed.clone(),
+        fields: lc.fields.clone(),
+        crs: None,
+    })
 }
 
 /// Adds to offline area `ai`'s source layers, and to the area's own copy of them, the fields
@@ -1147,6 +1300,46 @@ mod tests {
         assert!(refused.contains("damaged") && refused.contains("feature 7"), "{refused}");
     }
 
+    /// A copy with a layer held in its own system lists its layers in [`LAYERS_V2`], which a release
+    /// before it doesn't look for, so that release sends the package back as a whole map rather
+    /// than read the layer's rows as longitude/latitude; one in longitude/latitude only, in
+    /// [`LAYERS`], as before. This release reads either.
+    #[test]
+    fn a_copy_with_a_layer_in_its_own_system_is_listed_where_older_releases_dont_look() {
+        let _own = test_bases::write_own_systems();
+        let held = crate::sample::world_project();
+        let mut native = held.clone();
+        native.maps[0].layers[0].dataset.hold_in(Crs::from_epsg(8857).unwrap()).unwrap();
+        for (project, file, other) in [(&held, LAYERS, LAYERS_V2), (&native, LAYERS_V2, LAYERS)] {
+            let id = crate::project::field_id().unwrap();
+            assert!(keep_base(&GivenRows::of(project, &id)).unwrap().is_empty());
+            let dir = base_dir(&id).unwrap();
+            assert!(dir.join(file).is_file() && !dir.join(other).exists(), "{file}");
+            assert!(GivenRows::of(project, &id).kept());
+            let map = project.maps.first().unwrap();
+            assert!(list(map, &id).unwrap().unwrap().layers.is_empty(), "{file}: nothing changed");
+        }
+    }
+
+    /// As a release keeps them ([`writes_own_systems`] off, as on any test's thread that doesn't
+    /// turn it on): a layer held in its own system is kept in longitude/latitude, listed in
+    /// [`LAYERS`], and an unchanged return's list is of version 1, which every release reads.
+    #[test]
+    fn a_release_keeps_the_copy_in_longitude_latitude_until_version_2_is_written() {
+        assert!(!writes_own_systems());
+        let mut project = crate::sample::world_project();
+        project.maps[0].layers[0].dataset.hold_in(Crs::from_epsg(8857).unwrap()).unwrap();
+        let id = crate::project::field_id().unwrap();
+        assert!(keep_base(&GivenRows::of(&project, &id)).unwrap().is_empty());
+        let dir = base_dir(&id).unwrap();
+        assert!(dir.join(LAYERS).is_file() && !dir.join(LAYERS_V2).exists());
+        let text = std::fs::read(dir.join(LAYERS)).unwrap();
+        let layers: Vec<BaseLayer> = serde_json::from_slice(&text).unwrap();
+        assert!(layers.iter().all(|l| l.crs.is_none()));
+        let changes = list(project.maps.first().unwrap(), &id).unwrap().unwrap();
+        assert_eq!((changes.version, changes.layers.len()), (1, 0));
+    }
+
     /// A folder a racing send removed first is gone, not a failure to remove it.
     #[test]
     fn letting_go_of_a_folder_already_gone_says_nothing() {
@@ -1263,13 +1456,15 @@ mod tests {
         assert!(let_go(&dir, "the rows").is_none());
     }
 
-    /// A list of any version but this one is refused: a newer one asks for a newer RustGIS.
+    /// A list of a version RustGIS writes (1 and 2) is read; any other is refused: a newer one asks
+    /// for a newer RustGIS.
     #[test]
-    fn a_list_of_another_version_is_refused() {
+    fn a_list_of_a_version_rustgis_writes_is_read_and_another_refused() {
         let id = "0123456789abcdef0123456789abcdef";
         let list = |v: u32| format!(r#"{{"version":{v},"package":"{id}","layers":[]}}"#);
         assert!(Changes::read(list(1).as_bytes(), id).is_ok());
-        assert!(Changes::read(list(2).as_bytes(), id).unwrap_err().contains("newer RustGIS"));
+        assert!(Changes::read(list(2).as_bytes(), id).is_ok());
+        assert!(Changes::read(list(3).as_bytes(), id).unwrap_err().contains("newer RustGIS"));
         assert!(Changes::read(list(0).as_bytes(), id).unwrap_err().contains("damaged"));
     }
 }
@@ -1277,6 +1472,29 @@ mod tests {
 /// In tests, given copies go in a folder of each test's own thread, removed when it ends.
 #[cfg(test)]
 pub(crate) mod test_bases {
+    std::thread_local! {
+        /// Whether copies are kept, and lists written, in each layer's own system
+        /// ([`super::writes_own_systems`]) on this test's thread: off, as in a release, unless
+        /// the test turns it on. A copy is kept on the thread that runs `offline.keepRows` in
+        /// tests, the test's own.
+        pub(crate) static OWN_SYSTEMS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// [`OWN_SYSTEMS`] on for this test, until what it returns is dropped.
+    #[must_use = "the switch is off again once this is dropped"]
+    pub(crate) fn write_own_systems() -> OwnSystems {
+        OwnSystems(OWN_SYSTEMS.with(|on| on.replace(true)))
+    }
+
+    /// Puts [`OWN_SYSTEMS`] back as it was when dropped.
+    pub(crate) struct OwnSystems(bool);
+
+    impl Drop for OwnSystems {
+        fn drop(&mut self) {
+            OWN_SYSTEMS.with(|on| on.set(self.0));
+        }
+    }
+
     use std::path::PathBuf;
 
     struct Root(PathBuf);
