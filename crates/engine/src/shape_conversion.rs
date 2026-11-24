@@ -232,8 +232,9 @@ fn gather(dataset: &Dataset, mut t: Proposal, raster: Option<&rustgis_map::raste
     let f = frame(raster, p)?;
     // Fitted in longitude/latitude, from the layer's own coordinates, as its shape's geometry is
     // given (`replace_geometry` writes it back in them).
-    let polygon = dataset.features.get(t.row).and_then(|f| f.geometry.as_ref()).ok_or("missing polygon")?;
-    let polygon = dataset.geometry_to_lonlat(polygon)?;
+    let feature = dataset.features.row(t.row).ok_or("missing polygon")?;
+    let polygon = feature.geometry().ok_or("missing polygon")?;
+    let polygon = dataset.feature_to_lonlat(feature.id(), polygon)?;
     t.shape = fit(&polygon, f, p.get("kind").and_then(Value::as_str).ok_or("kind is required")?)?;
     Ok(t)
 }

@@ -141,13 +141,53 @@ fn coerce(v: &Attr, ty: FieldType) -> (Attr, Cut) {
 }
 
 fn paste(s: &mut Session, p: &Value) -> CmdResult {
-    let (src, said) = clip(s, p)?;
+    let (mut src, said) = clip(s, p)?;
     let id = s.layer_id(p)?;
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
     if l.is_raster() {
         return Err("features can't be pasted into a raster layer".into());
     }
     let want = l.geometry_type();
+    // The shapes the layer takes, written in its own coordinates from the system the clipboard
+    // holds them in: as they are in a layer of that system (pasted where they were copied from,
+    // nothing moves), else converted by the operation between the two, which doesn't depend on
+    // the map. All converted before anything changes; one with a place the layer's system can't
+    // hold is left out, counted and said, rather than the paste refused.
+    let (from, own) = (src.coord_crs(), l.dataset.coord_crs());
+    // Into Web Mercator by way of longitude/latitude, where the latitudes it can't hold are found.
+    let steps = if from == own {
+        vec![]
+    } else if own == Crs::WebMercator && from != Crs::LonLat {
+        vec![from.to(Crs::LonLat)?, Crs::LonLat.to(own)?]
+    } else {
+        vec![from.to(own)?]
+    };
+    let mut placed = Vec::with_capacity(src.features.len());
+    if !steps.is_empty() {
+        let none = rustgis_data::HeldPlaces::default();
+        for r in 0..src.features.len() {
+            let fits = src.features.row(r).and_then(|x| x.geometry()).is_some_and(|g| want == GeometryType::None || g.kind() == want);
+            let Some(Some(g)) = fits.then(|| src.features.set_geometry(r, None)).flatten() else {
+                placed.push(true);
+                continue;
+            };
+            match steps.iter().try_fold(g, |g, to| Dataset::edit_from_lonlat_by(to, g, &none)) {
+                Ok(g) => {
+                    src.features.set_geometry(r, Some(g));
+                    placed.push(true);
+                }
+                Err(_) => placed.push(false),
+            }
+        }
+    }
+    let unplaced = placed.iter().filter(|p| !**p).count();
+    if unplaced > 0 {
+        let mut keep = placed.into_iter();
+        src.features.retain_rows(|_| keep.next().unwrap_or(true));
+        if src.features.is_empty() {
+            return Err(format!("Paste: the copied feature(s) have a place {} ({}) can't hold", l.name, own.label()));
+        }
+    }
     // Ids for every feature the layer takes (one of another shape is left out below), above every id
     // it has or keeps new rows above, refused before anything changes when they would run past the
     // largest id.
@@ -184,30 +224,11 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
     // Per field, what converting the pasted values cut, and the values that aren't null but that
     // the field can't hold.
     let mut unfit = vec![(Cuts::default(), 0usize); l.dataset.fields.len()];
-    // The features the layer takes, their shapes written in its own coordinates from the system
-    // the clipboard holds them in: as they are in a layer of that system (pasted where they were
-    // copied from, nothing moves), else converted by the operation between the two, which
-    // doesn't depend on the map. All converted before any is added.
-    let (from, own) = (src.coord_crs(), l.dataset.coord_crs());
-    let mut taken: Vec<Feature> = src
+    let taken: Vec<Feature> = src
         .features
         .into_iter()
         .filter(|ft| !ft.geometry.as_ref().is_some_and(|g| want != GeometryType::None && g.kind() != want))
         .collect();
-    // Into Web Mercator by way of longitude/latitude, where the latitudes it can't hold are found.
-    let steps = if from == own {
-        vec![]
-    } else if own == Crs::WebMercator && from != Crs::LonLat {
-        vec![from.to(Crs::LonLat)?, Crs::LonLat.to(own)?]
-    } else {
-        vec![from.to(own)?]
-    };
-    let none = rustgis_data::HeldPlaces::default();
-    for ft in &mut taken {
-        for to in &steps {
-            ft.geometry = ft.geometry.take().map(|g| Dataset::edit_from_lonlat_by(to, g, &none)).transpose()?;
-        }
-    }
     for ft in taken {
         next = next.saturating_add(1);
         let attrs = l
@@ -234,6 +255,14 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
     let name = l.name.clone();
     let features = |n: usize| if n == 1 { "1 feature".to_string() } else { format!("{n} features") };
     let mut notices = Vec::new();
+    if unplaced > 0 {
+        let (have, they) = if unplaced == 1 { ("has", "it wasn't") } else { ("have", "they weren't") };
+        notices.push(format!(
+            "Paste: {} {have} a place that layer {name} ({}) can't hold, so {they} pasted",
+            features(unplaced),
+            own.label()
+        ));
+    }
     for (f, (cuts, n)) in l.dataset.fields.iter().zip(unfit) {
         notices.extend(cuts.notices("Paste", &f.name));
         if n > 0 {

@@ -376,7 +376,11 @@ pub fn editing(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                     if rows.is_empty() { String::new() } else { format!("#{}", rows.join(", #")) }
                 );
                 if ui.link(text).on_hover_text(tl!("Zoom to the error")).clicked() {
-                    let _ = app.run("map.goToXY", json!({"lon": e.lon, "lat": e.lat}));
+                    // An issue at a place that can't be given in longitude/latitude has none
+                    // (NaN): its features are selected, with no zoom.
+                    if e.lon.is_finite() && e.lat.is_finite() {
+                        let _ = app.run("map.goToXY", json!({"lon": e.lon, "lat": e.lat}));
+                    }
                     if let Some(l) = app.session.map().layer_by_name(&e.layer).map(|l| l.id)
                         && !e.rows.is_empty()
                     {

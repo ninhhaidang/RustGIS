@@ -548,6 +548,20 @@ impl Dataset {
         Self::geometry_to_lonlat_by(&self.shown_conversion()?, g)
     }
 
+    /// [`Dataset::geometry_to_lonlat`] of `g`, feature `id`'s geometry, for an edit of that one
+    /// feature: refused naming the layer and the feature when one of its places can't be given in
+    /// longitude/latitude, so it can't be edited there.
+    pub fn feature_to_lonlat<'a>(&self, id: u64, g: &'a Geometry) -> std::result::Result<Cow<'a, Geometry>, String> {
+        let to = self.shown_conversion()?;
+        Self::converted_to_lonlat(&to, g).ok_or_else(|| {
+            format!(
+                "{}: feature {id} has a place in {} that can't be given in longitude/latitude, so it can't be edited there",
+                self.name,
+                to.source().label()
+            )
+        })
+    }
+
     /// [`Dataset::geometry_to_lonlat`] by `to`, its [`Dataset::lonlat_conversion`] made once for
     /// many geometries: refused, naming its system, when one of the geometry's places can't be
     /// converted.

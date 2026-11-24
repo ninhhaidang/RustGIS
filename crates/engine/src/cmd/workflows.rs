@@ -1866,7 +1866,6 @@ fn route(s: &mut Session, p: &Value) -> CmdResult {
     let system = (l.dataset.coord_crs(), l.dataset.crs);
     let r = network::shortest_route_held(
         &l.dataset,
-        || Ok(std::borrow::Cow::Borrowed(&l.dataset)),
         &rows,
         point(p, "from")?,
         point(p, "to")?,

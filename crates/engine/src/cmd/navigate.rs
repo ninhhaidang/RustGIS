@@ -680,8 +680,6 @@ pub(crate) fn read_system_position(map: &Map, text: &str) -> Option<Result<Coord
         return Some(Err(format!("{system} counts in {theirs}, not {unit}")));
     }
     let at = Coord::new(numbers[0], numbers[1]);
-    // Two numbers that read as a latitude and a longitude before `map` are degrees typed with the
-    // map's name, not metres a few steps from the map's origin: said, not taken for metres.
     // Two numbers that read as a latitude and a longitude before a projected system (`map`, or
     // a code) are degrees typed with its name, not a place a few steps from its origin: said, not
     // taken for its units. Only numbers without a unit: `50 mE 30 mN map` says it is metres.

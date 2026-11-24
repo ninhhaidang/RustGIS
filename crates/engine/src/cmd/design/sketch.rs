@@ -50,11 +50,22 @@ pub(super) fn cut_polygon(s: &mut Session, p: &Value) -> CmdResult {
     let id = selection_layer(s)?;
     let l = s.map().layer(id).ok_or("no such layer")?;
     let mut cut_up = Vec::new();
-    let (mut missed, mut work) = (0, 0);
+    let (mut missed, mut work, mut unplaced) = (0, 0, 0);
+    let to = l.dataset.shown_conversion()?;
     for &r in &l.selection {
         let Some(f) = l.dataset.features.get(r) else { continue };
         // Cut in longitude/latitude, from the layer's own coordinates; the pieces go back in them.
-        let lonlat = f.geometry.as_ref().map(|g| l.dataset.geometry_to_lonlat(g)).transpose()?;
+        // A polygon with a place that can't be given there isn't cut; it is counted and said.
+        let lonlat = match f.geometry.as_ref() {
+            Some(g) => match rustgis_data::Dataset::converted_to_lonlat(&to, g) {
+                Some(g) => Some(g),
+                None => {
+                    unplaced += 1;
+                    continue;
+                }
+            },
+            None => None,
+        };
         match lonlat.map(|g| sketch_edit::cut_polygon(&g, &line, &mut work)).transpose()?.flatten() {
             Some(pieces) => {
                 for g in &pieces {
@@ -74,7 +85,11 @@ pub(super) fn cut_polygon(s: &mut Session, p: &Value) -> CmdResult {
         let pieces = pieces.into_iter().map(|g| l.dataset.edit_from_lonlat(g, &held)).collect::<Result<Vec<_>, _>>()?;
         cuts.push((r, f.clone(), pieces));
     }
+    let unplaced_said = (unplaced > 0).then(|| super::unplaced_said(&[(l.name.clone(), unplaced)]));
     if cuts.is_empty() {
+        if let Some(said) = unplaced_said {
+            return Err(format!("{said}, so they can't be cut; the line doesn't cut another selected polygon"));
+        }
         return Err("the line doesn't cut a selected polygon: draw it across the polygon, from outside to outside".into());
     }
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
@@ -102,6 +117,9 @@ pub(super) fn cut_polygon(s: &mut Session, p: &Value) -> CmdResult {
     if missed > 0 {
         s.notify(format!("Cut Polygon left {missed} selected feature(s) the line didn't cut"), false);
     }
+    if let Some(said) = unplaced_said {
+        s.warn(format!("Cut Polygon: {said}, so they weren't cut"));
+    }
     Ok(json!({"cut": cut, "pieces": pieces, "missed": missed}))
 }
 
@@ -116,7 +134,7 @@ pub(super) fn reshape(s: &mut Session, p: &Value) -> CmdResult {
     // Reshaped in longitude/latitude, from the layer's own coordinates, and written back in them,
     // what the line left (or snapped to) as stored.
     let own = f.geometry.as_ref().ok_or("the feature has no shape")?;
-    let lonlat = l.dataset.geometry_to_lonlat(own)?;
+    let lonlat = l.dataset.feature_to_lonlat(f.id, own)?;
     let done = sketch_edit::reshape(&lonlat, &line)?;
     super::super::edit::validate(&done.geometry)?;
     let held = super::held_places(s, id, &[own], &[&done.geometry]);
@@ -167,8 +185,9 @@ pub(super) fn trace(s: &mut Session, p: &Value) -> CmdResult {
     };
     // Traced in longitude/latitude, from the layer's own coordinates.
     let l = s.map().layer(id).ok_or("no such row")?;
-    let own = l.dataset.features.get(row).ok_or("no such row")?.geometry.as_ref().ok_or("the feature has no shape")?;
-    let g = l.dataset.geometry_to_lonlat(own)?;
+    let feature = l.dataset.features.row(row).ok_or("no such row")?;
+    let own = feature.geometry().ok_or("the feature has no shape")?;
+    let g = l.dataset.feature_to_lonlat(feature.id(), own)?;
     let t = sketch_edit::trace(&g, from, to, part)?;
     let path: Vec<[f64; 2]> = t.path.iter().map(|c| [c.x, c.y]).collect();
     // How far each point was moved onto the edge, so a far-off point isn't taken silently.

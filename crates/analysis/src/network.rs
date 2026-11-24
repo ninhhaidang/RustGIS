@@ -260,13 +260,12 @@ pub fn shortest_route(
     shortest_route_with(&NETWORK, ds, rows, from, to, cost_field, snap_m)
 }
 
-/// [`shortest_route`] over `held`, a layer held in another system than longitude/latitude: the
-/// graph is built from `lonlat`, the layer in longitude/latitude, only when the one kept isn't
-/// for `held`'s rows as they are, and is kept under them. Later routes over the same layer then
-/// reuse it without converting the layer again; the converted copy isn't kept.
-pub fn shortest_route_held<'a>(
+/// [`shortest_route`] over `held`, a layer held in another system than longitude/latitude. The
+/// graph is built from `held`'s lines, each converted to longitude/latitude as it is read (no
+/// converted copy of the layer is made), only when the one kept isn't for `held`'s rows as they
+/// are, and is kept under them. Later routes over the same layer then reuse it.
+pub fn shortest_route_held(
     held: &Dataset,
-    lonlat: impl FnOnce() -> Result<std::borrow::Cow<'a, Dataset>, String>,
     rows: &[usize],
     from: Coord,
     to: Coord,
@@ -274,7 +273,7 @@ pub fn shortest_route_held<'a>(
     snap_m: f64,
 ) -> Result<Route, String> {
     check_route_ends(from, to, snap_m)?;
-    let graph = network_keyed(&NETWORK, held, rows, cost_field, || Network::build(&*lonlat()?, rows, cost_field))?;
+    let graph = network_keyed(&NETWORK, held, rows, cost_field, || Network::build(held, rows, cost_field))?;
     route_on(&graph, held, from, to, snap_m)
 }
 

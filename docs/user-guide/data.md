@@ -200,8 +200,10 @@ A layer keeps its file's own coordinates and coordinate system; Shapefiles use t
 formats such as GeoPackage, GeoParquet and FlatGeobuf carry their coordinate system in the file.
 Rasters keep theirs too. The map uses Web Mercator by default, but **View › Projection** can
 change it; see [Maps](maps.md). On a map in a coordinate system, a layer or raster in that system
-is drawn as it is, and one in another system by the transformation PROJ picks between the two
-(between two datums, the one for that pair, not one through WGS 84). There, Zoom To Layer, Zoom To
+is drawn as it is. On a map in a system made for one area (a UTM zone or a Gauss-Krüger strip,
+say), one in another system is drawn by the transformation PROJ picks between the two (between
+two datums, the one for that pair, not one through WGS 84); on a world projection, such a layer
+goes through WGS 84 longitude/latitude. On a map in a coordinate system, Zoom To Layer, Zoom To
 Selection and Full Extent frame a layer in the map's system by its own coordinates, and its
 simplified drawing at small scales is made from them, with nothing converted.
 

@@ -38,7 +38,7 @@ pub fn off_earth(semi_major: f64) -> bool {
 /// `+ellps` or `+datum`, since PROJ's named ellipsoids are all the Earth's.
 pub fn proj4_axes(proj4: &str) -> Option<(f64, f64)> {
     let value = |key: &str| {
-        proj4.split_whitespace().take(64).find_map(|t| t.strip_prefix(key)).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite())
+        proj4.split_whitespace().find_map(|t| t.strip_prefix(key)).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite())
     };
     let a = value("+a=").or_else(|| value("+R=")).filter(|a| *a > 0.0)?;
     let b = match (value("+b="), value("+rf=")) {
@@ -379,6 +379,9 @@ mod tests {
         assert_eq!(proj4_axes("+proj=longlat +ellps=WGS84 +no_defs"), None);
         assert_eq!(proj4_axes("+proj=longlat +a=x +no_defs"), None);
         assert_eq!(proj4_axes("+proj=longlat +a=-5 +no_defs"), None);
+        // A radius written after many other parameters still counts: the whole definition is read.
+        let padding = (0..80).map(|i| format!("+x{i}=0")).collect::<Vec<_>>().join(" ");
+        assert_eq!(proj4_axes(&format!("+proj=longlat {padding} +a=3396190 +no_defs")), Some((3_396_190.0, 3_396_190.0)));
         assert_eq!(proj4_axes(""), None);
     }
 

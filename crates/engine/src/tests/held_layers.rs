@@ -909,6 +909,36 @@ fn a_held_offline_map_keeps_the_sources_later_edits() {
     assert_eq!(wells.coord_crs(), UTM);
 }
 
+/// A source feature with a place that can't be given in longitude/latitude, outside the offline
+/// area, doesn't stop the area's sync and stays as stored; one the area holds refuses the sync,
+/// naming it (#2032 C2f-4b-1c).
+#[test]
+fn a_sync_leaves_a_source_feature_it_cant_place_as_stored() {
+    let mut s = session(UTM);
+    s.run("offline.download", &json!({"name": "Field", "extent": [11.4, 48.6, 11.6, 48.8]})).unwrap();
+    s.run("offline.open", &json!({"name": "Field"})).unwrap();
+    s.run("edit.setValue", &json!({"layer": "Wells", "row": 1, "field": "n", "value": 99})).unwrap();
+    s.run("map.activate", &json!({"name": "Map"})).unwrap();
+    let far = Geometry::Point(Coord::new(1e12, 1e12));
+    let wells = &mut s.map_mut().layers.iter_mut().find(|l| l.name == "Wells").unwrap().dataset;
+    wells.push(Some(far.clone()), vec![]);
+    let far_row = wells.features.len() - 1;
+    let returned = s.project.maps.iter().find(|m| m.name == "Field (offline)").unwrap().clone();
+    let ai = s.project.offline_areas.iter().position(|a| a.name == "Field").unwrap();
+    crate::cmd::workspace::sync_area(&mut s, ai, &returned, "").unwrap();
+    let wells = &s.map().layer_by_name("Wells").unwrap().dataset;
+    assert_eq!(wells.value(1, wells.field_index("n").unwrap()), &Cell::Int(99));
+    assert_eq!(wells.features.row(far_row).and_then(|r| r.geometry().cloned()), Some(far.clone()), "kept as stored");
+    assert_eq!(wells.coord_crs(), UTM);
+    // A feature of the area moved in the source to such a place can't be compared: refused,
+    // naming it.
+    let id = wells.features.row(0).unwrap().id();
+    s.map_mut().layers.iter_mut().find(|l| l.name == "Wells").unwrap().dataset.features.set_geometry(0, Some(far));
+    let returned = s.project.maps.iter().find(|m| m.name == "Field (offline)").unwrap().clone();
+    let e = crate::cmd::workspace::sync_area(&mut s, ai, &returned, "").unwrap_err();
+    assert!(e.contains(&format!("feature {id} has a place in")) && e.contains("can't be compared"), "{e}");
+}
+
 /// A web scene leaves out, and says, a feature of a held layer with a place that can't be given
 /// in longitude/latitude, rather than failing the whole scene.
 #[test]

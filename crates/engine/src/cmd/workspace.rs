@@ -1079,13 +1079,37 @@ pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map, p
             // The source's fields the area hasn't (added there since): a deletion offline loses their
             // values too.
             let source_only: Vec<usize> = (0..sl.dataset.fields.len()).filter(|j| !to_source.contains(&Some(*j))).collect();
-            let held = (sl.dataset.coord_crs() != rustgis_data::raster::Crs::LonLat).then(|| sl.dataset.clone());
-            if held.is_some() {
-                sl.dataset = sl.dataset.in_lonlat().map_err(|e| sync_error(&ol.name, e))?.into_owned();
-            }
             // The ids the area held when it was last synced.
             let had: std::collections::HashSet<u64> = base.keys().copied().collect();
             let now_ids: std::collections::HashSet<u64> = ol_ds.features.rows().map(|r| r.id()).collect();
+            let held = (sl.dataset.coord_crs() != rustgis_data::raster::Crs::LonLat).then(|| sl.dataset.clone());
+            if let Some(own) = &held {
+                // A source feature with a place that can't be given in longitude/latitude is read
+                // without its geometry: one outside the area is left as stored (`merged_from_lonlat`
+                // takes it as the source holds it); one the area holds can't be compared, and
+                // refuses the sync, naming it.
+                let (lonlat, unplaced) = own.in_lonlat_leaving_out().map_err(|e| sync_error(&ol.name, e))?;
+                if unplaced > 0
+                    && let Some(fid) = own
+                        .features
+                        .rows()
+                        .zip(lonlat.features.rows())
+                        .find(|(o, l)| {
+                            o.geometry().is_some() && l.geometry().is_none() && (had.contains(&o.id()) || now_ids.contains(&o.id()))
+                        })
+                        .map(|(o, _)| o.id())
+                {
+                    return Err(sync_error(
+                        &ol.name,
+                        format!(
+                            "{}: feature {fid} has a place in {} that can't be given in longitude/latitude, so it can't be compared with the area's",
+                            own.name,
+                            own.coord_crs().label()
+                        ),
+                    ));
+                }
+                sl.dataset = lonlat.into_owned();
+            }
             // The features this sync writes, by their ids in the source: only these are converted
             // back to a held source's system.
             let mut written = std::collections::HashSet::new();

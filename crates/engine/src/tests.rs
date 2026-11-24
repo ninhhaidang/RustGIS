@@ -17,6 +17,8 @@ mod services_own;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "tests/sources_own.rs"]
 mod sources_own;
+#[path = "tests/unplaced_edits.rs"]
+mod unplaced_edits;
 #[path = "tests/unplaced_gp.rs"]
 mod unplaced_gp;
 #[path = "tests/unplaced_out.rs"]
