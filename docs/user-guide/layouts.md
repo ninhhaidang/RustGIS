@@ -594,6 +594,17 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   says so. From a command:
   `layout.update={"element":6,"group":"continent","stack":"income_grp"}`, and `"stack":""` for
   whole bars again; `layout.addElement` takes it too.
+- **Facing charts**: two charts side by side compare two fields per category back to back, such
+  as the share of businesses against the share of people in each district. **Mirror** draws a
+  chart as its mirror image, its text reading as ever: bars running across start from the right
+  with their labels at the right, and columns hang from the top with their labels over them.
+  **Maximum** fixes the value at the far end of the bars' room (**Automatic**, the default, takes
+  the largest bar, where a fixed one starts), so two charts given the same one share a scale; a
+  bar past it runs to that end, and the chart says how many do. **Hide labels** leaves the labels
+  out and gives their room to the bars. Mirror the left chart, leave the right one as it is and
+  hide its labels: the categories are then named once, between the two. From a command:
+  `layout.update={"element":6,"mirror":true,"max":40,"hideLabels":true}`, `"max":"auto"` (or
+  `null`) for the bars' own again; `layout.addElement` takes them too.
 - **Rulers and guides**: rulers start on along the top and left and show millimetres from the page's corner.
   Drag out of a ruler to add a guide, drag a guide to move it, and drag it back onto a ruler to
   remove it. Guides are saved with the layout but never printed or exported. **Clear Guides**

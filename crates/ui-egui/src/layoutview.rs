@@ -2091,6 +2091,9 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         label_align,
                         classes,
                         stack,
+                        mirror,
+                        max,
+                        hide_labels,
                         ..
                     } => {
                         // The feature layers of the frame's map, and the fields of the chart's layer (#2487).
@@ -2258,8 +2261,50 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                             update(app, json!({"barColor": crate::theme::rgba(c).hex()}));
                         }
                         ui.end_row();
+                        // Facing another chart (#2487 part 4): its labels left out, its bars the other
+                        // way round, on a scale it shares.
+                        let input_label = ui.label(tl!("Hide labels"));
+                        let mut on = *hide_labels;
+                        if ui.checkbox(&mut on, "").labelled_by(input_label.id).changed() {
+                            update(app, json!({"hideLabels": on}));
+                        }
+                        ui.end_row();
+                        let input_label = ui.label(tl!("Mirror"));
+                        let mut on = *mirror;
+                        if ui.checkbox(&mut on, "").labelled_by(input_label.id).changed() {
+                            update(app, json!({"mirror": on}));
+                        }
+                        ui.end_row();
+                        let input_label = ui.label(tl!("Maximum"));
+                        ui.horizontal(|ui| {
+                            // As the chart reads it: a maximum not above 0, from a file, isn't used.
+                            let fixed = rustgis_engine::map::layout::chart_max(*max);
+                            let mut auto = fixed.is_none();
+                            if ui.checkbox(&mut auto, tl!("Automatic")).labelled_by(input_label.id).changed() {
+                                // Fixed, it starts from where its bars reach, so none runs past it yet.
+                                let reach = || {
+                                    let (m, env) =
+                                        rustgis_engine::render::layout::frame_page_env(layout, &app.session.project.maps, *frame)?;
+                                    let data = e.kind.chart_data_of(m.layer_by_name(layer)?, &env)?;
+                                    Some(rustgis_engine::render::layout::chart_span(&data).1).filter(|v| *v > 0.0)
+                                };
+                                let to = if auto { json!("auto") } else { json!(reach().unwrap_or(100.0)) };
+                                update(app, json!({"max": to}));
+                            }
+                            if let Some(m) = fixed {
+                                let mut v = m;
+                                let drag = Dragged::lend(ui, drag_key("chart_max"), &mut v);
+                                let r = ui
+                                    .add(egui::DragValue::new(&mut v).update_while_editing(false).range(1e-6..=1e15).speed(m * 0.01))
+                                    .labelled_by(input_label.id);
+                                if drag.settled(ui, &r, &mut v) && v != m {
+                                    update(app, json!({"max": v}));
+                                }
+                            }
+                        });
+                        ui.end_row();
                         // Columns have their labels centred under them.
-                        if !vertical {
+                        if !vertical && !*hide_labels {
                             ui.label(tl!("Labels"));
                             ui.horizontal(|ui| {
                                 let right = *label_align == TextAlign::Right;

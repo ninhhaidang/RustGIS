@@ -43611,6 +43611,101 @@ fn layout_charts_take_a_look() {
     assert!(s.run("layout.update", &json!({"element": chart, "group": "name"})).is_err());
 }
 
+/// A chart faces another (#2487 part 4): `mirror`, a fixed `max` and `hideLabels`, set when it is
+/// added or updated, kept when its layer changes, undone in one step, left out at their defaults
+/// (`null` or `"auto"` giving `max` back to its bars), refused when bad (changing nothing) and for
+/// other kinds. A bar past the maximum is said, by count; none past it, nothing.
+#[test]
+fn layout_charts_face_each_other() {
+    use rustgis_data::{Dataset, Field, FieldType, GeometryType, Value};
+    use rustgis_map::layout::ElementKind;
+    let mut s = Session::new(sample::world_project());
+    for name in ["Places", "Towns"] {
+        let mut ds =
+            Dataset::new(name, GeometryType::Point, vec![Field::new("name", FieldType::Text), Field::new("people", FieldType::Double)]);
+        for i in 0..5 {
+            ds.push(None, vec![Value::Text(format!("P{i}")), Value::Float(i as f64 * 30.0)]);
+        }
+        s.map_mut().add_dataset(ds);
+    }
+    s.run("layout.new", &json!({"name": "Charts"})).unwrap();
+    let said = |s: &Session, mark| s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>();
+    let mark = s.notice_mark();
+    let r = s
+        .run(
+            "layout.addElement",
+            &json!({"kind": "chart", "layer": "Places", "field": "people", "mirror": true, "max": 100, "hideLabels": true}),
+        )
+        .unwrap();
+    // 120 is past 100; 0, 30, 60 and 90 aren't.
+    assert_eq!(said(&s, mark), vec!["1 bar of the chart runs past its maximum of 100: drawn to the end of its bars' room"]);
+    let chart = r["element"].as_u64().unwrap() as u32;
+    let facing = |s: &Session| match s.project.layouts[0].element(chart).map(|e| &e.kind) {
+        Some(ElementKind::Chart { mirror, max, hide_labels, .. }) => (*mirror, *max, *hide_labels),
+        _ => panic!("a chart"),
+    };
+    assert_eq!(facing(&s), (true, Some(100.0), true));
+    // A lower maximum says how many bars pass it; one above them all says nothing.
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": chart, "max": 50})).unwrap();
+    // 60, 90 and 120 are past 50.
+    assert_eq!(said(&s, mark), vec!["3 bars of the chart run past its maximum of 50: drawn to the end of its bars' room"]);
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": chart, "max": 500})).unwrap();
+    assert!(said(&s, mark).is_empty(), "{:?}", said(&s, mark));
+    // On a new layer the chart keeps them.
+    s.run("layout.update", &json!({"element": chart, "layer": "Towns"})).unwrap();
+    assert_eq!(facing(&s), (true, Some(500.0), true));
+    // Back to the defaults in one step, none written then; undone in one step.
+    s.run("layout.update", &json!({"element": chart, "mirror": false, "max": null, "hideLabels": false})).unwrap();
+    assert_eq!(facing(&s), (false, None, false));
+    let saved = serde_json::to_string(&s.project.layouts[0].element(chart).unwrap().kind).unwrap();
+    for key in ["mirror", "max", "hide_labels"] {
+        assert!(!saved.contains(&format!("\"{key}\"")), "{key} isn't written at its default");
+    }
+    s.run("edit.undo", &serde_json::Value::Null).unwrap();
+    assert_eq!(facing(&s), (true, Some(500.0), true));
+    // A locked chart takes no null maximum either: it gives the bars their own scale back.
+    s.run("layout.update", &json!({"element": chart, "locked": true})).unwrap();
+    assert!(s.run("layout.update", &json!({"element": chart, "max": null})).is_err());
+    assert_eq!(facing(&s).1, Some(500.0));
+    s.run("layout.update", &json!({"element": chart, "locked": false})).unwrap();
+    s.run("layout.update", &json!({"element": chart, "max": "auto"})).unwrap();
+    assert_eq!(facing(&s).1, None);
+    // A bad one is refused, naming it, and nothing changes.
+    let before = facing(&s);
+    for (bad, key) in [
+        (json!({"mirror": "maybe"}), "mirror"),
+        (json!({"max": 0}), "max"),
+        (json!({"max": -5}), "max"),
+        (json!({"max": "big"}), "max"),
+        (json!({"hideLabels": "x"}), "hideLabels"),
+    ] {
+        let mut p = bad.clone();
+        p["element"] = json!(chart);
+        p["x"] = json!(99);
+        let err = s.run("layout.update", &p).unwrap_err();
+        assert!(err.contains(key), "{bad}: {err}");
+        let mut add = bad.clone();
+        add["kind"] = json!("chart");
+        add["layer"] = json!("Places");
+        assert!(s.run("layout.addElement", &add).unwrap_err().contains(key), "{bad}");
+    }
+    assert_eq!(facing(&s), before);
+    assert!(s.project.layouts[0].element(chart).is_some_and(|e| e.x != 99.0));
+    // Only a chart takes them.
+    let rect =
+        s.run("layout.addElement", &json!({"kind": "rectangle", "x": 1, "y": 1, "w": 5, "h": 5})).unwrap()["element"].as_u64().unwrap();
+    for (key, value) in [("mirror", json!(true)), ("max", json!(10)), ("hideLabels", json!(true))] {
+        let mut p = json!({"element": rect});
+        p[key] = value.clone();
+        assert!(s.run("layout.update", &p).unwrap_err().contains("only charts"), "{key}");
+        let mut p = json!({"kind": "table", "layer": "Places"});
+        p[key] = value;
+        assert!(s.run("layout.addElement", &p).unwrap_err().contains("only charts"), "{key}");
+    }
+}
+
 /// A stack field with more values than the key has colours gathers the rest in its Other, and
 /// the chart says how many (#2487 part 3b); one that fits says nothing.
 #[test]

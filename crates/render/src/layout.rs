@@ -4194,8 +4194,10 @@ fn table(pm: &mut Canvas, r: Rect, ds: &rustgis_data::Dataset, rows: usize, ink:
 fn chart(pm: &mut Canvas, r: Rect, data: &rustgis_map::layout::ChartData, look: &ChartLook, dark: Rgba, ppp: f64, comma: bool) {
     let ppp = ppp as f32;
     let vals = &data.bars;
-    let (min, max) = chart_span(data);
-    if vals.is_empty() || (max <= 0.0 && min >= 0.0) {
+    let (min, reach) = chart_span(data);
+    // A fixed maximum is the far end of the bars' room, whatever they reach (#2487 part 4).
+    let max = look.max.unwrap_or(reach);
+    if vals.is_empty() || (reach <= 0.0 && min >= 0.0) {
         placeholder(pm, r, "Chart", ppp as f64);
         return;
     }
@@ -4229,15 +4231,16 @@ fn chart(pm: &mut Canvas, r: Rect, data: &rustgis_map::layout::ChartData, look: 
         dark,
         look,
     };
+    let labelled = data.labelled && !look.hide_labels;
     match look.orientation {
-        Orientation::Horizontal => bars.across(pm, data.labelled),
-        Orientation::Vertical => bars.columns(pm, data.labelled),
+        Orientation::Horizontal => bars.across(pm, labelled),
+        Orientation::Vertical => bars.columns(pm, labelled),
     }
 }
 
 /// The span a chart's bars run over: from the most a bar reaches below zero to the most above,
 /// stacked its stretches below zero added up and those above.
-fn chart_span(data: &rustgis_map::layout::ChartData) -> (f64, f64) {
+pub fn chart_span(data: &rustgis_map::layout::ChartData) -> (f64, f64) {
     data.bars
         .iter()
         .enumerate()
@@ -4260,7 +4263,7 @@ fn chart_head(r: Rect, data: &rustgis_map::layout::ChartData, look: &ChartLook, 
         Orientation::Vertical => {
             let (min, max) = chart_span(data);
             let values = |on: bool| if look.values && on { line } else { 0.0 };
-            (if data.labelled { line } else { 0.0 }) + values(max > 0.0) + values(min < 0.0)
+            (if data.labelled && !look.hide_labels { line } else { 0.0 }) + values(max > 0.0) + values(min < 0.0)
         }
     };
     (data.key.is_empty() || title_h + key_h + line + below <= r.height()).then_some((title_h, key_h))
@@ -4321,8 +4324,9 @@ fn fit_label(name: &str, too_wide: impl Fn(&str) -> bool) -> String {
 
 /// What [`chart`] draws its bars from: its box, the height of its title (and key) over the bars,
 /// the bars and their values written out (none without), each bar's own colour (none: the look's
-/// bar colour), stacked each bar's stretches and the key that colours them, the least and
-/// greatest a bar reaches (0 among them), its text size and pixels per point.
+/// bar colour), stacked each bar's stretches and the key that colours them, the least a bar
+/// reaches and the value at the far end of the bars' room (the greatest a bar reaches, or a fixed
+/// maximum in its place; 0 among them), its text size and pixels per point.
 struct ChartBars<'a> {
     r: Rect,
     title_h: f32,
@@ -4347,17 +4351,23 @@ impl ChartBars<'_> {
     /// those below back from it, one of 0 not drawn.
     fn stretches(&self, i: usize, v: f64) -> Vec<(f32, f32, Rgba)> {
         let Some(s) = self.stretches.get(i).filter(|s| !s.is_empty()) else {
-            return vec![(0.0, self.share(v), self.colors.get(i).copied().flatten().unwrap_or(self.look.bar_color))];
+            return vec![(0.0, self.share(v.min(self.max)), self.colors.get(i).copied().flatten().unwrap_or(self.look.bar_color))];
         };
         let (mut lo, mut hi) = (0.0_f64, 0.0_f64);
+        // Past a fixed maximum a stretch above zero is cut at it, and one wholly past it isn't
+        // drawn; one running back from zero is drawn whole.
         s.iter()
             .zip(self.key)
             .filter(|(v, _)| **v != 0.0)
-            .map(|(v, (_, c))| {
+            .filter_map(|(v, (_, c))| {
                 let end = if *v < 0.0 { &mut lo } else { &mut hi };
                 let from = *end;
                 *end += v;
-                (self.share(from), self.share(*v), *c)
+                if *v < 0.0 {
+                    return Some((self.share(from), self.share(*v), *c));
+                }
+                let len = (from + v).min(self.max) - from;
+                (len > 0.0).then(|| (self.share(from), self.share(len), *c))
             })
             .collect()
     }
@@ -4407,6 +4417,11 @@ impl ChartBars<'_> {
         // Where the bars start: the left of the bar area when none is negative.
         let zero = r.x() + label_w + room_lo + bar_area * self.share(-self.min);
         let right = self.look.label_align == TextAlign::Right;
+        // Laid out the usual way, then placed as its mirror image when mirrored: a box from `x`,
+        // `w` wide, and a text written from `x`, the text itself reading as ever.
+        let edges = r.x() + r.right();
+        let place = |x: f32, w: f32| if self.look.mirror { edges - x - w } else { x };
+        let write = |x: f32, align: text::Align| if self.look.mirror { (edges - x, mirrored(align)) } else { (x, align) };
         for (i, (v, name)) in self.vals.iter().enumerate() {
             let y = r.y() + self.title_h + bh * i as f32;
             // Each stretch at least a pixel wide, running back from its start below zero; where the
@@ -4415,22 +4430,25 @@ impl ChartBars<'_> {
             for (start, share, colour) in self.stretches(i, *v) {
                 let w = (bar_area * share.abs()).max(1.0);
                 let x = zero + bar_area * start - if share < 0.0 { w } else { 0.0 };
-                fill(pm, colour, x, y + bh * 0.15, w, bh * 0.7);
+                fill(pm, colour, place(x, w), y + bh * 0.15, w, bh * 0.7);
                 (left, right_end) = (left.min(x), right_end.max(x + w));
             }
             if labelled {
                 let t = fit_label(name, |t| text::measure(t, 7.5, false) * ppp > label_w - 4.0 * ppp);
                 // At the column's right, the label ends where the bars' side begins.
                 let (lx, align) = if right { (r.x() + label_w - 2.0 * ppp, text::Align::Right) } else { (r.x(), text::Align::Left) };
+                let (lx, align) = write(lx, align);
                 text::text_at(pm, &t, lx, y + bh / 2.0, size, self.dark, false, align, false);
             }
             if let Some(t) = self.values.get(i) {
                 let (vx, align) = if *v < 0.0 { (left - gap, text::Align::Right) } else { (right_end + gap, text::Align::Left) };
+                let (vx, align) = write(vx, align);
                 text::text_at(pm, t, vx, y + bh / 2.0, value_size, self.dark, false, align, false);
             }
         }
         if self.min < 0.0
-            && let Some(line) = Rect::from_xywh(zero - 0.375 * ppp, r.y() + self.title_h, 0.75 * ppp, bh * self.vals.len() as f32)
+            && let Some(line) =
+                Rect::from_xywh(place(zero - 0.375 * ppp, 0.75 * ppp), r.y() + self.title_h, 0.75 * ppp, bh * self.vals.len() as f32)
         {
             pm.fill_rect(line, &paint(self.dark, 1.0), Transform::identity(), None);
         }
@@ -4455,6 +4473,11 @@ impl ChartBars<'_> {
         }
         // Where the columns stand: the bottom of the plot when none is negative.
         let zero = top + plot_h * self.share(self.max);
+        // Laid out the usual way under its title, then placed upside down there when mirrored: a box
+        // from `y`, `h` high, and a text centred on `y`, the text itself reading as ever.
+        let edges = r.y() + self.title_h + r.bottom();
+        let place = |y: f32, h: f32| if self.look.mirror { edges - y - h } else { y };
+        let write = |y: f32| if self.look.mirror { edges - y } else { y };
         for (i, (v, name)) in self.vals.iter().enumerate() {
             let cx = r.x() + slot * (i as f32 + 0.5);
             // Each stretch at least a pixel high, standing up from its start above zero and hanging
@@ -4463,23 +4486,32 @@ impl ChartBars<'_> {
             for (start, share, colour) in self.stretches(i, *v) {
                 let h = (plot_h * share.abs()).max(1.0);
                 let y = zero - plot_h * start - if share < 0.0 { 0.0 } else { h };
-                fill(pm, colour, cx - slot * 0.35, y, slot * 0.7, h);
+                fill(pm, colour, cx - slot * 0.35, place(y, h), slot * 0.7, h);
                 (top_end, bottom) = (top_end.min(y), bottom.max(y + h));
             }
             if let Some(t) = self.values.get(i) {
                 let vy = if *v < 0.0 { bottom + value_h / 2.0 } else { top_end - value_h / 2.0 };
-                text::text_at(pm, t, cx, vy, value_px, self.dark, false, text::Align::Center, false);
+                text::text_at(pm, t, cx, write(vy), value_px, self.dark, false, text::Align::Center, false);
             }
             if labelled {
                 let t = fit_label(name, |t| text::measure(t, px / 1.33, false) > slot - 2.0 * ppp);
-                text::text_at(pm, &t, cx, r.bottom() - label_h / 2.0, px, self.dark, false, text::Align::Center, false);
+                text::text_at(pm, &t, cx, write(r.bottom() - label_h / 2.0), px, self.dark, false, text::Align::Center, false);
             }
         }
         if self.min < 0.0
-            && let Some(line) = Rect::from_xywh(r.x(), zero - 0.375 * ppp, r.width(), 0.75 * ppp)
+            && let Some(line) = Rect::from_xywh(r.x(), place(zero - 0.375 * ppp, 0.75 * ppp), r.width(), 0.75 * ppp)
         {
             pm.fill_rect(line, &paint(self.dark, 1.0), Transform::identity(), None);
         }
+    }
+}
+
+/// A text's alignment in a chart's mirror image: from the right where it was from the left.
+fn mirrored(align: text::Align) -> text::Align {
+    match align {
+        text::Align::Left => text::Align::Right,
+        text::Align::Right => text::Align::Left,
+        other => other,
     }
 }
 
@@ -4690,6 +4722,32 @@ mod tests {
         // As a column from the bottom up: red at its foot, green over it.
         let c = draw(&stacked(vec![6.0, 4.0]), Orientation::Vertical);
         assert!(is(&c, 100, 100, red) && is(&c, 100, 30, green), "the stretches up the column");
+        // Mirrored (#2487 part 4), the stretches run from the right, the key staying where it is.
+        let mut c = Canvas::new(200, 120).unwrap();
+        let look = ChartLook { mirror: true, ..ChartLook::default() };
+        chart(&mut c, Rect::from_xywh(0.0, 0.0, 200.0, 120.0).unwrap(), &stacked(vec![6.0, 4.0]), &look, INK, 1.0, false);
+        assert!(is(&c, 3, 7, red) && is(&c, 150, 23, red) && is(&c, 50, 23, green), "red from the right, green past it");
+        // On a fixed maximum a stretch past it is cut at it, and one wholly past it isn't drawn.
+        for (max, far) in [(8.0, green), (5.0, red)] {
+            let mut c = Canvas::new(200, 120).unwrap();
+            let look = ChartLook { max: Some(max), ..ChartLook::default() };
+            chart(&mut c, Rect::from_xywh(0.0, 0.0, 200.0, 120.0).unwrap(), &stacked(vec![6.0, 4.0]), &look, INK, 1.0, false);
+            assert!(is(&c, 190, 23, far) && !is(&c, 199, 23, far), "{max}: the bar ends at the maximum");
+        }
+        // At 5 the green stretch, from 6 on, is wholly past it: none of it is drawn, anywhere.
+        let mut c = Canvas::new(200, 120).unwrap();
+        let look = ChartLook { max: Some(5.0), ..ChartLook::default() };
+        chart(&mut c, Rect::from_xywh(0.0, 0.0, 200.0, 120.0).unwrap(), &stacked(vec![6.0, 4.0]), &look, INK, 1.0, false);
+        assert!((0..200).all(|x| !is(&c, x, 23, green)), "no green along the bar");
+        // One running back from zero is drawn whole on a fixed maximum too: 2 of a span of 7 (from
+        // -2 to 5) left of zero, red cut at 5 on the right.
+        let mut c = Canvas::new(200, 120).unwrap();
+        chart(&mut c, Rect::from_xywh(0.0, 0.0, 200.0, 120.0).unwrap(), &stacked(vec![6.0, -2.0]), &look, INK, 1.0, false);
+        assert!(is(&c, 30, 23, green) && is(&c, 150, 23, red) && !is(&c, 199, 23, red), "back from zero, cut at the maximum");
+        // Stretches all below zero run back from it, the first one too: red 6 of 10 from the
+        // right, green past it.
+        let c = draw(&stacked(vec![-6.0, -4.0]), Orientation::Horizontal);
+        assert!(is(&c, 150, 23, red) && is(&c, 50, 23, green), "both stretches back from zero");
         // A negative stretch runs back from zero: 2 of a span of 8 left of it, 6 right.
         let c = draw(&stacked(vec![6.0, -2.0]), Orientation::Horizontal);
         assert!(is(&c, 20, 23, green) && is(&c, 100, 23, red), "either way from zero");
@@ -4813,6 +4871,75 @@ mod tests {
         // The labels' column is 64 px wide.
         assert!(chart_inked(&left, 0..6, 18..32) && !chart_inked(&left, 56..63, 18..32));
         assert!(!chart_inked(&right, 0..6, 18..32) && chart_inked(&right, 50..63, 18..32));
+    }
+
+    /// Mirrored (#2487 part 4), a chart is drawn as its mirror image, its text read as ever: bars
+    /// run from the right, their labels' column at the right, values past the bars' left ends, a
+    /// negative bar to the right of zero; columns hang from the top, their labels over them.
+    #[test]
+    fn a_mirrored_chart_runs_the_other_way() {
+        use serde_json::json;
+        let plain = chart_drawn(&[(3.0, "a"), (1.0, "b")], json!({}));
+        let mirrored = chart_drawn(&[(3.0, "a"), (1.0, "b")], json!({"mirror": true}));
+        // Rows of 18 px under a 16 px title. The bar area is 196 px, kept 4 px from the left when
+        // mirrored; 1 takes a third of it.
+        assert!(bar_blue(&plain, 20, 43) && !bar_blue(&plain, 180, 43), "1 runs right from the left");
+        assert!(bar_blue(&mirrored, 180, 43) && !bar_blue(&mirrored, 20, 43), "1 runs left from the right");
+        assert!(bar_blue(&mirrored, 10, 25) && !bar_blue(&mirrored, 1, 25), "3 fills the bar area");
+        // Labelled, the 64 px column is at the right; the label at its outer edge, the right.
+        let labelled = chart_drawn(&[(3.0, "Madrid")], json!({"label": "name", "mirror": true}));
+        assert!(bar_blue(&labelled, 10, 25) && !bar_blue(&labelled, 140, 25), "the bars left of the labels");
+        assert!(chart_inked(&labelled, 190..200, 18..32) && !chart_inked(&labelled, 0..40, 18..32), "the label at the right");
+        // Values past the bar's left end.
+        let valued = chart_drawn(&[(3.0, "a")], json!({"values": true, "mirror": true}));
+        assert!(chart_inked(&valued, 0..15, 18..32) && !chart_inked(&valued, 185..200, 18..32));
+        // Zero 49 px from the right: 3 runs left of it, -1 right.
+        let negative = chart_drawn(&[(3.0, "a"), (-1.0, "b")], json!({"mirror": true}));
+        assert!(bar_blue(&negative, 50, 25) && !bar_blue(&negative, 170, 25), "3 left of zero");
+        assert!(bar_blue(&negative, 170, 43) && !bar_blue(&negative, 50, 43), "-1 right of zero");
+        // Columns hang from the top: 1 a third of the 120 px down.
+        let columns = chart_drawn(&[(3.0, "a"), (1.0, "b")], json!({"orientation": "Vertical", "title": "", "mirror": true}));
+        assert!(bar_blue(&columns, 150, 10) && !bar_blue(&columns, 150, 100), "1 hangs from the top");
+        assert!(bar_blue(&columns, 50, 110), "3 fills its slot");
+        let labelled =
+            chart_drawn(&[(3.0, "a"), (1.0, "b")], json!({"orientation": "Vertical", "title": "", "label": "name", "mirror": true}));
+        assert!(chart_inked(&labelled, 40..60, 0..12) && !chart_inked(&labelled, 40..60, 108..120), "labels over the columns");
+    }
+
+    /// A fixed maximum is the far end of the bar area, so charts given the same one share a
+    /// scale; a bar past it runs to that end. A maximum not above zero isn't read.
+    #[test]
+    fn a_charts_maximum_sets_its_scale() {
+        use serde_json::json;
+        let own = chart_drawn(&[(50.0, "a")], json!({}));
+        let shared = chart_drawn(&[(50.0, "a")], json!({"max": 100.0}));
+        assert!(bar_blue(&own, 150, 25), "50 fills the 196 px on its own");
+        assert!(bar_blue(&shared, 90, 25) && !bar_blue(&shared, 110, 25), "50 of 100 takes half of them");
+        let past = chart_drawn(&[(150.0, "a"), (50.0, "b")], json!({"max": 100.0}));
+        assert!(bar_blue(&past, 194, 25) && !bar_blue(&past, 198, 25), "150 runs to the end, no further");
+        assert!(bar_blue(&past, 90, 43) && !bar_blue(&past, 110, 43), "50 still half");
+        // A column of one 140 px slot, 120 px high: 50 of 100 stands half as high.
+        let columns = chart_drawn(&[(50.0, "a")], json!({"orientation": "Vertical", "title": "", "max": 100.0}));
+        assert!(bar_blue(&columns, 100, 100) && !bar_blue(&columns, 100, 40));
+        for bad in [json!(0.0), json!(-5.0)] {
+            assert!(bar_blue(&chart_drawn(&[(50.0, "a")], json!({"max": bad})), 150, 25), "{bad}");
+        }
+        // Bars all at zero still draw the placeholder, as they do on their own scale.
+        let zeros = |extra| chart_drawn(&[(0.0, "a"), (0.0, "b")], extra).pixmap().data().to_vec();
+        assert_eq!(zeros(json!({"max": 100.0})), zeros(json!({})));
+    }
+
+    /// Hidden labels leave their column, or their row under columns, to the bars.
+    #[test]
+    fn a_charts_hidden_labels_leave_their_room_to_the_bars() {
+        use serde_json::json;
+        let shown = chart_drawn(&[(3.0, "Madrid")], json!({"label": "name"}));
+        let hidden = chart_drawn(&[(3.0, "Madrid")], json!({"label": "name", "hide_labels": true}));
+        assert!(!bar_blue(&shown, 30, 25) && chart_inked(&shown, 0..6, 18..32));
+        assert!(bar_blue(&hidden, 30, 25) && !chart_inked(&hidden, 0..60, 18..32));
+        let columns =
+            chart_drawn(&[(3.0, "Madrid")], json!({"orientation": "Vertical", "title": "", "label": "name", "hide_labels": true}));
+        assert!(bar_blue(&columns, 100, 115), "the column down to the bottom");
     }
 
     /// Both map frames share the index feature, even though the locator draws a different map.

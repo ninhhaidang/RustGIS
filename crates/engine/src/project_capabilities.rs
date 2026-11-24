@@ -136,6 +136,7 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("layout-chart-look", command_uses_chart_look),
     ("layout-chart-classes", command_uses_chart_classes),
     ("layout-chart-stack", command_uses_chart_stack),
+    ("layout-chart-facing", command_uses_chart_facing),
     ("blank-paper", command_uses_blank_paper),
     ("layout-frame-border", command_uses_frame_border),
     ("layout-text-size", command_uses_text_size),
@@ -385,6 +386,32 @@ fn command_uses_chart_stack(id: &str, params: &Value) -> bool {
         "layout.update" => stack(),
         "layout.import" => imported_layout_uses(params, &["\"stack\""], charts_stack),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_chart_stack)),
+        _ => false,
+    }
+}
+
+fn charts_facing(e: &rustgis_map::layout::Element) -> bool {
+    e.kind.chart_uses_facing()
+}
+
+/// A layout command that mirrors a chart, gives it a fixed maximum or hides its labels (#2487
+/// part 4): an older reader ignores those keys and draws the chart the usual way round, on its
+/// bars' own scale, labelled. `false`, `null` and `"auto"` keep a chart as an older reader draws
+/// it; only a chart takes the keys, so a `layout.update` is read by them alone.
+fn command_uses_chart_facing(id: &str, params: &Value) -> bool {
+    let facing = || {
+        let on = |k: &str| params.get(k).and_then(crate::cmd::bool_value) == Some(true);
+        on("mirror")
+            || on("hideLabels")
+            || params.get("max").and_then(Value::as_f64).and_then(|m| rustgis_map::layout::chart_max(Some(m))).is_some()
+    };
+    match id {
+        "layout.addElement" => {
+            params.get("kind").and_then(Value::as_str).is_some_and(|k| k.trim().eq_ignore_ascii_case("chart")) && facing()
+        }
+        "layout.update" => facing(),
+        "layout.import" => imported_layout_uses(params, &["\"mirror\"", "\"max\"", "\"hide_labels\""], charts_facing),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_chart_facing)),
         _ => false,
     }
 }
@@ -685,6 +712,7 @@ fn layout_capabilities(layouts: &[rustgis_map::layout::Layout]) -> Vec<&'static 
         (elements().any(charts_look), "layout-chart-look"),
         (elements().any(charts_classes), "layout-chart-classes"),
         (elements().any(charts_stack), "layout-chart-stack"),
+        (elements().any(charts_facing), "layout-chart-facing"),
         (elements().any(|e| e.kind.has_custom_border()), "layout-frame-border"),
         (elements().any(|e| e.kind.has_custom_text_size()), "layout-text-size"),
     ]
@@ -1357,6 +1385,72 @@ mod tests {
                 document["tasks"] = value;
                 let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
                 let expected = if required { json!(["layout-chart-stack"]) } else { Value::Null };
+                assert_eq!(saved.get("requires").cloned().unwrap_or(Value::Null), expected, "{id} {params}");
+            }
+        }
+    }
+
+    /// A chart that faces another (#2487 part 4: mirrored, a fixed maximum, labels hidden) is
+    /// required where it is saved, so an older reader refuses the project instead of drawing it
+    /// the usual way round, on its own scale, labelled; so is a saved command that sets one. Each
+    /// at its default (`false`, `null`, `"auto"`) needs nothing, nor is written.
+    #[test]
+    fn chart_facing_capability_follows_saved_layouts_and_commands() {
+        use rustgis_map::layout::ElementKind;
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/layout_chart_facing.rgis")).unwrap();
+        let saved = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(saved["requires"], json!(["layout-chart-facing"]));
+        let mut clean = fixture;
+        for e in &mut clean.layouts[0].elements {
+            if let ElementKind::Chart { mirror, max, hide_labels, .. } = &mut e.kind {
+                (*mirror, *max, *hide_labels) = (false, None, false);
+            }
+        }
+        let base = serde_json::to_value(&clean).unwrap();
+        assert!(base.get("requires").is_none(), "a chart drawn the usual way needs nothing");
+        for key in ["\"mirror\"", "\"max\"", "\"hide_labels\""] {
+            assert!(!base["layouts"].to_string().contains(key), "nor writes {key}");
+        }
+        // Each one alone requires it.
+        for key in ["mirror", "max", "hide_labels"] {
+            let mut one = base.clone();
+            one["layouts"][0]["elements"][1]["kind"]["Chart"][key] = if key == "max" { json!(100.0) } else { json!(true) };
+            let saved = serde_json::to_value(Project::from_json(&one.to_string()).unwrap()).unwrap();
+            assert_eq!(saved["requires"], json!(["layout-chart-facing"]), "{key}");
+        }
+        // A hand-edited maximum not above 0 is let go on read (and said), so it is neither written
+        // back nor required.
+        let mut kept = base.clone();
+        kept["layouts"][0]["elements"][1]["kind"]["Chart"]["max"] = json!(-5.0);
+        let saved_kept = serde_json::to_value(Project::from_json(&kept.to_string()).unwrap()).unwrap();
+        assert!(saved_kept.get("requires").is_none());
+        assert!(saved_kept["layouts"][0]["elements"][1]["kind"]["Chart"].get("max").is_none());
+        let mut document = base.clone();
+        document["tasks"] = json!([{"name": "Task", "steps": [{"title": "Chart", "command": "layout.import", "params": {"text": saved["layouts"][0].to_string()}}]}]);
+        let imported = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+        assert_eq!(imported["requires"], json!(["layout-chart-facing"]));
+        for (id, params, required) in [
+            ("layout.addElement", json!({"kind": "chart", "mirror": true}), true),
+            ("layout.addElement", json!({"kind": "chart", "max": 100}), true),
+            ("layout.addElement", json!({"kind": "chart", "hideLabels": true}), true),
+            ("layout.addElement", json!({"kind": "chart", "mirror": false, "max": null, "hideLabels": false}), false),
+            ("layout.addElement", json!({"kind": "chart", "max": "auto"}), false),
+            ("layout.addElement", json!({"kind": "legend", "mirror": true}), false),
+            ("layout.update", json!({"element": 2, "mirror": true}), true),
+            ("layout.update", json!({"element": 2, "max": 50}), true),
+            ("layout.update", json!({"element": 2, "hideLabels": true}), true),
+            ("layout.update", json!({"element": 2, "mirror": false, "max": null, "hideLabels": false}), false),
+            ("layout.import", json!({"text": base["layouts"][0].to_string()}), false),
+        ] {
+            let script = format!("{id}= {params}");
+            for value in [
+                json!([{"name": "Task", "steps": [{"title": "Chart", "command": id, "params": params}]}]),
+                json!([{"name": "Script", "steps": [{"title": "Chart", "command": "script.run", "params": {"script": script}}]}]),
+            ] {
+                let mut document = base.clone();
+                document["tasks"] = value;
+                let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+                let expected = if required { json!(["layout-chart-facing"]) } else { Value::Null };
                 assert_eq!(saved.get("requires").cloned().unwrap_or(Value::Null), expected, "{id} {params}");
             }
         }

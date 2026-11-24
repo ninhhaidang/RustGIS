@@ -1198,6 +1198,19 @@ pub enum ElementKind {
         /// counts, so that its stretches add up to their bar ([`ElementKind::chart_stack`]).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stack: Option<String>,
+        /// Drawn as its mirror image, its text reading as ever (#2487 part 4): bars running across
+        /// from the right, their labels at the right; columns hanging from the top, their labels
+        /// over them. Beside a chart drawn the usual way, the two face each other.
+        #[serde(default, skip_serializing_if = "is_false")]
+        mirror: bool,
+        /// The value at the far end of its bars' room, so that charts given the same one share a
+        /// scale; a bar past it runs to that end. None, or one not above 0 (not read), its bars'
+        /// own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<f64>,
+        /// Its labels left out, their room given to the bars.
+        #[serde(default, skip_serializing_if = "is_false")]
+        hide_labels: bool,
     },
     /// A rectangle drawn on the page (a neatline or a backdrop). `width` is the outline's, in
     /// points (0: none).
@@ -1312,6 +1325,11 @@ pub struct ChartLook {
     pub decimals: Option<u8>,
     pub bar_color: Rgba,
     pub label_align: TextAlign,
+    /// Drawn as its mirror image ([`ElementKind::Chart`]'s `mirror`).
+    pub mirror: bool,
+    /// The value at the far end of its bars' room, above 0; none, its bars' own.
+    pub max: Option<f64>,
+    pub hide_labels: bool,
 }
 
 impl Default for ChartLook {
@@ -1322,8 +1340,16 @@ impl Default for ChartLook {
             decimals: None,
             bar_color: CHART_BAR,
             label_align: TextAlign::Left,
+            mirror: false,
+            max: None,
+            hide_labels: false,
         }
     }
+}
+
+/// A chart's fixed maximum as it is read: above 0 and finite, else none (its bars' own).
+pub fn chart_max(max: Option<f64>) -> Option<f64> {
+    max.filter(|m| m.is_finite() && *m > 0.0)
 }
 
 /// A chart's value as written on its bar: its thousands apart with commas, with `decimals`
@@ -1485,11 +1511,11 @@ impl ElementKind {
     }
 
     /// Whether `key` given as null changes an element of this kind, giving it back its default:
-    /// an ink's `color`, a chart's `title` (the title it is given) and `barColor`, and a legend's
-    /// or scale bar's `textSize` (#2581).
+    /// an ink's `color`, a chart's `title` (the title it is given), `barColor` and `max` (its bars'
+    /// own scale), and a legend's or scale bar's `textSize` (#2581).
     pub fn null_resets(&self, key: &str) -> bool {
         (self.takes_ink() && key == "color")
-            || (matches!(self, ElementKind::Chart { .. }) && matches!(key, "title" | "barColor"))
+            || (matches!(self, ElementKind::Chart { .. }) && matches!(key, "title" | "barColor" | "max"))
             || (matches!(self, ElementKind::Legend { .. } | ElementKind::ScaleBar { .. }) && key == "textSize")
     }
 
@@ -1841,7 +1867,9 @@ impl ElementKind {
     /// older reader would draw it as bars running across in the default blue, with the title it
     /// is given, and save it again without them.
     pub fn chart_uses_look_options(&self) -> bool {
-        matches!(self, ElementKind::Chart { title: Some(_), .. }) || self.chart_look().is_some_and(|l| l != ChartLook::default())
+        // Only part 2's options: facing another chart is its own capability ([`Self::chart_uses_facing`]).
+        let part_two = |l: ChartLook| ChartLook { mirror: false, max: None, hide_labels: false, ..l };
+        matches!(self, ElementKind::Chart { title: Some(_), .. }) || self.chart_look().is_some_and(|l| part_two(l) != ChartLook::default())
     }
 
     /// Whether a chart colours its bars by its layer's classes, which a chart had no way to before
@@ -1873,14 +1901,27 @@ impl ElementKind {
 
     /// How a chart draws its bars; `None` for another kind.
     pub fn chart_look(&self) -> Option<ChartLook> {
-        let ElementKind::Chart { orientation, values, decimals, bar_color, label_align, .. } = self else { return None };
+        let ElementKind::Chart { orientation, values, decimals, bar_color, label_align, mirror, max, hide_labels, .. } = self else {
+            return None;
+        };
         Some(ChartLook {
             orientation: *orientation,
             values: *values,
             decimals: *decimals,
             bar_color: bar_color.unwrap_or(CHART_BAR),
             label_align: *label_align,
+            mirror: *mirror,
+            max: chart_max(*max),
+            hide_labels: *hide_labels,
         })
+    }
+
+    /// Whether a chart faces another: mirrored, given a maximum or with its labels hidden, which a
+    /// chart had no way to before #2487 part 4: an older reader would draw it the usual way round,
+    /// on its bars' own scale, labelled, and save it again without. A maximum not above 0 is let go
+    /// when the layout is read ([`Layout::clamp`]), so a stored one is always drawn to.
+    pub fn chart_uses_facing(&self) -> bool {
+        matches!(self, ElementKind::Chart { mirror, max, hide_labels, .. } if *mirror || *hide_labels || max.is_some())
     }
 }
 
@@ -2631,6 +2672,9 @@ impl Layout {
                     text.truncate(end);
                 }
                 ElementKind::Table { rows, .. } => *rows = (*rows).clamp(1, 500),
+                // A maximum the chart can't draw to (only a hand-edited file has one) gives it its
+                // bars' own scale back, counted with the values out of range (#2487 part 4).
+                ElementKind::Chart { max, .. } => *max = chart_max(*max),
                 ElementKind::ScaleBar { divisions, text_size, .. } => {
                     *divisions = (*divisions).clamp(1, MAX_SCALE_DIVISIONS);
                     *text_size = layout_text_in_range(*text_size, SCALE_BAR_TEXT_PT);
@@ -4028,6 +4072,27 @@ mod tests {
         assert_eq!(frame(Some(" "), GridKind::Measured), (true, 0, 0));
         assert_eq!(frame(Some("EPSG:2056"), GridKind::Measured), (false, 1, 0), "said on its own, not as a value out of range");
         assert_eq!(frame(None, GridKind::Graticule), (false, 1, 0));
+    }
+
+    /// A chart's maximum not above 0, which only a hand-edited file holds and the chart can't
+    /// draw to, is let go on read (the chart on its bars' own scale) and counted as a value out of
+    /// range, so the project says so (#2487 part 4); one above 0 is kept.
+    #[test]
+    fn a_charts_maximum_not_above_zero_is_repaired_and_counted() {
+        for (max, kept, adjusted) in [(-5.0, None, 1), (0.0, None, 1), (40.0, Some(40.0), 0)] {
+            let mut l: Layout = serde_json::from_value(serde_json::json!({
+                "name": "L", "width": 120, "height": 90, "elements": [
+                    {"id": 1, "name": "Frame", "x": 10, "y": 10, "w": 60, "h": 70,
+                     "kind": {"MapFrame": {"map": "Map", "center": {"x": 0, "y": 0}, "scale": 1000000}}},
+                    {"id": 2, "name": "Chart", "x": 75, "y": 10, "w": 35, "h": 40,
+                     "kind": {"Chart": {"frame": 1, "layer": "Places", "field": "people", "max": max}}}
+                ]
+            }))
+            .unwrap();
+            let r = l.clamp();
+            let ElementKind::Chart { max: m, .. } = &l.elements[1].kind else { panic!("a chart") };
+            assert_eq!((*m, r.elements_adjusted), (kept, adjusted), "{max}");
+        }
     }
 
     #[test]

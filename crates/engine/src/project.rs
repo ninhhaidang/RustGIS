@@ -99,6 +99,7 @@ pub const CAPABILITIES: &[&str] = &[
     "layout-chart-look",
     "layout-chart-classes",
     "layout-chart-stack",
+    "layout-chart-facing",
     "field-generation",
     "field-package",
     FIELD_CONFLICTS,
