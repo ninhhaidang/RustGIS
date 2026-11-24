@@ -2567,15 +2567,37 @@ fn visit_complete(
     visit_within(source, None, visit)
 }
 
-/// As [`visit_complete`], for the features a request gives (those whose boxes meet its extent,
-/// or its box in the source's own system), or every feature for `None`.
+/// What a streamed layer's frame reads to draw its view ([`visit_within`]).
+enum ViewRead {
+    /// The features a request gives: those whose boxes meet its extent, or its box in the
+    /// source's own system.
+    Request(rustgis_data::source::Request),
+    /// The features with these ids, in order, found by their boxes as drawn (#2788).
+    Ids(Vec<u64>),
+}
+
+/// `e` rounded outward to f32, as an index of boxes keeps them.
+fn f32_box(e: &Extent) -> [f32; 4] {
+    let down = |v: f64| {
+        let f = v as f32;
+        if f64::from(f) > v { f.next_down() } else { f }
+    };
+    let up = |v: f64| {
+        let f = v as f32;
+        if f64::from(f) < v { f.next_up() } else { f }
+    };
+    [down(e.min_x), down(e.min_y), up(e.max_x), up(e.max_y)]
+}
+
+/// As [`visit_complete`], for the features a read gives, or every feature for `None`.
 fn visit_within(
     source: &dyn rustgis_data::source::FeatureSource,
-    request: Option<rustgis_data::source::Request>,
+    read: Option<&ViewRead>,
     visit: &mut dyn FnMut(Vec<rustgis_data::Feature>) -> rustgis_data::Result<()>,
 ) -> rustgis_data::Result<rustgis_data::source::Batch> {
-    let result = match request {
-        Some(req) => source.visit_request_chunks(&req, COMPLETE_CHUNK_BYTES, visit)?,
+    let result = match read {
+        Some(ViewRead::Request(req)) => source.visit_request_chunks(req, COMPLETE_CHUNK_BYTES, visit)?,
+        Some(ViewRead::Ids(ids)) => source.visit_ids_chunks(ids, COMPLETE_CHUNK_BYTES, visit)?,
         None => source.visit_chunks(None, COMPLETE_CHUNK_BYTES, visit)?,
     };
     if !result.complete {
@@ -6495,51 +6517,33 @@ fn render_frame(
             let crs = source.coord_crs();
             let view_only = globe.is_none()
                 && !gpu
-                && source.finds_all_by_area()
                 && matches!(labels_to, Labels::Own | Labels::Turned(_))
                 && draws_in_view_only(&chunk, !display.paused, shore.is_some());
             // On a map drawn in the file's own system.
-            let own_units = globe.is_none()
+            let own_map = globe.is_none()
                 && crs != rustgis_data::raster::Crs::LonLat
                 && source.reads_own_box()
                 && flat.held(crs).is_ok_and(|held| held.is_identity());
-            let own = view_only && own_units;
-            let whole =
-                || rustgis_data::source::Request { extent: None, limit: usize::MAX, own: Some((crs, rustgis_data::source::whole_plane())) };
-            let lonlat = !own && crs == rustgis_data::raster::Crs::LonLat && matches!(flat, rustgis_map::projection::Flat::Mercator);
-            // The box a read of the map extent `e` asks for, in its path's units.
-            let box_of = |e: &Extent| {
-                if own {
-                    Some(*e)
-                } else if lonlat && within_mercator_lats(e) {
-                    lonlat_box(&flat, e)
-                } else {
-                    None
-                }
-            };
-            let partial = |b: &Extent| {
-                let ll = if own { lonlat_box(&flat, b) } else { Some(*b) };
-                ll.is_none_or(|ll| !covers_most(&ll, &source.info().extent))
-            };
-            // A box as a read asks for it.
-            let ask = |b: Extent| rustgis_data::source::Request {
-                extent: if own { lonlat_box(&flat, &b) } else { Some(b) },
-                limit: usize::MAX,
-                own: own.then_some((crs, b)),
-            };
-            let near = view_only.then(|| box_of(&ctx.cull)).flatten().filter(partial);
-            // The source's long loops that only look at Cancel see the frame's stop too.
-            let _stop = cancel::current().map(rustgis_data::progress::also_stop_when);
-            // A view read this way is kept with the geometry drawn from it, for the frames of the
-            // views inside it: the same view again, a short pan, a zoom in, a restyle, an export.
-            // It is read a margin wider than it draws, so a short pan still finds it, unless a view
-            // this coarse was too large to keep. It is kept for the projection and the datum grids
-            // the frame drew with, within what the source's share of the map's view memory leaves
-            // beside its interaction rows.
-            let res = view.camera.res;
+            let own_units = view_only && own_map;
+            let lonlat_box_holds = view_only
+                && !own_units
+                && crs == rustgis_data::raster::Crs::LonLat
+                && matches!(flat, rustgis_map::projection::Flat::Mercator)
+                && within_mercator_lats(&ctx.cull);
+            // Both read by the file's own boxes, once a whole read has found them holding their
+            // shapes.
+            let own = own_units && source.finds_all_by_area();
+            let lonlat = lonlat_box_holds && source.finds_all_by_area();
+            // Every other pairing reads by the features' boxes as drawn, once a frame that read
+            // them all has indexed them (#2788); not one the file's own boxes serve, even before
+            // they are found holding, which an index would only duplicate, nor a file in
+            // longitude/latitude on Web Mercator, which draws from its display copy, whose boxes
+            // aren't gathered (at the latitudes Web Mercator clamps it reads every feature).
+            let mercator_lonlat = crs == rustgis_data::raster::Crs::LonLat && matches!(flat, rustgis_map::projection::Flat::Mercator);
+            let drawn = view_only && !own_units && !lonlat_box_holds && !mercator_lonlat && source.visits_ids();
             // Only while the source is as it was opened: a file changed since reads again, and
             // one gone fails as a read of it would.
-            let unchanged = match near.map(|_| source.same_as_opened()) {
+            let unchanged = match (own || lonlat || drawn).then(|| source.same_as_opened()) {
                 Some(Err(e)) => {
                     if let Some(s) = &mut layer.source {
                         s.error = Some(e.to_string());
@@ -6552,15 +6556,90 @@ fn render_frame(
             };
             let owner = layer.source.as_ref();
             let grids = rustgis_data::raster::crs::grid_generation();
-            let kept_key = format!("{key} {grids} {}", if own { "own" } else { "lonlat" });
-            let room = owner.map_or(0, |o| o.budget().saturating_sub(layer.view_cache_bytes()).min(rustgis_map::source::KEPT_VIEW_BYTES));
-            let kept = near.filter(|_| unchanged).and_then(|n| owner?.kept_view(&kept_key, &n, room));
+            let path_key = format!(
+                "{key} {grids} {}",
+                if own {
+                    "own"
+                } else if lonlat {
+                    "lonlat"
+                } else {
+                    "drawn"
+                }
+            );
+            // Looked up for every frame that may read only its view, so that a packing for another
+            // key (a projection, datum grids or way of reading since left) no longer counts.
+            let index = view_only.then(|| owner?.drawn_index(&path_key)).flatten().filter(|_| drawn && unchanged);
+            // What a frame asks the source for to draw the map extent `e` (the cull extent, or a
+            // wider one to keep): `None` reads every feature. The box must hold every feature
+            // drawn in `e`, straight edges and all:
+            // - on a map drawn in the source's own system (a UTM file on a UTM map, a Web Mercator
+            //   file on Web Mercator), `e` itself, in the file's units: the map draws its geometry
+            //   as it is;
+            // - on Web Mercator, for a source in longitude/latitude, `e`'s box in
+            //   longitude/latitude, short of the latitudes Web Mercator clamps: Web Mercator maps
+            //   longitude and latitude each on its own, so a feature whose box misses that box is
+            //   drawn wholly outside `e`;
+            // - otherwise, the features whose boxes as drawn meet `e`, from the index (#2788): the
+            //   boxes the draw loop culls by.
+            // A box over most of the layer reads it all, in file order: asking for nearly every
+            // feature costs more than reading the few left over.
+            let read_of = |e: &Extent| -> Option<ViewRead> {
+                if own {
+                    let ll = lonlat_box(&flat, e);
+                    (!ll.is_some_and(|ll| covers_most(&ll, &source.info().extent)))
+                        .then_some(ViewRead::Request(rustgis_data::source::Request { extent: ll, limit: usize::MAX, own: Some((crs, *e)) }))
+                } else if lonlat {
+                    let b = lonlat_box(&flat, e).filter(|_| within_mercator_lats(e))?;
+                    (!covers_most(&b, &source.info().extent)).then_some(ViewRead::Request(rustgis_data::source::Request {
+                        extent: Some(b),
+                        limit: usize::MAX,
+                        own: None,
+                    }))
+                } else {
+                    let index = index.as_ref()?;
+                    // Under half of them, or a stopped frame, which reads no further.
+                    let ids = index.query(f32_box(e), index.len().saturating_sub(1) / 2, cancel::requested)?;
+                    Some(ViewRead::Ids(ids))
+                }
+            };
+            // The source's long loops that only look at Cancel see the frame's stop too.
+            let _stop = cancel::current().map(rustgis_data::progress::also_stop_when);
+            let near_read = read_of(&ctx.cull);
+            let near = near_read.is_some().then_some(ctx.cull);
+            // A view read this way is kept with the geometry drawn from it, for the frames of the
+            // views inside it: the same view again, a short pan, a zoom in, a restyle, an export.
+            // It is read a margin wider than it draws, so a short pan still finds it, unless a view
+            // this coarse was too large to keep. It is kept for the projection, the datum grids and
+            // the way the frame read, within what the source's share of the map's view memory
+            // leaves beside its interaction rows and its index; its boxes are in map units.
+            let res = view.camera.res;
+            let share = owner.map_or(0, |o| o.budget().saturating_sub(layer.view_cache_bytes()));
+            let room = share.saturating_sub(owner.map_or(0, |o| o.drawn_index_bytes())).min(rustgis_map::source::KEPT_VIEW_BYTES);
+            let kept = near.filter(|_| unchanged).and_then(|n| owner?.kept_view(&path_key, &n, room));
             let wide = cull_extent(view, KEEP_MARGIN);
-            let keep = (near.is_some() && unchanged && kept.is_none() && owner.is_some_and(|o| o.view_worth_keeping(&kept_key, res)))
-                .then(|| box_of(&wide))
-                .flatten()
-                .filter(partial);
+            let keep = (near.is_some() && unchanged && kept.is_none() && owner.is_some_and(|o| o.view_worth_keeping(&path_key, res)))
+                .then(|| read_of(&wide).map(|r| (wide, r)))
+                .flatten();
             let mut keeping: Option<(Vec<rustgis_map::Layer>, usize)> = (keep.is_some() || kept.is_some()).then(|| (Vec::new(), 0));
+            // A frame reading every feature gathers their boxes as drawn, to index them, unless an
+            // index is kept or was too large for this key.
+            // Room for as many as the source says it holds, held at once and sorted where they lie
+            // to pack the index; none when that doesn't fit the source's share.
+            let wanted = drawn
+                && unchanged
+                && index.is_none()
+                && near_read.is_none()
+                && owner.is_some_and(|o| o.drawn_index_wanted(&path_key, share));
+            let count = source.info().count.and_then(|n| usize::try_from(n).ok());
+            let gathered_too_much = wanted && count.is_some_and(|n| n.saturating_mul(rustgis_map::source::PACKING_BYTES) > share);
+            let mut gathering: Option<Vec<(u32, [f32; 4])>> = count.filter(|_| wanted && !gathered_too_much).and_then(|n| {
+                let mut boxes = Vec::new();
+                boxes.try_reserve_exact(n).ok().map(|()| boxes)
+            });
+            // Records the read left out: one it couldn't read this time may read on another.
+            let mut skipped = 0usize;
+            // The view's own read isn't needed when a wider one is read to keep: its ids let go.
+            let near_read = near_read.filter(|_| keep.is_none());
             let mut draw_rows = |chunk: &mut rustgis_map::Layer| -> rustgis_data::Result<()> {
                 chunk.selection = chunk
                     .dataset
@@ -6578,6 +6657,29 @@ fn render_frame(
                         chunks.clear();
                     }
                 }
+                // Each row's box as the frame culled it; a chunk drawn without them (or an id an
+                // index can't hold) leaves the index unmade.
+                let gathered = gathering.as_mut().is_some_and(|boxes| {
+                    let extents = chunk.projected_extents();
+                    chunk.is_cached(&key)
+                        && extents.len() == chunk.dataset.features.len()
+                        && chunk.dataset.features.rows().zip(extents).all(|(row, e)| {
+                            // A shape of another kind than the layer's (a malformed file) may be
+                            // drawn past its box (a point's marker): no index.
+                            row.geometry().is_none_or(|g| g.kind() == chunk.dataset.geometry_type)
+                                && (e.is_empty()
+                                    // Never more than it has room for: a source that gives more
+                                    // than it said gets no index.
+                                    || (boxes.len() < boxes.capacity()
+                                        && u32::try_from(row.id()).is_ok_and(|id| {
+                                            boxes.push((id, f32_box(e)));
+                                            true
+                                        })))
+                        })
+                });
+                if !gathered {
+                    gathering = None;
+                }
                 chunk.clear_cache();
                 chunk.dataset.features = Vec::new().into();
                 Ok(())
@@ -6591,29 +6693,57 @@ fn render_frame(
                     chunk.draw_rows_of(rows);
                     draw_rows(&mut chunk)
                 }),
-                // A read of every feature on a map in the file's own system takes those
-                // longitude/latitude can't place too, as a read of the view there does.
-                None => visit_within(source.as_ref(), keep.or(near).map(ask).or_else(|| own_units.then(whole)), &mut |features| {
-                    // A frame no longer wanted reads no further (see `cancel`).
-                    if cancel::requested() {
-                        return Err(rustgis_data::DataError::Cancelled);
-                    }
-                    chunk.clear_cache();
-                    chunk.dataset.features = features.into();
-                    chunk.touch_geometry();
-                    draw_rows(&mut chunk)
-                })
-                .map(|_| ()),
+                None => {
+                    // A read of every feature on a map in the file's own system takes those
+                    // longitude/latitude can't place too, as a read of the view there does.
+                    let whole = own_map.then(|| {
+                        ViewRead::Request(rustgis_data::source::Request {
+                            extent: None,
+                            limit: usize::MAX,
+                            own: Some((crs, rustgis_data::source::whole_plane())),
+                        })
+                    });
+                    let read = keep.as_ref().map(|(_, r)| r).or(near_read.as_ref()).or(whole.as_ref());
+                    visit_within(source.as_ref(), read, &mut |features| {
+                        // A frame no longer wanted reads no further (see `cancel`).
+                        if cancel::requested() {
+                            return Err(rustgis_data::DataError::Cancelled);
+                        }
+                        chunk.clear_cache();
+                        chunk.dataset.features = features.into();
+                        chunk.touch_geometry();
+                        draw_rows(&mut chunk)
+                    })
+                    .map(|batch| skipped = batch.skipped)
+                }
             };
             // Kept only when drawn whole, for the datum grids there still are.
-            if let (Ok(()), Some(owner), Some((chunks, bytes))) = (&result, owner, keeping)
+            if let (Ok(()), Some(owner)) = (&result, owner)
                 && rustgis_data::raster::crs::grid_generation() == grids
             {
-                let fits = bytes <= room;
-                match (keep, &kept) {
-                    (Some(read), _) => owner.keep_view(&kept_key, read, res, fits.then_some((chunks, bytes))),
-                    (None, Some(drawn)) if fits => owner.refresh_kept_view(&kept_key, drawn, chunks, bytes),
-                    _ => {}
+                // Not a view a record was left out of: one it couldn't read this time may read on
+                // another.
+                if let Some((chunks, bytes)) = keeping.filter(|_| skipped == 0) {
+                    let fits = bytes <= room;
+                    match (keep, &kept) {
+                        (Some((read, _)), _) => owner.keep_view(&path_key, read, res, fits.then_some((chunks, bytes))),
+                        (None, Some(drawn)) if fits => owner.refresh_kept_view(&path_key, drawn, chunks, bytes),
+                        _ => {}
+                    }
+                }
+                // An index is made only from a read that gave every feature of a file as it was
+                // opened, in a frame still wanted: a feature left out of it would never be read.
+                if gathered_too_much {
+                    owner.refuse_drawn_index(&path_key, count.unwrap_or(0).saturating_mul(rustgis_map::source::PACKING_BYTES));
+                } else if let Some(boxes) = gathering.filter(|_| skipped == 0 && !cancel::requested())
+                    && source.same_as_opened().is_ok_and(|same| same)
+                {
+                    owner.index_drawn_boxes(&path_key, boxes, share);
+                } else if wanted && !cancel::requested() && source.same_as_opened().is_ok_and(|same| same) {
+                    // Gathered for nothing (a record left out, a row of another kind, more rows
+                    // than the source said): the next whole read would be the same, so none is
+                    // gathered again for this key, until the source is opened again.
+                    owner.refuse_drawn_index(&path_key, usize::MAX);
                 }
             }
             // Declined (`pictureless`): no frame, whatever the source made of the stop.
@@ -7009,12 +7139,14 @@ fn layer_masks(
                             && crs != rustgis_data::raster::Crs::LonLat
                             && source.reads_own_box()
                             && held.as_ref().is_some_and(|h| h.is_identity()))
-                        .then(|| rustgis_data::source::Request {
-                            extent: None,
-                            limit: usize::MAX,
-                            own: Some((crs, rustgis_data::source::whole_plane())),
+                        .then(|| {
+                            ViewRead::Request(rustgis_data::source::Request {
+                                extent: None,
+                                limit: usize::MAX,
+                                own: Some((crs, rustgis_data::source::whole_plane())),
+                            })
                         });
-                        let result = visit_within(source.as_ref(), whole, &mut |features| {
+                        let result = visit_within(source.as_ref(), whole.as_ref(), &mut |features| {
                             for feature in features {
                                 if let Some(g) = feature.geometry {
                                     let g = match (ctx.globe.is_some(), crs == rustgis_data::raster::Crs::LonLat) {

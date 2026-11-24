@@ -425,6 +425,16 @@ pub trait FeatureSource: Send + Sync {
     fn visit_chunks(&self, _extent: Option<Extent>, _bytes: usize, _visit: &mut dyn FnMut(Vec<Feature>) -> Result<()>) -> Result<Batch> {
         Err(DataError::Unsupported("a source that can't be read a chunk at a time".into()))
     }
+    /// Whether [`FeatureSource::visit_ids_chunks`] is available.
+    fn visits_ids(&self) -> bool {
+        false
+    }
+    /// The features with these ids ([`Feature::id`], in order), visited a chunk at a time in
+    /// source order, as [`FeatureSource::visit_chunks`] visits them: for a read of features
+    /// someone already knows by id. Ids the source doesn't hold are left out.
+    fn visit_ids_chunks(&self, _ids: &[u64], _bytes: usize, _visit: &mut dyn FnMut(Vec<Feature>) -> Result<()>) -> Result<Batch> {
+        Err(DataError::Unsupported("a source that can't be read by feature id".into()))
+    }
     /// [`FeatureSource::visit_chunks`] for a whole request, its box in the source's own system
     /// ([`Request::own`]) too (one over the whole plane, [`whole_plane`], reads every feature as a
     /// map in that system draws them): a source that reads one this way tests each feature's own box

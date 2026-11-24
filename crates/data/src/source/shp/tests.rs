@@ -978,3 +978,32 @@ fn a_complete_read_by_its_own_box_leaves_out_rows_without_a_shape() {
         assert_eq!(without_shape(&s, Some((utm, super::super::whole_plane()))), without_shape(&s, None));
     });
 }
+
+/// A read by feature ids gives exactly those features, in file order whatever order they are
+/// asked in, leaves out ids the file doesn't hold, and doesn't count as the whole read that looks
+/// at the stored boxes (#2788).
+#[test]
+fn a_read_by_ids_gives_those_features_in_file_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("pts.shp");
+    let mut ds = Dataset::new("pts", GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+    for i in 0..300 {
+        ds.push(Some(Geometry::Point(Coord::new(f64::from(i % 20), f64::from(i / 20)))), vec![Value::Int(i64::from(i))]);
+    }
+    write_shapefile(&ds, &path);
+    cache::with_index_dir(tmp.path().join("cache"), || {
+        let s = ShpSource::open_path(&path, "pts").unwrap();
+        assert!(s.visits_ids());
+        let mut got = Vec::new();
+        let batch = s
+            .visit_ids_chunks(&[250, 3, 0, 120, 3, 9_999], 4096, &mut |chunk| {
+                got.extend(chunk.iter().map(|f| (f.id, f.attrs.first().cloned())));
+                Ok(())
+            })
+            .unwrap();
+        assert!(batch.complete);
+        // Ids from 1: 0 and 9,999 aren't records of this file.
+        assert_eq!(got, [(3, Some(Value::Int(2))), (120, Some(Value::Int(119))), (250, Some(Value::Int(249)))]);
+        assert!(!s.finds_all_by_area(), "a read by ids isn't the whole read that looks at the boxes");
+    });
+}

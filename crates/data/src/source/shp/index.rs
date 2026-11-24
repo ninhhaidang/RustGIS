@@ -169,7 +169,7 @@ impl DiskIndex {
     /// through the directory in order: by id when few match, else in one pass over it. A join
     /// of the two tables sorted by id instead costs several seconds a few hundred thousand
     /// matches, and was run twice, once to count.
-    fn visit_matches(&self, db: &Connection, extent: [f32; 4], mut visit: impl FnMut(u32, Place) -> Result<()>) -> Result<(u64, bool)> {
+    fn visit_matches(&self, db: &Connection, extent: [f32; 4], visit: impl FnMut(u32, Place) -> Result<()>) -> Result<(u64, bool)> {
         let [x0, y0, x1, y1] = extent;
         let words = usize::try_from(self.count.div_ceil(64)).map_err(|_| bad("spatial index: too many records"))?;
         let mut hits: Vec<u64> = Vec::new();
@@ -197,6 +197,18 @@ impl DiskIndex {
                 }
             }
         }
+        self.visit_hits(db, &hits, matched, visit)
+    }
+
+    /// Every record marked in `hits` (one bit a record), `matched` of them, in file order: by id
+    /// when few are, else in one pass over the directory.
+    fn visit_hits(
+        &self,
+        db: &Connection,
+        hits: &[u64],
+        matched: u64,
+        mut visit: impl FnMut(u32, Place) -> Result<()>,
+    ) -> Result<(u64, bool)> {
         // What the progress counts from here: the records read, not every record of the file.
         crate::progress::begin(usize::try_from(matched).unwrap_or(usize::MAX));
         let hit = |id: u64| usize::try_from(id / 64).ok().and_then(|w| hits.get(w)).is_some_and(|w| w & (1u64 << (id % 64)) != 0);
@@ -418,6 +430,45 @@ impl Index {
     }
     pub fn indexed(&self) -> bool {
         matches!(self.storage, Storage::Disk(_))
+    }
+    /// The records numbered in `ids` (from 0, in order; numbers past the file's are left out), in
+    /// file order, for a read of the features someone already knows by number.
+    pub fn visit_numbered(&self, ids: &[u32], mut visit: impl FnMut(u32, Place) -> Result<()>) -> Result<(u64, bool)> {
+        let words = usize::try_from(self.count.div_ceil(64)).map_err(|_| bad("spatial index: too many records"))?;
+        let mut hits: Vec<u64> = Vec::new();
+        hits.try_reserve_exact(words).map_err(|e| bad(format!("spatial index: {e}")))?;
+        hits.resize(words, 0);
+        let mut matched = 0u64;
+        for &id in ids {
+            let id = u64::from(id);
+            if id >= self.count {
+                continue;
+            }
+            let Some(word) = usize::try_from(id / 64).ok().and_then(|w| hits.get_mut(w)) else { continue };
+            let bit = 1u64 << (id % 64);
+            if *word & bit == 0 {
+                *word |= bit;
+                matched += 1;
+            }
+        }
+        // None of the file's: nothing to read, not even its directory.
+        if matched == 0 {
+            crate::progress::check()?;
+            return Ok((0, true));
+        }
+        match &self.storage {
+            Storage::Disk(disk) => {
+                let db = connect(disk._lease.path(), false)?;
+                disk.visit_hits(&db, &hits, matched, visit)
+            }
+            // Without an index, the record headers are scanned and those numbered visited.
+            Storage::Scan { path, len } => {
+                crate::progress::begin(usize::try_from(matched).unwrap_or(usize::MAX));
+                let hit = |id: u32| usize::try_from(id / 64).ok().and_then(|w| hits.get(w)).is_some_and(|w| w & (1u64 << (id % 64)) != 0);
+                scan_for(path, *len, false, |id, place, _| if hit(id) { visit(id, place) } else { Ok(()) })?;
+                Ok((matched, true))
+            }
+        }
     }
     pub fn visit(&self, extent: Option<[f32; 4]>, limit: usize, mut visit: impl FnMut(u32, Place) -> Result<()>) -> Result<(u64, bool)> {
         match &self.storage {

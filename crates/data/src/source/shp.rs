@@ -262,6 +262,141 @@ impl ShpSource {
     }
 }
 
+impl ShpSource {
+    /// A complete visit of a request's records, or of those numbered `numbered` (from 0, in
+    /// order), parsed and given a chunk at a time ([`FeatureSource::visit_request_chunks`],
+    /// [`FeatureSource::visit_ids_chunks`]). Only a whole read looks at the stored boxes.
+    fn visit_with(
+        &self,
+        req: &Request,
+        numbered: Option<&[u32]>,
+        bytes: usize,
+        visit: &mut dyn FnMut(Vec<Feature>) -> Result<()>,
+    ) -> Result<Batch> {
+        let encoding = self.encoding.decoder();
+        let mut chunks = super::chunk_memory::Chunker::new(bytes, visit)?;
+        let req = Request { limit: usize::MAX, ..*req };
+        // The request's box in the file's own system, when it is one (a box in another system
+        // is read as if absent), and whether it is one over the whole plane, which narrows
+        // nothing: every record, those without a box too, as a whole read.
+        let own = self.reproject.own_box(&req);
+        let everywhere = own == Some(super::whole_plane());
+        let extent = self.reproject.request_box(&req).filter(|_| !everywhere);
+        if extent.is_some_and(|e| e.is_empty()) {
+            return Ok(Batch { complete: true, ..Batch::default() });
+        }
+        // Rounded outward, as the index keeps the records' boxes, so a box reaching the extent by
+        // less than an f32 step is still found.
+        let bounds = extent.map(|e| [f32_down(e.min_x), f32_down(e.min_y), f32_up(e.max_x), f32_up(e.max_y)]);
+        // As in `read`, an extent the file's system couldn't bound (#1925) visits every record.
+        let late = req.extent.is_some() && bounds.is_none();
+        // A whole read looks at whether the stored boxes hold their shapes, once.
+        let checking =
+            numbered.is_none() && req.extent.is_none() && (own.is_none() || everywhere) && self.boxes.load(Relaxed) == BOXES_UNKNOWN;
+        let mut missed = false;
+        // A record a whole read couldn't read this time had its box left unchecked: the check
+        // waits for a read that reads them all.
+        let mut unchecked = false;
+        let mut shp = Cursor::open(&self.shp)?;
+        let mut dbf = Cursor::open(&self.dbf)?;
+        let mut buf = Vec::new();
+        let mut row = vec![0u8; self.table.row_len];
+        let (mut skipped, mut unread_dates, mut null_text, mut boxed_off, mut not_utf8) = (0, Vec::new(), Vec::new(), 0u64, Vec::new());
+        let mut deleted = 0usize;
+        // The same directory, ordering, extent rules and read-only scan fallback as sampled
+        // reads, with no interaction row cap. The index visits records without materializing
+        // their directory or the complete feature collection in memory.
+        // Every record id fits u32. This format bound visits them all while keeping SQLite's
+        // LIMIT within its signed integer range on 64-bit hosts.
+        crate::progress::begin(self.info.count.and_then(|n| usize::try_from(n).ok()).unwrap_or(0));
+        let mut each = |i: u32, place: Place| -> Result<()> {
+            crate::progress::step(1)?;
+            if u64::from(place.len) > MAX_RECORD {
+                skipped += 1;
+                return Ok(());
+            }
+            buf.resize(place.len as usize, 0);
+            if shp.read_at(u64::from(place.offset), &mut buf).is_err() {
+                skipped += 1;
+                unchecked = true;
+                return Ok(());
+            }
+            let geometry = match parse_shape(&buf) {
+                // A coordinate that isn't a number (NaN or infinite) has no place: the record is
+                // left out and counted, as one that can't be converted (#1985). One under a stored
+                // box the index takes ([`index::usable`]) is counted apart too, as the index framed
+                // it by that box; a backwards one it can't frame, and counts as unboxed instead.
+                Ok(Some(g)) if !g.is_finite() => {
+                    skipped += 1;
+                    boxed_off += u64::from(index::usable(record_box(&buf, u64::from(place.len))));
+                    return Ok(());
+                }
+                Ok(Some(g)) => {
+                    // A box the index took as stored (one in order) that misses part of the shape.
+                    if checking && !missed {
+                        let stored = record_box(&buf, u64::from(place.len));
+                        missed = index::usable(stored) && !holds(stored, &g.extent());
+                    }
+                    match self.reproject.place(g, &req) {
+                        Some(placed) => Some(placed),
+                        None => {
+                            skipped += 1;
+                            return Ok(());
+                        }
+                    }
+                }
+                Ok(None) => None,
+                Err(()) => {
+                    skipped += 1;
+                    return Ok(());
+                }
+            };
+            // As in `read`, the shape itself is checked.
+            // As a read by area, its box in the file's own system included, gives no rows
+            // without a shape.
+            if geometry.as_ref().map_or(if own.is_some() { !everywhere } else { req.extent.is_some() }, |g| !g.inside) {
+                return Ok(());
+            }
+            let geometry = geometry.map(|p| p.geometry);
+            let attrs = if u64::from(i) < self.table.rows {
+                let at = self.table.header_len + u64::from(i) * self.table.row_len as u64;
+                if dbf.read_at(at, &mut row).is_err() {
+                    skipped += 1;
+                    return Ok(());
+                }
+                // A deleted row: its shape is left out too, and counted.
+                if row.first() == Some(&b'*') {
+                    deleted += 1;
+                    return Ok(());
+                }
+                self.table.values(&row, &encoding, &self.encoding, &mut unread_dates, &mut null_text, &mut not_utf8)
+            } else {
+                vec![Value::Null; self.table.columns.len()]
+            };
+            chunks.push(Feature { id: u64::from(i) + 1, geometry, attrs })
+        };
+        let (matched, complete) = match numbered {
+            Some(numbers) => self.index.visit_numbered(numbers, &mut each)?,
+            None => self.index.visit_complete(bounds, &mut each)?,
+        };
+        chunks.flush()?;
+        if checking && complete && (missed || !unchecked) {
+            self.boxes.store(if missed { BOXES_DONT } else { BOXES_HOLD }, Relaxed);
+        }
+        Ok(Batch {
+            features: Vec::new(),
+            matched,
+            complete,
+            skipped,
+            unread_dates,
+            rounded_dates: Vec::new(),
+            null_text,
+            notes: boxed_off_note(boxed_off, false, late).into_iter().chain(deleted_note(deleted, false)).collect(),
+            not_utf8,
+        })
+    }
+}
+
 impl FeatureSource for ShpSource {
     fn info(&self) -> &SourceInfo {
         &self.info
@@ -430,121 +565,15 @@ impl FeatureSource for ShpSource {
     /// As [`FeatureSource::visit_chunks`], narrowed by the request's box in the file's own system
     /// when it gives one ([`Request::own`]), and each shape's own box tested against it.
     fn visit_request_chunks(&self, req: &Request, bytes: usize, visit: &mut dyn FnMut(Vec<Feature>) -> Result<()>) -> Result<Batch> {
-        let encoding = self.encoding.decoder();
-        let mut chunks = super::chunk_memory::Chunker::new(bytes, visit)?;
-        let req = Request { limit: usize::MAX, ..*req };
-        // The request's box in the file's own system, when it is one (a box in another system
-        // is read as if absent), and whether it is one over the whole plane, which narrows
-        // nothing: every record, those without a box too, as a whole read.
-        let own = self.reproject.own_box(&req);
-        let everywhere = own == Some(super::whole_plane());
-        let extent = self.reproject.request_box(&req).filter(|_| !everywhere);
-        if extent.is_some_and(|e| e.is_empty()) {
-            return Ok(Batch { complete: true, ..Batch::default() });
-        }
-        // Rounded outward, as the index keeps the records' boxes, so a box reaching the extent by
-        // less than an f32 step is still found.
-        let bounds = extent.map(|e| [f32_down(e.min_x), f32_down(e.min_y), f32_up(e.max_x), f32_up(e.max_y)]);
-        // As in `read`, an extent the file's system couldn't bound (#1925) visits every record.
-        let late = req.extent.is_some() && bounds.is_none();
-        // A whole read looks at whether the stored boxes hold their shapes, once.
-        let checking = req.extent.is_none() && (own.is_none() || everywhere) && self.boxes.load(Relaxed) == BOXES_UNKNOWN;
-        let mut missed = false;
-        // A record a whole read couldn't read this time had its box left unchecked: the check
-        // waits for a read that reads them all.
-        let mut unchecked = false;
-        let mut shp = Cursor::open(&self.shp)?;
-        let mut dbf = Cursor::open(&self.dbf)?;
-        let mut buf = Vec::new();
-        let mut row = vec![0u8; self.table.row_len];
-        let (mut skipped, mut unread_dates, mut null_text, mut boxed_off, mut not_utf8) = (0, Vec::new(), Vec::new(), 0u64, Vec::new());
-        let mut deleted = 0usize;
-        // The same directory, ordering, extent rules and read-only scan fallback as sampled
-        // reads, with no interaction row cap. The index visits records without materializing
-        // their directory or the complete feature collection in memory.
-        // Every record id fits u32. This format bound visits them all while keeping SQLite's
-        // LIMIT within its signed integer range on 64-bit hosts.
-        crate::progress::begin(self.info.count.and_then(|n| usize::try_from(n).ok()).unwrap_or(0));
-        let (matched, complete) = self.index.visit_complete(bounds, |i, place| {
-            crate::progress::step(1)?;
-            if u64::from(place.len) > MAX_RECORD {
-                skipped += 1;
-                return Ok(());
-            }
-            buf.resize(place.len as usize, 0);
-            if shp.read_at(u64::from(place.offset), &mut buf).is_err() {
-                skipped += 1;
-                unchecked = true;
-                return Ok(());
-            }
-            let geometry = match parse_shape(&buf) {
-                // A coordinate that isn't a number (NaN or infinite) has no place: the record is
-                // left out and counted, as one that can't be converted (#1985). One under a stored
-                // box the index takes ([`index::usable`]) is counted apart too, as the index framed
-                // it by that box; a backwards one it can't frame, and counts as unboxed instead.
-                Ok(Some(g)) if !g.is_finite() => {
-                    skipped += 1;
-                    boxed_off += u64::from(index::usable(record_box(&buf, u64::from(place.len))));
-                    return Ok(());
-                }
-                Ok(Some(g)) => {
-                    // A box the index took as stored (one in order) that misses part of the shape.
-                    if checking && !missed {
-                        let stored = record_box(&buf, u64::from(place.len));
-                        missed = index::usable(stored) && !holds(stored, &g.extent());
-                    }
-                    match self.reproject.place(g, &req) {
-                        Some(placed) => Some(placed),
-                        None => {
-                            skipped += 1;
-                            return Ok(());
-                        }
-                    }
-                }
-                Ok(None) => None,
-                Err(()) => {
-                    skipped += 1;
-                    return Ok(());
-                }
-            };
-            // As in `read`, the shape itself is checked; a read by area, its box in the file's
-            // own system included, gives no rows without a shape.
-            if geometry.as_ref().map_or(if own.is_some() { !everywhere } else { req.extent.is_some() }, |g| !g.inside) {
-                return Ok(());
-            }
-            let geometry = geometry.map(|p| p.geometry);
-            let attrs = if u64::from(i) < self.table.rows {
-                let at = self.table.header_len + u64::from(i) * self.table.row_len as u64;
-                if dbf.read_at(at, &mut row).is_err() {
-                    skipped += 1;
-                    return Ok(());
-                }
-                // A deleted row: its shape is left out too, and counted.
-                if row.first() == Some(&b'*') {
-                    deleted += 1;
-                    return Ok(());
-                }
-                self.table.values(&row, &encoding, &self.encoding, &mut unread_dates, &mut null_text, &mut not_utf8)
-            } else {
-                vec![Value::Null; self.table.columns.len()]
-            };
-            chunks.push(Feature { id: u64::from(i) + 1, geometry, attrs })
-        })?;
-        chunks.flush()?;
-        if checking && complete && (missed || !unchecked) {
-            self.boxes.store(if missed { BOXES_DONT } else { BOXES_HOLD }, Relaxed);
-        }
-        Ok(Batch {
-            features: Vec::new(),
-            matched,
-            complete,
-            skipped,
-            unread_dates,
-            rounded_dates: Vec::new(),
-            null_text,
-            notes: boxed_off_note(boxed_off, false, late).into_iter().chain(deleted_note(deleted, false)).collect(),
-            not_utf8,
-        })
+        self.visit_with(req, None, bytes, visit)
+    }
+    fn visits_ids(&self) -> bool {
+        true
+    }
+    /// The records whose features have these ids (record numbers from 1), in file order.
+    fn visit_ids_chunks(&self, ids: &[u64], bytes: usize, visit: &mut dyn FnMut(Vec<Feature>) -> Result<()>) -> Result<Batch> {
+        let numbers: Vec<u32> = ids.iter().filter_map(|id| id.checked_sub(1).and_then(|n| u32::try_from(n).ok())).collect();
+        self.visit_with(&Request { extent: None, limit: usize::MAX, own: None }, Some(&numbers), bytes, visit)
     }
 }
 
