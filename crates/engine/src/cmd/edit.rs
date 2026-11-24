@@ -466,6 +466,61 @@ enum Loss {
     Error(rustgis_data::query::Fault),
 }
 
+impl Loss {
+    /// The loss as a preview names it; `None` for a cut that took nothing.
+    fn previewed(self) -> Option<PreviewLoss> {
+        Some(match self {
+            Loss::Cut(Cut::None) => return None,
+            Loss::Cut(Cut::Fraction) => PreviewLoss::Fraction,
+            Loss::Cut(Cut::Range) => PreviewLoss::Range,
+            Loss::Cut(Cut::NotANumber) => PreviewLoss::NotANumber,
+            Loss::Cut(Cut::NotFinite) => PreviewLoss::NotFinite,
+            Loss::Cut(Cut::Time) => PreviewLoss::Time,
+            Loss::Unread => PreviewLoss::Unheld,
+            Loss::Error(fault) => PreviewLoss::Error(fault),
+        })
+    }
+}
+
+/// What writing a row's result into its field loses, as a Calculate Field preview says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewLoss {
+    /// A whole-number field drops the fraction.
+    Fraction,
+    /// A number past the 64-bit integer range is null.
+    Range,
+    /// Not a number (NaN), or a word read as one, is null.
+    NotANumber,
+    /// An infinity is null.
+    NotFinite,
+    /// A date field keeps a date-time's day.
+    Time,
+    /// A result the field can't hold (text that isn't a number or a date) is null.
+    Unheld,
+    /// The expression's error made it null.
+    Error(rustgis_data::query::Fault),
+}
+
+/// A result as a field holds it, with what holding it lost.
+struct Held {
+    value: Value,
+    /// What the coercion to the field's type took.
+    cut: Option<Loss>,
+    /// The error that made it null or, for a null nobody asked for, the value not read.
+    other: Option<Loss>,
+}
+
+/// A result and the error that made it null, if one did, as a `ty` field holds it.
+fn held((v, fault): (Value, Option<rustgis_data::query::Fault>), ty: FieldType) -> Held {
+    let asked_null = v.asks_null();
+    let (value, cut) = coerce_cut(v, ty);
+    let other = match fault.filter(|_| value.is_null()) {
+        Some(fault) => Some(Loss::Error(fault)),
+        None => (!asked_null && value.is_null() && cut == Cut::None).then_some(Loss::Unread),
+    };
+    Held { value, cut: (cut != Cut::None).then_some(Loss::Cut(cut)), other }
+}
+
 impl WriteLosses {
     /// A tally for an edit that may write the same row more than once, counting each kind of
     /// loss once per row: a later write that loses something else is still counted.
@@ -480,29 +535,27 @@ impl WriteLosses {
 
     /// Row `row`'s result and the error that made it null, if one did, as a `ty` field holds it,
     /// counting what that lost.
-    pub(crate) fn write(&mut self, row: usize, (v, fault): (Value, Option<rustgis_data::query::Fault>), ty: FieldType) -> Value {
-        let asked_null = v.asks_null();
-        let (v, cut) = coerce_cut(v, ty);
-        if cut != Cut::None && self.first(row, Loss::Cut(cut)) {
-            self.cuts.add(cut);
-        }
-        if let Some(fault) = fault.filter(|_| v.is_null()) {
-            if !self.first(row, Loss::Error(fault)) {
-                return v;
+    pub(crate) fn write(&mut self, row: usize, result: (Value, Option<rustgis_data::query::Fault>), ty: FieldType) -> Value {
+        let Held { value, cut, other } = held(result, ty);
+        for loss in [cut, other].into_iter().flatten() {
+            if !self.first(row, loss) {
+                continue;
             }
-            match self.errors.iter_mut().find(|(f, ..)| *f == fault) {
-                Some((_, n, rows)) => {
-                    *n += 1;
-                    if rows.len() < LISTED_ROWS {
-                        rows.push(row);
+            match loss {
+                Loss::Cut(cut) => self.cuts.add(cut),
+                Loss::Unread => self.unread += 1,
+                Loss::Error(fault) => match self.errors.iter_mut().find(|(f, ..)| *f == fault) {
+                    Some((_, n, rows)) => {
+                        *n += 1;
+                        if rows.len() < LISTED_ROWS {
+                            rows.push(row);
+                        }
                     }
-                }
-                None => self.errors.push((fault, 1, vec![row])),
+                    None => self.errors.push((fault, 1, vec![row])),
+                },
             }
-        } else if !asked_null && v.is_null() && cut == Cut::None && self.first(row, Loss::Unread) {
-            self.unread += 1;
         }
-        v
+        value
     }
 
     /// The notices for what writing `field`, of type `ty`, lost, each starting with `by` (the
@@ -1592,6 +1645,36 @@ pub fn check_calculation(expr: &str, ds: &rustgis_data::Dataset) -> Result<(), S
     Calculation::parse(expr, ds).map(|_| ())
 }
 
+/// One row of a Calculate Field preview: the value the field would get, and what writing it
+/// loses, the kind the run's notices count.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CalculationPreview {
+    pub row: usize,
+    pub value: Value,
+    pub lost: Option<PreviewLoss>,
+}
+
+/// What Calculate Field would write with `expr` into field `field` of `rows` (rows past the end
+/// left out), parsed once as [`check_calculation`] reads it: the error is the same.
+pub fn preview_calculation(
+    expr: &str,
+    ds: &rustgis_data::Dataset,
+    field: usize,
+    rows: &[usize],
+) -> Result<Vec<CalculationPreview>, String> {
+    let calc = Calculation::parse(expr, ds)?;
+    let ty = ds.fields.get(field).map(|f| f.ty).ok_or("no field")?;
+    Ok(rows
+        .iter()
+        .filter(|r| **r < ds.features.len())
+        .map(|&row| {
+            let Held { value, cut, other } = held(calc.eval_or_fault(ds, row), ty);
+            // The error is why the value is null; a cut alone says what it took.
+            CalculationPreview { row, value, lost: other.or(cut).and_then(Loss::previewed) }
+        })
+        .collect())
+}
+
 /// A Calculate Field expression: the expression language, or, for text it doesn't read, the
 /// earlier calculator's `a op b` (whose bare field names may hold spaces: `Pop Est * 2`).
 pub(crate) enum Calculation {
@@ -1992,6 +2075,73 @@ mod tests {
         // Text that doesn't read the field means what it does elsewhere.
         assert_eq!(v("'it''s'"), Value::Text("it's".into()));
         assert_eq!(v("'a' || 'b'"), Value::Text("ab".into()));
+    }
+
+    /// Calculate Field's preview (#2817) is what the run writes in each row, as the field holds
+    /// it, with what writing it loses; the expression's error is the check's.
+    #[test]
+    fn a_calculation_preview_is_what_the_run_writes() {
+        let fields = vec![
+            Field::new("n", FieldType::Double),
+            Field::new("whole", FieldType::Integer),
+            Field::new("name", FieldType::Text),
+            Field::new("day", FieldType::Date),
+            Field::new("at", FieldType::DateTime),
+        ];
+        let mut ds = Dataset::new("t", GeometryType::None, fields);
+        for (n, name) in [(2.5, "a"), (1e300, "b"), (-1.5, "c"), (4.0, "d")] {
+            let at = Value::parse("2026-11-23T10:30:00", FieldType::DateTime);
+            ds.push(None, vec![Value::Float(n), Value::Int(0), Value::Text(name.into()), Value::Null, at]);
+        }
+        let (n, whole, day) = (0, 1, 3);
+        let preview = |e: &str, field: usize, rows: &[usize]| -> Vec<(usize, Value, Option<PreviewLoss>)> {
+            let previewed = preview_calculation(e, &ds, field, rows).unwrap_or_else(|e| panic!("{e}"));
+            previewed.into_iter().map(|p| (p.row, p.value, p.lost)).collect()
+        };
+        // The rows asked for, in their order; a clean result loses nothing.
+        assert_eq!(preview("n * 2", n, &[0, 3]), vec![(0, Value::Float(5.0), None), (3, Value::Float(8.0), None)]);
+        // As the field holds it: a fraction into whole numbers, a number past their range.
+        assert_eq!(
+            preview("n", whole, &[0, 2]),
+            vec![(0, Value::Int(2), Some(PreviewLoss::Fraction)), (2, Value::Int(-1), Some(PreviewLoss::Fraction))]
+        );
+        assert_eq!(preview("n", whole, &[1]), vec![(1, Value::Null, Some(PreviewLoss::Range))]);
+        // Text that isn't a number, an expression's error, a date-time into a date.
+        assert_eq!(preview("name", whole, &[0]), vec![(0, Value::Null, Some(PreviewLoss::Unheld))]);
+        assert_eq!(preview("n / 0", n, &[0]), vec![(0, Value::Null, Some(PreviewLoss::Error(rustgis_data::query::Fault::DivisionByZero)))]);
+        let at = preview("at", day, &[0]);
+        assert_eq!((at[0].0, at[0].2), (0, Some(PreviewLoss::Time)));
+        assert!(matches!(at[0].1, Value::Date(_)), "{:?}", at[0].1);
+        // A null asked for loses nothing.
+        assert_eq!(preview("null", n, &[0]), vec![(0, Value::Null, None)]);
+        // No rows, or rows past the end: nothing previewed.
+        assert_eq!(preview("n", n, &[]), vec![]);
+        assert_eq!(preview("n", n, &[3, 4, 99]), vec![(3, Value::Float(4.0), None)]);
+        // An expression that doesn't read: the check's error.
+        assert_eq!(preview_calculation("nosuch * 2", &ds, n, &[0]), Err(check_calculation("nosuch * 2", &ds).unwrap_err()));
+        assert!(preview_calculation("n", &ds, 9, &[0]).is_err(), "no such field");
+    }
+
+    /// The run's notices still count each loss as before the preview shared their reading: a
+    /// fraction, a value not read, an error, once each.
+    #[test]
+    fn calculate_field_notices_count_what_the_preview_reads() {
+        let mut ds = Dataset::new("t", GeometryType::None, vec![Field::new("n", FieldType::Double), Field::new("name", FieldType::Text)]);
+        for (n, name) in [(2.5, "a"), (0.0, "b"), (3.0, "7")] {
+            ds.push(None, vec![Value::Float(n), Value::Text(name.into())]);
+        }
+        let mut losses = WriteLosses::default();
+        let calc = Calculation::parse("if(n = 0, 1 / n, n)", &ds).unwrap();
+        let written: Vec<Value> = (0..3).map(|r| losses.write(r, calc.eval_or_fault(&ds, r), FieldType::Integer)).collect();
+        assert_eq!(written, vec![Value::Int(2), Value::Null, Value::Int(3)]);
+        let calc = Calculation::parse("name", &ds).unwrap();
+        assert_eq!(losses.write(0, calc.eval_or_fault(&ds, 0), FieldType::Integer), Value::Null);
+        let notices: Vec<String> =
+            losses.notices(NoticeText::term("Calculate Field"), "n", FieldType::Integer).into_iter().map(|(_, t)| t.english()).collect();
+        assert_eq!(notices.len(), 3, "{notices:?}");
+        assert!(notices[0].contains("1 result lost its fraction"), "{notices:?}");
+        assert!(notices[1].contains("is null in 1 row, whose result isn't"), "{notices:?}");
+        assert!(notices[2].contains("because of a division by zero (row 2)"), "{notices:?}");
     }
 
     /// A calculation past the expression language's length limit is refused, however the earlier

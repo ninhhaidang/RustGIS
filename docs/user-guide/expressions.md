@@ -240,7 +240,13 @@ them when it takes no arguments).
 While the list is open the expression isn't checked: `pop_`, with `pop_est` suggested, is a word
 still being chosen. It is checked once the list closes (an item taken, Escape, the cursor moved
 away, the box left, or nothing matching what's typed), and its error shown then if it's still
-invalid (`pop_x`: no field named 'pop_x').
+invalid (`pop_x`: no field named 'pop_x'). Once it reads, a line under the box previews what the
+expression gives in the first three selected rows, or the first three rows when none is selected,
+as the chosen field holds it and the attribute table shows it, with what writing it loses:
+`Preview: 2 (fraction dropped) · <Null> (a division by zero) · 6`. Only those rows are evaluated,
+and nothing changes until **Calculate** is clicked. The layer's checks (domains, allowed
+combinations of values, constraint rules) and its calculation rules still run then, so a value the
+preview shows can still be refused.
 
 A `(` typed closes itself, the cursor inside, unless text follows it or it's in a text or a field
 name; so does a `'` or `"` where a value can start (at the start, after a space, `(`, `,` or an
