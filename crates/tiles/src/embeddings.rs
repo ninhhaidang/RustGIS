@@ -282,6 +282,51 @@ fn year_of(t: i64) -> i32 {
     i32::try_from(y).unwrap_or(0)
 }
 
+/// The year of an index row, from its `datetime`: a timestamp column, read as date-times since
+/// native dates (#1894), and before them as a number since 1970 or as text.
+fn aef_year(v: &Value) -> Option<i32> {
+    match v {
+        Value::DateTime(t) => i32::try_from(t.date().ymd().0).ok(),
+        Value::Date(d) => i32::try_from(d.ymd().0).ok(),
+        Value::Int(t) => Some(year_of(*t)),
+        Value::Text(t) => t.get(..4).and_then(|y| y.parse().ok()),
+        _ => None,
+    }
+}
+
+/// What a search takes of a row of the index (its `datetime` in column `date`, its address in
+/// `href`): its year, its file's web address and its footprint. `None` when one can't be read.
+fn row_parts(f: &Feature, date: Option<usize>, href: Option<usize>) -> Option<(i32, String, &Geometry)> {
+    let at = |c: Option<usize>| f.attrs.get(c?);
+    let url = https(&at(href)?.to_string());
+    Some((aef_year(at(date)?)?, url.starts_with("https://").then_some(url)?, f.geometry.as_ref()?))
+}
+
+/// How many rows of what the index read a search can't use ([`row_parts`], and those whose footprint
+/// the reader couldn't decode) and leaves out; an error when it can use none of an index read whole,
+/// as the search would answer that there are no tiles (a read in part didn't see the others, and is
+/// said as one). A row without a footprint is in no box, so a search reads none.
+fn unusable(fields: &[Field], batch: &Batch) -> Result<usize, String> {
+    let col = |n: &str| fields.iter().position(|f| f.name == n);
+    let (date, href) = (col("datetime"), col(AEF_HREF));
+    let usable = batch.features.iter().filter(|f| row_parts(f, date, href).is_some()).count();
+    let n = (batch.features.len() - usable).saturating_add(batch.skipped);
+    if n > 0 && usable == 0 && batch.complete {
+        return Err(format!(
+            "AlphaEarth's index has {n} rows there, none whose date, address and footprint can be read, so its tiles can't be listed"
+        ));
+    }
+    Ok(n)
+}
+
+/// What to say of the `n` rows of AlphaEarth's index a search left out, as it can't use them
+/// ([`Found::unusable`], [`SeriesFound::unusable`]), of those it read when it read the index in part
+/// (not `complete`): nothing when there were none.
+pub fn unusable_note(n: usize, complete: bool) -> Option<String> {
+    let read = if complete { "" } else { " of those read" };
+    (n > 0).then(|| format!("rows of AlphaEarth's index left out, as their date, address or footprint can't be read: {n}{read}"))
+}
+
 /// The tiles of a year in what the index read, nearest the box's centre first (at most
 /// [`MAX_TILES`]).
 pub fn aef_tiles(fields: &[Field], batch: &Batch, year: i32, bbox: [f64; 4]) -> Vec<Tile> {
@@ -301,19 +346,7 @@ fn aef_rows(fields: &[Field], batch: &Batch, bbox: [f64; 4], keep: impl Fn(i32) 
         .features
         .iter()
         .filter_map(|f| {
-            let year = date.and_then(|c| f.attrs.get(c)).and_then(|v| match v {
-                Value::Int(t) => Some(year_of(*t)),
-                Value::Text(t) => t.get(..4).and_then(|y| y.parse().ok()),
-                _ => None,
-            })?;
-            if !keep(year) {
-                return None;
-            }
-            let url = https(&text(f, href));
-            if !url.starts_with("https://") {
-                return None;
-            }
-            let g = f.geometry.as_ref()?;
+            let (year, url, g) = row_parts(f, date, href).filter(|(year, ..)| keep(*year))?;
             let e = g.extent();
             let footprint = match g {
                 Geometry::Polygon(p) => {
@@ -373,6 +406,8 @@ pub struct SeriesFound {
     pub duplicates: usize,
     /// Whether the index was read whole for the box.
     pub complete: bool,
+    /// Rows left out because their date, address or footprint can't be read.
+    pub unusable: usize,
 }
 
 /// How far apart (degrees, about 10 m) two years' footprint corners may be and still be one
@@ -449,9 +484,34 @@ pub fn aef_place(url: &str) -> Option<String> {
     Some(format!("{zone} {place}"))
 }
 
-/// What a search found: the tiles, and whether the index was read whole for the box (a box
-/// holding more rows than one search reads is read in part, and the map should be zoomed in).
-pub type Found = (Vec<Tile>, bool);
+/// What a search found.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Found {
+    pub tiles: Vec<Tile>,
+    /// Whether the index was read whole for the box (a box holding more rows than one search reads
+    /// is read in part, and the map should be zoomed in).
+    pub complete: bool,
+    /// Rows of the index left out because their date, address or footprint can't be read (AlphaEarth).
+    pub unusable: usize,
+}
+
+impl From<(Vec<Tile>, bool)> for Found {
+    fn from((tiles, complete): (Vec<Tile>, bool)) -> Self {
+        Found { tiles, complete, unusable: 0 }
+    }
+}
+
+/// [`Found`], from what the index read.
+fn found(fields: &[Field], batch: &Batch, year: i32, bbox: [f64; 4]) -> Result<Found, String> {
+    let unusable = unusable(fields, batch)?;
+    Ok(Found { tiles: aef_tiles(fields, batch, year, bbox), complete: batch.complete, unusable })
+}
+
+/// [`SeriesFound`], from what the index read.
+fn series_found(fields: &[Field], batch: &Batch, years: (i32, i32), bbox: [f64; 4]) -> Result<SeriesFound, String> {
+    let unusable = unusable(fields, batch)?;
+    Ok(SeriesFound { unusable, ..aef_series(fields, batch, years, bbox) })
+}
 
 fn aef_request(bbox: [f64; 4]) -> Request {
     Request { extent: Some(Extent::new(bbox[0], bbox[1], bbox[2], bbox[3])), limit: MAX_INDEX_ROWS, own: None }
@@ -467,9 +527,7 @@ pub fn search_aef(bbox: [f64; 4], year: i32, done: Box<dyn FnOnce(Result<Found, 
         AEF_INDEX,
         vec![AEF_HREF.into()],
         aef_request(bbox),
-        Box::new(move |r| {
-            done(r.map(|(fields, batch)| (aef_tiles(&fields, &batch, year, bbox), batch.complete)).map_err(|e| e.to_string()))
-        }),
+        Box::new(move |r| done(r.map_err(|e| e.to_string()).and_then(|(fields, batch)| found(&fields, &batch, year, bbox)))),
     );
 }
 
@@ -479,7 +537,7 @@ pub fn search_aef_blocking(bbox: [f64; 4], year: i32) -> Result<Found, String> {
     let bbox = check_bbox(bbox)?;
     let (fields, batch) =
         rustgis_data::source::query_url_blocking(AEF_INDEX, vec![AEF_HREF.into()], aef_request(bbox)).map_err(|e| e.to_string())?;
-    Ok((aef_tiles(&fields, &batch, year, bbox), batch.complete))
+    found(&fields, &batch, year, bbox)
 }
 
 /// Finds AlphaEarth's tiles in a box over the years `first` to `last`, each with its file a year:
@@ -493,7 +551,7 @@ pub fn search_aef_series(bbox: [f64; 4], years: (i32, i32), done: Box<dyn FnOnce
         AEF_INDEX,
         vec![AEF_HREF.into()],
         aef_request(bbox),
-        Box::new(move |r| done(r.map(|(fields, batch)| aef_series(&fields, &batch, years, bbox)).map_err(|e| e.to_string()))),
+        Box::new(move |r| done(r.map_err(|e| e.to_string()).and_then(|(fields, batch)| series_found(&fields, &batch, years, bbox)))),
     );
 }
 
@@ -503,7 +561,7 @@ pub fn search_aef_series_blocking(bbox: [f64; 4], years: (i32, i32)) -> Result<S
     let bbox = check_bbox(bbox)?;
     let (fields, batch) =
         rustgis_data::source::query_url_blocking(AEF_INDEX, vec![AEF_HREF.into()], aef_request(bbox)).map_err(|e| e.to_string())?;
-    Ok(aef_series(&fields, &batch, years, bbox))
+    series_found(&fields, &batch, years, bbox)
 }
 
 // Earth Index.
@@ -622,7 +680,7 @@ pub fn search_earth_index(bbox: [f64; 4], done: Box<dyn FnOnce(Result<Found, Str
     };
     let (tiles, all) = earth_index_candidates(bbox);
     if tiles.is_empty() {
-        return done(Ok((Vec::new(), all)));
+        return done(Ok((Vec::new(), all).into()));
     }
     struct Probe {
         left: usize,
@@ -660,7 +718,7 @@ pub fn search_earth_index(bbox: [f64; 4], done: Box<dyn FnOnce(Result<Found, Str
                     drop(s);
                     done(match failed {
                         Some(e) if found.is_empty() => Err(e),
-                        _ => Ok((found, all)),
+                        _ => Ok((found, all).into()),
                     });
                 }
             }),
@@ -1013,6 +1071,89 @@ mod tests {
         assert_eq!(year_start_ms(2024), 1_704_067_200_000.0);
         assert_eq!(year_of(year_start_ms(2000) as i64), 2000);
         assert_eq!(aef_series(&[], &batch, (2017, 2025), [0.0, 0.0, 1.0, 1.0]).series, Vec::new());
+    }
+
+    /// The index as its reader gives it: a Parquet timestamp column, read as date-times.
+    #[test]
+    fn index_rows_read_from_parquet_have_their_years() {
+        use rustgis_data::DateTime;
+        use rustgis_data::source::{FeatureSource, parquet};
+        let file = |date: &dyn Fn(i32) -> Value| {
+            let fields = vec![
+                Field::new("id", FieldType::Text),
+                Field::new("datetime", FieldType::DateTime),
+                Field::new(AEF_HREF, FieldType::Text),
+                Field::new("proj:epsg", FieldType::Text),
+            ];
+            let mut ds = Dataset::new("index", GeometryType::Polygon, fields);
+            for year in [2017, 2024, 2025] {
+                let ring = [(-43.4, -21.0), (-42.6, -21.0), (-42.6, -20.7), (-43.4, -20.7), (-43.4, -21.0)];
+                let ring = ring.iter().map(|(x, y)| Coord::new(*x, *y)).collect();
+                let href = format!("s3://us-west-2.opendata.source.coop/a/{year}/23S/x{year}-0-0.tiff");
+                let attrs = vec![Value::Text("1".into()), date(year), Value::Text(href), Value::Text("EPSG:32723".into())];
+                ds.push(Some(Geometry::Polygon(vec![vec![ring]])), attrs);
+            }
+            let src = parquet::ParquetSource::open_bytes(parquet::write(&ds).unwrap(), "index").unwrap().exact();
+            (src.info().fields.clone(), src.read(&Request::all()).unwrap())
+        };
+        let bbox = [-42.89, -20.76, -42.87, -20.74];
+        // 1 January in UTC, as the index has it, and without a zone.
+        let micros = |year: i32| year_start_ms(year) as i64 * 1000;
+        for utc in [true, false] {
+            let at = |y: i32| if utc { DateTime::with_offset(micros(y), 0) } else { DateTime::local(micros(y)) };
+            let (fields, batch) = file(&|y| Value::DateTime(at(y).unwrap()));
+            assert!(matches!(batch.features.first().and_then(|f| f.attrs.get(1)), Some(Value::DateTime(_))));
+            let one = found(&fields, &batch, 2024, bbox).unwrap();
+            assert_eq!((one.tiles.len(), one.complete, one.unusable), (1, true, 0));
+            assert_eq!(one.tiles[0].url, "https://data.source.coop/a/2024/23S/x2024-0-0.tiff");
+            let f = series_found(&fields, &batch, (2017, 2025), bbox).unwrap();
+            let years: Vec<Vec<i32>> = f.series.iter().map(|s| s.years.keys().copied().collect()).collect();
+            assert_eq!((years, f.unusable), (vec![vec![2017, 2024, 2025]], 0));
+            // A year with no file is no tiles, while the dates are read.
+            assert_eq!(found(&fields, &batch, 2020, bbox), Ok((Vec::new(), true).into()));
+        }
+        // A row without a date among others is left out, counted whatever the year asked for.
+        let (fields, batch) = file(&|y| if y == 2025 { Value::Null } else { Value::DateTime(DateTime::local(micros(y)).unwrap()) });
+        let left = found(&fields, &batch, 2024, bbox).unwrap();
+        assert_eq!((left.tiles.len(), left.unusable), (1, 1));
+        let left = series_found(&fields, &batch, (2017, 2025), bbox).unwrap();
+        assert_eq!((left.series[0].years.len(), left.unusable), (2, 1));
+        // So are rows without a web address, or without a footprint.
+        let (fields, whole) = file(&|y| Value::DateTime(DateTime::local(micros(y)).unwrap()));
+        let spoil: [fn(&mut Feature); 2] = [|f| f.attrs[2] = Value::Text("ftp://nowhere".into()), |f| f.geometry = None];
+        for spoil in spoil {
+            let mut batch = whole.clone();
+            spoil(&mut batch.features[0]);
+            assert_eq!(found(&fields, &batch, 2024, bbox).unwrap().unusable, 1);
+            assert_eq!(series_found(&fields, &batch, (2017, 2025), bbox).unwrap().unusable, 1);
+        }
+        // And those in the box whose footprint the reader couldn't decode, which it counts itself.
+        let mut batch = Batch { skipped: 2, ..whole.clone() };
+        assert_eq!(found(&fields, &batch, 2024, bbox).unwrap().unusable, 2);
+        assert_eq!(series_found(&fields, &batch, (2017, 2025), bbox).unwrap().unusable, 2);
+        batch.features.clear();
+        assert!(found(&fields, &batch, 2024, bbox).unwrap_err().contains("has 2 rows there"));
+        assert_eq!(
+            unusable_note(1, true).as_deref(),
+            Some("rows of AlphaEarth's index left out, as their date, address or footprint can't be read: 1")
+        );
+        assert!(unusable_note(1, false).unwrap().ends_with("can't be read: 1 of those read"));
+        assert_eq!((unusable_note(0, true), unusable_note(0, false)), (None, None));
+        // Rows whose dates can't be read are said, not taken for no tiles; no rows are no tiles.
+        let (fields, mut batch) = file(&|_| Value::Null);
+        let e = found(&fields, &batch, 2024, bbox).unwrap_err();
+        assert!(e.contains("has 3 rows there, none whose date, address and footprint can be read"), "{e}");
+        assert_eq!(series_found(&fields, &batch, (2017, 2025), bbox).unwrap_err(), e);
+        // A read in part didn't see the others, which may be good: no error, the part read being said.
+        batch.complete = false;
+        let part = found(&fields, &batch, 2024, bbox).unwrap();
+        assert_eq!((part.tiles.len(), part.complete, part.unusable), (0, false, 3));
+        assert_eq!(series_found(&fields, &batch, (2017, 2025), bbox).unwrap().unusable, 3);
+        batch.complete = true;
+        batch.features.clear();
+        assert_eq!(found(&fields, &batch, 2024, bbox), Ok((Vec::new(), true).into()));
+        assert_eq!(aef_year(&Value::Date(rustgis_data::Date::from_ymd(2024, 1, 1).unwrap())), Some(2024));
+        assert_eq!(aef_year(&Value::Text("2024-01-01T00:00:00Z".into())), Some(2024));
     }
 
     #[test]

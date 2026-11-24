@@ -32,7 +32,7 @@ pub fn commands() -> Vec<C> {
             r#"{"dataset": "alphaearth" | "earth-index" | "tessera" | "olmoearth", "url"?: "AlphaEarth's tile or Earth Index's file, as embeddings.search lists it (Earth Index: default the MGRS tile at the view's centre)", "year"?: number (Tessera and OlmoEarth, default 2024), "bands"?: [red, green, blue] (bands from 1; AlphaEarth default [2, 17, 10], Tessera and OlmoEarth [1, 2, 3]), "stretch"?: number (AlphaEarth: dequantised values shown over ±stretch, default 0.3), "dimension"?: number (Earth Index: a vector value kept as each point's `value`, from 1), "bbox"?: [west, south, east, north] | "view" (Earth Index, Tessera and OlmoEarth: the area read, default the map's extent), "name"?: text, "ran"?: (internal: what the app read)}"#,
         ),
         C::new("embeddings.addCube", "Add Satellite Embeddings over Time", "Home › Add › Web Data", add_cube).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r#"{"dataset": "alphaearth", "bbox"?: [west, south, east, north] | "view" (the area searched, default the map's extent), "start"?: year (default 2017), "end"?: year (default 2025), "bands"?: [red, green, blue] (bands from 1, default [2, 17, 10]), "stretch"?: number (dequantised values shown over ±stretch, default 0.3), "name"?: text, "found"?: (internal: the tiles the app found, each {years: {year: address}}), "complete"?: (internal: false when the app's search read only part of the index)} → a tile layer per AlphaEarth tile, a file per year, following the time slider (turned on over the years when it is off)"#,
+            r#"{"dataset": "alphaearth", "bbox"?: [west, south, east, north] | "view" (the area searched, default the map's extent), "start"?: year (default 2017), "end"?: year (default 2025), "bands"?: [red, green, blue] (bands from 1, default [2, 17, 10]), "stretch"?: number (dequantised values shown over ±stretch, default 0.3), "name"?: text, "found"?: (internal: the tiles the app found, each {years: {year: address}}), "complete"?: (internal: false when the app's search read only part of the index), "unusable"?: (internal: the rows of the index the app's search left out, as they can't be read)} → a tile layer per AlphaEarth tile, a file per year, following the time slider (turned on over the years when it is off)"#,
         ),
         // Each makes a raster; on another thread from the app (workflows::IN_BACKGROUND).
         C::new("embeddings.similarity", "Satellite Embedding Similarity", "Home › Add › Web Data", similarity).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
@@ -118,16 +118,15 @@ fn search(s: &mut Session, p: &Value) -> CmdResult {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let (tiles, complete) = match d.id {
+        let found = match d.id {
             "alphaearth" => emb::search_aef_blocking(area, year)?,
             "earth-index" => emb::search_earth_index_blocking(area)?,
-            _ => tessera::tiles(tessera::store(d.id).ok_or_else(|| format!("{} can't be searched", d.name))?, area, year),
+            _ => tessera::tiles(tessera::store(d.id).ok_or_else(|| format!("{} can't be searched", d.name))?, area, year).into(),
         };
+        search_notices(s, d, &found);
+        let emb::Found { tiles, complete, .. } = found;
         let mut r = json!({"dataset": d.id, "year": year, "count": tiles.len(), "complete": complete,
             "tiles": tiles.iter().map(emb::Tile::to_json).collect::<Vec<_>>()});
-        if !complete {
-            s.notify(format!("{}: the area holds more tiles than one search reads; zoom in to list them all", d.name), false);
-        }
         if super::b(p, "footprints") != Some(false) && !tiles.is_empty() && tessera::store(d.id).is_none() {
             let name = format!("{} tiles {year}", d.name.split(" (").next().unwrap_or(d.name));
             if let Some(id) = super::stac::add_collection(s, &emb::footprints_geojson(&tiles), &name)? {
@@ -135,6 +134,17 @@ fn search(s: &mut Session, p: &Value) -> CmdResult {
             }
         }
         Ok(r)
+    }
+}
+
+/// Says what a search left out: rows past one read, and rows that can't be read.
+#[cfg(not(target_arch = "wasm32"))]
+fn search_notices(s: &mut Session, d: &emb::EmbeddingDataset, found: &emb::Found) {
+    if !found.complete {
+        s.notify(format!("{}: the area holds more tiles than one search reads; zoom in to list them all", d.name), false);
+    }
+    if let Some(note) = emb::unusable_note(found.unusable, found.complete) {
+        s.notify(format!("{}: {note}", d.name), false);
     }
 }
 
@@ -220,24 +230,28 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
     let given = p.get("found").filter(|v| !v.is_null());
     // Whether the index was read whole: a tile-year with no file is then the index's gap, not
     // the read's. The files handed over outside the years asked for, left out. And what the
-    // search left out, said once the cube is added (a refused one adds nothing to speak of).
-    let (series, complete, outside, notes) = match given {
+    // search left out, said once the cube is added (a refused one adds nothing to speak of), or
+    // with the error when there is no tile; the rows that can't be read, of which one may be a file.
+    let (series, complete, outside, unusable, notes) = match given {
         Some(v) => {
             let (series, outside) = found(v, start, end)?;
             let complete = super::b(p, "complete") != Some(false);
             // A part read: said even when every year of the tiles handed over is there.
-            let notes = if complete { Vec::new() } else { vec![PART_READ.to_string()] };
-            (series, complete, outside, notes)
+            let unusable = p.get("unusable").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).unwrap_or(0);
+            let left = emb::SeriesFound { complete, unusable, ..Default::default() };
+            (series, complete, outside, unusable, series_notes(&left))
         }
         None => {
-            let (series, complete, notes) = search_series(s, p, (start, end))?;
-            (series, complete, 0, notes)
+            let f = search_series(s, p, (start, end))?;
+            let notes = series_notes(&f);
+            (f.series.into_iter().map(|x| x.years).collect(), f.complete, 0, f.unusable, notes)
         }
     };
     let listed = series.len();
     let series: Vec<BTreeMap<i32, String>> = series.into_iter().filter(|y| !y.is_empty()).collect();
     if series.is_empty() {
-        return Err(format!("AlphaEarth has no tiles there for {start}–{end}"));
+        let left = if notes.is_empty() { String::new() } else { format!(" ({})", notes.join("; ")) };
+        return Err(format!("AlphaEarth has no tiles there for {start}–{end}{left}"));
     }
     let room = rustgis_map::tiles::MAX_TILE_LAYERS.saturating_sub(s.map().tiles.len());
     if series.len() > room {
@@ -325,19 +339,22 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
             false,
         );
     }
+    let read = if unusable > 0 { ", among the rows that can be read" } else { "" };
     if listed > series.len() {
-        s.notify(format!("{base}: {} of the {listed} tiles have no file in {start}–{end} and were left out", listed - series.len()), false);
+        let n = listed - series.len();
+        s.notify(format!("{base}: {n} of the {listed} tiles have no file in {start}–{end}{read} and were left out"), false);
     }
     if missing > 0 {
         let total = series.len() * span;
+        let (index, zoom) = if complete {
+            ("AlphaEarth's index", "")
+        } else {
+            ("the part of AlphaEarth's index that was read", " (zoom in to read it whole)")
+        };
         s.notify(
-            if complete {
-                format!("{base}: {missing} of the {total} tile-years have no file in AlphaEarth's index; in those years the tile shows nothing")
-            } else {
-                format!(
-                    "{base}: {missing} of the {total} tile-years have no file in the part of AlphaEarth's index that was read (zoom in to read it whole); in those years the tile shows nothing"
-                )
-            },
+            format!(
+                "{base}: {missing} of the {total} tile-years have no file in {index}{read}{zoom}; in those years the tile shows nothing"
+            ),
             false,
         );
     }
@@ -377,9 +394,8 @@ fn found(v: &Value, start: i32, end: i32) -> Result<(Vec<BTreeMap<i32, String>>,
 }
 
 /// AlphaEarth's tiles over the years where the command says, from one read of the index, waiting
-/// for it (the command line); whether it read the index whole for the area; and what the read
-/// left out, to be said.
-fn search_series(s: &mut Session, p: &Value, years: (i32, i32)) -> Result<(Vec<BTreeMap<i32, String>>, bool, Vec<String>), String> {
+/// for it (the command line), with what the read left out.
+fn search_series(s: &mut Session, p: &Value, years: (i32, i32)) -> Result<emb::SeriesFound, String> {
     let area = bbox(s, p)?;
     #[cfg(target_arch = "wasm32")]
     {
@@ -394,18 +410,15 @@ fn search_series(s: &mut Session, p: &Value, years: (i32, i32)) -> Result<(Vec<B
                 "AlphaEarth's index is read off the frame here: add its years from Home › Add › Web Data › Satellite Embeddings".into()
             );
         }
-        let f = emb::search_aef_series_blocking(area, years)?;
-        let notes = series_notes(&f);
-        Ok((f.series.into_iter().map(|x| x.years).collect(), f.complete, notes))
+        emb::search_aef_series_blocking(area, years)
     }
 }
 
 /// A search over the years that read part of the index, said.
 const PART_READ: &str = "AlphaEarth: the area holds more tiles than one search reads; zoom in to take them all";
 
-/// What a search over the years left out: rows past one read, tiles past a search's list, and a
-/// tile's second file for a year.
-#[cfg(not(target_arch = "wasm32"))]
+/// What a search over the years left out: rows past one read, tiles past a search's list, a
+/// tile's second file for a year, and rows that can't be read.
 fn series_notes(f: &emb::SeriesFound) -> Vec<String> {
     let mut notes = Vec::new();
     if !f.complete {
@@ -417,6 +430,7 @@ fn series_notes(f: &emb::SeriesFound) -> Vec<String> {
     if f.duplicates > 0 {
         notes.push(format!("AlphaEarth: {} tile-years had a second file in the index; the first was taken", f.duplicates));
     }
+    notes.extend(emb::unusable_note(f.unusable, f.complete).map(|n| format!("AlphaEarth: {n}")));
     notes
 }
 
@@ -744,7 +758,10 @@ fn pick_tile(found: &emb::SeriesFound, years: &[i32]) -> Result<(Vec<String>, St
             ),
         };
         // A part of the index read: the tile may be in the rest of it.
-        if found.complete { none } else { format!("{none}, in the part of the index that was read: take a smaller box to read it whole") }
+        let none =
+            if found.complete { none } else { format!("{none}, in the part of the index that was read: take a smaller box to read it whole") };
+        // Or in a row left out.
+        emb::unusable_note(found.unusable, found.complete).map_or_else(|| none.clone(), |n| format!("{none} ({n})"))
     })?;
     let files: Vec<String> = years.iter().filter_map(|y| tile.years.get(y).cloned()).collect();
     let place = files.first().and_then(|u| emb::aef_place(u)).unwrap_or_else(|| tile.tile.title.clone());
@@ -764,6 +781,7 @@ fn pick_tile(found: &emb::SeriesFound, years: &[i32]) -> Result<(Vec<String>, St
     if found.duplicates > 0 {
         notes.push(format!("{} tile-years had a second file in AlphaEarth's index; the first was taken", found.duplicates));
     }
+    notes.extend(emb::unusable_note(found.unusable, found.complete));
     if kept + dropped > 1 {
         notes.push(format!(
             "the area meets {} AlphaEarth tiles: one is read ({place}), the nearest its centre with files for {listed}; a box within one tile is read whole",
@@ -1044,6 +1062,46 @@ mod tests {
         let whole = json!([{"years": {"2024": file(2024, "7-8"), "2025": file(2025, "7-8")}}]);
         v.run("embeddings.addCube", &json!({"dataset": "alphaearth", "start": 2024, "found": whole, "complete": false})).unwrap();
         assert!(v.notices.iter().any(|n| n.text.contains("more tiles than one search reads")), "a part read is said");
+        // Rows the search left out, as they can't be read, one of which may be the file: said, with a
+        // missing year's notice that doesn't call it the index's gap, and in the error of no tiles.
+        let mut x = Session::new(Project::default());
+        let some = json!([{"years": {"2025": file(2025, "9-1")}}]);
+        let gap = |end: &str| format!("1 of the 2 tile-years have no file in {end}; in those years the tile shows nothing");
+        let dated = ", among the rows that can be read";
+        for (complete, end) in [
+            (true, format!("AlphaEarth's index{dated}")),
+            (false, format!("the part of AlphaEarth's index that was read{dated} (zoom in to read it whole)")),
+        ] {
+            let p = json!({"dataset": "alphaearth", "start": 2024, "found": some, "complete": complete, "unusable": 4});
+            x.run("embeddings.addCube", &p).unwrap();
+            let said: Vec<&str> = x.notices.iter().map(|n| n.text.as_str()).collect();
+            let note = if complete { "read: 4" } else { "read: 4 of those read" };
+            assert!(
+                said.iter().any(|n| n.ends_with(&format!("left out, as their date, address or footprint can't be {note}"))),
+                "{said:?}"
+            );
+            assert!(said.iter().any(|n| n.ends_with(&gap(&end))), "{said:?}");
+            x.notices.clear();
+        }
+        let out = json!([{"years": {"2025": file(2025, "9-2")}}, {"years": {"2016": file(2016, "9-3")}}]);
+        x.run("embeddings.addCube", &json!({"dataset": "alphaearth", "start": 2024, "found": out, "unusable": 4})).unwrap();
+        let out = format!("1 of the 2 tiles have no file in 2024–2025{dated} and were left out");
+        assert!(x.notices.iter().any(|n| n.text.ends_with(&out)), "{out}");
+        let none = json!([{"years": {"2016": file(2016, "9-1")}}]);
+        let empty = |x: &mut Session, unusable: u64| {
+            let p = json!({"dataset": "alphaearth", "start": 2024, "found": none, "unusable": unusable});
+            x.run("embeddings.addCube", &p).unwrap_err()
+        };
+        let e = empty(&mut x, 4);
+        assert!(
+            e.ends_with("(AlphaEarth: rows of AlphaEarth's index left out, as their date, address or footprint can't be read: 4)"),
+            "{e}"
+        );
+        assert_eq!(empty(&mut x, 0), "AlphaEarth has no tiles there for 2024–2025");
+        // So is a part of the index read.
+        let part = json!({"dataset": "alphaearth", "start": 2024, "found": none, "complete": false, "unusable": 4});
+        let e = x.run("embeddings.addCube", &part).unwrap_err();
+        assert!(e.contains(PART_READ) && e.ends_with("can't be read: 4 of those read)"), "{e}");
         // An hourly slider widened over the years would be more steps than it lists: refused,
         // the slider and the map as they were.
         let mut h = Session::new(Project::default());
@@ -1084,12 +1142,30 @@ mod tests {
     fn series_notes_say_what_a_search_left_out() {
         let whole = emb::SeriesFound { complete: true, ..Default::default() };
         assert!(series_notes(&whole).is_empty(), "a whole search says nothing");
-        let gaps = emb::SeriesFound { complete: false, dropped: 61, duplicates: 2, ..Default::default() };
+        let gaps = emb::SeriesFound { complete: false, dropped: 61, duplicates: 2, unusable: 4, ..Default::default() };
         let notes = series_notes(&gaps);
-        assert_eq!(notes.len(), 3, "{notes:?}");
+        assert_eq!(notes.len(), 4, "{notes:?}");
+        assert_eq!(
+            notes[3],
+            "AlphaEarth: rows of AlphaEarth's index left out, as their date, address or footprint can't be read: 4 of those read"
+        );
         assert!(notes.iter().any(|n| n == PART_READ), "{notes:?}");
         assert!(notes.iter().any(|n| n.contains("61 tiles past the 60 a search lists were left out")), "{notes:?}");
         assert!(notes.iter().any(|n| n.contains("2 tile-years had a second file in the index")), "{notes:?}");
+        // A search of one year says the rows left out too, and nothing when there were none.
+        let mut s = Session::new(Project::default());
+        let d = emb::dataset("alphaearth").unwrap();
+        search_notices(&mut s, d, &emb::Found { complete: true, ..Default::default() });
+        assert!(s.notices.is_empty());
+        search_notices(&mut s, d, &emb::Found { complete: true, unusable: 4, ..Default::default() });
+        assert!(
+            s.notices.len() == 1 && s.notices[0].text.ends_with("left out, as their date, address or footprint can't be read: 4"),
+            "{:?}",
+            s.notices[0].text
+        );
+        // So does the tile a similarity or a change picks, or fails to.
+        let e = pick_tile(&emb::SeriesFound { complete: true, unusable: 4, ..Default::default() }, &[2024]).unwrap_err();
+        assert!(e.starts_with("AlphaEarth has no tiles there (rows of AlphaEarth's index left out"), "{e}");
     }
 
     /// A plugin's command in the app (`leave_downloads`) doesn't read an AlphaEarth tile's header
@@ -1242,32 +1318,38 @@ mod tests {
             years: years.iter().map(|y| (*y, format!("https://x.org/{y}/23S/h{y}-{place}.tiff"))).collect(),
         };
         // One tile, the index read whole: nothing to say.
-        let one = emb::SeriesFound { series: vec![tile("0-0", &[2017, 2025])], dropped: 0, duplicates: 0, complete: true };
+        let one = emb::SeriesFound { series: vec![tile("0-0", &[2017, 2025])], dropped: 0, duplicates: 0, complete: true, unusable: 0 };
         let (files, place, notes) = pick_tile(&one, &[2017, 2025]).unwrap();
         assert_eq!(files, ["https://x.org/2017/23S/h2017-0-0.tiff", "https://x.org/2025/23S/h2025-0-0.tiff"]);
         assert_eq!((place.as_str(), notes.len()), ("23S 0-0", 0));
         // The nearest tile without 2017: the next one is read. Part of the index read, and three
         // tiles past a search's list: each said, the tiles counted with them.
-        let many =
-            emb::SeriesFound { series: vec![tile("0-0", &[2025]), tile("0-1", &[2017, 2025])], dropped: 3, duplicates: 2, complete: false };
+        let many = emb::SeriesFound {
+            series: vec![tile("0-0", &[2025]), tile("0-1", &[2017, 2025])],
+            dropped: 3,
+            duplicates: 2,
+            complete: false,
+            unusable: 4,
+        };
         let (files, place, notes) = pick_tile(&many, &[2017, 2025]).unwrap();
         assert_eq!((files.len(), place.as_str()), (2, "23S 0-1"));
-        assert_eq!(notes.len(), 4, "{notes:?}");
+        assert_eq!(notes.len(), 5, "{notes:?}");
         assert!(notes[0].contains("a tile nearer its centre may have been missed"), "{notes:?}");
         assert_eq!(notes[1], "3 AlphaEarth tiles past the 60 nearest the area's centre were left out, not looked at: take a smaller box");
         assert_eq!(notes[2], "2 tile-years had a second file in AlphaEarth's index; the first was taken");
-        assert!(notes[3].starts_with("the area meets 5 AlphaEarth tiles: one is read (23S 0-1)"), "{notes:?}");
+        assert_eq!(notes[3], "rows of AlphaEarth's index left out, as their date, address or footprint can't be read: 4 of those read");
+        assert!(notes[4].starts_with("the area meets 5 AlphaEarth tiles: one is read (23S 0-1)"), "{notes:?}");
         // No tile with the years: tiles left out are said, not taken for none there, and so is a
         // part of the index read.
         let e = pick_tile(&many, &[2018]).unwrap_err();
         assert!(e.contains("none of the 2 AlphaEarth tiles nearest the area's centre has files for 2018, and 3 more"), "{e}");
         assert!(
             e.ends_with(
-                "and 3 more were left out: take a smaller box, in the part of the index that was read: take a smaller box to read it whole"
+                "and 3 more were left out: take a smaller box, in the part of the index that was read: take a smaller box to read it whole (rows of AlphaEarth's index left out, as their date, address or footprint can't be read: 4 of those read)"
             ),
             "{e}"
         );
-        let kept = emb::SeriesFound { dropped: 0, duplicates: 0, complete: true, ..many.clone() };
+        let kept = emb::SeriesFound { dropped: 0, duplicates: 0, complete: true, unusable: 0, ..many.clone() };
         assert_eq!(pick_tile(&kept, &[2018]).unwrap_err(), "AlphaEarth has no tile there with files for 2018");
         assert_eq!(
             pick_tile(&emb::SeriesFound { complete: true, ..emb::SeriesFound::default() }, &[2018]).unwrap_err(),
@@ -1291,7 +1373,7 @@ mod tests {
         let v = super::super::workflows::add_made(&mut s, made("Sim", notes.clone())).unwrap();
         assert_eq!(v["year"], 2024);
         let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
-        assert_eq!(said.iter().filter(|n| n.starts_with("Sim: ")).count(), 4, "{said:?}");
+        assert_eq!(said.iter().filter(|n| n.starts_with("Sim: ")).count(), 5, "{said:?}");
         let mark = s.notice_mark();
         super::super::workflows::add_made(&mut s, made("Clean", Vec::new())).unwrap();
         assert!(!s.notices_since(mark).iter().any(|n| n.text.starts_with("Clean: ")));

@@ -58,6 +58,8 @@ pub struct State {
     pub found: Vec<Tile>,
     /// Each tile found's file a year, by `found`'s order, when the search was over the years.
     years: Vec<BTreeMap<i32, String>>,
+    /// The rows that search left out, as they can't be read (handed over as `unusable`).
+    years_unusable: usize,
     /// Whether the search over the years read the index whole (handed over as `complete`).
     years_whole: bool,
     /// The footprints layer of the last search, and its project (`Session::opened`): layer ids
@@ -81,6 +83,7 @@ impl Default for State {
             searched: None,
             found: Vec::new(),
             years: Vec::new(),
+            years_unusable: 0,
             years_whole: true,
             footprints: None,
             error: None,
@@ -135,12 +138,13 @@ struct Listed {
     years: Vec<BTreeMap<i32, String>>,
     dropped: usize,
     duplicates: usize,
+    unusable: usize,
 }
 
 impl Listed {
     fn of_series(f: SeriesFound) -> Listed {
         let (tiles, years) = f.series.into_iter().map(|s| (s.tile, s.years)).unzip();
-        Listed { tiles, complete: f.complete, years, dropped: f.dropped, duplicates: f.duplicates }
+        Listed { tiles, complete: f.complete, years, dropped: f.dropped, duplicates: f.duplicates, unusable: f.unusable }
     }
 }
 
@@ -152,7 +156,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
-            .map(|r| Ok(r.map(|(tiles, complete)| Listed { tiles, complete, ..Default::default() }))),
+            .map(|r| Ok(r.map(|f| Listed { tiles: f.tiles, complete: f.complete, unusable: f.unusable, ..Default::default() }))),
         Some(Read::Series(slot)) => slot.lock().unwrap_or_else(|e| e.into_inner()).take().map(|r| Ok(r.map(Listed::of_series))),
         Some(Read::Data(slot, _)) => slot.lock().unwrap_or_else(|e| e.into_inner()).take().map(Err),
     };
@@ -163,7 +167,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     let read = app.ui.embeddings.reading.take();
     match landed {
         Ok(found) => match found {
-            Ok(Listed { tiles, complete, years, dropped, duplicates }) => {
+            Ok(Listed { tiles, complete, years, dropped, duplicates, unusable }) => {
                 let st = &mut app.ui.embeddings;
                 // A search for a dataset no longer picked: its tiles aren't this one's.
                 // Or for a project since closed.
@@ -171,7 +175,8 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
                 if st.searched.is_some_and(|(_, d, o)| d != st.dataset || o != opened) {
                     return;
                 }
-                let mut info = if tiles.is_empty() {
+                // Nothing found in a part of the index read is said as one.
+                let mut info = if tiles.is_empty() && complete {
                     tl!("Nothing found where the map is").to_string()
                 } else if complete {
                     crate::i18n::fmt("{n} found where the map is", &[("n", &tiles.len().to_string())])
@@ -190,10 +195,25 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
                         &[("n", &duplicates.to_string())],
                     ));
                 }
+                if unusable > 0 {
+                    let n = unusable.to_string();
+                    info.push_str(&if complete {
+                        crate::i18n::fmt(
+                            " · rows of the index left out, as their date, address or footprint can't be read: {n}",
+                            &[("n", &n)],
+                        )
+                    } else {
+                        crate::i18n::fmt(
+                            " · rows of the index left out, as their date, address or footprint can't be read: {n} of those read",
+                            &[("n", &n)],
+                        )
+                    });
+                }
                 st.info = Some(info);
                 st.found = tiles;
                 st.years = years;
                 st.years_whole = complete;
+                st.years_unusable = unusable;
                 show_footprints(app);
             }
             Err(e) => app.ui.embeddings.error = Some(e),
@@ -294,7 +314,7 @@ fn search(app: &mut RustGisApp) {
     match st.dataset {
         "alphaearth" => emb::search_aef(bbox, st.year, done),
         "earth-index" => emb::search_earth_index(bbox, done),
-        id => done(Ok(tessera::tiles(tessera::store(id).unwrap_or(&tessera::TESSERA), bbox, st.year))),
+        id => done(Ok(tessera::tiles(tessera::store(id).unwrap_or(&tessera::TESSERA), bbox, st.year).into())),
     }
     st.reading = Some(Read::Search(slot));
 }
@@ -317,7 +337,7 @@ fn add(app: &mut RustGisApp, i: usize) {
                     (
                         "embeddings.addCube",
                         json!({
-                            "dataset": "alphaearth", "found": found, "complete": st.years_whole,
+                            "dataset": "alphaearth", "found": found, "complete": st.years_whole, "unusable": st.years_unusable,
                             "start": first, "end": last, "bands": bands, "stretch": stretch,
                         }),
                     )
@@ -691,4 +711,39 @@ fn card(ui: &mut egui::Ui, t: &crate::theme::Tokens, tile: &Tile, i: usize, busy
     );
     ui.add_space(2.0);
     act
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A search says the index's rows it left out, of one year and over the years, and nothing
+    /// when there were none.
+    #[test]
+    fn a_search_says_the_rows_it_left_out() {
+        let mut app = RustGisApp::with_sample();
+        let ctx = egui::Context::default();
+        let mut said = |read: Read| {
+            app.ui.embeddings.reading = Some(read);
+            poll(&mut app, &ctx);
+            let st = &mut app.ui.embeddings;
+            (st.info.take().unwrap(), st.years_unusable)
+        };
+        for (unusable, left) in [(0, false), (4, true)] {
+            let one = Found { complete: true, unusable, ..Default::default() };
+            let years = SeriesFound { complete: true, unusable, ..Default::default() };
+            for (info, handed) in [
+                said(Read::Search(std::sync::Arc::new(std::sync::Mutex::new(Some(Ok(one)))))),
+                said(Read::Series(std::sync::Arc::new(std::sync::Mutex::new(Some(Ok(years)))))),
+            ] {
+                assert_eq!(info.ends_with("left out, as their date, address or footprint can't be read: 4"), left, "{info}");
+                // What embeddings.addCube is handed with a tile found.
+                assert_eq!(handed, unusable);
+            }
+        }
+        // Of a part of the index read: said as one, though nothing is found in it.
+        let part = Found { unusable: 4, ..Default::default() };
+        let (info, _) = said(Read::Search(std::sync::Arc::new(std::sync::Mutex::new(Some(Ok(part))))));
+        assert!(info.contains("more than one search reads") && info.ends_with("can't be read: 4 of those read"), "{info}");
+    }
 }

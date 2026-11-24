@@ -125,7 +125,7 @@ edit.updateBox layer? row featureId? box
 edit.updateCircle layer? row featureId? circle
 edit.vertex layer? row action part? ring? index lon? lat?
 embeddings.add dataset url? year? bands? stretch? dimension? bbox? name? ran?
-embeddings.addCube dataset bbox? start? end? bands? stretch? name? found? complete?
+embeddings.addCube dataset bbox? start? end? bands? stretch? name? found? complete? unusable?
 embeddings.change dataset from? to? bbox? cellSize? name? ran?
 embeddings.datasets
 embeddings.search dataset year? bbox? footprints?
