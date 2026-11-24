@@ -45,7 +45,7 @@ pub(crate) fn sync(app: &mut RustGisApp) {
         cancel(app);
         let pixels = app.annotation.pixels;
         let error = pixels.then(|| {
-            tl!("The project or map changed. Choose an image again or select Web Mercator grid metres before drawing.").to_string()
+            tl!("The project or map changed. Choose an image again, or the grid without an image (Web Mercator grid metres, or the layer's own grid), before drawing.").to_string()
         });
         app.annotation =
             State { context: Some(context), next: app.annotation.next, pixels, image_chosen: pixels, error, ..State::default() };
@@ -173,16 +173,53 @@ pub(crate) fn show_grid_result(app: &mut RustGisApp, result: Landed) {
         Err(_) => app.session.notify(tl!("The original image grid result could not be displayed."), true),
     }
 }
+/// The grid new shapes use without an image: the target layer's own when it is held in a
+/// projected system (#2032 C2f-6), else Web Mercator grid metres.
+pub(crate) fn layer_frame(app: &RustGisApp) -> Frame {
+    app.session.active_layer.and_then(|id| app.session.map().layer(id)).map(|l| Frame::for_crs(l.dataset.coord_crs())).unwrap_or_default()
+}
+
+/// The name of [`layer_frame`], for the grid choice.
+pub(crate) fn layer_grid_name(app: &RustGisApp) -> String {
+    let frame = layer_frame(app);
+    match frame.crs() {
+        Some(crs) if frame.is_system_grid() => crate::i18n::fmt("Layer's own grid ({system})", &[("system", &crs.label())]),
+        _ => tl!("Web Mercator grid metres").into(),
+    }
+}
+
+/// What a system's grid units are (Web Mercator's, a layer's own grid [`Frame::is_system_grid`],
+/// or a command's frame in another system), for a label; `None` for an image's pixels.
+pub(crate) fn grid_units(frame: &Frame) -> Option<String> {
+    if *frame == Frame::default() {
+        return Some(tl!("Web Mercator grid metres, not ground metres.").into());
+    }
+    let crs = frame.crs()?;
+    let d = Frame::default();
+    // An image's grid has its own size and affine; a system's grid has the default ones.
+    if (frame.width, frame.height, frame.affine) != (d.width, d.height, d.affine) {
+        return None;
+    }
+    // Axis-neutral: a system's x and y may point west, south, or north first.
+    Some(crate::i18n::fmt(
+        "Grid units of {system}: grid x is its x, grid y minus its y; angle clockwise from grid x.",
+        &[("system", &crs.label())],
+    ))
+}
+
 /// Only new objects use this choice. Existing objects keep their own frozen frame.
 pub(crate) fn drawing_frame(app: &RustGisApp) -> Result<Frame, String> {
     if !app.annotation.pixels {
-        return Ok(Frame::default());
+        return Ok(layer_frame(app));
     }
     if app.annotation.context != Some((app.session.opened, app.session.map().instance_id())) {
         return Err(tl!("The image context changed. Select the image again before drawing.").into());
     }
     if app.annotation.image.is_none() {
-        return Err(tl!("Choose an image or Web Mercator grid metres before drawing.").into());
+        return Err(tl!(
+            "Choose an image, or the grid without an image (Web Mercator grid metres, or the layer's own grid), before drawing."
+        )
+        .into());
     }
     if !app.annotation.source.as_ref().is_some_and(|s| s.current(&app.session)) {
         return Err(tl!("The image changed. Reload its grid before drawing.").into());
@@ -267,10 +304,10 @@ pub(crate) fn grid_controls(app: &mut RustGisApp, ui: &mut egui::Ui) {
     }
     let mut pixels = app.annotation.pixels;
     egui::ComboBox::new("annotation-construction-grid", tl!("Grid"))
-        .selected_text(if pixels { tl!("Original image pixels") } else { tl!("Web Mercator grid metres") })
+        .selected_text(if pixels { tl!("Original image pixels").to_string() } else { layer_grid_name(app) })
         .show_ui(ui, |ui| {
             ui.add_enabled_ui(available, |ui| ui.selectable_value(&mut pixels, true, tl!("Original image pixels")));
-            ui.selectable_value(&mut pixels, false, tl!("Web Mercator grid metres"));
+            ui.selectable_value(&mut pixels, false, layer_grid_name(app));
         });
     if pixels != app.annotation.pixels {
         let _ = app.run("ui.annotationGrid", json!({"pixels":pixels}));
@@ -295,7 +332,8 @@ pub(crate) fn grid_controls(app: &mut RustGisApp, ui: &mut egui::Ui) {
             let _ = app.run("ui.annotationImage", json!({"image":image}));
         }
     } else {
-        ui.small(tl!("Web Mercator grid metres, not ground metres. Image pixels are the default when an image is selected."));
+        ui.small(grid_units(&layer_frame(app)).unwrap_or_default());
+        ui.small(tl!("Image pixels are the default when an image is selected."));
     }
     if image.is_some() && !available {
         ui.colored_label(egui::Color32::RED, tl!("This image is unavailable. Choose another image or No image."));
@@ -391,6 +429,20 @@ pub(crate) fn panel(app: &mut RustGisApp, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Every system grid names its system and says its axes neutrally; an image's pixels don't.
+    #[test]
+    fn grid_units_name_each_systems_grid() {
+        use rustgis_engine::data::raster::Crs;
+        assert!(grid_units(&Frame::default()).unwrap().contains("Web Mercator"));
+        for code in [32632, 2053, 4326] {
+            let f = Frame { epsg: code, ..Frame::default() };
+            let said = grid_units(&f).unwrap();
+            assert!(said.contains("grid x is its x") && !said.contains("east") && !said.contains("northing"), "{code}: {said}");
+        }
+        assert_eq!(Frame::for_crs(Crs::Epsg(2053)).epsg, 2053);
+        let image = Frame { epsg: 32632, width: 400, height: 300, affine: [500_000., 0.8, 0.2, 1000., 0.1, -0.8] };
+        assert_eq!(grid_units(&image), None);
+    }
     use rustgis_engine::data::raster::{ColorHint, Crs, GeoTransform, Raster};
     use rustgis_engine::{
         Project, Session,

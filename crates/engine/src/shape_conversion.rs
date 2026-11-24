@@ -22,6 +22,12 @@ impl Shape {
             Self::RotatedBox(s) => s.geometry(),
         }
     }
+    pub(crate) fn built(&self) -> Result<crate::construction::Built, String> {
+        match self {
+            Self::Circle(s) => s.built(),
+            Self::RotatedBox(s) => s.built(),
+        }
+    }
 }
 /// An ephemeral preview, bound to this source instance, revision and exact geometry. Not a file
 /// format or a recovered construction: callers explicitly apply the proposed replacement.
@@ -211,13 +217,14 @@ fn target(s: &Session, p: &Value) -> Result<Proposal, String> {
         shape: Shape::Circle(CircleSpec { frame: Frame::default(), center: [0., 0.], radius: 1., tolerance: 0.25 }),
     })
 }
-fn frame(raster: Option<&rustgis_map::raster::RasterLayer>, p: &Value) -> Result<Frame, String> {
+fn frame(raster: Option<&rustgis_map::raster::RasterLayer>, p: &Value, crs: rustgis_data::raster::Crs) -> Result<Frame, String> {
     if let Some(r) = raster {
         crate::image_grid::read(r)
     } else if let Some(f) = p.get("frame") {
         serde_json::from_value(f.clone()).map_err(|e| e.to_string())
     } else {
-        Ok(Frame::default())
+        // The layer's own grid when it has one (#2032 C2f-6), else Web Mercator grid metres.
+        Ok(Frame::for_crs(crs))
     }
 }
 struct Prepared {
@@ -229,7 +236,7 @@ fn gather(dataset: &Dataset, mut t: Proposal, raster: Option<&rustgis_map::raste
     if raster.is_some() && p.get("frame").is_some() {
         return Err("choose image or frame, not both".into());
     }
-    let f = frame(raster, p)?;
+    let f = frame(raster, p, dataset.coord_crs())?;
     // Fitted in longitude/latitude, from the layer's own coordinates, as its shape's geometry is
     // given (`replace_geometry` writes it back in them).
     let feature = dataset.features.row(t.row).ok_or("missing polygon")?;
@@ -286,8 +293,7 @@ pub(crate) fn apply(s: &mut Session, p: &Value) -> CmdResult {
     polygon(l.dataset.features.get(proposal.row).and_then(|f| f.geometry.as_ref()).ok_or("missing polygon")?)?;
     s.constructions.room()?;
     let attributes = l.dataset.features.get(proposal.row).ok_or("no feature")?.attrs.clone();
-    let g = proposal.shape.geometry()?;
-    crate::cmd::design::replace_geometry(s, proposal.layer, proposal.row, g)?;
+    proposal.shape.built()?.replace(s, proposal.layer, proposal.row)?;
     if s.map()
         .layer(proposal.layer)
         .and_then(|l| l.dataset.features.get(proposal.row))
@@ -735,5 +741,37 @@ mod tests {
         assert!((b.width * b.height - 10000.).abs() < 1e-5);
         let Shape::Circle(c) = fit(&g, frame, "circle").unwrap() else { panic!() };
         assert!((c.radius - 50_f64.hypot(50.)).abs() < 1e-5);
+    }
+
+    /// On a layer held in a projected system, a conversion with no frame fits in the layer's own
+    /// grid, and the shape is written there as built: a rectangle stored in UTM comes back as
+    /// that rectangle, its corners where they were.
+    #[test]
+    fn a_conversion_on_a_projected_layer_fits_in_its_own_grid() {
+        use rustgis_data::raster::Crs;
+        use rustgis_geom::Coord;
+        let mut ds = Dataset::new("Lots", GeometryType::Polygon, vec![Field::new("class", FieldType::Text)]);
+        ds.hold_in(Crs::Epsg(32632)).unwrap();
+        let rect = [
+            Coord::new(684_000., 5_397_000.),
+            Coord::new(684_120., 5_397_000.),
+            Coord::new(684_120., 5_397_040.),
+            Coord::new(684_000., 5_397_040.),
+            Coord::new(684_000., 5_397_000.),
+        ];
+        ds.push(Some(Geometry::Polygon(vec![vec![rect.to_vec()]])), vec![rustgis_data::Value::Text("lot".into())]);
+        let mut s = Session::new(crate::Project::default());
+        let id = s.map_mut().add_dataset(ds);
+        s.active_layer = Some(id);
+        s.run("edit.enable", &json!({"on":true})).unwrap();
+        let p = s.run("edit.previewShapeConversion", &json!({"layer":id,"row":0,"kind":"rotatedBox"})).unwrap();
+        s.run("edit.applyShapeConversion", &json!({"preview":p,"confirm":true})).unwrap();
+        let b = s.box_spec(id, 0).unwrap();
+        assert_eq!(b.frame, Frame::for_crs(Crs::Epsg(32632)));
+        let mut got = Vec::new();
+        s.map().layer(id).unwrap().dataset.features[0].geometry.as_ref().unwrap().for_each_coord(|c| got.push(c));
+        for c in &rect {
+            assert!(got.iter().any(|g| (g.x - c.x).abs() < 1e-6 && (g.y - c.y).abs() < 1e-6), "{c:?} in {got:?}");
+        }
     }
 }

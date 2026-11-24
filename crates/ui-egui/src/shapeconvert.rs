@@ -283,9 +283,9 @@ pub(crate) fn panel(app: &mut RustGisApp, ui: &mut egui::Ui) {
             .image
             .and_then(|id| app.session.map().layer(id))
             .map(|l| l.name.clone())
-            .unwrap_or_else(|| tl!("Web Mercator grid metres").into());
+            .unwrap_or_else(|| crate::annotation::layer_grid_name(app));
         egui::ComboBox::from_label(tl!("Construction Grid")).selected_text(title).show_ui(ui, |ui| {
-            changed |= ui.selectable_value(&mut f.image, None, tl!("Web Mercator grid metres")).changed();
+            changed |= ui.selectable_value(&mut f.image, None, crate::annotation::layer_grid_name(app)).changed();
             for l in app.session.map().layers.iter().filter(|l| l.raster.is_some()) {
                 changed |= ui.selectable_value(&mut f.image, Some(l.id), &l.name).changed();
             }
@@ -296,10 +296,11 @@ pub(crate) fn panel(app: &mut RustGisApp, ui: &mut egui::Ui) {
         f.image_stamp = None;
         f.error = None;
     }
+    let shape_layer_units = crate::annotation::grid_units(&crate::annotation::layer_frame(app)).unwrap_or_default();
     ui.small(if f.image.is_some() {
         tl!("Original GeoTIFF pixels, including rotation and shear. Only local or embedded GeoTIFFs are supported.")
     } else {
-        tl!("Web Mercator grid metres, not ground metres.")
+        &shape_layer_units
     });
     ui.label(if f.kind == "circle" {
         tl!("Fit: centre of the vertex bounds, radius enclosing all vertices. This is not recovery of the original circle.")

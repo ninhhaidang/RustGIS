@@ -16,7 +16,7 @@ pub fn commands() -> Vec<C> {
     vec![
         C::new("edit.previewShapeConversion", "Preview Shape Conversion", "Edit › Features", crate::shape_conversion::preview).inputs(crate::shape_conversion::preview_inputs)
             .roles(&[crate::ParamRole {key:"frame",role:crate::Role::Opaque}]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).view()
-            .when(crate::cmd::design::need_editable).params(r#"{"layer"?:name|id,"row":number,"featureId"?:number,"kind":"circle|rotatedBox","request"?:number (preview correlation only),"image"?:GeoTIFF layer name|id,"frame"?:construction grid as edit.addBox.box.frame (otherwise Web Mercator)}"#),
+            .when(crate::cmd::design::need_editable).params(r#"{"layer"?:name|id,"row":number,"featureId"?:number,"kind":"circle|rotatedBox","request"?:number (preview correlation only),"image"?:GeoTIFF layer name|id,"frame"?:construction grid as edit.addBox.box.frame (otherwise the layer's own grid when it is held in a projected EPSG system, else Web Mercator; give {"epsg":3857} for Web Mercator)}"#),
         C::new("edit.applyShapeConversion", "Apply Shape Conversion", "Edit › Features", crate::shape_conversion::apply).inputs(crate::shape_conversion::apply_inputs)
             .roles(&[crate::ParamRole {key:"preview",role:crate::Role::Opaque}]).effects(crate::policy::Effects::NONE).atomic()
             .when(crate::shape_conversion::need_editing).params(r#"{"preview":result of edit.previewShapeConversion,"confirm":true}"#),

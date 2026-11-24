@@ -333,11 +333,9 @@ pub(crate) fn panel(app: &mut RustGisApp, ui: &mut egui::Ui) {
         let name = app.session.map().layer(layer).map(|l| l.name.clone()).unwrap_or_default();
         let shown = feature.map(|id| id.to_string()).unwrap_or_default();
         ui.small(crate::i18n::fmt("Layer: {layer} · Feature {feature}", &[("layer", &name), ("feature", &shown)]));
-        ui.label(if b.frame == Frame::default() {
-            tl!("Web Mercator grid metres, not ground metres.")
-        } else {
-            tl!("Grid pixels; angle clockwise from grid right.")
-        });
+        ui.label(
+            crate::annotation::grid_units(&b.frame).unwrap_or_else(|| tl!("Grid pixels; angle clockwise from grid right.").to_string()),
+        );
         let mut changed = false;
         let [cx, cy] = &mut b.center;
         egui::Grid::new("rotated_box_dimensions").show(ui, |ui| {

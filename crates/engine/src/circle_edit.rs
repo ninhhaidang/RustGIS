@@ -45,12 +45,18 @@ impl CircleSpec {
         Err("circle tolerance requires more than 2048 edges; increase tolerance or reduce radius".into())
     }
     pub fn geometry(&self) -> Result<Geometry, String> {
+        self.built().map(|b| b.lonlat)
+    }
+    /// The circle in longitude/latitude, and its vertices in its frame's system.
+    pub(crate) fn built(&self) -> Result<crate::construction::Built, String> {
         let n = self.segments()?;
-        let mut ring = Vec::with_capacity(n + 1);
+        let (mut ring, mut world) = (Vec::with_capacity(n + 1), Vec::with_capacity(n + 1));
         for i in 0..n {
+            let p = self.point(i as f64 * std::f64::consts::TAU / n as f64);
+            world.push(self.frame.to_world(p).ok_or("circle vertex is outside its construction grid")?);
             let c = self
                 .frame
-                .to_lonlat(self.point(i as f64 * std::f64::consts::TAU / n as f64))
+                .to_lonlat(p)
                 .filter(|c| c.is_finite() && c.x.abs() <= 180. && c.y.abs() < 85.05)
                 .ok_or("circle crosses an unsupported projection boundary or the polar editing limit")?;
             ring.push(c);
@@ -70,12 +76,7 @@ impl CircleSpec {
         if !area.is_finite() || area == 0. {
             return Err("circle collapses after transformation".into());
         }
-        if area < 0. {
-            ring.reverse();
-        }
-        let first = ring.first().copied().ok_or("missing circle vertex")?;
-        ring.push(first);
-        Ok(Geometry::Polygon(vec![vec![ring]]))
+        Ok(crate::construction::Built::new(&self.frame, ring, world, area < 0.))
     }
 }
 impl Session {
@@ -139,8 +140,7 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
             }
         }
     }
-    let g = b.geometry()?;
-    let result = crate::cmd::edit::add_geometry(s, id, p, g)?;
+    let result = b.built()?.add(s, id, p)?;
     let row = result.get("row").and_then(Value::as_u64).and_then(|r| usize::try_from(r).ok()).ok_or("circle was not added")?;
     remember(s, id, row, b.clone())?;
     Ok(
@@ -152,12 +152,8 @@ pub(crate) fn remember(s: &mut Session, id: u32, row: usize, spec: CircleSpec) -
     if key.3 == u64::MAX {
         return Err("feature IDs have reached their limit; create a fresh layer for circles".into());
     }
-    let l = s.map().layer(id).ok_or("circle geometry is missing")?;
-    let g = l.dataset.features.get(row).and_then(|f| f.geometry.clone()).ok_or("circle geometry is missing")?;
-    // The spec is in longitude/latitude; the feature as written, in the layer's own coordinates,
-    // its places that read as the spec's kept as stored, as the edit wrote them.
-    let held = crate::cmd::design::held_places(s, id, &[&g], &[]);
-    if g != l.dataset.edit_from_lonlat(spec.geometry()?, &held)? {
+    let g = s.map().layer(id).and_then(|l| l.dataset.features.get(row)?.geometry.clone()).ok_or("circle geometry is missing")?;
+    if !spec.built()?.as_stored(s, id, &g)? {
         return Err("an edit rule changed the circle geometry".into());
     }
     s.constructions.remember(key, Record { spec: Construction::Circle(spec), geometry: g })
@@ -185,7 +181,7 @@ pub(crate) fn update(s: &mut Session, p: &Value) -> CmdResult {
     if b.frame != before.frame {
         return Err("a circle's construction grid is frozen; start another circle to change grids".into());
     }
-    crate::cmd::design::replace_geometry(s, id, row, b.geometry()?)?;
+    b.built()?.replace(s, id, row)?;
     remember(s, id, row, b.clone())?;
     Ok(
         json!({"row":row,"circle":b,"polygonEdges":b.segments()?,"approximation":"straight edges; tolerance is in construction-grid units before projection"}),
@@ -821,5 +817,26 @@ mod tests {
             assert_eq!(s.circle_spec(id, 0), Some(b.clone()));
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    /// A circle built in its layer's own grid is written as built: every vertex the grid's place
+    /// in the layer's coordinates, exactly, at the radius from the centre.
+    #[test]
+    fn a_circle_in_the_layers_own_grid_is_written_as_built() {
+        let mut ds = Dataset::new("Lots", GeometryType::Polygon, vec![Field::new("class", FieldType::Text)]);
+        ds.hold_in(Crs::Epsg(32632)).unwrap();
+        let mut s = Session::new(crate::Project::default());
+        let id = s.map_mut().add_dataset(ds);
+        s.active_layer = Some(id);
+        s.run("edit.enable", &json!({"on":true})).unwrap();
+        let c = CircleSpec { frame: Frame::for_crs(Crs::Epsg(32632)), center: [684_000., -5_397_000.], radius: 50., tolerance: 0.05 };
+        let row = s.run("edit.addCircle", &json!({"circle":c})).unwrap()["row"].as_u64().unwrap() as usize;
+        let mut got = Vec::new();
+        s.map().layer(id).unwrap().dataset.features[row].geometry.as_ref().unwrap().for_each_coord(|p| got.push(p));
+        assert_eq!(got.len(), c.segments().unwrap() + 1);
+        for p in &got {
+            assert!(((p.x - 684_000.).hypot(p.y - 5_397_000.) - 50.).abs() < 1e-9, "{p:?}");
+        }
+        assert_eq!(s.circle_spec(id, row), Some(c));
     }
 }

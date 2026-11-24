@@ -58,7 +58,34 @@ impl Frame {
         })
     }
     pub fn to_lonlat(&self, p: [f64; 2]) -> Option<Coord> {
-        self.projection()?.to_lonlat(self.grid().ok()?.to_world(p[0], p[1])?)
+        self.projection()?.to_lonlat(self.to_world(p)?)
+    }
+    /// A grid place in the frame's system.
+    pub fn to_world(&self, p: [f64; 2]) -> Option<Coord> {
+        self.grid().ok()?.to_world(p[0], p[1])
+    }
+    /// The frame's system, when it is one construction grids take.
+    pub fn crs(&self) -> Option<Crs> {
+        self.grid().ok().map(|g| g.crs())
+    }
+    /// Whether it is a projected system's own grid ([`Frame::for_crs`]) other than Web
+    /// Mercator's: one grid unit per unit of the system, not an image's pixels.
+    pub fn is_system_grid(&self) -> bool {
+        let d = Self::default();
+        self.epsg != d.epsg
+            && self.width == d.width
+            && self.height == d.height
+            && self.affine == d.affine
+            && self.crs().is_some_and(rustgis_analysis::works_in)
+    }
+    /// The construction grid of a layer held in `crs` (#2032 C2f-6): its own system, one grid
+    /// unit per unit of it, y down (so a grid y is minus its northing), when it is a projected
+    /// system with an EPSG code that construction grids take
+    /// ([`rustgis_analysis::works_in`]); Web Mercator grid metres ([`Frame::default`]) otherwise.
+    /// A shape built in it is written in the layer's own coordinates as built.
+    pub fn for_crs(crs: Crs) -> Self {
+        let own = Self { epsg: u32::from(crs.epsg()), ..Self::default() };
+        if crs.epsg() != 0 && rustgis_analysis::works_in(crs) && own.crs() == Some(crs) { own } else { Self::default() }
     }
     pub fn to_local(&self, c: Coord) -> Option<[f64; 2]> {
         let (x, y) = self.grid().ok()?.to_pixel(self.projection()?.from_lonlat(c)?)?;
@@ -92,6 +119,10 @@ impl BoxSpec {
         [self.point(-w, -h), self.point(w, -h), self.point(w, h), self.point(-w, h)]
     }
     pub fn geometry(&self) -> Result<Geometry, String> {
+        self.built().map(|b| b.lonlat)
+    }
+    /// The box in longitude/latitude, and its corners in its frame's system.
+    pub(crate) fn built(&self) -> Result<crate::construction::Built, String> {
         self.frame.grid()?;
         if !self.center.iter().chain([&self.width, &self.height, &self.angle]).all(|v| v.is_finite() && v.abs() <= 1e12)
             || self.width < 1e-6
@@ -99,8 +130,9 @@ impl BoxSpec {
         {
             return Err("a box needs finite coordinates, angle and positive dimensions".into());
         }
-        let mut ring = Vec::with_capacity(5);
+        let (mut ring, mut world) = (Vec::with_capacity(5), Vec::with_capacity(5));
         for p in self.corners() {
+            world.push(self.frame.to_world(p).ok_or("box corner is outside its construction grid")?);
             ring.push(
                 self.frame
                     .to_lonlat(p)
@@ -123,12 +155,7 @@ impl BoxSpec {
             }
             sign = turn.signum();
         }
-        if sign < 0. {
-            ring.reverse();
-        }
-        let first = ring.first().copied().ok_or("missing box corner")?;
-        ring.push(first);
-        Ok(Geometry::Polygon(vec![vec![ring]]))
+        Ok(crate::construction::Built::new(&self.frame, ring, world, sign < 0.))
     }
 }
 
@@ -207,8 +234,7 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
             }
         }
     }
-    let g = b.geometry()?;
-    let result = crate::cmd::edit::add_geometry(s, id, p, g)?;
+    let result = b.built()?.add(s, id, p)?;
     let row = result.get("row").and_then(Value::as_u64).and_then(|r| usize::try_from(r).ok()).ok_or("box was not added")?;
     remember(s, id, row, b.clone())?;
     Ok(json!({"row":row,"box":b}))
@@ -218,12 +244,8 @@ pub(crate) fn remember(s: &mut Session, id: u32, row: usize, spec: BoxSpec) -> R
     if key.3 == u64::MAX {
         return Err("feature IDs have reached their limit; create a fresh layer for boxes".into());
     }
-    let l = s.map().layer(id).ok_or("box geometry is missing")?;
-    let g = l.dataset.features.get(row).and_then(|f| f.geometry.clone()).ok_or("box geometry is missing")?;
-    // The spec is in longitude/latitude; the feature as written, in the layer's own coordinates,
-    // its places that read as the spec's kept as stored, as the edit wrote them.
-    let held = crate::cmd::design::held_places(s, id, &[&g], &[]);
-    if g != l.dataset.edit_from_lonlat(spec.geometry()?, &held)? {
+    let g = s.map().layer(id).and_then(|l| l.dataset.features.get(row)?.geometry.clone()).ok_or("box geometry is missing")?;
+    if !spec.built()?.as_stored(s, id, &g)? {
         return Err("an edit rule changed the box geometry".into());
     }
     s.constructions.remember(key, Record { spec: Construction::Box(spec), geometry: g })
@@ -249,7 +271,7 @@ pub(crate) fn update(s: &mut Session, p: &Value) -> CmdResult {
     if b.frame != before.frame {
         return Err("a box's construction grid is frozen; start another box to change grids".into());
     }
-    crate::cmd::design::replace_geometry(s, id, row, b.geometry()?)?;
+    b.built()?.replace(s, id, row)?;
     remember(s, id, row, b.clone())?;
     Ok(json!({"row":row,"box":b}))
 }
@@ -652,5 +674,72 @@ mod tests {
         let l = s.map_mut().layer_mut(id).unwrap();
         l.touch_replacement();
         assert!(s.box_spec(id, row).is_none());
+    }
+
+    /// A session with a polygon layer "Lots" held in UTM 32N, editing on, active.
+    fn held_session() -> (Session, u32) {
+        let mut ds = Dataset::new("Lots", GeometryType::Polygon, vec![Field::new("class", FieldType::Text)]);
+        ds.hold_in(Crs::Epsg(32632)).unwrap();
+        let mut s = Session::new(crate::Project::default());
+        let id = s.map_mut().add_dataset(ds);
+        s.active_layer = Some(id);
+        s.run("edit.enable", &json!({"on":true})).unwrap();
+        (s, id)
+    }
+    fn stored(s: &Session, id: u32, row: usize) -> Vec<Coord> {
+        let mut out = Vec::new();
+        s.map().layer(id).unwrap().dataset.features[row].geometry.as_ref().unwrap().for_each_coord(|c| out.push(c));
+        out
+    }
+    /// A layer held in a projected EPSG system has its own grid; others keep Web Mercator's.
+    #[test]
+    fn a_projected_layer_has_its_own_construction_grid() {
+        let utm = Frame::for_crs(Crs::Epsg(32632));
+        assert_eq!(utm.epsg, 32632);
+        assert!(utm.is_system_grid());
+        assert_eq!(utm.to_world([500_000., -5_400_000.]), Some(Coord::new(500_000., 5_400_000.)), "y down: minus the northing");
+        let robinson = Crs::parse("+proj=robin +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs").unwrap();
+        for crs in [Crs::LonLat, Crs::WebMercator, Crs::Epsg(4258), robinson] {
+            assert_eq!(Frame::for_crs(crs), Frame::default(), "{crs:?}");
+        }
+        assert!(!Frame::default().is_system_grid());
+    }
+    /// A box built in its layer's own grid is written as built: each stored corner is the grid
+    /// corner in the layer's coordinates, exactly; an update rewrites them so, and its handles stay.
+    #[test]
+    fn a_box_in_the_layers_own_grid_is_written_as_built() {
+        let (mut s, id) = held_session();
+        let mut b =
+            BoxSpec { frame: Frame::for_crs(Crs::Epsg(32632)), center: [684_000., -5_397_000.], width: 120., height: 40., angle: 30. };
+        let row = s.run("edit.addBox", &json!({"box":b})).unwrap()["row"].as_u64().unwrap() as usize;
+        let corners = |b: &BoxSpec| b.corners().iter().map(|p| b.frame.to_world(*p).unwrap()).collect::<Vec<_>>();
+        let got = stored(&s, id, row);
+        assert_eq!(got.len(), 5);
+        for c in corners(&b) {
+            assert!(got.contains(&c), "{c:?} in {got:?}");
+        }
+        assert_eq!(s.box_spec(id, row), Some(b.clone()), "its handles stay");
+        b.angle = 75.;
+        s.run("edit.updateBox", &json!({"row":row,"box":b})).unwrap();
+        let got = stored(&s, id, row);
+        for c in corners(&b) {
+            assert!(got.contains(&c), "{c:?} in {got:?}");
+        }
+        assert_eq!(s.box_spec(id, row), Some(b));
+    }
+    /// A box in Web Mercator grid metres on the same layer is converted, as before.
+    #[test]
+    fn a_box_in_web_mercator_on_a_projected_layer_is_converted() {
+        let (mut s, id) = held_session();
+        let b = BoxSpec { frame: Frame::default(), center: [1_280_000., -6_220_000.], width: 120., height: 40., angle: 30. };
+        let row = s.run("edit.addBox", &json!({"box":b})).unwrap()["row"].as_u64().unwrap() as usize;
+        let lonlat = s.map().layer(id).unwrap().dataset.lonlat_conversion().unwrap();
+        let got = stored(&s, id, row);
+        let Geometry::Polygon(want) = b.geometry().unwrap() else { panic!("a polygon") };
+        for (g, w) in got.iter().zip(&want[0][0]) {
+            let g = lonlat.point(*g).unwrap();
+            assert!((g.x - w.x).abs() < 1e-9 && (g.y - w.y).abs() < 1e-9, "{g:?} vs {w:?}");
+        }
+        assert!(s.box_spec(id, row).is_some());
     }
 }

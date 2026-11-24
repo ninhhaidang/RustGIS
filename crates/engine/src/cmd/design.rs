@@ -1522,8 +1522,15 @@ pub(crate) fn replace_geometry(s: &mut Session, id: u32, row: usize, g: Geometry
     // What the edit left of the feature, or snapped to, stays as stored.
     let original = s.map().layer(id).and_then(|l| l.dataset.features.get(row)?.geometry.as_ref());
     let held = held_places(s, id, &original.into_iter().collect::<Vec<_>>(), &[&g]);
+    let g = s.map().layer(id).ok_or("no such layer")?.dataset.edit_from_lonlat(g, &held)?;
+    replace_geometry_own(s, id, row, g)
+}
+
+/// [`replace_geometry`] with `g` in the layer's own coordinates, written as it is: for a shape
+/// built in its own grid (#2032 C2f-6).
+pub(crate) fn replace_geometry_own(s: &mut Session, id: u32, row: usize, g: Geometry) -> Result<(), String> {
+    super::edit::validate(&g)?;
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
-    let g = l.dataset.edit_from_lonlat(g, &held)?;
     if l.geometry_type() != GeometryType::None && l.geometry_type() != g.kind() {
         return Err(format!("a {} can't replace a {}", g.kind().label(), l.geometry_type().label()));
     }
@@ -1968,7 +1975,7 @@ fn traverse(s: &mut Session, p: &Json) -> CmdResult {
             None => rustgis_data::raster::Crs::LonLat
                 .to(l.dataset.coord_crs())?
                 .point(start)
-                .ok_or_else(|| format!("the start can't be given in the system '{}' is held in", l.name))?,
+                .ok_or_else(|| format!("the start can't be given in the system that '{}' is held in", l.name))?,
         }),
         None => None,
     };

@@ -95,7 +95,8 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
   with grid north up, and Scale scales, about the middle of the feature's extent there. A Move
   whose selection spans layers in more than one system (or some in one and some in
   longitude/latitude; graphics don't count) moves them all as below, so places they share stay
-  together, and says so. The rest of this paragraph, about Web Mercator and the ground, is for
+  together, and says so. Rotate and Scale turn each feature about its own middle anyway, so
+  they take each layer's own grid even then. The rest of this paragraph, about Web Mercator and the ground, is for
   the other layers.
   A selected feature with a place that can't be given in longitude/latitude (one far past where
   its layer's own system reaches) is left as it is by Move, Rotate and Scale (except in a layer
@@ -240,13 +241,19 @@ image coordinates may appear elliptical on the map; a rectangle may appear skewe
 not resampled by this choice, and shapes are not clipped to its boundary.
 
 Choose **Web Mercator grid metres** explicitly to draw in map coordinates instead; those are not
-ground-distance metres. Choosing **No image** restores that grid. Under Edit, the same choices
+ground-distance metres. Choosing **No image** restores that grid. When the target layer is held
+in a projected system with an EPSG code (UTM, a national grid; not Web Mercator, another world
+projection or a geographic system), that choice is the **Layer's own grid** instead: one grid
+unit per unit of the layer's system, y down (a grid x is the system's x and a grid y minus its y,
+whichever way its axes point), and a shape built
+in it is written in the layer's own coordinates as built, with no conversion. Web Mercator grid
+metres are then not offered for new shapes; a command takes them with `"frame": {"epsg": 3857}`. Under Edit, the same choices
 are in Editing → New shape grid when a circle or rotated box tool is active. Grid changes affect
 new shapes; existing shapes retain their own construction grid when moved, resized or rotated.
 Undo/Redo retain those constructions within the session.
 
 On desktop, header reads run in the background with progress and Cancel. Changing images,
-switching to Web Mercator or using **Cancel Grid Read** stops only that lookup and preserves
+switching to Web Mercator (or the layer's own grid) or using **Cancel Grid Read** stops only that lookup and preserves
 unrelated queued work. The status-bar Cancel retains its queue-wide behaviour. Pixel-based
 drawing waits for a valid grid; a failed or cancelled read never silently substitutes map metres.
 After changing a source file externally, reload the image layer first, then use **Reload Grid**.
@@ -256,13 +263,13 @@ download remote originals first. In the browser, upload the original GeoTIFF. Ot
 (including PNG, JPEG, ASCII grids and GDAL-converted images) are refused with guidance to export
 the image as a GeoTIFF and add that file; reloading the unsupported source cannot supply its grid.
 Construction grids require a supported EPSG coordinate system. Unsupported or custom systems
-are refused during the grid read; choose a supported image or **Web Mercator grid metres**.
+are refused during the grid read; choose a supported image or **Web Mercator grid metres** (the **Layer's own grid** on a layer that has one).
 Changing projects or maps clears the old image binding, keeps pixel mode selected and reports a
 warning. Drawing stays blocked until you choose an image again or explicitly choose Web Mercator
-grid metres; opening the pane does not clear the warning.
+grid metres (or the layer's own grid); opening the pane does not clear the warning.
 An image removed from the map keeps its last name as **Unavailable image**. Pixel drawing stays
 blocked and **Reload Grid** is disabled until the image is restored or another image is chosen.
-Choose **No image** to return explicitly to Web Mercator grid metres.
+Choose **No image** to return explicitly to Web Mercator grid metres (or the layer's own grid).
 **Original Image Grid** in Command Search reports the active image's original dimensions and
 EPSG coordinate system in a notice, while keeping the Annotate pane open.
 
@@ -344,8 +351,11 @@ rules continue to apply. Box tools do not create annotation or class fields.
   completed move, resize, rotation or deletion is undoable. ++esc++ cancels a held gesture;
   press it again to leave the tool.
 
-The interactive tool starts in Web Mercator grid metres, **not ground metres**; angles run
-clockwise from grid east. Activating the interactive tool, including through `tool.set`, requires
+The interactive tool starts in the layer's own grid when it has one (see
+[Annotating an image](#annotating-an-image)), and otherwise in Web Mercator grid metres, **not
+ground metres**; angles run clockwise from grid east. `edit.addBox` without `box.frame` uses
+Web Mercator grid metres, as before; `"frame": {"epsg": 32632}` builds in that system's own grid
+(the layer's own when it is held in it). Activating the interactive tool, including through `tool.set`, requires
 an untilted, non-globe Earth view. The geometry commands (`edit.addBox`, `edit.updateBox` and
 `edit.deleteBox`) work independently of the map's projection and pitch, using the construction
 grid on an Earth map. Boxes crossing the antimeridian, the polar editing limit, and unsupported
@@ -403,7 +413,8 @@ The existing **Editing** pane opens with centre X/Y, radius and polygon toleranc
   leaves the tool. Templates, ordinary attributes and edit rules work as for other features.
 
 The interactive tool uses the same flat Earth view and frozen construction grids as Rotated
-Box. Its default radius is in **Web Mercator grid metres, not ground metres**. Scripts may
+Box: the layer's own grid when it has one, else **Web Mercator grid metres, not ground
+metres**; `edit.addCircle` without `circle.frame` uses Web Mercator grid metres, as before. Scripts may
 supply `circle.frame` from an original GeoTIFF grid via `box_edit::Frame::from_grid`; centre,
 radius and tolerance then use original image pixels, including rotated or skewed grids.
 A pixel circle may look elliptical on the map. Geometry commands remain view-independent.
@@ -596,8 +607,10 @@ clear the selection on empty space, ready to draw another shape. Drawing and mea
 keep their current selection when opening the map menu.
 
 1. Choose Circle or Rotated Box and a construction grid. The shape defaults to the active
-   Circle or Rotated Box tool when opening conversion; other tools default to Circle. The default is **Web Mercator grid
-   metres**, not ground metres. Choose an open GeoTIFF to fit in its **original image pixels**,
+   Circle or Rotated Box tool when opening conversion; other tools default to Circle. The default is the layer's own grid when
+   it has one (as for drawing), else **Web Mercator grid metres**, not ground metres, also for
+   `edit.previewShapeConversion` without `frame` (`"frame": {"epsg": 3857}` asks for Web
+   Mercator there). Choose an open GeoTIFF to fit in its **original image pixels**,
    preserving the source affine transform, including rotation and shear, rather than using a
    display overview. Local GeoTIFFs and embedded/browser-uploaded GeoTIFFs are supported; remote
    original grids must be downloaded and added first. An unreadable or unsupported source gives

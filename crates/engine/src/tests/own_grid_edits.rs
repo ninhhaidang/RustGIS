@@ -13,14 +13,7 @@ const UTM: Crs = Crs::Epsg(32632);
 /// A square of 0.005° near Ingolstadt (2.5° east of UTM 32N's central meridian, its grid turned
 /// some 1.9° from north there) and a line through it, in longitude/latitude.
 fn square() -> Geometry {
-    let (x, y) = (11.5, 48.7);
-    Geometry::Polygon(vec![vec![vec![
-        Coord::new(x, y),
-        Coord::new(x + 0.005, y),
-        Coord::new(x + 0.005, y + 0.005),
-        Coord::new(x, y + 0.005),
-        Coord::new(x, y),
-    ]]])
+    square_sized(11.5, 48.7, 0.005)
 }
 
 fn line() -> Geometry {
@@ -144,11 +137,16 @@ fn a_move_follows_the_systems_unit_and_axes() {
 }
 
 fn square_at(x: f64, y: f64) -> Geometry {
+    square_sized(x, y, 0.002)
+}
+
+/// A square of side `d` degrees with its south-west corner at `x`, `y`.
+fn square_sized(x: f64, y: f64, d: f64) -> Geometry {
     Geometry::Polygon(vec![vec![vec![
         Coord::new(x, y),
-        Coord::new(x + 0.002, y),
-        Coord::new(x + 0.002, y + 0.002),
-        Coord::new(x, y + 0.002),
+        Coord::new(x + d, y),
+        Coord::new(x + d, y + d),
+        Coord::new(x, y + d),
         Coord::new(x, y),
     ]]])
 }
