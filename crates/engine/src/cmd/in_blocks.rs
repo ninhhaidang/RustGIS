@@ -176,13 +176,43 @@ fn written(full: (u32, u32)) -> bool {
 
 /// Whether command `id` with `params` writes its result to a file in the results folder: a
 /// command that works in blocks ([`in_blocks`]) over a layer too large to read whole, whose
-/// result is too large to hold. The permission check adds that it writes files.
+/// result is too large to hold, or a resample of such a layer whose result is ([`holds`]) and
+/// can be written ([`streams`]). The permission check adds that it writes files. It doesn't ask
+/// whether the memory or a results folder is there now. When either isn't, the run reads the file
+/// as before, and the check has asked for more than the run needed.
 pub(crate) fn writes_file(context: &impl super::InputSource, id: &str, params: &Value) -> bool {
-    if !in_blocks(id, params) {
+    let resample = id == "raster.process" && params.get("operation").and_then(Value::as_str) == Some("resample");
+    if !in_blocks(id, params) && !resample {
         return false;
     }
     let Some(name) = params.get("layer").and_then(Value::as_str) else { return false };
-    Input::of(context, name).ok().as_ref().and_then(too_large).is_some_and(written)
+    let Some((full, bands)) = Input::of(context, name).ok().and_then(|i| Some((too_large(&i)?, i.held().band_count()))) else {
+        return false;
+    };
+    match resample {
+        true => !holds(resample_samples(full, super::imagery::resample_factor(params), bands)) && streams(bands),
+        false => written(full),
+    }
+}
+
+/// Whether a result of `bands` bands can be written a row of tiles at a time
+/// ([`cogwrite::TileStream::most_bands`]).
+pub(crate) fn streams(bands: usize) -> bool {
+    bands <= cogwrite::TileStream::<std::io::Cursor<Vec<u8>>>::most_bands()
+}
+
+/// A resample by `factor` of a raster `full` in size: the factor used (never coarser than the
+/// raster itself), and the result's columns and rows, its trailing ones short of a full block
+/// left out.
+pub(crate) fn resample_size(full: (u32, u32), factor: u32) -> (u32, u32, u32) {
+    let k = factor.min(full.0.min(full.1)).max(1);
+    (k, (full.0 / k).max(1), (full.1 / k).max(1))
+}
+
+/// The samples of a resample by `factor` of a raster `full` in size, of `bands` bands.
+pub(crate) fn resample_samples(full: (u32, u32), factor: u32, bands: usize) -> u64 {
+    let (_, w, h) = resample_size(full, factor);
+    u64::from(w).saturating_mul(u64::from(h)).saturating_mul(bands as u64)
 }
 
 /// The plan to make `out` from `input` a block at a time, when `input` is a layer read in place
@@ -199,7 +229,7 @@ pub(crate) fn plan(s: &Session, input: &Input, out: &str) -> Result<Option<Block
         ));
     }
     let folder = match written(full) {
-        true => Some(folder(s).ok_or("this computer gives RustGIS no folder to write the result to: save the project first")?),
+        true => Some(results_folder(s)?),
         false => None,
     };
     Ok(Some(Blocks {
@@ -269,6 +299,22 @@ impl Reading {
     /// The file's full columns and rows.
     pub(crate) fn full(&self) -> (u32, u32) {
         self.full
+    }
+
+    /// Whether a part of `cols` × `rows` of the file is read at its full size: its samples, every
+    /// band's, within what a part read takes ([`rustgis_data::raster::max_samples`]), a 64-bit
+    /// sample counted twice, as it is decoded at its size before it is held as a float.
+    pub(crate) fn part_fits(&self, cols: u32, rows: u32) -> bool {
+        let held = self.input.held();
+        let wide: u64 = if matches!(held.data_type.as_str(), "Float64" | "Int64" | "UInt64") { 2 } else { 1 };
+        let samples = u64::from(cols).saturating_mul(u64::from(rows)).saturating_mul(held.band_count().max(1) as u64).saturating_mul(wide);
+        samples <= rustgis_data::raster::max_samples() as u64
+    }
+
+    /// The columns and rows of its file's tiles (a strip's: the image's width), which a block
+    /// read decodes whole; `None` when they can't be read.
+    pub(crate) fn chunk(&self) -> Option<(u32, u32)> {
+        rustgis_data::raster::chunk_size(Path::new(&self.path))
     }
 
     /// The input layer's name.
@@ -417,7 +463,7 @@ impl Blocks {
             // The row of blocks made, and the file's levels' rows waiting to be written (less
             // than a row each way, two at most at the full size, half that at the next level…),
             // the tables of its tiles, and the overview kept.
-            Some(_) => cogwrite::TileStream::<std::io::Cursor<Vec<u8>>>::peak(fw, fh, OVERVIEW_SAMPLES).saturating_add(row_bytes),
+            Some(_) => stream_peak(fw, fh, 1).saturating_add(row_bytes),
             None => u64::from(fw).saturating_mul(u64::from(fh)).saturating_mul(4).saturating_add(row_bytes),
         };
         // Within what any run of rasters plans for ([`rustgis_data::raster::max_samples`]),
@@ -466,96 +512,128 @@ impl Blocks {
             });
             return super::workflows::made_then(r, None, Some(then));
         };
-        // A folder this run makes goes again with a result never added, while nothing else is in
-        // it; one already there stays, whatever is in it.
-        let mut made_folder = make_folder(&folder)?;
-        let (mut taken, mut i, mut remade) = (None, 1u32, 0);
-        while i < 10_000 {
-            let stem = stem(&out);
-            let dest = folder.join(if i == 1 { format!("{stem}.tif") } else { format!("{stem} {i}.tif") });
-            // The file's name is reserved before it is written: two runs never take the same one.
-            let wrote = rustgis_data::io::stage_streamed_new(&dest, made_folder.then_some(folder.as_path()), |w| {
-                let (mut sink, mut stream) = (Some(w), None);
-                let (_, _, rounded) = blocks
-                    .each_row(&cells, halo, |_, rows, (grid, crs)| {
-                        count(rows);
-                        // Placed on the file's full grid, as a read of all of it places it.
-                        if stream.is_none() {
-                            let t = Raster::new(
-                                out.clone(),
-                                1,
-                                1,
-                                vec![vec![nodata]],
-                                grid,
-                                crs,
-                                Some(f64::from(nodata)),
-                                ColorHint::Gray,
-                                kind,
-                            )
-                            .map_err(|e| e.to_string())?;
-                            let t = named(t);
-                            let w = sink.take().ok_or("the result's file was started twice")?;
-                            stream = Some(
-                                cogwrite::TileStream::new(&t, fw, fh, shape.samples(), w)
-                                    .map_err(|e| e.to_string())?
-                                    .keeping(OVERVIEW_SAMPLES),
-                            );
-                        }
-                        stream.as_mut().map_or(Ok(()), |s: &mut cogwrite::TileStream<_>| s.put(rows).map_err(|e| e.to_string()))
-                    })
-                    // A Cancel stays one, as on the path that holds its result.
-                    .map_err(rustgis_data::DataError::of_conversion)?;
-                let (info, overview) =
-                    stream.ok_or_else(|| rustgis_data::DataError::Format(format!("{layer}: it has no pixels")))?.finish()?;
-                Ok::<_, rustgis_data::DataError>((info, overview, rounded))
-            });
-            match wrote {
-                Err(rustgis_data::DataError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => i += 1,
-                // Another run's result, never added, took the folder it made with it meanwhile:
-                // made again (this run's now, if it makes it), the same name tried again.
-                Err(rustgis_data::DataError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound && !folder.exists() && remade < 8 => {
-                    made_folder = make_folder(&folder)?;
-                    remade += 1;
-                }
-                Err(e) => {
-                    if made_folder {
-                        let _ = std::fs::remove_dir(&folder);
+        let (dest, staged, (info, overview, rounded)) = write_new(&folder, &out, |w| {
+            let (mut sink, mut stream) = (Some(w), None);
+            let (_, _, rounded) = blocks
+                .each_row(&cells, halo, |_, rows, (grid, crs)| {
+                    count(rows);
+                    // Placed on the file's full grid, as a read of all of it places it.
+                    if stream.is_none() {
+                        let t =
+                            Raster::new(out.clone(), 1, 1, vec![vec![nodata]], grid, crs, Some(f64::from(nodata)), ColorHint::Gray, kind)
+                                .map_err(|e| e.to_string())?;
+                        let t = named(t);
+                        let w = sink.take().ok_or("the result's file was started twice")?;
+                        stream = Some(self::stream(&t, fw, fh, shape.samples(), w)?);
                     }
-                    return Err(match e {
-                        rustgis_data::DataError::Cancelled => e.to_string(),
-                        e => format!("{}: {e}", dest.display()),
-                    });
-                }
-                Ok(w) => {
-                    taken = Some((dest, w));
-                    break;
-                }
-            }
-        }
-        let (dest, (staged, (info, overview, rounded))) =
-            taken.ok_or_else(|| format!("{}: every name for {out} is taken", folder.display()))?;
+                    stream.as_mut().map_or(Ok(()), |s: &mut cogwrite::TileStream<_>| s.put(rows).map_err(|e| e.to_string()))
+                })
+                // A Cancel stays one, as on the path that holds its result.
+                .map_err(rustgis_data::DataError::of_conversion)?;
+            let (info, overview) = stream.ok_or_else(|| rustgis_data::DataError::Format(format!("{layer}: it has no pixels")))?.finish()?;
+            Ok((info, overview, rounded))
+        })?;
         // Refused, its file goes with it.
         overflowed()?;
-        rustgis_data::progress::check().map_err(|e| e.to_string())?;
-        // The layer holds an overview of the file, as one added from it would.
-        let overview = overview.ok_or("the result's overview wasn't kept")?;
-        let file = dest.display().to_string();
-        let rl = rustgis_map::RasterLayer::tiled_file(overview, file.clone());
         let (w, h) = info.levels.first().copied().unwrap_or_default();
-        let mut notes = vec![format!(
-            "{out}: made a block at a time from {layer} at its full {w} × {h}, and written to {file}, where the layer reads it from"
-        )];
-        notes.extend(super::gp::tiled_read_notes(&[note(rounded)], "its"));
-        let then: super::workflows::Then = Box::new(move |s: &mut Session, v: &mut Value| {
-            for note in notes {
-                s.notify(note, false);
-            }
-            if let Some(o) = v.as_object_mut() {
-                o.insert("path".into(), Value::String(file));
-            }
-        });
-        Ok(super::workflows::made_layer(out, rl, None, Some(then)).committing(staged, Vec::new()))
+        let made = format!("made a block at a time from {layer} at its full {w} × {h}");
+        file_layer(out, &dest, staged, overview, &made, super::gp::tiled_read_notes(&[note(rounded)], "its"))
     }
+}
+
+/// A stream of a raster `w` × `h` in size, of `template`'s bands, place and no-data, into `out`,
+/// keeping the overview the layer that reads its file holds ([`OVERVIEW_SAMPLES`]).
+pub(crate) fn stream<'a, W: std::io::Write + std::io::Seek>(
+    template: &Raster,
+    w: u32,
+    h: u32,
+    samples: cogwrite::Samples,
+    out: &'a mut W,
+) -> Result<cogwrite::TileStream<'a, W>, String> {
+    Ok(cogwrite::TileStream::new(template, w, h, samples, out).map_err(|e| e.to_string())?.keeping(OVERVIEW_SAMPLES))
+}
+
+/// The most bytes a [`stream`] of a raster `w` × `h` of `bands` bands holds at once, given its
+/// rows a row of tiles at a time.
+pub(crate) fn stream_peak(w: u32, h: u32, bands: usize) -> u64 {
+    cogwrite::TileStream::<std::io::Cursor<Vec<u8>>>::peak(w, h, bands, OVERVIEW_SAMPLES)
+}
+
+/// The project's results folder for a result too large to hold ([`folder`]), or an error saying
+/// to save the project first when the computer gives none.
+pub(crate) fn results_folder(s: &Session) -> Result<PathBuf, String> {
+    folder(s).ok_or_else(|| "this computer gives RustGIS no folder to write the result to: save the project first".to_string())
+}
+
+/// Writes a result called `out` to a new file in `folder` (made when it isn't there), under the
+/// first of its names not taken (`out.tif`, `out 2.tif`, …): the name is reserved before `write`
+/// writes it, so two runs never take the same one, and the file is staged beside its place,
+/// put there as the layer is added ([`file_layer`]). A run cancelled, failed or never added
+/// leaves no file behind, nor the folder when this made it (not the folders around it, the
+/// project's own when it is saved) while nothing else is in it (one another run wrote into too can
+/// stay, empty, once both their results are gone).
+pub(crate) fn write_new<T>(
+    folder: &Path,
+    out: &str,
+    mut write: impl FnMut(&mut std::io::BufWriter<std::fs::File>) -> Result<T, rustgis_data::DataError>,
+) -> Result<(PathBuf, rustgis_data::io::StagedWrite, T), String> {
+    // A folder this run makes goes again with a result never added, while nothing else is in
+    // it; one already there stays, whatever is in it.
+    let mut made_folder = make_folder(folder)?;
+    let (mut i, mut remade) = (1u32, 0);
+    while i < 10_000 {
+        let stem = stem(out);
+        let dest = folder.join(if i == 1 { format!("{stem}.tif") } else { format!("{stem} {i}.tif") });
+        match rustgis_data::io::stage_streamed_new(&dest, made_folder.then_some(folder), &mut write) {
+            Err(rustgis_data::DataError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => i += 1,
+            // Another run's result, never added, took the folder it made with it meanwhile:
+            // made again (this run's now, if it makes it), the same name tried again.
+            Err(rustgis_data::DataError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound && !folder.exists() && remade < 8 => {
+                made_folder = make_folder(folder)?;
+                remade += 1;
+            }
+            Err(e) => {
+                if made_folder {
+                    let _ = std::fs::remove_dir(folder);
+                }
+                return Err(match e {
+                    rustgis_data::DataError::Cancelled => e.to_string(),
+                    e => format!("{}: {e}", dest.display()),
+                });
+            }
+            Ok((staged, value)) => return Ok((dest, staged, value)),
+        }
+    }
+    Err(format!("{}: every name for {out} is taken", folder.display()))
+}
+
+/// The layer `out` reading its file `dest` in place, holding `overview` of it, the file staged
+/// to be put there as it is added: says it was `made` (how) and written there, then `notes`, and
+/// its answer gives the file's `path`.
+pub(crate) fn file_layer(
+    out: String,
+    dest: &Path,
+    staged: rustgis_data::io::StagedWrite,
+    overview: Option<Raster>,
+    made: &str,
+    notes: Vec<String>,
+) -> Result<Made, String> {
+    rustgis_data::progress::check().map_err(|e| e.to_string())?;
+    // The layer holds an overview of the file, as one added from it would.
+    let overview = overview.ok_or("the result's overview wasn't kept")?;
+    let file = dest.display().to_string();
+    let rl = rustgis_map::RasterLayer::tiled_file(overview, file.clone());
+    let mut said = vec![format!("{out}: {made}, and written to {file}, where the layer reads it from")];
+    said.extend(notes);
+    let then: super::workflows::Then = Box::new(move |s: &mut Session, v: &mut Value| {
+        for note in said {
+            s.notify(note, false);
+        }
+        if let Some(o) = v.as_object_mut() {
+            o.insert("path".into(), Value::String(file));
+        }
+    });
+    Ok(super::workflows::made_layer(out, rl, None, Some(then)).committing(staged, Vec::new()))
 }
 
 /// A file read a block at a time ([`Source::each_row`]): the layer's input, name and file, and

@@ -1513,6 +1513,13 @@ pub struct PartRead {
     pub full: (u32, u32),
 }
 
+/// The columns and rows of a tile of the GeoTIFF at `path` (a strip's: the image's width), which a
+/// part read decodes whole ([`read_path_part`]); `None` when they can't be read.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn chunk_size(path: &Path) -> Option<(u32, u32)> {
+    geotiff::chunk_size(path)
+}
+
 /// `part` of the GeoTIFF at `path`, as [`read_path`] reads the file but holding only that part,
 /// at the finest level whose part fits `max` samples: the full image when it does, read from the
 /// strips or tiles that hold it alone. The `.aux.xml` beside it is applied as it is to the whole

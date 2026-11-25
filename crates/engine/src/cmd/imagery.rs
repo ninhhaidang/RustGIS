@@ -1573,23 +1573,15 @@ pub(crate) fn supervised_work(s: &Session, p: &Value) -> Result<super::workflows
             let mut means = rasterops::ClassMeans::on_grid(reading.held(), &grid, reading.full(), ds.coord_crs(), &bands, &polygons)
                 .map_err(explain)?;
             let (cols, under) = means.window();
-            // Whole rows of the window's columns, in order: a tile's rows at a time where the
-            // computer can give them (the part read and its tiles as decoded, about twice the
-            // strip), so each row of tiles is decoded once; half as many, and again, where it
-            // can't. A strip of fewer rows than a tile decodes its row of tiles once for each strip
-            // in it: a window as wide as the mosaic of #2761 (83517 columns, 3 bands) needs 513 MB
-            // at once for that.
-            let (_, bh) = super::in_blocks::BLOCK;
+            // Whole rows of the window's columns, in order, a row of the file's tiles at a time
+            // where the computer can give them ([`training_strips`]).
             let width = cols.end.saturating_sub(cols.start).max(1);
             let row = u64::from(width).saturating_mul(reading.held().band_count().max(1) as u64).saturating_mul(4);
-            let mut strip = bh;
-            while strip > 1 && !super::in_blocks::affordable(row.saturating_mul(u64::from(strip)).saturating_mul(2)) {
-                strip /= 2;
-            }
-            // From the start of the row of tiles the window begins in (a block's rows, which a
-            // file's tiles of 256 or 512 rows divide), so no row of tiles is read for two strips;
-            // the rows above the window are visited by no polygon.
-            let top = under.start / bh * bh;
+            // Within what the computer can give, and what a part read reads at full size.
+            let fits = |rows: u32| {
+                super::in_blocks::affordable(row.saturating_mul(u64::from(rows)).saturating_mul(2)) && reading.part_fits(width, rows)
+            };
+            let (top, strip) = training_strips(under.start, reading.chunk().map(|c| c.1), fits);
             reading
                 .each_block((cols.start, cols.end), (top, under.end), (width, strip), |_, _, read| {
                     means.add(&read.raster, read.at, &read.grid.0).map_err(String::from)
@@ -1867,25 +1859,42 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
             // Never coarser than the raster itself; trailing columns and rows short of a full
             // block are left out.
             r.held().require_coordinates()?;
-            let factor = uint(p, "factor").unwrap_or(2).clamp(2, 64) as u32;
+            let factor = resample_factor(p);
             let out = name(p, format!("{}_resampled", r.held().name))?;
-            // A file too large to read whole at its full size, whose resample can be held and the
-            // memory for it given now: made from the file a block at a time (#2865). Another
-            // reads the finest level of it that fits, as before, and says so.
+            // A file too large to read whole at its full size: made from the file a block at a
+            // time (#2865), held when it can be, else written to the results folder. One this
+            // computer can't give the memory for now, or of more bands than a file written a row
+            // of tiles at a time takes, reads the finest level of the file that fits, as before,
+            // and says so.
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(reading) = super::in_blocks::plan_read(&r) {
-                let (fw, fh) = reading.full();
-                let k = factor.min(fw.min(fh)).max(1);
-                let (w, h) = ((fw / k).max(1), (fh / k).max(1));
+                let (k, w, h) = super::in_blocks::resample_size(reading.full(), factor);
                 let bands = r.held().band_count();
-                let samples = u64::from(w) * u64::from(h) * bands as u64;
-                // One this computer can't give the memory for now reads the file as before.
-                if super::in_blocks::holds(samples) && super::in_blocks::affordable(resample_need(w, h, bands)) {
+                let held = super::in_blocks::holds(super::in_blocks::resample_samples(reading.full(), factor, bands));
+                // Planned with blocks of the factor alone; the file's tiles, which the work reads
+                // as it runs (not here, on the window's thread), choose the blocks it reads.
+                let plain = resample_block(k, None, |_, _| true);
+                // One too large to hold needs a folder to write to: without one, it reads the
+                // file as before.
+                let folder = (!held).then(|| super::in_blocks::results_folder(s).ok()).flatten();
+                if (held || (super::in_blocks::streams(bands) && folder.is_some()))
+                    && super::in_blocks::affordable(resample_need(w, h, bands, held, plain, k))
+                {
                     reading.refused_in_script(s)?;
-                    return Ok(Box::new(move || match super::in_blocks::affordable(resample_need(w, h, bands)) {
-                        true => resample_in_blocks(&reading, k, out),
-                        // Short of it since then: the file read as before.
-                        false => resample_whole(&r, factor, out),
+                    return Ok(Box::new(move || {
+                        // Blocks of whole tiles where the part reader reads them at full size and
+                        // the computer can give them now, else of the factor alone; the memory
+                        // planned for is the blocks read.
+                        let fits = |cols: u32, rows: u32| reading.part_fits(cols, rows);
+                        let blocks = [resample_block(k, reading.chunk(), fits), resample_block(k, None, fits)];
+                        let block = blocks
+                            .into_iter()
+                            .find(|b| fits(b.0, b.1) && super::in_blocks::affordable(resample_need(w, h, bands, held, *b, k)));
+                        match block {
+                            Some(block) => resample_in_blocks(&reading, k, out, folder, block),
+                            // Short of it since then: the file read as before.
+                            None => resample_whole(&r, factor, out),
+                        }
                     }));
                 }
             }
@@ -1895,13 +1904,57 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
     }
 }
 
-/// What a resample `w` × `h` of `bands` bands made a block at a time holds: its bands and its
-/// file, and for several bands the copy of them interleaved that the file is made from (one band
-/// is written from itself), planned before they are set aside.
+/// The factor a resample is by: `factor`, 2 to 64, 2 when not given.
+pub(crate) fn resample_factor(p: &Value) -> u32 {
+    uint(p, "factor").unwrap_or(2).clamp(2, 64) as u32
+}
+
+/// What a resample `w` × `h` of `bands` bands made a block at a time holds, planned before it is
+/// set aside. `held`: its bands and its file, and for several bands the copy of them interleaved
+/// that the file is made from (one band is written from itself). Written: a row of blocks of the
+/// result (blocks of `block` of the file, `k` times the result's), and its file's levels' rows as
+/// they are written, with the tables of its tiles and the overview kept. Either way, a block of the
+/// file as it is read: its samples, and its tiles as decoded, about as many again.
 #[cfg(not(target_arch = "wasm32"))]
-fn resample_need(w: u32, h: u32, bands: usize) -> u64 {
-    let copies = if bands > 1 { 3 } else { 2 };
-    u64::from(w).saturating_mul(u64::from(h)).saturating_mul(bands as u64).saturating_mul(4 * copies)
+fn resample_need(w: u32, h: u32, bands: usize, held: bool, block: (u32, u32), k: u32) -> u64 {
+    // 4 bytes a sample, twice: as held, and as its tiles are decoded.
+    let input = u64::from(block.0).saturating_mul(u64::from(block.1)).saturating_mul(bands as u64).saturating_mul(4 * 2);
+    if held {
+        let copies = if bands > 1 { 3 } else { 2 };
+        return u64::from(w).saturating_mul(u64::from(h)).saturating_mul(bands as u64).saturating_mul(4 * copies).saturating_add(input);
+    }
+    let rows = block.1 / k.max(1);
+    let row = u64::from(w).saturating_mul(u64::from(rows)).saturating_mul(bands as u64).saturating_mul(4);
+    super::in_blocks::stream_peak(w, h, bands).saturating_add(row).saturating_add(input)
+}
+
+/// The columns and rows of the blocks a resample by `k` reads of a file whose tiles are `chunk`:
+/// whole multiples of `k` near [`super::in_blocks::BLOCK`]'s size, and of the tiles too where a
+/// common multiple stays within four blocks' columns or rows, so that no tile is decoded for two
+/// blocks, and `fits` says the part reader reads a block that size at full size
+/// ([`super::in_blocks::Reading::part_fits`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn resample_block(k: u32, chunk: Option<(u32, u32)>, fits: impl Fn(u32, u32) -> bool) -> (u32, u32) {
+    let k = k.max(1);
+    let side = |block: u32, tile: Option<u32>| {
+        let plain = (block / k).max(1) * k;
+        let Some(tile) = tile.filter(|t| *t > 0) else { return plain };
+        let gcd = |mut a: u64, mut b: u64| {
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            a
+        };
+        let lcm = u64::from(k) / gcd(u64::from(k), u64::from(tile)) * u64::from(tile);
+        match u32::try_from(lcm) {
+            Ok(lcm) if lcm <= block.saturating_mul(4) => (block / lcm).max(1) * lcm,
+            _ => plain,
+        }
+    };
+    let (bw, bh) = super::in_blocks::BLOCK;
+    let (aligned, plain) = ((side(bw, chunk.map(|c| c.0)), side(bh, chunk.map(|c| c.1))), (side(bw, None), side(bh, None)));
+    // Whole tiles each way the part reader reads at full size, else one way, else neither.
+    [aligned, (aligned.0, plain.1), (plain.0, aligned.1)].into_iter().find(|(c, r)| fits(*c, *r)).unwrap_or(plain)
 }
 
 /// A resample by `factor` of `r` read whole (the finest level of a file read in place that
@@ -1913,10 +1966,8 @@ fn resample_whole(r: &super::workflows::Input, factor: u32, out: String) -> Resu
     // Each output pixel is the mean of the valid pixels it covers; one covering none
     // takes the result's no-data value (the raster's, else the one cells with no value
     // take).
-    let empty = r.nodata.map_or(NODATA, |d| d as f32);
-    let bands = r
-        .bands
-        .iter()
+    let (empty, alpha) = (resample_empty(&r), alpha_band(&r));
+    let bands = (0..r.band_count())
         .map(|b| {
             // A cell reads its k × k block; the cells are counted and cancellable.
             let cost = (k * k) as usize;
@@ -1927,20 +1978,11 @@ fn resample_whole(r: &super::workflows::Input, factor: u32, out: String) -> Resu
                 || (),
                 |_, i| {
                     let (row, col) = ((i / w as usize) as u32, (i % w as usize) as u32);
-                    let (mut sum, mut n) = (0.0f64, 0u32);
-                    for dy in 0..k {
-                        for dx in 0..k {
-                            let (x, y) = (col * k + dx, row * k + dy);
-                            if x >= r.width || y >= r.height {
-                                continue;
-                            }
-                            if let Some(v) = b.data.get((y * r.width + x) as usize).copied().filter(|v| r.is_valid(*v)) {
-                                sum += v as f64;
-                                n += 1;
-                            }
-                        }
-                    }
-                    if n > 0 { (sum / n as f64) as f32 } else { empty }
+                    let cells = (0..k)
+                        .flat_map(|dy| (0..k).map(move |dx| (col * k + dx, row * k + dy)))
+                        .filter(|(x, y)| *x < r.width && *y < r.height)
+                        .map(|(x, y)| (y * r.width + x) as usize);
+                    resample_mean(&r, b, alpha, cells, empty)
                 },
             )
         })
@@ -1957,7 +1999,34 @@ fn resample_whole(r: &super::workflows::Input, factor: u32, out: String) -> Resu
     });
     // The blocks average values rounded when the file was read, some or all of them.
     out.keep_rounded_mark(&r);
-    super::workflows::made(out, None)
+    let notes: Vec<String> = resample_palette_note(&r, &r.name).into_iter().collect();
+    let then: super::workflows::Then = Box::new(move |s: &mut Session, _: &mut Value| {
+        for note in notes {
+            s.notify(note, false);
+        }
+    });
+    super::workflows::made_then(out, None, Some(then))
+}
+
+/// What a resample `out` of `source` written to a file says it leaves out: with alpha, the file
+/// says which pixels have a value by alpha, not by the no-data value `source` has, which a held
+/// resample keeps (`cogwrite::TileStream`).
+#[cfg(not(target_arch = "wasm32"))]
+fn alpha_nodata_note(source: &Raster, out: &str) -> Option<String> {
+    let alpha = match source.color {
+        ColorHint::Rgb { alpha } => alpha && source.band_count() >= 4,
+        ColorHint::GrayAlpha => source.band_count() >= 2,
+        _ => false,
+    };
+    let d = source.nodata.filter(|_| alpha)?;
+    Some(format!("{out}: its no-data value {d} isn't written to its file: alpha says which of its pixels have a value"))
+}
+
+/// What a resample of `r` (layer `layer`) says it leaves out: a palette's colour table, whose
+/// indexes it averages as grey values (a mean of indexes is no colour of the table).
+fn resample_palette_note(r: &Raster, layer: &str) -> Option<String> {
+    matches!(r.color, ColorHint::Palette(_))
+        .then(|| format!("{layer}: its colour table isn't kept: its colour indexes are resampled as grey values"))
 }
 
 /// A resample by `k` of a large file read in place, made a block at a time from the file at its
@@ -1967,102 +2036,224 @@ fn resample_whole(r: &super::workflows::Input, factor: u32, out: String) -> Resu
 /// output pixel spans two. Its memory ([`resample_need`]) is planned by the caller, which reads
 /// the file as before when the computer can't give it.
 #[cfg(not(target_arch = "wasm32"))]
-fn resample_in_blocks(reading: &super::in_blocks::Reading, k: u32, out: String) -> Result<super::workflows::Made, String> {
+fn resample_in_blocks(
+    reading: &super::in_blocks::Reading,
+    k: u32,
+    out: String,
+    folder: Option<std::path::PathBuf>,
+    size: (u32, u32),
+) -> Result<super::workflows::Made, String> {
     let (fw, fh) = reading.full();
     let (w, h) = ((fw / k).max(1), (fh / k).max(1));
-    let (bw, bh) = super::in_blocks::BLOCK;
-    let size = ((bw / k).max(1) * k, (bh / k).max(1) * k);
-    let need = resample_need(w, h, reading.held().band_count());
+    let need = resample_need(w, h, reading.held().band_count(), folder.is_none(), size, k);
     let _held = rustgis_data::memory::Holding::of(need);
-    let mut bands: Vec<Vec<f32>> = Vec::new();
-    let mut first: Option<Raster> = None;
-    let mut marks: Vec<bool> = Vec::new();
-    let rounded = reading.each_block((0, w * k), (0, h * k), size, |cols, rows, read| {
-        let r = &read.raster;
-        let (ax, ay) = read.at;
-        // A pixel with no value takes the result's no-data value, as a whole raster's resample.
-        let empty = r.nodata.map_or(NODATA, |d| d as f32);
-        if bands.is_empty() {
-            bands = (0..r.band_count()).map(|_| rasterops::new_band(w as usize, h as usize, empty)).collect::<Result<_, _>>()?;
-            marks = vec![false; r.band_count()];
+    let note = |rounded: u64| {
+        let mut notes = super::gp::tiled_read_notes(&[super::gp::ReadNote::rounded(reading.layer(), rounded)], "its");
+        notes.extend(resample_palette_note(reading.held(), reading.layer()));
+        notes
+    };
+    let Some(folder) = folder else {
+        let mut res: Vec<Vec<f32>> = Vec::new();
+        let mut first: Option<Raster> = None;
+        let mut marks: Vec<bool> = Vec::new();
+        let rounded = reading.each_block((0, w * k), (0, h * k), size, |cols, rows, read| {
+            let r = &read.raster;
+            if res.is_empty() {
+                res = (0..r.band_count())
+                    .map(|_| rasterops::new_band(w as usize, h as usize, resample_empty(r)))
+                    .collect::<Result<_, _>>()?;
+                marks = vec![false; r.band_count()];
+            }
+            marks.iter_mut().enumerate().for_each(|(b, m)| *m |= r.band_rounded(b));
+            let (ox0, oy0) = (cols.0 / k, rows.0 / k);
+            for (means, dst) in block_means(read, k, cols, rows)?.iter().zip(res.iter_mut()) {
+                let ow = ((cols.1 - cols.0) / k) as usize;
+                for (row, line) in means.chunks(ow.max(1)).enumerate() {
+                    let at = (oy0 as usize + row) * w as usize + ox0 as usize;
+                    let d = dst
+                        .get_mut(at..at + line.len())
+                        .ok_or_else(|| format!("{}: a block's means don't fit the result", reading.layer()))?;
+                    d.copy_from_slice(line);
+                }
+            }
+            if first.is_none() {
+                first = Some(resampled_as(read, k, &out)?);
+            }
+            Ok(())
+        })?;
+        let t = first.ok_or_else(|| format!("{}: it has no pixels", reading.layer()))?;
+        let mut res =
+            Raster::new(out, w, h, res, t.transform, t.crs, t.nodata, t.color.clone(), t.data_type.clone()).map_err(|e| e.to_string())?;
+        res.bands.iter_mut().zip(&t.bands).for_each(|(o, i)| {
+            o.name.clone_from(&i.name);
+            o.wavelength = i.wavelength;
+        });
+        // The blocks average values rounded when the file was read, some or all of them.
+        res.rounded = Vec::new();
+        res.rounded_some = if marks.contains(&true) { marks } else { Vec::new() };
+        let notes = note(rounded);
+        let then: super::workflows::Then = Box::new(move |s: &mut Session, _: &mut Value| {
+            for note in notes {
+                s.notify(note, false);
+            }
+        });
+        return super::workflows::made_then(res, None, Some(then));
+    };
+    // Too large to hold: written a row of blocks at a time to the results folder, read in place.
+    let (oh, row_len) = (size.1 / k, w as usize * (size.1 / k) as usize);
+    let (dest, staged, (overview, rounded)) = super::in_blocks::write_new(&folder, &out, |sink| {
+        let (mut sink, mut stream, mut row) = (Some(sink), None, Vec::new());
+        let mut marks: Vec<bool> = Vec::new();
+        let rounded = reading
+            .each_block((0, w * k), (0, h * k), size, |cols, rows, read| {
+                marks.resize(read.raster.band_count(), false);
+                marks.iter_mut().enumerate().for_each(|(b, m)| *m |= read.raster.band_rounded(b));
+                if stream.is_none() {
+                    // Placed, named and coloured as a resample held is, its bands floats.
+                    let t = resampled_as(read, k, &out)?;
+                    let sink = sink.take().ok_or("the result's file was started twice")?;
+                    stream = Some(super::in_blocks::stream(&t, w, h, raster::cogwrite::Samples::Floats, sink)?);
+                    let empty = resample_empty(&read.raster);
+                    row = (0..t.band_count()).map(|_| rasterops::new_band(w as usize, oh as usize, empty)).collect::<Result<_, _>>()?;
+                }
+                let ox0 = (cols.0 / k) as usize;
+                let ow = ((cols.1 - cols.0) / k) as usize;
+                for (means, dst) in block_means(read, k, cols, rows)?.iter().zip(row.iter_mut()) {
+                    for (y, line) in means.chunks(ow.max(1)).enumerate() {
+                        let at = y * w as usize + ox0;
+                        let d = dst
+                            .get_mut(at..at + line.len())
+                            .ok_or_else(|| format!("{}: a block's means don't fit the result", reading.layer()))?;
+                        d.copy_from_slice(line);
+                    }
+                }
+                // A row of blocks done: its rows of the result written.
+                if cols.1 == w * k {
+                    let n = ((rows.1 - rows.0) / k) as usize * w as usize;
+                    let rows: Vec<&[f32]> = row.iter().map(|b| b.get(..n.min(row_len)).unwrap_or_default()).collect();
+                    stream
+                        .as_mut()
+                        .map_or(Ok(()), |s: &mut raster::cogwrite::TileStream<_>| s.put_bands(&rows).map_err(|e| e.to_string()))?;
+                }
+                Ok(())
+            })
+            // A Cancel stays one, as on the path that holds its result.
+            .map_err(rustgis_data::DataError::of_conversion)?;
+        let stream = stream.ok_or_else(|| rustgis_data::DataError::Format(format!("{}: it has no pixels", reading.layer())))?;
+        let (_, mut overview) = stream.finish()?;
+        // The blocks average values rounded when the file was read, some or all of them, as a
+        // held resample says of its bands.
+        if let Some(o) = overview.as_mut().filter(|_| marks.contains(&true)) {
+            o.rounded = Vec::new();
+            o.rounded_some = marks;
         }
-        marks.iter_mut().enumerate().for_each(|(b, m)| *m |= r.band_rounded(b));
-        // This block's output pixels: columns and rows of the output.
-        let (ox0, ox1, oy0, oy1) = (cols.0 / k, cols.1 / k, rows.0 / k, rows.1 / k);
-        let ow = (ox1 - ox0) as usize;
-        for (band, dst) in r.bands.iter().zip(bands.iter_mut()) {
-            let means = rasterops::per_index(
+        Ok((overview, rounded))
+    })?;
+    let made = format!("resampled by {k} from {} at its full {fw} × {fh}", reading.layer());
+    let mut notes = note(rounded);
+    let source = reading.held();
+    notes.extend(alpha_nodata_note(source, &out));
+    let mut made = super::in_blocks::file_layer(out, &dest, staged, overview, &made, notes)?;
+    // A byte colour image's resample is drawn on its 0 to 255, as one held is, not stretched as
+    // the floats its file holds would be.
+    if source.data_type == "UInt8" && matches!(source.color, ColorHint::Rgb { .. }) && source.band_count() >= 3 {
+        made.layer_mut().style.stretch = rustgis_map::Stretch::Custom { min: 0.0, max: 255.0, bands: None };
+    }
+    Ok(made)
+}
+
+/// The means of a block of a resample by `k` (`read`, holding columns `cols` and rows `rows` of
+/// the full image, whole multiples of `k`), a band each: each output pixel the mean of the valid
+/// pixels of the `k` × `k` it covers, row by row, as a whole raster's resample makes it, and one
+/// covering none the result's no-data value ([`resample_empty`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn block_means(read: &rustgis_data::raster::PartRead, k: u32, cols: (u32, u32), rows: (u32, u32)) -> Result<Vec<Vec<f32>>, String> {
+    let r = &read.raster;
+    let (empty, alpha) = (resample_empty(r), alpha_band(r));
+    let (ax, ay) = read.at;
+    let (ox0, ox1, oy0, oy1) = (cols.0 / k, cols.1 / k, rows.0 / k, rows.1 / k);
+    let ow = (ox1 - ox0) as usize;
+    (0..r.band_count())
+        .map(|b| {
+            rasterops::per_index(
                 ow * (oy1 - oy0) as usize,
                 ow,
                 (k * k) as usize,
                 || (),
                 |_, i| {
                     let (ox, oy) = (ox0 + (i % ow.max(1)) as u32, oy0 + (i / ow.max(1)) as u32);
-                    let (mut sum, mut n) = (0.0f64, 0u32);
-                    for dy in 0..k {
-                        for dx in 0..k {
-                            let (x, y) = (ox * k + dx - ax, oy * k + dy - ay);
-                            if let Some(v) = band.data.get((y * r.width + x) as usize).copied().filter(|v| r.is_valid(*v)) {
-                                sum += f64::from(v);
-                                n += 1;
-                            }
-                        }
-                    }
-                    if n > 0 { (sum / f64::from(n)) as f32 } else { empty }
+                    let cells = (0..k).flat_map(|dy| (0..k).map(move |dx| ((oy * k + dy - ay) * r.width + (ox * k + dx - ax)) as usize));
+                    resample_mean(r, b, alpha, cells, empty)
                 },
-            )?;
-            for (row, line) in means.chunks(ow.max(1)).enumerate() {
-                let at = (oy0 as usize + row) * w as usize + ox0 as usize;
-                let d =
-                    dst.get_mut(at..at + line.len()).ok_or_else(|| format!("{}: a block's means don't fit the result", reading.layer()))?;
-                d.copy_from_slice(line);
-            }
-        }
-        if first.is_none() {
-            // Its bands, place and kind, as a whole read gives them.
-            let mut meta = Raster::new(
-                r.name.clone(),
-                1,
-                1,
-                vec![vec![0.0]; r.band_count()],
-                read.grid.0,
-                r.crs,
-                r.nodata,
-                r.color.clone(),
-                r.data_type.clone(),
             )
-            .map_err(|e| e.to_string())?;
-            meta.bands.iter_mut().zip(&r.bands).for_each(|(o, i)| {
-                o.name.clone_from(&i.name);
-                o.wavelength = i.wavelength;
-            });
-            first = Some(meta);
+        })
+        .collect()
+}
+
+/// The band of `r` that says which of its pixels have a value: an RGB raster's fourth when it
+/// says it is alpha, grey and alpha's second.
+fn alpha_band(r: &Raster) -> Option<usize> {
+    match r.color {
+        ColorHint::Rgb { alpha: true } if r.band_count() >= 4 => Some(3),
+        ColorHint::GrayAlpha if r.band_count() >= 2 => Some(1),
+        _ => None,
+    }
+}
+
+/// One resampled pixel of band `b` of `r`, from its pixels at `cells` (indexes into a band's
+/// values): the mean of those with a value, `empty` for none. With `alpha`, which says which
+/// pixels have a value, alpha's own mean counts a pixel with none as see-through (0), and the
+/// colours before it are weighted by alpha, so a see-through pixel counts for nothing and a black
+/// one is black (the plain mean where all are see-through).
+fn resample_mean(r: &Raster, b: usize, alpha: Option<usize>, cells: impl Iterator<Item = usize> + Clone, empty: f32) -> f32 {
+    let value = |band: usize, i: usize| r.bands.get(band).and_then(|x| x.data.get(i)).copied();
+    let mean = |(sum, n): (f64, u32)| if n > 0 { (sum / f64::from(n)) as f32 } else { empty };
+    let plain =
+        || mean(cells.clone().filter_map(|i| value(b, i).filter(|v| r.is_valid(*v))).fold((0.0, 0), |(s, n), v| (s + f64::from(v), n + 1)));
+    match alpha {
+        Some(a) if b == a => mean(
+            cells
+                .clone()
+                .filter_map(|i| value(b, i).map(|v| if r.is_valid(v) { v } else { 0.0 }))
+                .fold((0.0, 0), |(s, n), v| (s + f64::from(v), n + 1)),
+        ),
+        Some(a) if b < a => {
+            let (sum, weight) =
+                cells.clone().fold((0.0f64, 0.0f64), |(s, w), i| match (value(b, i), value(a, i).filter(|v| r.is_valid(*v))) {
+                    (Some(v), Some(al)) if v.is_finite() && al > 0.0 => (s + f64::from(v) * f64::from(al), w + f64::from(al)),
+                    _ => (s, w),
+                });
+            if weight > 0.0 { (sum / weight) as f32 } else { plain() }
         }
-        Ok(())
-    })?;
-    let meta = first.ok_or_else(|| format!("{}: it has no pixels", reading.layer()))?;
-    let gt = GeoTransform {
-        pixel_width: meta.transform.pixel_width * f64::from(k),
-        pixel_height: meta.transform.pixel_height * f64::from(k),
-        ..meta.transform
-    };
-    let nodata = meta.nodata.or(Some(NODATA as f64));
-    let color = if matches!(meta.color, ColorHint::Palette(_)) { ColorHint::Gray } else { meta.color.clone() };
-    let mut res = Raster::new(out, w, h, bands, gt, meta.crs, nodata, color, meta.data_type.clone()).map_err(|e| e.to_string())?;
-    res.bands.iter_mut().zip(&meta.bands).for_each(|(o, i)| {
+        _ => plain(),
+    }
+}
+
+/// The value a resampled pixel covering no pixel of `r` with a value takes: the result's no-data
+/// value, `r`'s, else the one cells with no value take.
+fn resample_empty(r: &Raster) -> f32 {
+    r.nodata.map_or(NODATA, |d| d as f32)
+}
+
+/// A raster of one pixel of each band of a resample by `k` of the file `read` is a part of,
+/// called `out`: placed on the resample's grid (the file's, `k` times coarser), with its system,
+/// no-data value (the file's, else the one cells with no value take), colour (grey for a palette's
+/// indexes, which a mean isn't), type and bands' names and wavelengths, as a whole raster's
+/// resample makes them.
+#[cfg(not(target_arch = "wasm32"))]
+fn resampled_as(read: &rustgis_data::raster::PartRead, k: u32, out: &str) -> Result<Raster, String> {
+    let r = &read.raster;
+    let grid = read.grid.0;
+    let gt = GeoTransform { pixel_width: grid.pixel_width * f64::from(k), pixel_height: grid.pixel_height * f64::from(k), ..grid };
+    let nodata = r.nodata.or(Some(NODATA as f64));
+    let color = if matches!(r.color, ColorHint::Palette(_)) { ColorHint::Gray } else { r.color.clone() };
+    let mut t = Raster::new(out.to_string(), 1, 1, vec![vec![0.0]; r.band_count()], gt, r.crs, nodata, color, r.data_type.clone())
+        .map_err(|e| e.to_string())?;
+    t.bands.iter_mut().zip(&r.bands).for_each(|(o, i)| {
         o.name.clone_from(&i.name);
         o.wavelength = i.wavelength;
     });
-    // The blocks average values rounded when the file was read, some or all of them.
-    res.rounded = Vec::new();
-    res.rounded_some = if marks.contains(&true) { marks } else { Vec::new() };
-    let notes = super::gp::tiled_read_notes(&[super::gp::ReadNote::rounded(reading.layer(), rounded)], "its");
-    let then: super::workflows::Then = Box::new(move |s: &mut Session, _: &mut Value| {
-        for note in notes {
-            s.notify(note, false);
-        }
-    });
-    super::workflows::made_then(res, None, Some(then))
+    Ok(t)
 }
 
 /// The pixel window of `r` covering extent `e`'s edges (columns, rows); an error when it can't be
@@ -2447,6 +2638,27 @@ fn edge_pixels_on(r: &Raster, gt: &GeoTransform, bounds: Extent, e: &Extent) -> 
         let (w, s, east, n) = (e.min_x.max(b.min_x), e.min_y.max(b.min_y), e.max_x.min(b.max_x), e.max_y.min(b.max_y));
         (w <= east && s <= n).then(|| at(&Extent::new(w, s, east, n))).flatten()
     })
+}
+
+/// Where the strips of rows a training read takes begin, and how many rows each holds, for a
+/// window whose first row is `start` in a file whose tiles have `tile` rows (`None`: a block's):
+/// from the start of the row of tiles the window begins in, whole rows of tiles at a time (as many
+/// as make a block's rows, for tiles or strips shorter than that), so each is decoded once, where
+/// `fits` says the computer can give a strip that tall (the part read and its
+/// tiles as decoded, about twice the strip); half as many, and again, where it can't. A strip of
+/// fewer rows than a tile decodes its row of tiles once for each strip in it: a window as wide as
+/// the mosaic of #2761 (83517 columns, 3 bands) needs 513 MB at once for strips of 512 rows. The
+/// rows above the window are in no polygon's window.
+#[cfg(not(target_arch = "wasm32"))]
+fn training_strips(start: u32, tile: Option<u32>, fits: impl Fn(u32) -> bool) -> (u32, u32) {
+    let tile = tile.filter(|t| *t > 0).unwrap_or(super::in_blocks::BLOCK.1);
+    // Rows of tiles at least a block's rows, so a file in strips of a row or a few isn't read a
+    // strip at a time.
+    let mut strip = tile.saturating_mul((super::in_blocks::BLOCK.1 / tile).max(1));
+    while strip > 1 && !fits(strip) {
+        strip /= 2;
+    }
+    (start / tile * tile, strip)
 }
 
 /// The training polygons of `ds`, each with its class (field `fi`'s value), in the layer's
@@ -3274,4 +3486,93 @@ fn pixel_window_tells_a_miss_from_a_place_it_cant_take() {
     let r = Raster::new("zone", 180, 180, vec![vec![1.0; 32_400]], transform, crs, None, ColorHint::Gray, "Float32").unwrap();
     let e = pixel_window(&r, &Extent::new(-170.0, -10.0, 10.0, 10.0)).unwrap_err();
     assert!(e.contains("coordinate system can't place the polygon's edge"), "{e}");
+}
+
+/// A resample's blocks are whole multiples of its factor, and of the file's tiles where a common
+/// multiple stays within four blocks, so no tile is decoded for two blocks; strips as tall as the
+/// image, or a factor with no small common multiple, keep blocks of the factor alone.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_resample_reads_blocks_of_whole_tiles() {
+    let (bw, bh) = super::in_blocks::BLOCK;
+    for (k, chunk) in [
+        (2u32, Some((256u32, 256u32))),
+        (3, Some((256, 256))),
+        (5, Some((512, 512))),
+        (3, Some((100_000, 16))),
+        (3, None),
+        (61, Some((256, 256))),
+    ] {
+        let (cols, rows) = resample_block(k, chunk, |_, _| true);
+        assert!(cols % k == 0 && rows % k == 0, "{k} {chunk:?}: {cols} × {rows}");
+        let lcm = |t: u32| (1..=t).map(|i| i * k).find(|m| m % t == 0).unwrap_or(0);
+        match chunk {
+            Some((tw, th)) => {
+                assert_eq!(cols % tw == 0, lcm(tw) <= 4 * bw, "{k} {chunk:?}: {cols} columns");
+                assert_eq!(rows % th == 0, lcm(th) <= 4 * bh, "{k} {chunk:?}: {rows} rows");
+            }
+            None => assert_eq!((cols, rows), ((bw / k) * k, (bh / k) * k)),
+        }
+    }
+    // Blocks the part reader can't read at full size give way to blocks of the factor alone, one
+    // way or both.
+    let plain = ((bw / 3) * 3, (bh / 3) * 3);
+    assert_eq!(resample_block(3, Some((256, 256)), |c, r| c <= plain.0 && r <= plain.1), plain);
+    assert_eq!(resample_block(3, Some((256, 256)), |c, _| c <= plain.0), (plain.0, 768));
+}
+
+/// A training read's strips start on a row of the file's own tiles and hold one, so a file of
+/// 1024-row tiles has each decoded once; where a strip that tall isn't given, they hold half as
+/// many rows, and again.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn training_strips_follow_the_files_tiles() {
+    assert_eq!(training_strips(1500, Some(1024), |_| true), (1024, 1024));
+    assert_eq!(training_strips(1500, Some(256), |_| true), (1280, 512));
+    // A file in strips of one row is read a block's rows at a time, not a row.
+    assert_eq!(training_strips(1500, Some(1), |_| true), (1500, super::in_blocks::BLOCK.1));
+    assert_eq!(training_strips(1500, Some(1024), |rows| rows <= 300), (1024, 256));
+    let block = super::in_blocks::BLOCK.1;
+    assert_eq!(training_strips(1500, None, |_| true), (1500 / block * block, block));
+    assert_eq!(training_strips(7, Some(1024), |_| false), (0, 1));
+}
+
+/// A resample written to a file of an image with alpha and a no-data value says the value isn't
+/// written, as alpha says which pixels have one; nothing for an image without alpha or no-data.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_written_resample_with_alpha_says_its_no_data_value_goes() {
+    let gt = GeoTransform { origin_x: 10.0, origin_y: 46.0, pixel_width: 0.001, pixel_height: -0.001 };
+    let image = |bands: usize, color: ColorHint, nodata: Option<f64>| {
+        Raster::new("image", 2, 2, vec![vec![1.0; 4]; bands], gt, Crs::LonLat, nodata, color, "UInt8").unwrap()
+    };
+    let note = alpha_nodata_note(&image(4, ColorHint::Rgb { alpha: true }, Some(0.0)), "out");
+    assert!(note.is_some_and(|n| n.contains("no-data value 0 isn't written")));
+    assert!(alpha_nodata_note(&image(2, ColorHint::GrayAlpha, Some(5.0)), "out").is_some());
+    assert!(alpha_nodata_note(&image(4, ColorHint::Rgb { alpha: true }, None), "out").is_none());
+    assert!(alpha_nodata_note(&image(3, ColorHint::Rgb { alpha: false }, Some(0.0)), "out").is_none());
+}
+
+/// A resampled pixel of an image with alpha and a no-data value: alpha's mean counts a
+/// see-through pixel as 0, so half see-through stays half; the colours are weighted by alpha, a
+/// see-through one counting for nothing and a black one black; without alpha, the mean of the
+/// pixels with a value, as before.
+#[test]
+fn a_resampled_pixel_with_alpha_is_weighted_by_it() {
+    let gt = GeoTransform { origin_x: 10.0, origin_y: 46.0, pixel_width: 0.001, pixel_height: -0.001 };
+    let red = vec![200.0, 200.0, 0.0, 0.0];
+    let grey = vec![0.0, 100.0, 7.0, 7.0];
+    let alpha = vec![255.0, 255.0, 0.0, 0.0];
+    let r =
+        Raster::new("rgba", 4, 1, vec![red.clone(), grey, red, alpha], gt, Crs::LonLat, Some(0.0), ColorHint::Rgb { alpha: true }, "UInt8")
+            .unwrap();
+    let a = alpha_band(&r);
+    assert_eq!(a, Some(3));
+    let all = || 0..4usize;
+    assert_eq!(resample_mean(&r, 3, a, all(), -1.0), 127.5, "half see-through");
+    assert_eq!(resample_mean(&r, 0, a, all(), -1.0), 200.0, "see-through black counts for nothing");
+    assert_eq!(resample_mean(&r, 1, a, all(), -1.0), 50.0, "an opaque black is black");
+    assert_eq!(resample_mean(&r, 1, a, 2..4, -1.0), 7.0, "all see-through: the plain mean");
+    let grey = Raster::new("grey", 4, 1, vec![vec![0.0, 4.0, 8.0, 0.0]], gt, Crs::LonLat, Some(0.0), ColorHint::Gray, "UInt8").unwrap();
+    assert_eq!(resample_mean(&grey, 0, alpha_band(&grey), all(), -1.0), 6.0, "no alpha: no-data left out");
 }

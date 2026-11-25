@@ -1016,6 +1016,17 @@ impl Span {
     }
 }
 
+/// The columns and rows of a chunk (a tile, or a strip of the image's width) of the full image of
+/// the GeoTIFF at `path`, as its tags give them; `None` when it can't be read.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn chunk_size(path: &std::path::Path) -> Option<(u32, u32)> {
+    let file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    let mut dec = Decoder::new(reader(file).ok()?).ok()?.with_limits(Limits::default());
+    let (w, h) = dec.dimensions().ok()?;
+    let c = Chunks::new(&mut dec, w, h, 1, false);
+    Some((c.cw, c.ch))
+}
+
 /// How an image is cut into chunks (strips or tiles), and how they're laid out.
 #[derive(Clone, Copy)]
 struct Chunks {
