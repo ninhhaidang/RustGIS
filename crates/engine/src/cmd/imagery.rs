@@ -1558,16 +1558,90 @@ pub(crate) fn supervised_work(s: &Session, p: &Value) -> Result<super::workflows
     // All the training polygons: a layer read in place is read whole as the work runs.
     let rows = super::whole::Whole::of(l);
     let out = name(p, format!("{}_classified", r.held().name))?;
+    // A file too large to read whole at its full size: each class's mean summed from rows of the
+    // file under the training polygons, as the whole raster's are, then each block classified
+    // (#2865).
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(blocks) = super::in_blocks::plan(s, &r, &out)? {
+        return Ok(Box::new(move || {
+            let (ds, unread) = rows.read()?;
+            let explain = |e: String| unread.explain(e);
+            let polygons = training_polygons(&ds, fi)?;
+            let reading = blocks.reading();
+            // Each polygon's window found on the file's full grid, as on the whole raster.
+            let grid = reading.grid()?;
+            let mut means = rasterops::ClassMeans::on_grid(reading.held(), &grid, reading.full(), ds.coord_crs(), &bands, &polygons)
+                .map_err(explain)?;
+            let (cols, under) = means.window();
+            // Whole rows of the window's columns, in order: a tile's rows at a time where the
+            // computer can give them (the part read and its tiles as decoded, about twice the
+            // strip), so each row of tiles is decoded once; half as many, and again, where it
+            // can't. A strip of fewer rows than a tile decodes its row of tiles once for each strip
+            // in it: a window as wide as the mosaic of #2761 (83517 columns, 3 bands) needs 513 MB
+            // at once for that.
+            let (_, bh) = super::in_blocks::BLOCK;
+            let width = cols.end.saturating_sub(cols.start).max(1);
+            let row = u64::from(width).saturating_mul(reading.held().band_count().max(1) as u64).saturating_mul(4);
+            let mut strip = bh;
+            while strip > 1 && !super::in_blocks::affordable(row.saturating_mul(u64::from(strip)).saturating_mul(2)) {
+                strip /= 2;
+            }
+            // From the start of the row of tiles the window begins in (a block's rows, which a
+            // file's tiles of 256 or 512 rows divide), so no row of tiles is read for two strips;
+            // the rows above the window are visited by no polygon.
+            let top = under.start / bh * bh;
+            reading
+                .each_block((cols.start, cols.end), (top, under.end), (width, strip), |_, _, read| {
+                    means.add(&read.raster, read.at, &read.grid.0).map_err(String::from)
+                })
+                .map_err(explain)?;
+            let classes = means.means();
+            if classes.len() < 2 {
+                return Err(explain("the training polygons need at least two classes with pixels under them".into()));
+            }
+            // The means go to the classifying, the names and counts to the legend; what the means
+            // hold is counted while the blocks are classified.
+            let (legend, ids): (Vec<Value>, Vec<(f32, Vec<f64>)>) = classes
+                .into_iter()
+                .enumerate()
+                .map(|(i, (class, m, pixels))| (json!({"value": i + 1, "class": class, "pixels": pixels}), ((i + 1) as f32, m)))
+                .unzip();
+            let _means = rustgis_data::memory::Holding::of(ids.iter().map(|(_, m)| m.len() as u64 * 8 + 32).sum());
+            let shape = super::in_blocks::Shape { classes: true, ..Default::default() };
+            // The classes some pixel takes, which the whole raster's are drawn by.
+            let present = std::cell::RefCell::new(vec![false; ids.len()]);
+            let mut made = blocks.run(
+                |block, _| {
+                    let v = rasterops::classify_min_distance(block, &bands, &ids)?;
+                    let mut present = present.borrow_mut();
+                    for c in &v {
+                        if let Some(p) = (c.is_finite() && *c >= 1.0).then(|| present.get_mut(*c as usize - 1)).flatten() {
+                            *p = true;
+                        }
+                    }
+                    Ok(v)
+                },
+                shape,
+            )?;
+            // Drawn by class, as the whole raster's: each class some pixel takes, in order, while
+            // its statistics keep them (at most 256 classes), whatever an overview of it holds.
+            let taken: Vec<f64> = present.into_inner().iter().enumerate().filter(|(_, p)| **p).map(|(i, _)| (i + 1) as f64).collect();
+            let ramp = rustgis_map::Ramp::Harbour;
+            let n = if taken.len() <= 256 { taken.len().min(rustgis_map::raster::MAX_UNIQUE_VALUES) } else { 0 };
+            made.layer_mut().style.renderer = rustgis_map::RasterRenderer::UniqueValues {
+                band: 0,
+                ramp: ramp.clone(),
+                values: taken.into_iter().take(n).enumerate().map(|(i, v)| (v, ramp.pick(i, n))).collect(),
+            };
+            let made = super::workflows::also(made, Box::new(move |s: &mut Session, _: &mut Value| unread.say(s)));
+            Ok(made.with_extra(json!({"classes": legend})))
+        }));
+    }
     Ok(Box::new(move || {
         let r = r.read()?;
         let (ds, unread) = rows.read()?;
         let explain = |e: String| unread.explain(e);
-        let mut polygons = Vec::new();
-        for (row, ft) in ds.features.iter().enumerate() {
-            let Some(Geometry::Polygon(polys)) = &ft.geometry else { continue };
-            let key = ds.value(row, fi).to_string();
-            polygons.extend(polys.iter().map(|rings| (key.clone(), rings.clone())));
-        }
+        let polygons = training_polygons(&ds, fi)?;
         // Mean of each class's training pixels, tested in the system the polygons are held in.
         let classes = rasterops::class_means_in(&r, ds.coord_crs(), &bands, &polygons).map_err(explain)?;
         if classes.len() < 2 {
@@ -2373,6 +2447,21 @@ fn edge_pixels_on(r: &Raster, gt: &GeoTransform, bounds: Extent, e: &Extent) -> 
         let (w, s, east, n) = (e.min_x.max(b.min_x), e.min_y.max(b.min_y), e.max_x.min(b.max_x), e.max_y.min(b.max_y));
         (w <= east && s <= n).then(|| at(&Extent::new(w, s, east, n))).flatten()
     })
+}
+
+/// The training polygons of `ds`, each with its class (field `fi`'s value), in the layer's
+/// order: a polygon of several parts is a polygon each. Cancel is looked at as they are gathered.
+fn training_polygons(ds: &rustgis_data::Dataset, fi: usize) -> Result<Vec<(String, Vec<Vec<Coord>>)>, String> {
+    let mut polygons = Vec::new();
+    for (row, ft) in ds.features.iter().enumerate() {
+        if row % 4096 == 0 {
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+        }
+        let Some(Geometry::Polygon(polys)) = &ft.geometry else { continue };
+        let key = ds.value(row, fi).to_string();
+        polygons.extend(polys.iter().map(|rings| (key.clone(), rings.clone())));
+    }
+    Ok(polygons)
 }
 
 /// What [`pixel_window`] says of a polygon whose box misses the raster.

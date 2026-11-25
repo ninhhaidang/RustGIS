@@ -1114,10 +1114,16 @@ impl ZoneIn {
     /// raster when the box holds a pole ([`ZoneIn::holds_a_pole`]), else [`zone_window`], with its
     /// interior samples for a zone in a system of its own.
     pub(crate) fn window(&self, r: &Raster, e: &Extent) -> (Range<u32>, Range<u32>) {
+        self.window_on(r, &r.transform, (r.width, r.height), e)
+    }
+
+    /// [`ZoneIn::window`] on a grid of `r`'s system placed by `gt`, `size` columns and rows: the
+    /// whole grid of a file `r` is an overview of.
+    pub(crate) fn window_on(&self, r: &Raster, gt: &GeoTransform, size: (u32, u32), e: &Extent) -> (Range<u32>, Range<u32>) {
         match self {
-            _ if self.holds_a_pole(e) => (0..r.width, 0..r.height),
-            Self::Own { .. } => zone_window(r, e, true, |c| self.grid(r, c)),
-            Self::LonLat => zone_window(r, e, false, |c| self.grid(r, c)),
+            _ if self.holds_a_pole(e) => (0..size.0, 0..size.1),
+            Self::Own { .. } => zone_window(gt, size, e, true, |c| self.grid(r, c)),
+            Self::LonLat => zone_window(gt, size, e, false, |c| self.grid(r, c)),
         }
     }
 
@@ -1224,17 +1230,23 @@ fn means_under(
 /// the zone's box holds a place the raster's grid can't take in one piece, and the whole raster is
 /// read. (A box holding a pole, whose outline lands south of a Web Mercator raster's cells near
 /// it, is read whole before this: `means_under`.)
-fn zone_window(r: &Raster, e: &Extent, interior: bool, to_grid: impl Fn(Coord) -> Option<Coord>) -> (Range<u32>, Range<u32>) {
+fn zone_window(
+    gt: &GeoTransform,
+    (width, height): (u32, u32),
+    e: &Extent,
+    interior: bool,
+    to_grid: impl Fn(Coord) -> Option<Coord>,
+) -> (Range<u32>, Range<u32>) {
     if e.is_empty() {
         return (0..0, 0..0);
     }
     const SAMPLES: u32 = 64;
     // Halvings of a stretch: past 2^-40 of a side it is far below a cell.
     const DEPTH: u32 = 40;
-    let whole = (0..r.width, 0..r.height);
-    let (w, h) = (f64::from(r.width), f64::from(r.height));
+    let whole = (0..width, 0..height);
+    let (w, h) = (f64::from(width), f64::from(height));
     let place = |ll: Coord| {
-        let (col, row) = r.transform.to_pixel(to_grid(ll)?);
+        let (col, row) = gt.to_pixel(to_grid(ll)?);
         (col.is_finite() && row.is_finite()).then_some((col, row))
     };
     let sides: [(Coord, Coord); 4] = [
@@ -1287,7 +1299,7 @@ fn zone_window(r: &Raster, e: &Extent, interior: bool, to_grid: impl Fn(Coord) -
         }
     }
     let clamp = |v: f64, n: u32| v.clamp(0.0, f64::from(n)) as u32;
-    ((clamp(c0, r.width)..clamp(c1, r.width)), (clamp(r0, r.height)..clamp(r1, r.height)))
+    ((clamp(c0, width)..clamp(c1, width)), (clamp(r0, height)..clamp(r1, height)))
 }
 
 /// Each class's mean of `bands` over the pixels under its training polygons (lon/lat rings, each
@@ -1307,26 +1319,159 @@ pub fn class_means_in(
     bands: &[usize],
     polygons: &[(String, Vec<Vec<Coord>>)],
 ) -> Result<Vec<(String, Vec<f64>, usize)>, String> {
-    let zone = ZoneIn::new(r, from)?;
+    let mut means = ClassMeans::new(r, from, bands, polygons)?;
     crate::control::begin(polygons.len().saturating_mul(r.height as usize));
-    let mut classes: Vec<(String, Vec<f64>, usize)> = Vec::new();
-    for (key, rings) in polygons {
-        let counted = |rows: usize| {
-            crate::control::check()?;
-            crate::control::advance(rows);
-            Ok(())
-        };
-        let Some((m, n)) = means_under(r, &zone, bands, &[rings.as_slice()], counted)? else { continue };
-        match classes.iter_mut().find(|c| c.0 == *key) {
-            Some(c) => {
-                let total = c.2 + n;
-                c.1 = c.1.iter().zip(&m).map(|(a, b)| (a * c.2 as f64 + b * n as f64) / total as f64).collect();
-                c.2 = total;
-            }
-            None => classes.push((key.clone(), m, n)),
-        }
+    means.add(r, (0, 0), &r.transform)?;
+    Ok(means.means())
+}
+
+/// [`class_means_in`] made a part of a raster at a time (#2865): each training polygon's pixels
+/// summed as the whole raster's are, row by row over its window then column by column, its cells'
+/// centres placed on the whole grid, so its mean, and the class's, are the whole raster's to the
+/// last bit, however the raster is cut into rows of parts. Give it the parts in the order of their
+/// rows, each holding whole rows of all the columns of [`ClassMeans::window`].
+pub struct ClassMeans<'a> {
+    zone: ZoneIn,
+    bands: &'a [usize],
+    polygons: &'a [(String, Vec<Vec<Coord>>)],
+    /// Each polygon's box in the zone's system, and the columns and rows of the whole grid its
+    /// cells' centres can fall in.
+    boxes: Vec<Extent>,
+    windows: Vec<(Range<u32>, Range<u32>)>,
+    /// Each polygon's sums of `bands` over its pixels so far, and how many.
+    sums: Vec<(Vec<f64>, usize)>,
+    /// What the sums hold, counted in what RustGIS holds while they live, so the reads they're
+    /// made from plan for them.
+    _held: rustgis_data::memory::Holding,
+}
+
+impl<'a> ClassMeans<'a> {
+    /// The means of `polygons` (their rings in `from`) on `r`, the whole raster.
+    pub fn new(r: &Raster, from: Crs, bands: &'a [usize], polygons: &'a [(String, Vec<Vec<Coord>>)]) -> Result<ClassMeans<'a>, String> {
+        ClassMeans::on_grid(r, &r.transform, (r.width, r.height), from, bands, polygons)
     }
-    Ok(classes)
+
+    /// The means of `polygons` on the whole grid of a file placed by `grid`, `size` columns and
+    /// rows, of which `r` is an overview (or the whole raster): each polygon's window found on
+    /// that grid, as on the whole raster. Cancel is looked at between polygons. The sums of the
+    /// polygons whose window holds a cell are planned before they are set aside, and refused
+    /// past what the computer can give now, with a way out.
+    pub fn on_grid(
+        r: &Raster,
+        grid: &GeoTransform,
+        size: (u32, u32),
+        from: Crs,
+        bands: &'a [usize],
+        polygons: &'a [(String, Vec<Vec<Coord>>)],
+    ) -> Result<ClassMeans<'a>, String> {
+        let zone = ZoneIn::new(r, from)?;
+        let boxes = Self::boxes(polygons)?;
+        let windows = boxes
+            .iter()
+            .map(|e| {
+                crate::control::check()?;
+                Ok(zone.window_on(r, grid, size, e))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        // A polygon with no cell under its box sums nothing: only the others are set aside, each
+        // with its sums and, as they are made into the classes' means, its mean.
+        let under = windows.iter().filter(|(cols, rows)| !cols.is_empty() && !rows.is_empty()).count();
+        let per = (bands.len() as u64).saturating_mul(16).saturating_add(64);
+        let floor = ((256u64 << 20) / per.max(1)) as usize;
+        if under > rustgis_data::memory::planned(floor, usize::MAX, per) {
+            return Err(format!(
+                "its {under} training polygons over {} bands need {} MB for their sums and means, more than this computer can give now: use fewer training polygons or bands",
+                bands.len(),
+                (under as u64).saturating_mul(per) >> 20
+            ));
+        }
+        let sums = windows
+            .iter()
+            .map(|(cols, rows)| (if cols.is_empty() || rows.is_empty() { Vec::new() } else { vec![0.0; bands.len()] }, 0))
+            .collect();
+        let _held = rustgis_data::memory::Holding::of((under as u64).saturating_mul(per));
+        Ok(ClassMeans { zone, bands, polygons, boxes, windows, sums, _held })
+    }
+
+    /// Each polygon's box: the extent of its rings' places.
+    fn boxes(polygons: &[(String, Vec<Vec<Coord>>)]) -> Result<Vec<Extent>, String> {
+        polygons
+            .iter()
+            .map(|(_, rings)| {
+                crate::control::check()?;
+                Ok(rings.iter().flatten().fold(Extent::EMPTY, |mut e, c| {
+                    e.expand(*c);
+                    e
+                }))
+            })
+            .collect()
+    }
+
+    /// The columns and rows of the whole grid every polygon's window covers together.
+    pub fn window(&self) -> (Range<u32>, Range<u32>) {
+        let cover = |a: Option<Range<u32>>, b: &Range<u32>| match a {
+            None => Some(b.clone()),
+            Some(a) => Some(a.start.min(b.start)..a.end.max(b.end)),
+        };
+        // A polygon with no cell under it (beside the raster: its columns or its rows none) adds
+        // nothing, not the side it does have.
+        let held = self.windows.iter().filter(|(wc, wr)| !wc.is_empty() && !wr.is_empty());
+        let (cols, rows) = held.fold((None, None), |(c, r), (wc, wr)| (cover(c, wc), cover(r, wr)));
+        (cols.unwrap_or(0..0), rows.unwrap_or(0..0))
+    }
+
+    /// Adds the pixels of `part`, a part of the whole grid placed by `grid` whose first column and
+    /// row on it are `at`, holding whole rows of the columns of [`ClassMeans::window`]: each
+    /// polygon's, over the rows of its window the part holds. Each row counts toward the run's
+    /// progress, and a cancelled run stops.
+    pub fn add(&mut self, part: &Raster, at: (u32, u32), grid: &GeoTransform) -> Result<(), crate::control::Cancelled> {
+        let (r0, r1) = (at.1, at.1.saturating_add(part.height));
+        for (k, (rings, e)) in self.polygons.iter().map(|(_, rings)| rings.as_slice()).zip(&self.boxes).enumerate() {
+            let (Some((cols, rows)), Some(sums)) = (self.windows.get(k), self.sums.get_mut(k)) else { continue };
+            let rows = rows.start.max(r0)..rows.end.min(r1);
+            crate::control::check()?;
+            crate::control::advance((r1 - r0) as usize - rows.len());
+            for row in rows {
+                crate::control::check()?;
+                crate::control::advance(1);
+                for col in cols.clone() {
+                    let w = grid.to_world(f64::from(col) + 0.5, f64::from(row) + 0.5);
+                    let Some(ll) = self.zone.zone(part, w) else { continue };
+                    if !(e.contains(ll) && rustgis_data::geometry::polygon_contains(rings, ll)) {
+                        continue;
+                    }
+                    let (c, rr) = (i64::from(col) - i64::from(at.0), i64::from(row) - i64::from(at.1));
+                    let vals: Option<Vec<f64>> = self.bands.iter().map(|b| part.value(*b, c, rr).map(f64::from)).collect();
+                    if let Some(v) = vals {
+                        sums.0.iter_mut().zip(&v).for_each(|(s, x)| *s += x);
+                        sums.1 += 1;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Each class's mean and pixels, in the order its first polygon with pixels comes, a class
+    /// with none left out, as [`class_means_in`] gives them.
+    pub fn means(self) -> Vec<(String, Vec<f64>, usize)> {
+        let mut classes: Vec<(String, Vec<f64>, usize)> = Vec::new();
+        for ((key, _), (s, n)) in self.polygons.iter().zip(self.sums) {
+            if n == 0 {
+                continue;
+            }
+            let m: Vec<f64> = s.into_iter().map(|s| s / n as f64).collect();
+            match classes.iter_mut().find(|c| c.0 == *key) {
+                Some(c) => {
+                    let total = c.2 + n;
+                    c.1 = c.1.iter().zip(&m).map(|(a, b)| (a * c.2 as f64 + b * n as f64) / total as f64).collect();
+                    c.2 = total;
+                }
+                None => classes.push((key.clone(), m, n)),
+            }
+        }
+        classes
+    }
 }
 
 /// `bands` bands of `images` laid onto a north-up grid in `crs` of `cols` × `rows` cells of `cell`
@@ -2343,6 +2488,76 @@ mod tests {
         let _none = crate::control::install(None);
         let c = class_means(&r, &[0, 1], &polygons[..1]).unwrap();
         assert_eq!(Some((c[0].1.clone(), c[0].2)), zonal_means(&r, &[0, 1], &polygons[0].1).unwrap());
+    }
+
+    /// Class means summed from rows of a raster cut unevenly, each polygon's window found on its
+    /// whole grid from an overview of it, are the whole raster's to the last bit (#2865): values
+    /// whose sums depend on their order, a no-data cell, polygons crossing the raster's edges, a
+    /// class made of two polygons, one outside the raster, and rings in another system.
+    #[test]
+    fn class_means_by_rows_are_the_whole_rasters() {
+        let (w, h) = (37u32, 29u32);
+        let gt = GeoTransform { origin_x: 10.0, origin_y: 46.0, pixel_width: 0.01, pixel_height: -0.01 };
+        let band = |k: f32| -> Vec<f32> { (0..w * h).map(|i| ((i as f32 * 0.137 + k).sin() * 1000.3) + (i % 7) as f32 * 1e-3).collect() };
+        let (mut b0, mut b1) = (band(0.0), band(0.5));
+        // A no-data cell under the first polygon: its pixel isn't counted.
+        b1[(5 * w + 3) as usize] = -9999.0;
+        // Three cells down a column whose sum is 0 in the rows' order, 1 in any other or with the
+        // rows cut between them summed apart: 1 + 2^60 is 2^60 in a double.
+        for (row, v) in [(10u32, 1.0f32), (11, 2f32.powi(60)), (12, -(2f32.powi(60)))] {
+            b0[(row * w + 20) as usize] = v;
+        }
+        let r = Raster::new("r", w, h, vec![b0, b1], gt, Crs::LonLat, Some(-9999.0), ColorHint::Gray, "Float32").unwrap();
+        // An overview of it, on the same ground.
+        let (ow, oh) = (w.div_ceil(2), h.div_ceil(2));
+        let ogt = GeoTransform {
+            pixel_width: gt.pixel_width * f64::from(w) / f64::from(ow),
+            pixel_height: gt.pixel_height * f64::from(h) / f64::from(oh),
+            ..gt
+        };
+        let coarse =
+            Raster::new("o", ow, oh, vec![vec![1.0; (ow * oh) as usize]; 2], ogt, Crs::LonLat, Some(-9999.0), ColorHint::Gray, "Float32")
+                .unwrap();
+        let ring = |pts: &[(f64, f64)]| vec![pts.iter().map(|&(x, y)| Coord::new(x, y)).collect::<Vec<_>>()];
+        let lonlat = vec![
+            ("a".to_string(), ring(&[(9.95, 45.99), (10.08, 45.97), (10.02, 45.90)])),
+            ("b".to_string(), ring(&[(10.15, 45.75), (10.30, 45.75), (10.30, 45.65), (10.15, 45.65)])),
+            ("a".to_string(), ring(&[(10.20, 45.95), (10.24, 45.95), (10.24, 45.91), (10.20, 45.91)])),
+            ("c".to_string(), ring(&[(20.0, 10.0), (21.0, 10.0), (21.0, 11.0)])),
+            ("z".to_string(), ring(&[(10.202, 45.872), (10.208, 45.872), (10.208, 45.898), (10.202, 45.898)])),
+        ];
+        let mercator = Crs::Epsg(3857);
+        let to = mercator.transformer().unwrap();
+        let projected: Vec<(String, Vec<Vec<Coord>>)> = lonlat
+            .iter()
+            .map(|(k, rings)| (k.clone(), rings.iter().map(|ring| ring.iter().map(|c| to.from_lonlat(*c).unwrap()).collect()).collect()))
+            .collect();
+        let bits = |c: Vec<(String, Vec<f64>, usize)>| {
+            c.into_iter().map(|(k, m, n)| (k, m.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), n)).collect::<Vec<_>>()
+        };
+        // A polygon beside the raster, under its rows but east of its columns, widens no window.
+        let beside = vec![lonlat[1].clone(), ("e".to_string(), ring(&[(11.0, 45.8), (11.1, 45.8), (11.1, 45.9), (11.0, 45.9)]))];
+        let window = |p: &[(String, Vec<Vec<Coord>>)]| ClassMeans::on_grid(&coarse, &gt, (w, h), Crs::LonLat, &[0, 1], p).unwrap().window();
+        assert_eq!(window(&beside), window(&beside[..1]));
+        for (from, polygons) in [(Crs::LonLat, &lonlat), (mercator, &projected)] {
+            let whole = bits(class_means_in(&r, from, &[0, 1], polygons).unwrap());
+            assert_eq!(whole.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["a", "b", "z"], "{from:?}: {whole:?}");
+            assert_eq!(whole.get(2).map(|z| (z.1[0], z.2)), Some((0f64.to_bits(), 3)), "{from:?}: the column's sum in its rows' order");
+            for cuts in [vec![1u32, 5, 7, 3], vec![2], vec![11], vec![12], vec![h]] {
+                let mut means = ClassMeans::on_grid(&coarse, &gt, (w, h), from, &[0, 1], polygons).unwrap();
+                let (_, rows) = means.window();
+                let (mut r0, mut i) = (rows.start, 0);
+                while r0 < rows.end {
+                    let r1 = (r0 + cuts.get(i).copied().unwrap_or(4)).min(rows.end);
+                    let data = r.bands.iter().map(|b| b.data[(r0 * w) as usize..(r1 * w) as usize].to_vec()).collect();
+                    let part_gt = GeoTransform { origin_y: gt.origin_y + f64::from(r0) * gt.pixel_height, ..gt };
+                    let part = Raster::new("p", w, r1 - r0, data, part_gt, Crs::LonLat, Some(-9999.0), ColorHint::Gray, "Float32").unwrap();
+                    means.add(&part, (0, r0), &gt).unwrap();
+                    (r0, i) = (r1, i + 1);
+                }
+                assert_eq!(bits(means.means()), whole, "{from:?}, cut {cuts:?}");
+            }
+        }
     }
 
     /// Band math and per-cell rows made on several threads give the same cells, bit for bit, as

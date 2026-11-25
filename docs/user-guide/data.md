@@ -1689,14 +1689,16 @@ place too: the map draws the part in view at the level it needs. Commands that m
 it read the file again as they run. **Clip** by an extent reads only the part under the extent,
 at the file's full resolution when that part fits. **Indices**, **Raster Functions** (band math,
 NDVI, remap, threshold, slope, aspect and hillshade, those over a cell's neighbours reading each
-block with the cells around it) and the **Function Editor** with those steps work a block of
-tiles at a time at the file's full resolution. A result of up to 120 million pixels is
-held, as any other; a larger one is written to a tiled GeoTIFF in the project's results folder
-beside it (`Survey.rgis.data` for `Survey.rgis`), or in RustGIS's own folder for a project not
-saved yet, and the new layer reads it in place; a notice says where it is. **Process**'s resample
-is made from the file a block at a time when its result fits. A chain that remaps or thresholds
-after a step over neighbours, or has a slope in percent before its last step, the other commands, and a
-larger resample read the finest level of the file they can hold, and say which.
+block with the cells around it), the **Function Editor** with those steps, and **Classification
+Tools** (each class's mean summed from the rows of the file under the training polygons, as
+from the whole raster) work a block of tiles at a time at the file's full resolution. A result
+of up to 120 million pixels is held, as any other; a larger one is written to a tiled GeoTIFF in
+the project's results folder beside it (`Survey.rgis.data` for `Survey.rgis`), or in RustGIS's
+own folder for a project not saved yet, and the new layer reads it in place; a notice says where
+it is. **Process**'s resample is made from the file a block at a time when its result fits. A
+chain that remaps or thresholds after a step over neighbours, or has a slope in percent before
+its last step, the other commands, and a larger resample read the finest level of the file they
+can hold, and say which.
 
 The web app opens a picked or dropped file of up to 256 MB whole. A larger GeoTIFF is read a part
 at a time instead: its header, then only the tiles of the overview it opens from. A

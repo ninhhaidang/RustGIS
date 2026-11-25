@@ -379,6 +379,19 @@ pub struct Made {
 }
 
 impl Made {
+    /// With `extra` added to the command's answer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn with_extra(mut self, extra: Value) -> Made {
+        self.extra = Some(extra);
+        self
+    }
+
+    /// The layer it adds, to style.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn layer_mut(&mut self) -> &mut rustgis_map::RasterLayer {
+        &mut self.layer
+    }
+
     /// With `file` to commit as it is added; `said`, what the run had to say, goes with the
     /// error when it can't be (its `then` doesn't run).
     pub(crate) fn committing(mut self, file: rustgis_data::io::StagedWrite, said: Vec<String>) -> Made {
@@ -1780,7 +1793,7 @@ fn hillshade_look(mut m: Made, defaults: &rustgis_map::RasterDefaults) -> Made {
 
 /// `m`, doing `then` too once it is added, after what it did already.
 #[cfg(not(target_arch = "wasm32"))]
-fn also(mut m: Made, then: Then) -> Made {
+pub(crate) fn also(mut m: Made, then: Then) -> Made {
     let before = m.then.take();
     m.then = Some(Box::new(move |s: &mut Session, v: &mut Value| {
         if let Some(before) = before {

@@ -607,8 +607,16 @@ fn indices_over_a_file_too_large_to_read_whole_run_a_block_at_a_time() {
 fn raster_functions_and_resamples_run_a_block_at_a_time() {
     let d = dir("functions");
     let path = thousandths(&d);
+    // Training polygons: two of one class, a triangle of another straddling the rows and columns
+    // of blocks, its edges across the grid's cells, and a third class's.
+    let training = r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"class":"low"},"geometry":{"type":"Polygon","coordinates":[[[10.1,45.1],[10.3,45.1],[10.3,45.3],[10.1,45.3],[10.1,45.1]]]}},
+        {"type":"Feature","properties":{"class":"high"},"geometry":{"type":"Polygon","coordinates":[[[10.35,45.2],[10.9,45.6],[10.6,45.85],[10.35,45.2]]]}},
+        {"type":"Feature","properties":{"class":"low"},"geometry":{"type":"Polygon","coordinates":[[[10.5,45.2],[10.55,45.2],[10.55,45.25],[10.5,45.25],[10.5,45.2]]]}},
+        {"type":"Feature","properties":{"class":"mid"},"geometry":{"type":"Polygon","coordinates":[[[10.7,45.05],[10.95,45.05],[10.95,45.15],[10.7,45.15],[10.7,45.05]]]}}]}"#;
     let open = |s: &mut Session| {
         s.run("layer.addData", &json!({"path": path})).unwrap();
+        s.run("layer.addDataText", &json!({"fileName": "train.geojson", "text": training})).unwrap();
     };
     let cases = [
         ("raster.function", json!({"layer": "checks", "function": "slope", "band": 1, "name": "out"})),
@@ -628,6 +636,10 @@ fn raster_functions_and_resamples_run_a_block_at_a_time() {
             json!({"layer": "checks", "steps": [{"function": "bandMath", "expression": "b1 + b2"}, {"function": "aspect"}, {"function": "slope"}], "name": "out"}),
         ),
         ("raster.process", json!({"layer": "checks", "operation": "resample", "factor": 3, "name": "out"})),
+        (
+            "raster.classifySupervised",
+            json!({"layer": "checks", "training": "train", "classField": "class", "bands": [1, 2, 3], "name": "out"}),
+        ),
     ];
     let reads = || crate::cmd::gp::TILED_READS.with(std::cell::Cell::get);
     for (command, p) in &cases {
@@ -635,7 +647,7 @@ fn raster_functions_and_resamples_run_a_block_at_a_time() {
         let mut whole = Session::new(Project::default());
         open(&mut whole);
         let mark = whole.notice_mark();
-        whole.run(command, p).unwrap();
+        let answer = whole.run(command, p).unwrap();
         let want = raster(&whole, "out").data.clone().unwrap();
         let said_whole: Vec<String> = said(&whole, mark).into_iter().filter(|n| n.contains("matches no")).collect();
         assert_eq!(said_whole.is_empty(), p["function"] != "remap", "{command}: a range of the remap is empty, and said");
@@ -649,7 +661,7 @@ fn raster_functions_and_resamples_run_a_block_at_a_time() {
             open(&mut s);
             assert!(raster(&s, "checks").tiled);
             let (before, mark) = (reads(), s.notice_mark());
-            s.run(command, p).unwrap();
+            let got = s.run(command, p).unwrap();
             assert_eq!(reads(), before, "{why}: the file isn't read whole");
             let rl = raster(&s, "out");
             assert_eq!(rl.tiled, written, "{why}");
@@ -671,9 +683,16 @@ fn raster_functions_and_resamples_run_a_block_at_a_time() {
             // What a remap met is said as of the whole raster.
             let said_blocks: Vec<String> = said(&s, mark).into_iter().filter(|n| n.contains("matches no")).collect();
             assert_eq!(said_blocks, said_whole, "{why}");
-            // A remap's or threshold's overview held is of its classes, never an average of two; one
-            // of a remap keeping the values it doesn't match averages them, as measures.
-            if written && matches!(p["function"].as_str(), Some("remap" | "threshold")) {
+            // The same classes and legend, drawn by the classes some pixel takes.
+            if *command == "raster.classifySupervised" {
+                assert_eq!(got["classes"], answer["classes"], "{why}");
+                let drawn = |s: &Session| format!("{:?}", raster(s, "out").style.renderer);
+                assert_eq!(drawn(&s), drawn(&whole), "{why}");
+                assert!(answer["classes"].as_array().is_some_and(|c| c.len() == 3), "{why}: three classes");
+            }
+            // A remap's, threshold's or classes' overview held is of its classes, never an average
+            // of two; one of a remap keeping the values it doesn't match averages them, as measures.
+            if written && (matches!(p["function"].as_str(), Some("remap" | "threshold")) || *command == "raster.classifySupervised") {
                 let classes: std::collections::BTreeSet<u32> = want.bands[0].data.iter().map(|v| v.to_bits()).collect();
                 let held = rl.data.as_deref().unwrap();
                 assert!(held.overview.is_some(), "{why}: an overview held");

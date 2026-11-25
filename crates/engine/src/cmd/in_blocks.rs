@@ -66,11 +66,11 @@ pub(crate) fn chain_halo(steps: &[Value]) -> Option<u32> {
 }
 
 /// Whether command `id` with `params` works in blocks over a large file, and makes one band:
-/// Indices, and Raster Functions and the Function Editor whose functions do ([`function_halo`],
-/// [`chain_halo`]).
+/// Indices, Classification Tools, and Raster Functions and the Function Editor whose functions do
+/// ([`function_halo`], [`chain_halo`]).
 fn in_blocks(id: &str, params: &Value) -> bool {
     match id {
-        "raster.index" => true,
+        "raster.index" | "raster.classifySupervised" => true,
         "raster.function" => params.get("function").and_then(Value::as_str).and_then(function_halo).is_some(),
         "raster.functionChain" => params.get("steps").and_then(Value::as_array).is_some_and(|s| !s.is_empty() && chain_halo(s).is_some()),
         _ => false,
@@ -91,7 +91,15 @@ pub(crate) struct Blocks {
     full: (u32, u32),
     /// The cells around each block read with it ([`Blocks::with_halo`]).
     halo: u32,
+    /// The no-data value its first block was read with, shared with its [`Blocks::reading`].
+    nodata: Nodata,
 }
+
+/// The no-data value of a run's first block, which every other block it reads must have: a
+/// sidecar beside the file changed while it runs would give later blocks another. Shared by a
+/// plan and the reading it gives, so a command that reads the file twice (training, then
+/// classifying) reads it with one value.
+type Nodata = std::sync::Arc<std::sync::OnceLock<Option<u64>>>;
 
 /// What a raster made a block at a time is: its band's name (none: the band's number); whether
 /// it is a hillshade's whole numbers 1 to 255, held and written as bytes with 0 for no value
@@ -194,7 +202,16 @@ pub(crate) fn plan(s: &Session, input: &Input, out: &str) -> Result<Option<Block
         true => Some(folder(s).ok_or("this computer gives RustGIS no folder to write the result to: save the project first")?),
         false => None,
     };
-    Ok(Some(Blocks { input: input.clone(), layer: layer.to_string(), path: path.to_string(), out: out.to_string(), folder, full, halo: 0 }))
+    Ok(Some(Blocks {
+        input: input.clone(),
+        layer: layer.to_string(),
+        path: path.to_string(),
+        out: out.to_string(),
+        folder,
+        full,
+        halo: 0,
+        nodata: Nodata::default(),
+    }))
 }
 
 /// The full size of `input`'s file when a command reads it a block at a time ([`plan`]), for one
@@ -203,7 +220,7 @@ pub(crate) fn plan(s: &Session, input: &Input, out: &str) -> Result<Option<Block
 /// asks [`Reading::refused_in_script`] first, as [`plan`] does.
 pub(crate) fn plan_read(input: &Input) -> Option<Reading> {
     let (full, (layer, path)) = (too_large(input)?, input.file()?);
-    Some(Reading { input: input.clone(), layer: layer.to_string(), path: path.to_string(), full })
+    Some(Reading { input: input.clone(), layer: layer.to_string(), path: path.to_string(), full, nodata: Nodata::default() })
 }
 
 /// Whether the work can plan for `need` bytes more: within what a job may take now
@@ -233,6 +250,7 @@ pub(crate) struct Reading {
     layer: String,
     path: String,
     full: (u32, u32),
+    nodata: Nodata,
 }
 
 impl Reading {
@@ -263,6 +281,12 @@ impl Reading {
         self.input.held()
     }
 
+    /// The file's full grid, as a read of all of it places it: from a part of one pixel.
+    pub(crate) fn grid(&self) -> Result<rustgis_data::raster::GeoTransform, String> {
+        let source = Source { input: &self.input, layer: &self.layer, path: &self.path, full: self.full, nodata: &self.nodata };
+        Ok(source.block((0, 1), (0, 1))?.0.grid.0)
+    }
+
     /// Reads the blocks of columns `cols` and rows `rows` (half-open, at the full size), each of
     /// `size` columns and rows from their start, in turn, and gives each to `each` with its
     /// columns and rows: at the file's full size, holding all of them, counted as the run's
@@ -275,7 +299,7 @@ impl Reading {
         size: (u32, u32),
         mut each: impl FnMut((u32, u32), (u32, u32), &rustgis_data::raster::PartRead) -> Result<(), String>,
     ) -> Result<u64, String> {
-        let source = Source { input: &self.input, layer: &self.layer, path: &self.path, full: self.full, nodata: Default::default() };
+        let source = Source { input: &self.input, layer: &self.layer, path: &self.path, full: self.full, nodata: &self.nodata };
         let (bw, bh) = (size.0.max(1), size.1.max(1));
         let (across, down) = (cols.1.saturating_sub(cols.0).div_ceil(bw), rows.1.saturating_sub(rows.0).div_ceil(bh));
         rustgis_data::progress::begin((across as usize).saturating_mul(down as usize));
@@ -333,6 +357,17 @@ fn folder(s: &Session) -> Option<PathBuf> {
 }
 
 impl Blocks {
+    /// The input layer's file read a block at a time ([`Reading::each_block`]), as by this plan.
+    pub(crate) fn reading(&self) -> Reading {
+        Reading {
+            input: self.input.clone(),
+            layer: self.layer.clone(),
+            path: self.path.clone(),
+            full: self.full,
+            nodata: self.nodata.clone(),
+        }
+    }
+
     /// The plan reading `halo` cells around each block with it, for work over a cell's
     /// neighbours: a block's cells are made from the cells around them as from the whole raster's.
     pub(crate) fn with_halo(mut self, halo: u32) -> Blocks {
@@ -355,7 +390,7 @@ impl Blocks {
         cells: impl Fn(&Raster, &rustgis_geom::Extent) -> Result<Vec<f32>, String>,
         shape: Shape,
     ) -> Result<Made, String> {
-        let Blocks { input, layer, path, out, folder, full, halo } = self;
+        let Blocks { input, layer, path, out, folder, full, halo, nodata: first } = self;
         let (nodata, kind) = shape.nodata();
         let cells = |r: &Raster, ground: &rustgis_geom::Extent| -> Result<Vec<f32>, String> {
             let mut v = cells(r, ground)?;
@@ -394,7 +429,7 @@ impl Blocks {
             ));
         }
         let _held = rustgis_data::memory::Holding::of(need);
-        let blocks = Source { input: &input, layer: &layer, path: &path, full, nodata: Default::default() };
+        let blocks = Source { input: &input, layer: &layer, path: &path, full, nodata: &first };
         // The kept cells whose values pass a float's range (none for most functions): counted in
         // the rows made, which hold no margin, so a margin's cell, made from too few neighbours,
         // isn't counted.
@@ -530,8 +565,8 @@ struct Source<'a> {
     layer: &'a str,
     path: &'a str,
     full: (u32, u32),
-    /// The no-data value its first block was read with, which every other one must have.
-    nodata: std::cell::Cell<Option<Option<u64>>>,
+    /// The no-data value the run's first block was read with, which every other one must have.
+    nodata: &'a Nodata,
 }
 
 impl Source<'_> {
@@ -547,15 +582,10 @@ impl Source<'_> {
             format!("{}: its file can't be read in blocks: it isn't the file the layer was read from any more (Reload Data)", self.layer)
         })?;
         let r = &read.raster;
-        // One no-data value for every block of a run: a sidecar beside the file changed while it
-        // runs would give later blocks another.
+        // One no-data value for every block of a run ([`Nodata`]).
         let nodata = r.nodata.map(f64::to_bits);
-        match self.nodata.get() {
-            Some(first) if first != nodata => {
-                return Err(format!("{}: its no-data value changed while it was read (Reload Data)", self.layer));
-            }
-            Some(_) => {}
-            None => self.nodata.set(Some(nodata)),
+        if *self.nodata.get_or_init(|| nodata) != nodata {
+            return Err(format!("{}: its no-data value changed while it was read (Reload Data)", self.layer));
         }
         let (ax, ay) = read.at;
         if r.overview.is_some() || ax > cols.0 || ay > rows.0 || ax + r.width < cols.1 || ay + r.height < rows.1 {
