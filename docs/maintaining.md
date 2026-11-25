@@ -220,8 +220,9 @@ chart is given, and saving it again without them. Saved `layout.addElement` comm
 that set one of them require it too. A saved `layout.update` requires it for `values`,
 `decimals`, `barColor` and `labelAlign` only: its `title` and `orientation` may be a legend's or
 a colorbar's, which the command alone doesn't tell, and the project the update ran on requires it
-for its chart anyway. Giving the defaults needs nothing. A saved `layout.import` whose `text` has
-such a chart requires it as well.
+for its chart anyway (`decimals` may also be a scale bar's, so such an update requires
+`layout-scale-bar-details` as well). Giving the defaults needs nothing. A saved `layout.import`
+whose `text` has such a chart requires it as well.
 
 Projects with a layout chart coloured by its layer's classes (`classes` on a chart element)
 require `layout-chart-classes`, so an older reader refuses them instead of drawing every bar in
@@ -273,6 +274,20 @@ a scale bar `textSize`, or a grid `labelSize`, of another size requires it too, 
 nothing. A saved `layout.update` isn't told which element it changes, so any `textSize` but
 `null` requires it there. A saved `layout.import` whose `text` has such an element requires it
 as well.
+
+Projects with a scale bar that has subdivisions, divisions before zero, labels below, a unit
+label of its own or placed elsewhere, decimals or a fit other than the defaults
+(`subdivisions`, `divisions_before_zero`, `label_position`, `unit_label`, `unit_label_position`,
+`decimals`, `fit` on a scale bar element) require `layout-scale-bar-details`, so
+an older reader refuses them instead of drawing a plain bar and saving it again without them.
+Saved `layout.addElement` and `layout.update` commands that set one require it too, since an
+older reader ignores the keys; giving the defaults, `"decimals": "auto"` or `"unitLabel": null`,
+needs nothing. Decimals fixed at any number, 0 included, are a detail. A chart takes `decimals`
+too: a saved `layout.update` can't tell whose they are, so a number there requires both this and
+`layout-chart-look`, while a `layout.addElement` says which kind it adds. A saved
+`layout.import` whose `text` has such a bar requires it as well, and a layout file
+(`.rgislayout`) with such a bar lists it in its header, so an older reader refuses the file too.
+A scale bar's text size isn't one of its details: it requires `layout-text-size`, as above.
 
 Projects, map files and layer files with a layer or table held in a coordinate system of its own
 (`Dataset::held_in`: a file's system, kept since #2580) save its features in that system, exactly,

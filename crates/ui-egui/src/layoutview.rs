@@ -8,8 +8,9 @@ use egui::{Align2, Color32, CornerRadius, CursorIcon, Pos2, Rect, Sense, Stroke,
 use rustgis_engine::map::layout::{
     Arrange, ArrowStyle, Background, ChartOrder, CoordFormat, Element, ElementKind, Grid, GridKind, GridStyle, INK, LAYOUT_TEXT_SIZE,
     Layout, LineHead, MAX_BACKGROUND_PADDING, MAX_BACKGROUND_RADIUS, MAX_BACKGROUND_WIDTH, MAX_CHART_BARS, MAX_CHART_DECIMALS,
-    MAX_COLORBAR_TICKS, MAX_FRAME_SCALE, MAX_GRID_WIDTH, MAX_LEGEND_COLUMNS, MAX_SCALE_DIVISIONS, MAX_TICK_MM, MIN_FRAME_SCALE,
-    Orientation, PT_PER_MM, ScaleBarStyle, ScaleUnits, TextAlign, TickSide, chart_stack_refusal, frame_camera, line_angle, line_length,
+    MAX_COLORBAR_TICKS, MAX_FRAME_SCALE, MAX_GRID_WIDTH, MAX_LEGEND_COLUMNS, MAX_SCALE_BEFORE_ZERO, MAX_SCALE_DECIMALS,
+    MAX_SCALE_DIVISIONS, MAX_SCALE_SUBDIVISIONS, MAX_TICK_MM, MIN_FRAME_SCALE, Orientation, PT_PER_MM, ScaleBarFit, ScaleBarStyle,
+    ScaleLabelPosition, ScaleUnits, TextAlign, TickSide, UnitLabelPosition, chart_stack_refusal, frame_camera, line_angle, line_length,
 };
 use rustgis_engine::map::report::StatKind;
 use rustgis_engine::map::symbology::Dash;
@@ -1361,10 +1362,13 @@ pub(crate) fn save_drafts(app: &mut RustGisApp) {
             ("text", ElementKind::Text { text, .. }) => Some(text.clone()),
             ("title", ElementKind::Legend { title, .. } | ElementKind::Colorbar { title, .. }) => Some(title.clone()),
             ("title", ElementKind::Chart { title, .. }) => title.clone(),
+            ("unitLabel", ElementKind::ScaleBar { unit_label, .. }) => Some(unit_label.clone().unwrap_or_default()),
             _ => None,
         });
         if current.is_some_and(|c| c != text) {
-            let _ = app.run("layout.update", json!({"layout": l, "element": id, field: text}));
+            // An emptied unit label gives the unit's abbreviation back, as the field does.
+            let value = if field == "unitLabel" && text.is_empty() { Value::Null } else { json!(text) };
+            let _ = app.run("layout.update", json!({"layout": l, "element": id, field: value}));
         }
     }
 }
@@ -1401,12 +1405,28 @@ fn text_field(
     multiline: bool,
     label_id: egui::Id,
 ) -> Option<String> {
+    hinted_text_field(app, ui, key, current, multiline, None, label_id)
+}
+
+/// [`text_field`] showing `hint` while it's empty.
+fn hinted_text_field(
+    app: &mut RustGisApp,
+    ui: &mut Ui,
+    key: (usize, u32, &'static str),
+    current: &str,
+    multiline: bool,
+    hint: Option<&str>,
+    label_id: egui::Id,
+) -> Option<String> {
     let mut buf = app.layout.typing.remove(&key).unwrap_or_else(|| current.to_string());
-    let edit = if multiline {
+    let mut edit = if multiline {
         egui::TextEdit::multiline(&mut buf).desired_rows(3).desired_width(240.0)
     } else {
         egui::TextEdit::singleline(&mut buf)
     };
+    if let Some(hint) = hint {
+        edit = edit.hint_text(hint);
+    }
     let r = ui.add(edit).labelled_by(label_id);
     if r.lost_focus() {
         return (buf != current).then_some(buf);
@@ -2019,7 +2039,22 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                             ui.end_row();
                         }
                     }
-                    ElementKind::ScaleBar { units, divisions, style, color, fill, text_size, .. } => {
+                    ElementKind::ScaleBar {
+                        units,
+                        divisions,
+                        style,
+                        color,
+                        fill,
+                        text_size,
+                        subdivisions,
+                        divisions_before_zero,
+                        label_position,
+                        unit_label,
+                        unit_label_position,
+                        decimals,
+                        fit,
+                        ..
+                    } => {
                         let input_label = ui.label(tl!("Style"));
                         egui::ComboBox::from_id_salt(("scale_style", id))
                             .selected_text(tl!(style.label()))
@@ -2050,7 +2085,11 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         let mut n = *divisions as u64;
                         let drag = Dragged::lend(ui, drag_key("divisions"), &mut n);
                         let r = ui
-                            .add(egui::DragValue::new(&mut n).update_while_editing(false).range(1..=MAX_SCALE_DIVISIONS as u64))
+                            .add(
+                                egui::DragValue::new(&mut n)
+                                    .update_while_editing(false)
+                                    .range(1..=MAX_SCALE_DIVISIONS.saturating_sub(*divisions_before_zero).max(1) as u64),
+                            )
                             .labelled_by(input_label.id);
                         if drag.settled(ui, &r, &mut n) && n as usize != *divisions {
                             update(app, json!({"divisions": n}));
@@ -2059,6 +2098,132 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         // Its labels' points; their room follows, the bar keeping its size (#2581).
                         if let Some(pt) = text_size_row(ui, tl!("Text size"), drag_key("textSize"), *text_size) {
                             update(app, json!({"textSize": pt}));
+                        }
+                        // Each division split into parts, and divisions left of zero.
+                        for (label, key, current, max) in [
+                            (tl!("Subdivisions"), "subdivisions", *subdivisions, MAX_SCALE_SUBDIVISIONS),
+                            (
+                                tl!("Divisions before zero"),
+                                "divisionsBeforeZero",
+                                *divisions_before_zero,
+                                MAX_SCALE_BEFORE_ZERO.min(MAX_SCALE_DIVISIONS.saturating_sub(*divisions)),
+                            ),
+                        ] {
+                            let input_label = ui.label(label);
+                            let mut n = current as u64;
+                            let drag = Dragged::lend(ui, drag_key(key), &mut n);
+                            let r = ui
+                                .add(egui::DragValue::new(&mut n).update_while_editing(false).range(0..=max as u64))
+                                .labelled_by(input_label.id);
+                            let settled = drag.settled(ui, &r, &mut n);
+                            // One subdivision is none: the bar keeps 0, so 1 changes nothing.
+                            if key == "subdivisions" && n == 1 {
+                                n = 0;
+                            }
+                            if settled && n as usize != current {
+                                update(app, json!({key: n}));
+                            }
+                            ui.end_row();
+                        }
+                        // The numbers' decimal places, as a chart's: automatic, as each label needs, or fixed.
+                        let input_label = ui.label(tl!("Decimals"));
+                        let auto = tl!("Automatic");
+                        let mut items = vec![(auto.to_string(), decimals.is_none(), json!("auto"))];
+                        items.extend((0..=MAX_SCALE_DECIMALS as u8).map(|d| (d.to_string(), *decimals == Some(d), json!(d))));
+                        let current = decimals.map_or(auto.to_string(), |d| d.to_string());
+                        if let Some(v) = choice(ui, ("scale_decimals", id), input_label.id, &current, &items) {
+                            update(app, json!({"decimals": v}));
+                        }
+                        ui.end_row();
+                        let input_label = ui.label(tl!("Label position"));
+                        egui::ComboBox::from_id_salt(("scale_labels", id))
+                            .selected_text(tl!(label_position.label()))
+                            .show_ui(ui, |ui| {
+                                for v in ScaleLabelPosition::ALL {
+                                    if ui.selectable_label(*label_position == v, tl!(v.label())).clicked() && *label_position != v {
+                                        update(app, json!({"labelPosition": v.code()}));
+                                    }
+                                }
+                            })
+                            .response
+                            .labelled_by(input_label.id);
+                        ui.end_row();
+                        let input_label = ui.label(tl!("Fit"));
+                        egui::ComboBox::from_id_salt(("scale_fit", id))
+                            .selected_text(tl!(fit.label()))
+                            .show_ui(ui, |ui| {
+                                for v in ScaleBarFit::ALL {
+                                    if ui.selectable_label(*fit == v, tl!(v.label())).clicked() && *fit != v {
+                                        update(app, json!({"fit": v.code()}));
+                                    }
+                                }
+                            })
+                            .response
+                            .labelled_by(input_label.id);
+                        ui.end_row();
+                        // Unticked, the bar prints no unit; ticked again, the label typed before
+                        // it was hidden (kept for the session), else the unit's abbreviation.
+                        let input_label = ui.label(tl!("Show unit label"));
+                        let shows_unit = unit_label.as_deref() != Some("");
+                        let mut on = shows_unit;
+                        if ui.checkbox(&mut on, "").labelled_by(input_label.id).changed() {
+                            // Kept per project and per layout name too, so another project's
+                            // bar, or another layout's once a layout before it is deleted, never
+                            // gets this one's text; a renamed layout forgets it.
+                            let kept = egui::Id::unique(("scale_unit_label_kept", app.session.opened, li, layout.name.as_str(), id));
+                            // The label being typed is dropped, so the field losing its focus
+                            // doesn't write it back; hidden, it is the text kept.
+                            let draft = app.layout.typing.remove(&(li, id, "unitLabel"));
+                            if on {
+                                // Read, not taken: a show that is undone can be shown again.
+                                let typed = ui.ctx().data(|d| d.get_temp::<String>(kept)).filter(|t| !t.is_empty());
+                                update(app, json!({"unitLabel": typed.map_or(Value::Null, Value::String)}));
+                            } else {
+                                // Every hide keeps the text hidden now, and forgets an older one
+                                // once the label is back to the abbreviation.
+                                match draft.or_else(|| unit_label.clone()).filter(|t| !t.is_empty()) {
+                                    Some(text) => {
+                                        ui.ctx().data_mut(|d| d.insert_temp(kept, text));
+                                    }
+                                    None => {
+                                        ui.ctx().data_mut(|d| d.remove_temp::<String>(kept));
+                                    }
+                                }
+                                update(app, json!({"unitLabel": ""}));
+                            }
+                        }
+                        ui.end_row();
+                        if shows_unit {
+                            let input_label = ui.label(tl!("Unit label"));
+                            let current = unit_label.as_deref().unwrap_or("");
+                            // Left empty, the bar prints the unit's abbreviation; an automatic
+                            // unit's depends on the frame's scale.
+                            let hint = match *units {
+                                ScaleUnits::Auto => tl!("Unit's abbreviation"),
+                                fixed => fixed.resolve(0.0).1,
+                            };
+                            if let Some(text) =
+                                hinted_text_field(app, ui, (li, id, "unitLabel"), current, false, Some(hint), input_label.id)
+                            {
+                                // Emptied, the field gives the unit's abbreviation back.
+                                update(app, json!({"unitLabel": if text.is_empty() { Value::Null } else { json!(text) }}));
+                            }
+                            ui.end_row();
+                            let input_label = ui.label(tl!("Unit label position"));
+                            egui::ComboBox::from_id_salt(("scale_unit_label", id))
+                                .selected_text(tl!(unit_label_position.label()))
+                                .show_ui(ui, |ui| {
+                                    for v in UnitLabelPosition::ALL {
+                                        if ui.selectable_label(*unit_label_position == v, tl!(v.label())).clicked()
+                                            && *unit_label_position != v
+                                        {
+                                            update(app, json!({"unitLabelPosition": v.code()}));
+                                        }
+                                    }
+                                })
+                                .response
+                                .labelled_by(input_label.id);
+                            ui.end_row();
                         }
                         // The fill is the alternating bar's light divisions: the other styles draw none.
                         let colors = [("Color", "color", *color), ("Fill", "fill", *fill)];
@@ -3798,6 +3963,7 @@ mod tests {
             below_box,
             past_limit,
             off_page: false,
+            unit_label: None,
         };
         assert_eq!(lines_left_out_label(&loss(0, false, false)), None);
         assert_eq!(lines_left_out_label(&loss(3, true, false)).as_deref(), Some("3 lines don't fit the box"));
@@ -3834,6 +4000,163 @@ mod tests {
         h.state_mut().run("layout.update", json!({"element": id, "h": 40})).unwrap();
         h.run_steps(3);
         assert!(h.query_by_label("2 lines don't fit the box").is_none(), "they fit");
+    }
+
+    /// A scale bar's details are set in the Format pane through layout.update, each one undo step.
+    #[test]
+    fn a_scale_bar_takes_its_details_in_the_format_pane() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        use rustgis_engine::map::layout::{ElementKind, ScaleBarFit, ScaleLabelPosition};
+        let mut app = RustGisApp::with_sample();
+        app.run("layout.new", json!({"name": "Bar", "template": "map"})).unwrap();
+        let li = app.session.active_layout.unwrap();
+        let bar = app.session.project.layouts[li].elements.iter().find(|e| matches!(e.kind, ElementKind::ScaleBar { .. })).unwrap().id;
+        app.layout.selected = Some(bar);
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 900.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                with_format(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let set = |h: &egui_kittest::Harness<'_, RustGisApp>| match &h.state().session.project.layouts[li].element(bar).unwrap().kind {
+            ElementKind::ScaleBar { label_position, unit_label, fit, .. } => (*label_position, unit_label.clone(), *fit),
+            _ => panic!("a scale bar"),
+        };
+        assert_eq!(set(&h), (ScaleLabelPosition::Above, None, ScaleBarFit::AdjustDivisionValue));
+        for label in
+            ["Subdivisions", "Divisions before zero", "Decimals", "Text size", "Label position", "Unit label", "Unit label position", "Fit"]
+        {
+            assert!(h.query_by_label(label).is_some(), "{label}");
+        }
+        // Left empty, the field shows what the bar prints: an automatic unit's abbreviation
+        // depends on the frame's scale, a fixed unit's is its own.
+        let hint =
+            |h: &egui_kittest::Harness<'_, RustGisApp>| h.get_by_label("Unit label").accesskit_node().placeholder().map(str::to_owned);
+        assert_eq!(hint(&h).as_deref(), Some("Unit's abbreviation"));
+        h.state_mut().run("layout.update", json!({"element": bar, "units": "kilometers"})).unwrap();
+        h.run_steps(2);
+        assert_eq!(hint(&h).as_deref(), Some("km"));
+        h.get_by_label("Label position").click();
+        h.run_steps(2);
+        h.get_by_label("Below the bar").click();
+        h.run_steps(2);
+        assert_eq!(set(&h).0, ScaleLabelPosition::Below);
+        h.get_by_label("Fit").click();
+        h.run_steps(2);
+        h.get_by_label("Adjust width").click();
+        h.run_steps(2);
+        assert_eq!(set(&h).2, ScaleBarFit::AdjustWidth);
+        // Decimals as a chart's: automatic at first, fixed when picked, automatic again.
+        let decimals = |h: &egui_kittest::Harness<'_, RustGisApp>| match &h.state().session.project.layouts[li].element(bar).unwrap().kind {
+            ElementKind::ScaleBar { decimals, .. } => *decimals,
+            _ => panic!("a scale bar"),
+        };
+        assert_eq!(decimals(&h), None);
+        h.get_by_label("Decimals").click();
+        h.run_steps(2);
+        h.get_by_role_and_label(Role::Button, "2").click();
+        h.run_steps(2);
+        assert_eq!(decimals(&h), Some(2));
+        h.get_by_label("Decimals").click();
+        h.run_steps(2);
+        h.get_by_role_and_label(Role::Button, "Automatic").click();
+        h.run_steps(2);
+        assert_eq!(decimals(&h), None);
+        // Typed, the unit label is set once left.
+        h.get_by_label("Unit label").focus();
+        h.run_steps(2);
+        h.get_by_label("Unit label").type_text("Feet");
+        h.run_steps(2);
+        h.get_by_label("Subdivisions").focus();
+        h.run_steps(3);
+        assert_eq!(set(&h).1.as_deref(), Some("Feet"));
+        // Unticked, no unit label prints; one undo step brings the text back.
+        h.get_by_role_and_label(Role::CheckBox, "Show unit label").click();
+        h.run_steps(3);
+        assert_eq!(set(&h).1.as_deref(), Some(""));
+        assert!(h.query_by_label("Unit label position").is_none());
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        h.run_steps(3);
+        assert_eq!(set(&h).1.as_deref(), Some("Feet"));
+        // Hidden and shown again, the typed label comes back, not the abbreviation; one undo
+        // step hides it again.
+        h.get_by_role_and_label(Role::CheckBox, "Show unit label").click();
+        h.run_steps(3);
+        assert_eq!(set(&h).1.as_deref(), Some(""));
+        h.get_by_role_and_label(Role::CheckBox, "Show unit label").click();
+        h.run_steps(3);
+        assert_eq!(set(&h).1.as_deref(), Some("Feet"));
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        h.run_steps(3);
+        assert_eq!(set(&h).1.as_deref(), Some(""));
+        // A show that was undone can be shown again: the kept text is read, not taken.
+        h.get_by_role_and_label(Role::CheckBox, "Show unit label").click();
+        h.run_steps(3);
+        assert_eq!(set(&h).1.as_deref(), Some("Feet"));
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        h.run_steps(3);
+        assert_eq!(set(&h).1.as_deref(), Some(""));
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        h.run_steps(3);
+        assert_eq!(set(&h).1.as_deref(), Some("Feet"));
+        // Back to the abbreviation, then hidden and shown: the old "Feet" is forgotten.
+        h.state_mut().run("layout.update", json!({"layout": li, "element": bar, "unitLabel": null})).unwrap();
+        h.run_steps(3);
+        assert_eq!(set(&h).1, None);
+        h.get_by_role_and_label(Role::CheckBox, "Show unit label").click();
+        h.run_steps(3);
+        assert_eq!(set(&h).1.as_deref(), Some(""));
+        h.get_by_role_and_label(Role::CheckBox, "Show unit label").click();
+        h.run_steps(3);
+        assert_eq!(set(&h).1, None);
+        // Hidden while it is being typed, the label isn't written back as the field loses its
+        // focus; the typed text is the one kept.
+        h.get_by_label("Unit label").focus();
+        h.run_steps(2);
+        h.get_by_label("Unit label").type_text("Yards");
+        h.run_steps(2);
+        h.get_by_role_and_label(Role::CheckBox, "Show unit label").click();
+        h.run_steps(3);
+        assert_eq!(set(&h).1.as_deref(), Some(""));
+        assert!(h.state().layout.typing.is_empty());
+        h.get_by_role_and_label(Role::CheckBox, "Show unit label").click();
+        h.run_steps(3);
+        assert!(set(&h).1.is_some_and(|t| t.ends_with("Yards")), "{:?}", set(&h).1);
+        // One subdivision is none, as the bar already has: no change, no undo step.
+        let subdivisions =
+            |h: &egui_kittest::Harness<'_, RustGisApp>| match &h.state().session.project.layouts[li].element(bar).unwrap().kind {
+                ElementKind::ScaleBar { subdivisions, .. } => *subdivisions,
+                _ => panic!("a scale bar"),
+            };
+        let depth = h.state().session.undo_depth();
+        for (typed, expected, steps) in [("1", 0, 0), ("3", 3, 1)] {
+            h.get_by_label("Subdivisions").focus();
+            h.run_steps(2);
+            h.get_by_label("Subdivisions").type_text(typed);
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+            assert_eq!(subdivisions(&h), expected, "{typed}");
+            assert_eq!(h.state().session.undo_depth(), depth + steps, "{typed}");
+        }
+        // A unit label being typed when the bar is no longer shown is saved, and an emptied one
+        // gives the abbreviation back.
+        for (draft, expected) in [("Miles", Some("Miles")), ("", None)] {
+            h.state_mut().layout.selected = Some(bar);
+            h.run_steps(2);
+            h.state_mut().layout.typing.insert((li, bar, "unitLabel"), draft.into());
+            h.state_mut().layout.selected = None;
+            h.run_steps(3);
+            assert!(h.state().layout.typing.is_empty(), "{draft:?}");
+            assert_eq!(set(&h).1.as_deref(), expected, "{draft:?}");
+        }
     }
 
     /// A number dragged in the Format pane and let go is applied (#607): X moves the element by

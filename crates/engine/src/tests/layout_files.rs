@@ -74,6 +74,13 @@ fn a_layout_file_read_from_its_path_is_checked_too() {
     assert_eq!(s.project.layouts.len(), 2);
 }
 
+#[test]
+fn a_layout_file_requiring_scale_bar_details_opens() {
+    let (mut s, bare) = with_layout();
+    s.run("layout.import", &json!({"text": headed(&bare, 2, json!(["layout-scale-bar-details"]))})).unwrap();
+    assert_eq!(s.project.layouts.len(), 2);
+}
+
 /// What `layout.save` writes for the layout at `layout`, as text and as a value.
 fn saved_file(s: &mut Session, layout: usize, tag: &str) -> (String, Value) {
     let path = std::env::temp_dir().join(format!("rustgis-layout-save-{}-{tag}.rgislayout", std::process::id()));
@@ -140,4 +147,23 @@ fn a_layout_file_requires_nothing_for_other_layouts_or_saved_commands() {
     let (_, plain) = saved_file(&mut s, 1, "other-plain");
     assert_eq!(plain["format"], json!(crate::project::FORMAT));
     assert!(plain.get("requires").is_none(), "{plain}");
+}
+
+/// A layout file with a scale bar that has details requires `layout-scale-bar-details`, so an
+/// older RustGIS refuses it instead of drawing a plain bar; a plain bar's file requires nothing.
+#[test]
+fn a_layout_file_with_scale_bar_details_says_so_in_its_header() {
+    let (mut s, _) = with_layout();
+    s.run("layout.addElement", &json!({"kind": "scaleBar"})).unwrap();
+    let (_, plain) = saved_file(&mut s, 0, "plain-bar");
+    assert_eq!(plain["format"], json!(crate::project::FORMAT));
+    assert!(plain.get("requires").is_none(), "{plain}");
+    s.run("layout.new", &json!({"page": "a4", "template": "map"})).unwrap();
+    s.run("layout.addElement", &json!({"kind": "scaleBar", "subdivisions": 4})).unwrap();
+    assert!(s.project.layouts[1].elements.iter().any(|e| e.kind.scale_bar_uses_details()));
+    let (text, detailed) = saved_file(&mut s, 1, "detailed-bar");
+    assert_eq!(detailed["requires"], json!(["layout-scale-bar-details"]));
+    // This RustGIS reads it back.
+    s.run("layout.import", &json!({"text": text})).unwrap();
+    assert!(s.project.layouts[2].elements.iter().any(|e| e.kind.scale_bar_uses_details()));
 }

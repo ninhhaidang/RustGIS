@@ -837,6 +837,130 @@ fn divisions() -> usize {
     4
 }
 
+/// The most subdivisions the first division after zero of a scale bar is split into.
+pub const MAX_SCALE_SUBDIVISIONS: usize = 10;
+
+/// The most divisions a scale bar draws to the left of its zero.
+pub const MAX_SCALE_BEFORE_ZERO: usize = 2;
+
+/// The most decimal places a scale bar's numbers show.
+pub const MAX_SCALE_DECIMALS: usize = 3;
+
+/// The most characters a scale bar's unit label has.
+pub const MAX_UNIT_LABEL_CHARS: usize = 100;
+
+/// Where a scale bar's numbers sit against the bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScaleLabelPosition {
+    /// Over the bar.
+    #[default]
+    Above,
+    /// Under the bar.
+    Below,
+}
+
+impl ScaleLabelPosition {
+    pub const ALL: [ScaleLabelPosition; 2] = [ScaleLabelPosition::Above, ScaleLabelPosition::Below];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            ScaleLabelPosition::Above => "above",
+            ScaleLabelPosition::Below => "below",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ScaleLabelPosition::Above => "Above the bar",
+            ScaleLabelPosition::Below => "Below the bar",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<ScaleLabelPosition> {
+        ScaleLabelPosition::ALL.into_iter().find(|v| v.code().eq_ignore_ascii_case(s.trim()))
+    }
+}
+
+/// Where a scale bar's unit label sits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UnitLabelPosition {
+    /// After the last number, on the same line.
+    #[default]
+    AfterLabels,
+    /// Beside the end of the bar.
+    AfterBar,
+    /// Over the bar.
+    Above,
+    /// Under the bar.
+    Below,
+}
+
+impl UnitLabelPosition {
+    pub const ALL: [UnitLabelPosition; 4] =
+        [UnitLabelPosition::AfterLabels, UnitLabelPosition::AfterBar, UnitLabelPosition::Above, UnitLabelPosition::Below];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            UnitLabelPosition::AfterLabels => "afterLabels",
+            UnitLabelPosition::AfterBar => "afterBar",
+            UnitLabelPosition::Above => "above",
+            UnitLabelPosition::Below => "below",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UnitLabelPosition::AfterLabels => "After the labels",
+            UnitLabelPosition::AfterBar => "After the bar",
+            UnitLabelPosition::Above => "Above the bar",
+            UnitLabelPosition::Below => "Below the bar",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<UnitLabelPosition> {
+        UnitLabelPosition::ALL.into_iter().find(|v| v.code().eq_ignore_ascii_case(s.trim()))
+    }
+}
+
+/// What a scale bar gives way on when its length does not fit its box.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScaleBarFit {
+    /// Keep the number of divisions and the bar's width; the value of a division changes.
+    #[default]
+    AdjustDivisionValue,
+    /// Keep the value of a division and the bar's width; the number of divisions changes.
+    AdjustDivision,
+    /// Keep the value and the number of divisions; the bar's width changes.
+    AdjustWidth,
+}
+
+impl ScaleBarFit {
+    pub const ALL: [ScaleBarFit; 3] = [ScaleBarFit::AdjustDivisionValue, ScaleBarFit::AdjustDivision, ScaleBarFit::AdjustWidth];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            ScaleBarFit::AdjustDivisionValue => "adjustDivisionValue",
+            ScaleBarFit::AdjustDivision => "adjustDivision",
+            ScaleBarFit::AdjustWidth => "adjustWidth",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ScaleBarFit::AdjustDivisionValue => "Adjust division value",
+            ScaleBarFit::AdjustDivision => "Adjust number of divisions",
+            ScaleBarFit::AdjustWidth => "Adjust width",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<ScaleBarFit> {
+        ScaleBarFit::ALL.into_iter().find(|v| v.code().eq_ignore_ascii_case(s.trim()))
+    }
+}
+
 /// The most columns a legend lays its rows in.
 pub const MAX_LEGEND_COLUMNS: usize = 3;
 
@@ -1016,6 +1140,29 @@ pub enum ElementKind {
         /// bytes.
         #[serde(default = "scale_bar_text_pt", skip_serializing_if = "is_scale_bar_text_pt")]
         text_size: f64,
+        /// Parts the first division after zero is split into, 0 (none) to [`MAX_SCALE_SUBDIVISIONS`].
+        #[serde(default, skip_serializing_if = "is_default")]
+        subdivisions: usize,
+        /// Divisions drawn left of zero, 0 to [`MAX_SCALE_BEFORE_ZERO`].
+        #[serde(default, skip_serializing_if = "is_default")]
+        divisions_before_zero: usize,
+        /// Where the numbers sit against the bar.
+        #[serde(default, skip_serializing_if = "is_default")]
+        label_position: ScaleLabelPosition,
+        /// Text printed in place of the units' abbreviation. `None` prints the abbreviation and
+        /// `Some("")` prints nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unit_label: Option<String>,
+        /// Where the unit label sits.
+        #[serde(default, skip_serializing_if = "is_default")]
+        unit_label_position: UnitLabelPosition,
+        /// Decimal places in the numbers, 0 to [`MAX_SCALE_DECIMALS`], their thousands set apart;
+        /// none (auto), the decimals each label needs, as bars always printed.
+        #[serde(default, deserialize_with = "de_scale_decimals", skip_serializing_if = "Option::is_none")]
+        decimals: Option<u8>,
+        /// What gives way when the bar's length does not fit its box.
+        #[serde(default, skip_serializing_if = "is_default")]
+        fit: ScaleBarFit,
     },
     Legend {
         frame: u32,
@@ -1272,6 +1419,38 @@ fn is_chart_bars(n: &usize) -> bool {
     *n == CHART_BARS
 }
 
+/// What a file's scale bar decimals that are no count at all (negative, fractional, not a number)
+/// read as: read from a file only, never kept. `Layout::clamp` sends it back to automatic and
+/// counts it.
+const SCALE_DECIMALS_INVALID: u8 = u8::MAX;
+
+/// A scale bar's decimals as a file holds them, of whatever JSON kind: null or the word "auto"
+/// (any case, trimmed) as automatic, a whole number from 0 to 253 as it is, a whole number past
+/// that as 254 (more than any count, so `Layout::clamp` cuts it to the most), and anything else
+/// (negative, fractional, another word, a flag, a list, an object) as
+/// [`SCALE_DECIMALS_INVALID`]. So `Layout::clamp` brings every invalid value into range and says
+/// so, rather than the whole layout failing to load or a bad value passing as a good one.
+fn de_scale_decimals<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u8>, D::Error> {
+    let v: Option<serde_json::Value> = serde::Deserialize::deserialize(d)?;
+    Ok(match v {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) if s.trim().eq_ignore_ascii_case("auto") => None,
+        Some(serde_json::Value::Number(n)) => {
+            if let Some(whole) = n.as_u64() {
+                // 254 is the cap.
+                Some(whole.min(254) as u8)
+            } else {
+                match n.as_f64() {
+                    // Whole and not negative (a float such as 2.0 or 1e30): 254 is the cap.
+                    Some(f) if f.fract() == 0.0 && f >= 0.0 => Some(f.min(254.0) as u8),
+                    _ => Some(SCALE_DECIMALS_INVALID),
+                }
+            }
+        }
+        Some(_) => Some(SCALE_DECIMALS_INVALID),
+    })
+}
+
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
 }
@@ -1497,7 +1676,52 @@ impl ElementKind {
             color: ink(),
             fill: white(),
             text_size: SCALE_BAR_TEXT_PT,
+            subdivisions: 0,
+            divisions_before_zero: 0,
+            label_position: ScaleLabelPosition::default(),
+            unit_label: None,
+            unit_label_position: UnitLabelPosition::default(),
+            decimals: None,
+            fit: ScaleBarFit::default(),
         }
+    }
+
+    /// Whether this is a scale bar with any of the details set: subdivisions, divisions before
+    /// zero, a label or unit label placement, a unit label, decimals or a fit. Its text size
+    /// isn't one: [`ElementKind::has_custom_text_size`] tells that.
+    pub fn scale_bar_uses_details(&self) -> bool {
+        let ElementKind::ScaleBar {
+            frame,
+            subdivisions,
+            divisions_before_zero,
+            label_position,
+            unit_label,
+            unit_label_position,
+            decimals,
+            fit,
+            ..
+        } = self
+        else {
+            return false;
+        };
+        let ElementKind::ScaleBar {
+            subdivisions: s0,
+            divisions_before_zero: z0,
+            label_position: lp0,
+            unit_label: u0,
+            unit_label_position: up0,
+            decimals: d0,
+            fit: f0,
+            ..
+        } = ElementKind::scale_bar(*frame)
+        else {
+            return false;
+        };
+        // One subdivision is none: it clamps to 0, and an imported text is checked before that.
+        // Before clamp a file's invalid decimals read as 255 (a detail): over-requires for an invalid file only.
+        let subdivisions = if *subdivisions == 1 { 0 } else { *subdivisions };
+        (subdivisions, *divisions_before_zero, *label_position, unit_label, *unit_label_position, *decimals, *fit)
+            != (s0, z0, lp0, &u0, up0, d0, f0)
     }
 
     pub fn code(&self) -> &'static str {
@@ -1546,11 +1770,13 @@ impl ElementKind {
 
     /// Whether `key` given as null changes an element of this kind, giving it back its default:
     /// an ink's `color`, a chart's `title` (the title it is given), `barColor`, `max` (its bars'
-    /// own scale) and `barOutline` (none), and a legend's or scale bar's `textSize` (#2581).
+    /// own scale) and `barOutline` (none), a legend's or scale bar's `textSize` (#2581), and a
+    /// scale bar's `unitLabel` (its unit's abbreviation).
     pub fn null_resets(&self, key: &str) -> bool {
         (self.takes_ink() && key == "color")
             || (matches!(self, ElementKind::Chart { .. }) && matches!(key, "title" | "barColor" | "max" | "barOutline"))
             || (matches!(self, ElementKind::Legend { .. } | ElementKind::ScaleBar { .. }) && key == "textSize")
+            || (matches!(self, ElementKind::ScaleBar { .. }) && key == "unitLabel")
     }
 
     /// Its ink, when it [takes one](ElementKind::takes_ink) and has one; `None` draws in [`INK`].
@@ -2616,6 +2842,12 @@ impl Layout {
                     *pitch = 0.0;
                 }
             }
+            // One subdivision is the division whole, as none: it draws the same.
+            if let ElementKind::ScaleBar { subdivisions, .. } = &mut before.kind
+                && *subdivisions == 1
+            {
+                *subdivisions = 0;
+            }
             // A bar outline of width 0 draws none, as the commands take it: letting it go is no
             // change.
             if let ElementKind::Chart { bar_outline, .. } = &mut before.kind
@@ -2728,9 +2960,26 @@ impl Layout {
                     *max = chart_max(*max);
                     *bar_outline = chart_outline(*bar_outline);
                 }
-                ElementKind::ScaleBar { divisions, text_size, .. } => {
+                ElementKind::ScaleBar { divisions, text_size, subdivisions, divisions_before_zero, decimals, unit_label, .. } => {
                     *divisions = (*divisions).clamp(1, MAX_SCALE_DIVISIONS);
                     *text_size = layout_text_in_range(*text_size, SCALE_BAR_TEXT_PT);
+                    // One part is the whole division: saved as none, it asks for no details.
+                    *subdivisions = if *subdivisions == 1 { 0 } else { (*subdivisions).min(MAX_SCALE_SUBDIVISIONS) };
+                    *divisions_before_zero = (*divisions_before_zero).min(MAX_SCALE_BEFORE_ZERO);
+                    // The two together are drawn as at most ten: the ones before zero give way.
+                    *divisions_before_zero = (*divisions_before_zero).min(MAX_SCALE_DIVISIONS.saturating_sub(*divisions));
+                    // A file's invalid count (negative, fractional) is read as a marker: back to automatic.
+                    *decimals = match *decimals {
+                        Some(SCALE_DECIMALS_INVALID) => None,
+                        d => d.map(|d| d.min(MAX_SCALE_DECIMALS as u8)),
+                    };
+                    // The label is one line: a break in a hand-edited file is a space.
+                    if let Some(label) = unit_label {
+                        *label = label.replace("\r\n", " ").replace(['\n', '\r'], " ");
+                        let end = label.char_indices().nth(MAX_UNIT_LABEL_CHARS).map_or(label.len(), |(i, _)| i);
+                        cut |= end < label.len();
+                        label.truncate(end);
+                    }
                 }
                 ElementKind::Rectangle { width, .. } | ElementKind::Ellipse { width, .. } => {
                     *width = finite_or(*width, 1.0).clamp(0.0, 50.0)
@@ -2795,10 +3044,11 @@ impl Layout {
 /// What [`Layout::clamp`] changed in a layout.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LayoutRepairs {
-    /// Elements kept with a value brought into range, a new id, or a reference cleared.
+    /// Elements kept with a value brought into range, a new id, a reference cleared, or a unit
+    /// label's line breaks replaced.
     pub elements_adjusted: usize,
-    /// Elements with a name, text, polygon points, legend exclusions or legend labels cut to their
-    /// limits (the same element may count as adjusted too).
+    /// Elements with a name, text, polygon points, legend exclusions, scale bar unit labels or
+    /// legend labels cut to their limits (the same element may count as adjusted too).
     pub elements_cut: usize,
     /// Elements removed: beyond the 500 a layout holds, or tied to a map frame it doesn't have.
     pub elements_removed: usize,
@@ -4448,5 +4698,157 @@ mod tests {
         assert_eq!(back, l);
         let mut text = ElementKind::text("t", 12.0, Rgba::rgb(0, 0, 0), false);
         assert!(!text.takes_ink() && text.ink_mut().is_none(), "a text's colour is its own option");
+    }
+
+    #[test]
+    fn scale_bars_without_details_save_as_before() {
+        // As main writes a plain bar: colour and fill always, nothing new.
+        let plain = r#"{"ScaleBar":{"frame":2,"units":"Auto","divisions":4,"style":"Alternating","color":[34,34,34,255],"fill":[255,255,255,255]}}"#;
+        let bar: ElementKind = serde_json::from_str(plain).unwrap();
+        assert_eq!(serde_json::to_string(&bar).unwrap(), plain);
+        assert_eq!(bar, ElementKind::scale_bar(2));
+        assert!(!bar.scale_bar_uses_details());
+        let ElementKind::ScaleBar {
+            subdivisions,
+            divisions_before_zero,
+            label_position,
+            unit_label,
+            unit_label_position,
+            decimals,
+            text_size,
+            fit,
+            ..
+        } = &bar
+        else {
+            panic!("a scale bar")
+        };
+        assert_eq!((*subdivisions, *divisions_before_zero, *decimals, *text_size), (0, 0, None, SCALE_BAR_TEXT_PT));
+        assert_eq!(
+            (*label_position, unit_label.clone(), *unit_label_position, *fit),
+            (ScaleLabelPosition::Above, None, UnitLabelPosition::AfterLabels, ScaleBarFit::AdjustDivisionValue)
+        );
+        // Every setting, saved under its own key and read back equal.
+        let mut all = bar.clone();
+        if let ElementKind::ScaleBar {
+            subdivisions,
+            divisions_before_zero,
+            label_position,
+            unit_label,
+            unit_label_position,
+            decimals,
+            text_size,
+            fit,
+            ..
+        } = &mut all
+        {
+            (*subdivisions, *divisions_before_zero, *label_position) = (4, 1, ScaleLabelPosition::Below);
+            (*unit_label, *unit_label_position) = (Some("Kilometres".into()), UnitLabelPosition::AfterBar);
+            (*decimals, *text_size, *fit) = (Some(2), 10.5, ScaleBarFit::AdjustWidth);
+        }
+        assert!(all.scale_bar_uses_details());
+        // Its text size alone is no detail: the text size capability covers it.
+        let mut sized = bar.clone();
+        if let ElementKind::ScaleBar { text_size, .. } = &mut sized {
+            *text_size = 16.0;
+        }
+        assert!(!sized.scale_bar_uses_details() && sized.has_custom_text_size());
+        let s = serde_json::to_string(&all).unwrap();
+        // The middle fit saves as the camelCase of its variant.
+        let mut middle = all.clone();
+        if let ElementKind::ScaleBar { fit, .. } = &mut middle {
+            *fit = ScaleBarFit::AdjustDivision;
+        }
+        assert!(serde_json::to_string(&middle).unwrap().contains(r#""fit":"adjustDivision""#));
+        assert!(s.starts_with(r#"{"ScaleBar":{"frame":2,"units":"Auto","divisions":4,"style":"Alternating","color":[34,34,34,255],"fill":[255,255,255,255],"#), "{s}");
+        for part in [
+            r#""subdivisions":4"#,
+            r#""divisions_before_zero":1"#,
+            r#""label_position":"below""#,
+            r#""unit_label":"Kilometres""#,
+            r#""unit_label_position":"afterBar""#,
+            r#""decimals":2"#,
+            r#""text_size":10.5"#,
+            r#""fit":"adjustWidth""#,
+        ] {
+            assert!(s.contains(part), "{part} in {s}");
+        }
+        assert_eq!(serde_json::from_str::<ElementKind>(&s).unwrap(), all);
+        // An empty unit label is a setting too: it prints none.
+        let mut blank = bar.clone();
+        if let ElementKind::ScaleBar { unit_label, .. } = &mut blank {
+            *unit_label = Some(String::new());
+        }
+        assert!(blank.scale_bar_uses_details());
+        assert!(serde_json::to_string(&blank).unwrap().contains(r#""unit_label":"""#));
+        // Fixed at no decimals is a setting too, apart from auto: its thousands are set apart.
+        let mut whole = bar.clone();
+        if let ElementKind::ScaleBar { decimals, .. } = &mut whole {
+            *decimals = Some(0);
+        }
+        assert!(whole.scale_bar_uses_details());
+        assert!(serde_json::to_string(&whole).unwrap().contains(r#""decimals":0"#));
+        // A loaded layout's out-of-range values are brought into range, and said.
+        let text = format!(
+            r#"{{"name":"x","width":200,"height":100,"elements":[
+            {{"id":1,"name":"a","x":0,"y":0,"w":10,"h":10,"kind":{{"MapFrame":{{"map":"m","center":{{"x":0,"y":0}},"scale":1000}}}}}},
+            {{"id":2,"name":"b","x":0,"y":0,"w":10,"h":10,"kind":{{"ScaleBar":{{"frame":1,"subdivisions":99,"divisions_before_zero":9,"decimals":9,"text_size":1e9,"unit_label":"{}"}}}}}},
+            {{"id":3,"name":"c","x":0,"y":0,"w":10,"h":10,"kind":{{"ScaleBar":{{"frame":1,"text_size":-4,"unit_label":"a\r\nb\rc\nd"}}}}}},
+            {{"id":4,"name":"d","x":0,"y":0,"w":10,"h":10,"kind":{{"ScaleBar":{{"frame":1,"subdivisions":1}}}}}},
+            {{"id":5,"name":"e","x":0,"y":0,"w":10,"h":10,"kind":{{"ScaleBar":{{"frame":1,"decimals":300}}}}}},
+            {{"id":6,"name":"f","x":0,"y":0,"w":10,"h":10,"kind":{{"ScaleBar":{{"frame":1,"decimals":-1}}}}}},
+            {{"id":7,"name":"g","x":0,"y":0,"w":10,"h":10,"kind":{{"ScaleBar":{{"frame":1,"decimals":2.5}}}}}},
+            {{"id":8,"name":"h","x":0,"y":0,"w":10,"h":10,"kind":{{"ScaleBar":{{"frame":1,"decimals":" Auto "}}}}}},
+            {{"id":9,"name":"i","x":0,"y":0,"w":10,"h":10,"kind":{{"ScaleBar":{{"frame":1,"decimals":"two"}}}}}},
+            {{"id":10,"name":"j","x":0,"y":0,"w":10,"h":10,"kind":{{"ScaleBar":{{"frame":1,"decimals":[2]}}}}}},
+            {{"id":11,"name":"k","x":0,"y":0,"w":10,"h":10,"kind":{{"ScaleBar":{{"frame":1,"divisions":10,"divisions_before_zero":2}}}}}}]}}"#,
+            "x".repeat(150)
+        );
+        let mut l: Layout = serde_json::from_str(&text).unwrap();
+        let repairs = l.clamp();
+        let got = |id| match l.element(id).map(|e| &e.kind) {
+            Some(ElementKind::ScaleBar { subdivisions, divisions_before_zero, decimals, text_size, unit_label, .. }) => {
+                (*subdivisions, *divisions_before_zero, *decimals, *text_size, unit_label.clone().unwrap_or_default())
+            }
+            _ => (0, 0, None, 0.0, String::new()),
+        };
+        assert_eq!(
+            got(2),
+            (
+                MAX_SCALE_SUBDIVISIONS,
+                MAX_SCALE_BEFORE_ZERO,
+                Some(MAX_SCALE_DECIMALS as u8),
+                *LAYOUT_TEXT_SIZE.end(),
+                "x".repeat(MAX_UNIT_LABEL_CHARS)
+            )
+        );
+        assert_eq!(got(3), (0, 0, None, *LAYOUT_TEXT_SIZE.start(), "a b c d".to_string()));
+        // One subdivision is the division whole: it loads as none, quietly, and asks for no details.
+        assert_eq!(got(4), (0, 0, None, SCALE_BAR_TEXT_PT, String::new()));
+        assert!(l.element(4).is_some_and(|e| !e.kind.scale_bar_uses_details()));
+        // A count past 255 loads too (it would not fit a byte) and ends at the most, said.
+        assert_eq!(got(5), (0, 0, Some(MAX_SCALE_DECIMALS as u8), SCALE_BAR_TEXT_PT, String::new()));
+        // A negative or fractional count is no count: it goes back to automatic, and is said too.
+        assert_eq!(got(6), (0, 0, None, SCALE_BAR_TEXT_PT, String::new()));
+        assert_eq!(got(7), (0, 0, None, SCALE_BAR_TEXT_PT, String::new()));
+        // Any JSON kind loads: the word "auto" is automatic and no repair; other words and lists
+        // are no count, so they go back to automatic and are said too.
+        for id in [8, 9, 10] {
+            assert_eq!(got(id), (0, 0, None, SCALE_BAR_TEXT_PT, String::new()), "{id}");
+        }
+        // Ten divisions with two before zero are more than the ten a bar draws: the ones before zero
+        // give way, and it is said.
+        assert_eq!(got(11), (0, 0, None, SCALE_BAR_TEXT_PT, String::new()));
+        assert!(matches!(l.element(11).map(|e| &e.kind), Some(ElementKind::ScaleBar { divisions: 10, .. })));
+        assert_eq!((repairs.elements_adjusted, repairs.elements_cut), (8, 1));
+        for v in ScaleLabelPosition::ALL {
+            assert_eq!(ScaleLabelPosition::from_name(&format!(" {} ", v.code().to_uppercase())), Some(v));
+        }
+        for v in UnitLabelPosition::ALL {
+            assert_eq!(UnitLabelPosition::from_name(v.code()), Some(v));
+        }
+        for v in ScaleBarFit::ALL {
+            assert_eq!(ScaleBarFit::from_name(v.code()), Some(v));
+        }
+        assert_eq!(ScaleBarFit::from_name("manual"), None);
     }
 }
