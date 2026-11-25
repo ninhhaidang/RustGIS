@@ -683,7 +683,9 @@ fn draw_page(
     let mut pm =
         if record.is_some() { Canvas::recording(bounds.width(), bounds.height())? } else { Canvas::new(bounds.width(), bounds.height())? };
     if element.is_none() {
-        pm.fill(tiny_skia::Color::WHITE);
+        // The page's colour (#2855), white unless given.
+        let paper = layout.paper.unwrap_or(Rgba::rgb(0xFF, 0xFF, 0xFF));
+        pm.fill(tiny_skia::Color::from_rgba8(paper.r(), paper.g(), paper.b(), 255));
     }
     let visible = |e: &&rustgis_map::layout::Element| e.visible && element.is_none_or(|id| e.id == id);
     // Frame cameras first: surrounds and extent indicators read them.
@@ -6197,6 +6199,31 @@ mod tests {
             text.clear();
         }
         assert_eq!(layers(&layout), [("Texto".to_string(), u64::from(b))]);
+    }
+
+    /// The page's colour (#2855) is the first thing the PDF's drawing fills, over the whole page;
+    /// a white page is filled white as before.
+    #[test]
+    fn a_pages_colour_is_filled_first_in_the_pdfs_drawing() {
+        use crate::vector::{Brush, Item};
+        let mut layout = Layout::new("Paper", 120.0, 90.0);
+        let first = |layout: &Layout| {
+            let (drawing, _) = render_drawing(layout, &mut [], 72.0, &PageInfo::default()).unwrap();
+            let (w, h, items) = drawing.finish();
+            match items.into_iter().next() {
+                Some(Item::Fill { path, brush: Brush::Solid(c), .. }) => {
+                    let b = path.bounds();
+                    assert!(b.left() <= 0.0 && b.top() <= 0.0 && b.right() >= w - 0.5 && b.bottom() >= h - 0.5, "{b:?}");
+                    c.to_color_u8()
+                }
+                _ => panic!("the page is not filled first"),
+            }
+        };
+        let c = first(&layout);
+        assert_eq!((c.red(), c.green(), c.blue(), c.alpha()), (255, 255, 255, 255));
+        layout.paper = Some(Rgba::rgb(0x0B, 0x1B, 0x2B));
+        let c = first(&layout);
+        assert_eq!((c.red(), c.green(), c.blue(), c.alpha()), (0x0B, 0x1B, 0x2B, 255));
     }
 
     /// A page with a frame of the built-in world and a title.

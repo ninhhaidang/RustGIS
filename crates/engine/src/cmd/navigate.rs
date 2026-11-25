@@ -1307,21 +1307,7 @@ fn basemap(s: &mut Session, p: &Value) -> CmdResult {
     let n = s_name(p)?;
     let basemap = Basemap::from_code(n).ok_or_else(|| format!("unknown basemap '{n}'"))?;
     // The blank basemap's paper (#2532): absent keeps it, null takes it off (white).
-    let paper = match p.get("color") {
-        None => None,
-        Some(Value::Null) => Some(None),
-        // Six hex digits: `from_hex` alone would take a sign in a pair ("#+F0000").
-        Some(Value::String(c)) => match c
-            .trim()
-            .strip_prefix('#')
-            .filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))
-            .and_then(rustgis_map::Rgba::from_hex)
-        {
-            Some(rgba) => Some(Some(rgba)),
-            None => return Err(format!("color must be \"#RRGGBB\" (opaque), not '{c}'")),
-        },
-        Some(_) => return Err("color must be \"#RRGGBB\" or null".into()),
-    };
+    let paper = super::opaque_color(p, "color")?;
     let m = s.map_mut();
     m.basemap = basemap;
     // A built-in basemap takes the place of the web basemaps (tile overlays stay).

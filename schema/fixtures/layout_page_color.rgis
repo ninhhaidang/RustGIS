@@ -1,0 +1,25 @@
+{
+  "format": 2,
+  "name": "Page colour",
+  "requires": ["layout-page-color"],
+  "active_map": 0,
+  "maps": [
+    {
+      "name": "Map",
+      "layers": [],
+      "basemap": "Paper",
+      "camera": {"center": {"x": 0, "y": 0}, "res": 30000}
+    }
+  ],
+  "layouts": [
+    {
+      "name": "Dark page",
+      "width": 297,
+      "height": 210,
+      "paper": [11, 27, 43, 255],
+      "elements": [
+        {"id": 1, "name": "Map", "x": 10, "y": 10, "w": 277, "h": 190, "kind": {"MapFrame": {"map": "Map", "center": {"x": 0, "y": 0}, "scale": 1000000}}}
+      ]
+    }
+  ]
+}

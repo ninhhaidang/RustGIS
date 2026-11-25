@@ -111,7 +111,7 @@ pub fn commands() -> Vec<C> {
         }).inputs(named_object_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name"?: string, "layout"?: name|index (instead of name; default: the open layout), "newName"?: string (default: "<layout> copy")}"#),
         C::new("layout.page", "Page Size", "Publish › Page Setup", page).inputs(object_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
-            r#"{"layout"?, "page"?: page id, "orientation"?: "landscape"|"portrait", "width"?: mm, "height"?: mm, "decimal"?: "."|"," (the decimal mark of the numbers its surrounds print)}"#,
+            r##"{"layout"?, "page"?: page id, "orientation"?: "landscape"|"portrait", "width"?: mm, "height"?: mm, "decimal"?: "."|"," (the decimal mark of the numbers its surrounds print), "color"?: "#RRGGBB" (the page's colour, painted under every element in the view and every export; opaque only; null or #FFFFFF: white, the default; left out: as it was)}"##,
         ),
         C::new("layout.addFrame", "Map Frame", "Publish › Map Frames", add_frame).inputs(add_frame_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layout"?, "shape"?: "rectangle"|"circle"|"ellipse"|"polygon"|"lasso", "points"?: [[u, v], …] (polygon/lasso, 0..1 across the frame), "map"?: name, "x"?, "y"?, "w"?, "h"?: mm}"#,
@@ -3087,13 +3087,19 @@ fn page(s: &mut Session, p: &Value) -> CmdResult {
     let cur = s.project.layouts.get(i).map(|l| (l.width, l.height));
     let (w, h) = page_size(p, cur)?;
     let comma = decimal_mark(p)?;
+    // The page's colour (#2855): absent keeps it, null or white gives the white page back.
+    let paper = super::opaque_color(p, "color")?;
     let l = s.project.layouts.get_mut(i).ok_or("no layout")?;
     l.width = w;
     l.height = h;
     if let Some(comma) = comma {
         l.decimal_comma = comma;
     }
-    Ok(json!({"width": w, "height": h, "decimal": if l.decimal_comma { "," } else { "." }}))
+    if let Some(paper) = paper {
+        l.paper = paper.filter(|c| *c != Rgba::rgb(0xFF, 0xFF, 0xFF));
+    }
+    let color = l.paper.map(Rgba::hex);
+    Ok(json!({"width": w, "height": h, "decimal": if l.decimal_comma { "," } else { "." }, "color": color}))
 }
 
 /// A sheet's footer of two columns, its right one moved to start where a legend at the right of the

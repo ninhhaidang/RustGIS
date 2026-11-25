@@ -122,6 +122,7 @@ pub const CAPABILITIES: &[&str] = &[
     "svg-markers",
     "label-duplicates",
     "tile-resampling",
+    "layout-page-color",
 ];
 /// An offline area keeping the versions that lost a sync or a Bring Back
 /// (`OfflineArea::conflicts`, #2468): an older reader would save it again without them.
@@ -2795,7 +2796,7 @@ pub(crate) fn layout_notices(
     let pages = total(|r| r.page_adjusted);
     if pages > 0 {
         notices.push(format!(
-            "{name}: the page size, guides or map series margin of {pages} layout(s) adjusted {when} (in {})",
+            "{name}: the page size, guides, page colour or map series margin of {pages} layout(s) adjusted {when} (in {})",
             layout_names(repairs, |r| r.page_adjusted)
         ));
     }

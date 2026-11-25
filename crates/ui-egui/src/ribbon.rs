@@ -748,6 +748,26 @@ pub(crate) fn sample_data_gallery(ui: &mut Ui, app: &mut RustGisApp) {
     }
 }
 
+/// The page's colour (#2855), under Page Size. The picker is drawn in the menu itself, as the
+/// blank basemap's paper is: a colour button's picker is a popup of its own, and opening it would
+/// close the menu.
+fn page_color(ui: &mut Ui, app: &mut RustGisApp, li: usize, layout: &rustgis_engine::map::layout::Layout) {
+    let white = rustgis_engine::map::Rgba::rgb(0xFF, 0xFF, 0xFF);
+    ui.separator();
+    egui::CollapsingHeader::new(tl!("Page color")).id_salt("page_color").show(ui, |ui| {
+        if let Some(c) = opaque_picker(ui, app, layout.paper.unwrap_or(white))
+            && let Err(e) = app.run("layout.page", json!({"layout": li, "color": c.hex()}))
+        {
+            app.session.notify(e, true);
+        }
+        if ui.add_enabled(layout.paper.is_some(), egui::Button::new(tl!("White"))).clicked()
+            && let Err(e) = app.run("layout.page", json!({"layout": li, "color": null}))
+        {
+            app.session.notify(e, true);
+        }
+    });
+}
+
 /// The blank basemap's paper colour (#2532), while the map is on it with no web basemap over it:
 /// the colour a map frame shows on a coloured page. The picker is drawn in the gallery itself: a
 /// colour button's picker is a popup of its own, and opening it would close this menu.
@@ -756,17 +776,27 @@ fn blank_paper(ui: &mut Ui, app: &mut RustGisApp) {
     if map.basemap != Basemap::Blank || !map.tiles.iter().all(|t| t.overlay) {
         return;
     }
-    let mut c = crate::theme::c32(map.palette().0);
+    let current = map.palette().0;
     ui.add_space(6.0);
     egui::CollapsingHeader::new(tl!("Paper color")).id_salt("blank_paper").show(ui, |ui| {
-        let picked = ui.scope(|ui| egui::color_picker::color_picker_color32(ui, &mut c, egui::color_picker::Alpha::Opaque));
-        if picked.inner {
-            crate::widgets::one_step_per_press(app, &picked.response);
-            let [r, g, b, _] = c.to_srgba_unmultiplied();
-            let _ =
-                app.run("map.basemap", json!({"name": "blank", "color": rustgis_engine::map::Rgba::rgb(r, g, b).hex(), "keepTiles": true}));
+        if let Some(c) = opaque_picker(ui, app, current) {
+            let _ = app.run("map.basemap", json!({"name": "blank", "color": c.hex(), "keepTiles": true}));
         }
     });
+}
+
+/// An opaque colour picker drawn in place, from `current`: the colour picked, its drag one step
+/// to undo. Drawn in the menu or gallery itself, as a colour button's picker is a popup of its own
+/// and opening it would close them.
+fn opaque_picker(ui: &mut Ui, app: &mut RustGisApp, current: rustgis_engine::map::Rgba) -> Option<rustgis_engine::map::Rgba> {
+    let mut c = crate::theme::c32(current);
+    let picked = ui.scope(|ui| egui::color_picker::color_picker_color32(ui, &mut c, egui::color_picker::Alpha::Opaque));
+    if !picked.inner {
+        return None;
+    }
+    crate::widgets::one_step_per_press(app, &picked.response);
+    let [r, g, b, _] = c.to_srgba_unmultiplied();
+    Some(rustgis_engine::map::Rgba::rgb(r, g, b))
 }
 
 pub(crate) fn basemap_gallery(ui: &mut Ui, app: &mut RustGisApp) {
@@ -3376,7 +3406,7 @@ fn layout_groups(app: &mut RustGisApp, ui: &mut Ui) {
         }
     };
     group(ui, "Page", |ui| {
-        big_menu(ui, app, "new_layout", "Page\nSize", "Change the page size and orientation.", |ui, app| {
+        big_form_menu(ui, app, "new_layout", "Page\nSize", "Change the page size and orientation.", |ui, app| {
             for (id, label, w, h) in rustgis_engine::map::layout::PAGES {
                 let landscape = layout.width > layout.height;
                 let (pw, ph) = if landscape { (h.max(*w), h.min(*w)) } else { (*w, *h) };
@@ -3396,6 +3426,7 @@ fn layout_groups(app: &mut RustGisApp, ui: &mut Ui) {
                     ui.close();
                 }
             }
+            page_color(ui, app, li, &layout);
         });
         col(ui, |ui| {
             let snap = !app.layout.no_snap;

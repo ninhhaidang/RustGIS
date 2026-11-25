@@ -1283,7 +1283,8 @@
           "label-clearance",
           "svg-markers",
           "label-duplicates",
-          "tile-resampling"
+          "tile-resampling",
+          "layout-page-color"
         ],
         "type": "string"
       },
@@ -1395,7 +1396,8 @@
     "label-clearance",
     "svg-markers",
     "label-duplicates",
-    "tile-resampling"
+    "tile-resampling",
+    "layout-page-color"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2

@@ -294,6 +294,14 @@ too: a saved `layout.update` can't tell whose they are, so a number there requir
 (`.rgislayout`) with such a bar lists it in its header, so an older reader refuses the file too.
 A scale bar's text size isn't one of its details: it requires `layout-text-size`, as above.
 
+Projects with a layout whose page isn't white (`paper` on the layout, #2855) require
+`layout-page-color`, so an older reader refuses them instead of opening the page white and saving
+it again without its colour. A saved `layout.page` that gives a `color` other than white requires
+it too; `null` or `"#FFFFFF"` need nothing. A saved `layout.import` whose `text` has a coloured
+page requires it as well. A translucent page colour, which only a hand-edited file holds, is read
+as it looks on white paper (a clear one is the white page) and counted with the page settings the
+project says it repaired.
+
 Projects, map files and layer files with a layer or table held in a coordinate system of its own
 (`Dataset::held_in`: a file's system, kept since #2580) save its features in that system, exactly,
 with `held_in` beside them, and require `native-coordinates`: an older reader would read those

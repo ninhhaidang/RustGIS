@@ -811,7 +811,8 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     }
     // Shadow, page, elements.
     painter.rect_filled(page.translate(vec2(3.0, 4.0)), 2.0, Color32::from_black_alpha(50));
-    painter.rect_filled(page, 0.0, Color32::WHITE);
+    // The page's colour (#2855), shown until the page's texture is drawn over it.
+    painter.rect_filled(page, 0.0, layout.paper.map_or(Color32::WHITE, crate::theme::c32));
     let pointer = ui.input(|i| i.pointer.latest_pos());
     if let Some(tex) = &app.layout.texture {
         painter.image(tex.id(), page, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
@@ -2645,7 +2646,8 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         let mut on = ink.is_some();
                         let hint = tl!("Its own colour for its text and lines; off, the default dark grey");
                         if ui.checkbox(&mut on, "").labelled_by(input_label.id).on_hover_text(hint).changed() {
-                            update(app, json!({"color": on.then(|| first_ink(e.background.as_ref()).hex())}));
+                            let page = layout.paper.unwrap_or(rustgis_engine::map::Rgba::rgb(0xFF, 0xFF, 0xFF));
+                            update(app, json!({"color": on.then(|| first_ink(e.background.as_ref(), page).hex())}));
                         }
                         let Some(current) = ink else { return };
                         let mut c = crate::theme::c32(current);
@@ -2967,13 +2969,15 @@ fn choice(ui: &mut Ui, salt: (&str, u32), label: egui::Id, current: &str, items:
     picked
 }
 
-/// The ink an element starts with when Ink is turned on (#2257): white over a background that is
-/// dark once drawn on the white page, else the default dark grey, so its text never disappears.
-fn first_ink(background: Option<&Background>) -> rustgis_engine::map::Rgba {
-    let Some(fill) = background.map(|b| b.fill) else { return INK };
+/// The ink an element starts with when Ink is turned on (#2257): white over what shows under its
+/// text, its background drawn on the page (`page`, the page's colour, #2855), when that is dark,
+/// else the default dark grey, so its text never disappears.
+fn first_ink(background: Option<&Background>, page: rustgis_engine::map::Rgba) -> rustgis_engine::map::Rgba {
+    // No background: nothing drawn over the page, so the page itself shows under the text.
+    let fill = background.map_or(rustgis_engine::map::Rgba::new(0, 0, 0, 0), |b| b.fill);
     let a = u16::from(fill.a());
-    let over = |c: u8| u8::try_from((u16::from(c) * a + 255 * (255 - a)) / 255).unwrap_or(u8::MAX);
-    let shown = Color32::from_rgb(over(fill.r()), over(fill.g()), over(fill.b()));
+    let over = |c: u8, under: u8| u8::try_from((u16::from(c) * a + u16::from(under) * (255 - a)) / 255).unwrap_or(u8::MAX);
+    let shown = Color32::from_rgb(over(fill.r(), page.r()), over(fill.g(), page.g()), over(fill.b(), page.b()));
     let white = rustgis_engine::map::Rgba::rgb(0xFF, 0xFF, 0xFF);
     if crate::theme::contrast(shown, Color32::WHITE) > crate::theme::contrast(shown, crate::theme::c32(INK)) { white } else { INK }
 }
@@ -3025,14 +3029,21 @@ mod tests {
     fn ink_starts_readable_on_its_background() {
         use rustgis_engine::map::Rgba;
         use rustgis_engine::map::layout::{Background, INK};
-        let on = |fill: Rgba| first_ink(Some(&Background { fill, ..serde_json::from_value(json!({})).unwrap() }));
         let white = Rgba::rgb(0xFF, 0xFF, 0xFF);
-        assert_eq!(first_ink(None), INK);
+        let on = |fill: Rgba| first_ink(Some(&Background { fill, ..serde_json::from_value(json!({})).unwrap() }), white);
+        assert_eq!(first_ink(None, white), INK);
         assert_eq!(on(white), INK);
         assert_eq!(on(Rgba::rgb(0x1E, 0x29, 0x3B)), white);
         // A dark fill seen through mostly: the page shows, so it reads as light.
         assert_eq!(on(Rgba::new(0x1E, 0x29, 0x3B, 0x20)), INK);
         assert_eq!(on(Rgba::new(0x1E, 0x29, 0x3B, 0xE0)), white);
+        // On a dark page (#2855): white with no background, or over a fill the page shows through;
+        // dark grey over a light fill.
+        let navy = Rgba::rgb(0x0B, 0x1B, 0x2B);
+        let on_navy = |fill: Rgba| first_ink(Some(&Background { fill, ..serde_json::from_value(json!({})).unwrap() }), navy);
+        assert_eq!(first_ink(None, navy), white);
+        assert_eq!(on_navy(Rgba::new(0xFF, 0xFF, 0xFF, 0x20)), white);
+        assert_eq!(on_navy(white), INK);
     }
 
     /// In the browser, a page drawn while its frames' tiles were on their way is drawn again as

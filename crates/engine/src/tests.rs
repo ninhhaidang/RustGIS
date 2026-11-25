@@ -19206,6 +19206,55 @@ fn a_globe_locator_keeps_the_blank_paper() {
     assert_eq!(m.blank_paper(), Some(rustgis_map::Rgba::rgb(0xF1, 0xEA, 0xDF)));
 }
 
+/// A layout's page colour (#2855): set by layout.page, opaque #RRGGBB only, white or null giving
+/// the white page back; painted under every element in the PNG and SVG exports, kept by
+/// duplicate, undone in one step, and written only when it isn't white.
+#[test]
+fn a_layouts_page_takes_a_colour() {
+    let navy = rustgis_map::Rgba::rgb(0x0B, 0x1B, 0x2B);
+    let mut s = Session::new(Project::default());
+    s.run("layout.new", &json!({"page": "a4", "orientation": "landscape", "template": "blank"})).unwrap();
+    let paper = |s: &Session| s.project.layouts.last().and_then(|l| l.paper);
+    assert_eq!(s.run("layout.page", &json!({})).unwrap()["color"], Value::Null, "white unless given");
+    let r = s.run("layout.page", &json!({"color": "#0B1B2B"})).unwrap();
+    assert_eq!((r["color"].clone(), paper(&s)), (json!("#0B1B2B"), Some(navy)));
+    s.run("layout.page", &json!({"orientation": "portrait"})).unwrap();
+    assert_eq!(paper(&s), Some(navy), "a page change without color keeps it");
+    // Painted under everything: a corner of the PNG and the SVG's page.
+    let dir = std::env::temp_dir().join(format!("rustgis-page-colour-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("page.png");
+    s.run("layout.export", &json!({"path": png.display().to_string(), "dpi": 72})).unwrap();
+    let pm = crate::render::decode_png(&std::fs::read(&png).unwrap()).unwrap();
+    let corner = pm.pixel(3, 3).unwrap();
+    assert_eq!((corner.red(), corner.green(), corner.blue()), (0x0B, 0x1B, 0x2B));
+    let svg = dir.join("page.svg");
+    s.run("layout.export", &json!({"path": svg.display().to_string()})).unwrap();
+    let text = std::fs::read_to_string(&svg).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(text.contains(r##"fill="#0b1b2b"/>"##) && !text.contains(r##"fill="#ffffff"/>"##), "{text}");
+    // Saved with the layout, and kept by a duplicate.
+    let saved = serde_json::to_value(&s.project).unwrap();
+    assert_eq!(saved["layouts"][0]["paper"], json!([0x0B, 0x1B, 0x2B, 255]));
+    s.run("layout.duplicate", &json!({})).unwrap();
+    assert_eq!(paper(&s), Some(navy));
+    // Bad colours are refused and change nothing; translucent ones too (a page has nothing under it).
+    for bad in [json!("#0B1B2B80"), json!("0B1B2B"), json!("#+B1B2B"), json!("navy"), json!(3)] {
+        let e = s.run("layout.page", &json!({"color": bad})).unwrap_err();
+        assert!(e.contains("#RRGGBB"), "{bad}: {e}");
+        assert_eq!(paper(&s), Some(navy), "{bad}");
+    }
+    // White and null give the white page back, written as before (no key).
+    s.run("layout.page", &json!({"color": "#ffffff"})).unwrap();
+    assert_eq!(paper(&s), None, "white is the page's own");
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(paper(&s), Some(navy), "undone in one step");
+    s.run("layout.page", &json!({"color": null})).unwrap();
+    assert_eq!(paper(&s), None);
+    let saved = serde_json::to_value(&s.project).unwrap();
+    assert!(saved["layouts"].as_array().unwrap().last().unwrap().get("paper").is_none());
+}
+
 /// A blank basemap's paper colour (#2532): kept until null or another basemap, opaque #RRGGBB only,
 /// a warning (not an error) when given with another basemap, and drawn in a layout's map frame.
 #[test]

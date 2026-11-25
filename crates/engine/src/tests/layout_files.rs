@@ -111,6 +111,7 @@ fn a_saved_layout_file_requires_what_its_elements_use_and_reads_back_the_same() 
         ("border", include_str!("../../../../schema/fixtures/layout_frame_border.rgis")),
         ("legend-text", include_str!("../../../../schema/fixtures/layout_legend_text.rgis")),
         ("scale-grid-text", include_str!("../../../../schema/fixtures/layout_scale_grid_text.rgis")),
+        ("page-color", include_str!("../../../../schema/fixtures/layout_page_color.rgis")),
         ("plain", include_str!("../../../../schema/fixtures/layout_no_data.rgis")),
     ] {
         let project = Project::from_json(fixture).unwrap();

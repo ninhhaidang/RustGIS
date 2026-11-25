@@ -162,6 +162,7 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("label-clearance", command_clears_labels),
     ("label-duplicates", command_removes_duplicate_labels),
     ("tile-resampling", command_resamples_tiles),
+    ("layout-page-color", command_colours_the_page),
 ];
 
 /// A saved `labels.placement` that has a class remove duplicates, read as the command reads it
@@ -285,6 +286,22 @@ fn command_uses_frame_border(id: &str, params: &Value) -> bool {
         "layout.update" => params.get("border").is_some_and(|b| !b.is_null()),
         "layout.import" => imported_layout_uses(params, &["\"border_"], |e| e.kind.has_custom_border()),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_frame_border)),
+        _ => false,
+    }
+}
+
+/// A `layout.page` command that gives the page a colour other than white (#2855), read as the
+/// command reads it: an older reader ignores `color` and opens the page white. A `layout.import`
+/// whose layout has one needs it too.
+fn command_colours_the_page(id: &str, params: &Value) -> bool {
+    match id {
+        "layout.page" => crate::cmd::opaque_color(params, "color")
+            .is_ok_and(|c| c.flatten().is_some_and(|c| c != rustgis_map::Rgba::rgb(0xFF, 0xFF, 0xFF))),
+        "layout.import" => imported_layout(params, &["\"paper\""]).is_some_and(|mut l| {
+            l.clamp();
+            l.paper.is_some()
+        }),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_colours_the_page)),
         _ => false,
     }
 }
@@ -557,12 +574,17 @@ fn command_uses_chart_outline(id: &str, params: &Value) -> bool {
 /// backslash: JSON may spell a key with escapes (`"\u0063olor"`). It is read once, whatever its
 /// keys.
 fn imported_layout_uses(params: &Value, keys: &[&str], uses: fn(&rustgis_map::layout::Element) -> bool) -> bool {
+    imported_layout(params, keys).is_some_and(|l| l.elements.iter().any(uses))
+}
+
+/// A `layout.import`'s layout, read only when its text names one of `keys` (or escapes, which
+/// could hide one).
+fn imported_layout(params: &Value, keys: &[&str]) -> Option<rustgis_map::layout::Layout> {
     params
         .get("text")
         .and_then(Value::as_str)
         .filter(|t| keys.iter().any(|key| t.contains(key)) || t.contains('\\'))
         .and_then(|t| serde_json::from_str::<rustgis_map::layout::Layout>(t).ok())
-        .is_some_and(|l| l.elements.iter().any(uses))
 }
 
 /// Require only executable payloads being saved: graph files omit steps, web tools omit graphs.
@@ -928,6 +950,7 @@ fn layout_capabilities(layouts: &[rustgis_map::layout::Layout]) -> Vec<&'static 
         (elements().any(|e| e.kind.has_custom_border()), "layout-frame-border"),
         (elements().any(|e| e.kind.has_custom_text_size()), "layout-text-size"),
         (elements().any(bar_details), "layout-scale-bar-details"),
+        (layouts.iter().any(|l| l.paper.is_some()), "layout-page-color"),
     ]
     .into_iter()
     .filter_map(|(used, name)| used.then_some(name))
@@ -1225,6 +1248,7 @@ mod tests {
             (&["label-clearance"], "labels.placement", json!({"clearance": 9})),
             (&["label-duplicates"], "labels.placement", json!({"removeDuplicates": 20})),
             (&["tile-resampling"], "map.addTiles", json!({"resampling": "nearest"})),
+            (&["layout-page-color"], "layout.page", json!({"color": "#0B1B2B"})),
             // An SVG image is a picture marker as well, in a node as in a saved command.
             (&["picture-markers", "svg-markers"], "layer.marker", json!({"image": svg})),
             (&[], "buffer", json!({"input": "Cities", "distance": 1})),
@@ -2456,6 +2480,48 @@ mod tests {
         let mut unknown = saved;
         unknown["requires"] = json!(["layout-frame-border", "future-border"]);
         assert!(Project::from_json(&unknown.to_string()).unwrap_err().contains("future-border"));
+    }
+
+    /// A layout's page colour (#2855) is required where it is saved, so an older reader refuses
+    /// the project instead of opening the page white and saving it so. A white page is not
+    /// written and needs nothing; neither do a saved layout.page that gives white or null.
+    #[test]
+    fn page_color_capability_follows_saved_layouts_and_commands() {
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/layout_page_color.rgis")).unwrap();
+        let saved = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(saved["requires"], json!(["layout-page-color"]));
+        assert_eq!(saved["layouts"][0]["paper"], json!([11, 27, 43, 255]));
+        let mut clean = fixture;
+        clean.layouts[0].paper = None;
+        let base = serde_json::to_value(&clean).unwrap();
+        assert!(base.get("requires").is_none() && base["layouts"][0].get("paper").is_none(), "a white page needs nothing");
+        for (params, required) in [
+            (json!({"color": "#0B1B2B"}), true),
+            (json!({"color": " #0b1b2b "}), true),
+            (json!({"color": "#FFFFFF"}), false),
+            (json!({"color": "#ffffff"}), false),
+            (json!({"color": null}), false),
+            (json!({"orientation": "portrait"}), false),
+        ] {
+            let script = format!("layout.page {params}");
+            for value in [
+                json!([{"name": "Task", "steps": [{"title": "Page", "command": "layout.page", "params": params}]}]),
+                json!([{"name": "Script", "steps": [{"title": "Page", "command": "script.run", "params": {"script": script}}]}]),
+            ] {
+                let mut document = base.clone();
+                document["tasks"] = value;
+                let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+                let expected = if required { json!(["layout-page-color"]) } else { Value::Null };
+                assert_eq!(saved.get("requires").cloned().unwrap_or(Value::Null), expected, "{params}");
+            }
+        }
+        // An imported layout's text with a page colour needs it; a white one, none.
+        for (layout, required) in [(&saved["layouts"][0], true), (&base["layouts"][0], false)] {
+            let mut document = base.clone();
+            document["tasks"] = json!([{"name": "Task", "steps": [{"title": "Import", "command": "layout.import", "params": {"text": layout.to_string()}}]}]);
+            let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+            assert_eq!(saved.get("requires").is_some(), required, "{layout}");
+        }
     }
 
     /// A legend's, scale bar's or grid's text size other than its default (#2581) is required

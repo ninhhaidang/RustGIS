@@ -198,6 +198,24 @@ pub(crate) fn saved_target(layer: &str, table: &str) -> String {
     if layer == table { layer.to_string() } else { format!("{layer}: {table}") }
 }
 
+/// An opaque colour under `k`: absent `None`, null `Some(None)`, `"#RRGGBB"` `Some(Some(colour))`;
+/// anything else, a translucent `#RRGGBBAA` included, refused. Six hex digits exactly: `from_hex`
+/// alone would take a sign in a pair ("#+F0000").
+pub(crate) fn opaque_color(p: &Value, k: &str) -> Result<Option<Option<rustgis_map::Rgba>>, String> {
+    match p.get(k) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(c)) => c
+            .trim()
+            .strip_prefix('#')
+            .filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(rustgis_map::Rgba::from_hex)
+            .map(|rgba| Some(Some(rgba)))
+            .ok_or_else(|| format!("{k} must be \"#RRGGBB\" (opaque), not '{c}'")),
+        Some(_) => Err(format!("{k} must be \"#RRGGBB\" or null")),
+    }
+}
+
 pub(crate) fn ps<'a>(p: &'a Value, k: &str) -> Option<&'a str> {
     p.get(k).and_then(Value::as_str)
 }

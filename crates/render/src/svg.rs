@@ -61,7 +61,9 @@ fn layout_svg_inner(
     if !defs.text.is_empty() {
         let _ = write!(s, "<defs>\n{}</defs>\n", defs.text);
     }
-    let _ = writeln!(s, r##"<rect width="{}" height="{}" fill="#ffffff"/>"##, num(pw), num(ph));
+    // The page's colour (#2855), white unless given; its channels alone, opaque as the PNG's.
+    let paper = layout.paper.map_or_else(|| "#ffffff".to_string(), |c| format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b()));
+    let _ = writeln!(s, r##"<rect width="{}" height="{}" fill="{paper}"/>"##, num(pw), num(ph));
     body.insert_str(0, &s);
     body.push_str("</svg>\n");
     Some((body, pictured))

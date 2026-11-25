@@ -200,6 +200,14 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     "note": "Only cells with a significant trend (p < 0.05) are coloured."}
   ```
 
+- **Page colour**: Publish › Page Size › **Page color** paints the whole page a colour under
+  every element, in the view and in PNG, PDF and SVG exports; **White** gives the white page back.
+  `layout.page={"color": "#0B1B2B"}` sets it, `null` or `"#FFFFFF"` restores white. It is
+  opaque: a page has nothing under it to show through. The elements keep their own colours: on a
+  dark page, give texts a light colour, and legends, colorbars, tables and charts a light **Ink**
+  (below). A map frame keeps its own map's background; give the frame the blank basemap with a
+  paper colour to match a coloured page.
+
 - **Map frames**: rectangle, circle and ellipse frames, or polygon and lasso frames drawn on the
   page. Each frame shows a map of the project at its own centre and scale. Turn on **Pan/Zoom
   Map** (Map Frames group, or a frame's properties) to drag inside frames to pan their maps and

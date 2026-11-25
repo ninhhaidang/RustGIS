@@ -2675,6 +2675,11 @@ pub struct Layout {
     /// Spanish, French or German do; off, the other way round.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub decimal_comma: bool,
+    /// The page's colour, painted under every element (#2855); none, white. Always opaque: a
+    /// page has nothing under it to show through, so a translucent one in a hand-edited file is
+    /// read as it looks on white paper.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paper: Option<Rgba>,
     #[serde(default)]
     next_id: u32,
     /// Process-local identity, kept by undo snapshots but never stored in a project.
@@ -2727,6 +2732,7 @@ impl Layout {
             series: None,
             guides: Guides::default(),
             decimal_comma: false,
+            paper: None,
             next_id: 1,
             instance: Instance::default(),
         }
@@ -2812,6 +2818,12 @@ impl Layout {
         let count = self.elements.len();
         self.width = finite_or(self.width, 210.0).clamp(20.0, 5000.0);
         self.height = finite_or(self.height, 297.0).clamp(20.0, 5000.0);
+        // A page colour is opaque (a page has nothing under it to show through) and white is the
+        // page's own (#2855): a hand-edited translucent one is read as it looks on white paper,
+        // and said.
+        let white = Rgba::rgb(255, 255, 255);
+        let translucent = self.paper.is_some_and(|c| c.a() != 255);
+        self.paper = self.paper.map(|c| white.lerp(c.with_alpha(255), f64::from(c.a()) / 255.0)).filter(|c| *c != white);
         // The same limits `layout.guides` sets: the view walks these lists every frame.
         for list in [&mut self.guides.x, &mut self.guides.y] {
             list.retain(|v| v.is_finite() && v.abs() <= 5000.0);
@@ -3029,7 +3041,7 @@ impl Layout {
             }
         }
         let series_adjusted = !series_removed && self.series != page.3;
-        let page_adjusted = series_adjusted || (self.width, self.height, &self.guides) != (page.0, page.1, &page.2);
+        let page_adjusted = series_adjusted || translucent || (self.width, self.height, &self.guides) != (page.0, page.1, &page.2);
         LayoutRepairs {
             elements_adjusted: adjusted,
             elements_cut: cut_count,
@@ -3052,7 +3064,7 @@ pub struct LayoutRepairs {
     pub elements_cut: usize,
     /// Elements removed: beyond the 500 a layout holds, or tied to a map frame it doesn't have.
     pub elements_removed: usize,
-    /// Whether the page size, guides or map series margin changed (0 or 1).
+    /// Whether the page size, guides, page colour or map series margin changed (0 or 1).
     pub page_adjusted: usize,
     /// Whether the map series was removed, its map frame missing (0 or 1).
     pub series_removed: usize,
@@ -4438,6 +4450,27 @@ mod tests {
             let ElementKind::Chart { bar_outline, .. } = &l.elements[1].kind else { panic!("a chart") };
             let expected = kept.map(|w| ChartOutline { color: ink, width: w });
             assert_eq!((*bar_outline, r.elements_adjusted), (expected, adjusted), "{width}");
+        }
+    }
+
+    /// A page colour with alpha, which only a hand-edited file holds, is read as it looks on white
+    /// paper (a page has nothing else under it), so a clear one is the white page, and every one
+    /// is counted as a page repaired (#2855). An opaque one is kept, and opaque white is the page's
+    /// own, so it is let go without a word.
+    #[test]
+    fn a_translucent_page_colour_is_made_opaque_and_counted() {
+        for (paper, kept, adjusted) in [
+            (serde_json::json!([11, 27, 43, 128]), Some(Rgba::rgb(133, 141, 149)), 1),
+            (serde_json::json!([11, 27, 43, 0]), None, 1),
+            (serde_json::json!([11, 27, 43, 255]), Some(Rgba::rgb(11, 27, 43)), 0),
+            (serde_json::json!([255, 255, 255, 255]), None, 0),
+            (serde_json::json!([255, 255, 255, 128]), None, 1),
+        ] {
+            let mut l: Layout =
+                serde_json::from_value(serde_json::json!({"name": "L", "width": 120, "height": 90, "elements": [], "paper": paper}))
+                    .unwrap();
+            let r = l.clamp();
+            assert_eq!((l.paper, r.page_adjusted), (kept, adjusted), "{paper}");
         }
     }
 

@@ -295,7 +295,7 @@ layout.guides layout? x? y? clear?
 layout.import path? text?
 layout.move name? layout? to
 layout.new name? page? orientation? width? height? template?
-layout.page layout? page? orientation? width? height? decimal?
+layout.page layout? page? orientation? width? height? decimal? color?
 layout.publication profile? extent? name? title? subtitle? sources? reference? note? author? headings? locator? decimal? colorbar? veil? contextInLegend? northArrow? legendBox? style? accent? arrangement? coverage?
 layout.remove name? layout?
 layout.removeElement layout? element
