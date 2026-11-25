@@ -53039,6 +53039,115 @@ fn calculate_field_preview_refuses_what_calculate_refuses() {
     assert_eq!(ran.iter().map(Option::is_some).collect::<Vec<_>>(), [false, true], "row 1 makes 10, row 2 makes 20");
 }
 
+/// Calculate Field's preview shows the value the field holds after the layer's calculation rules
+/// (#2884): a rule writing the field overwrites Calculate's result on the run, so the preview is the
+/// rule's result, as the field holds it, with what writing that loses. It is what Calculate leaves in
+/// each row, with a layer whose only design is calculation rules, with the later of two rules, and
+/// with a rule on another field leaving the value alone.
+#[test]
+fn calculate_field_preview_shows_what_a_calculation_rule_leaves_in_the_field() {
+    use crate::cmd::edit::{PreviewLoss, preview_calculation};
+    use rustgis_data::Value as V;
+    use rustgis_data::query::Fault;
+    let layer = |rules: &[(&str, &str, &str)]| {
+        let mut s = Session::new(Project::default());
+        let features: Vec<Value> = [1, 2, 3]
+            .map(|n| json!({"type": "Feature", "properties": {"n": n, "m": 0}, "geometry": {"type": "Point", "coordinates": [n, 0]}}))
+            .to_vec();
+        let points = json!({"type": "FeatureCollection", "features": features});
+        s.run("layer.addDataText", &json!({"fileName": "calc.geojson", "text": points.to_string()})).unwrap();
+        for (name, field, expression) in rules {
+            if expression.contains("nosuch") {
+                // The command refuses a rule that doesn't read; a hand-edited file or an earlier version may hold one.
+                let id = s.map().layer_by_name("calc").unwrap().id;
+                let rule = rustgis_map::design::AttributeRule {
+                    name: name.to_string(),
+                    kind: rustgis_map::design::RuleKind::Calculation,
+                    field: field.to_string(),
+                    expression: expression.to_string(),
+                };
+                s.map_mut().layer_mut(id).unwrap().design.rules.push(rule);
+                continue;
+            }
+            s.run(
+                "data.attributeRule",
+                &json!({"layer": "calc", "name": name, "kind": "calculation", "field": field, "expression": expression}),
+            )
+            .unwrap();
+        }
+        s
+    };
+    // The preview's value and loss in each row, and what Calculate leaves there when it runs on that row alone.
+    let both = |rules: &[(&str, &str, &str)], expression: &str| -> (Vec<(V, Option<PreviewLoss>)>, Vec<V>) {
+        let s = layer(rules);
+        let l = s.map().layer_by_name("calc").unwrap();
+        let n = l.dataset.field_index("n").unwrap();
+        let previewed = preview_calculation(expression, &l.dataset, n, &[0, 1, 2], Some(&l.design)).unwrap();
+        let ran = (0..3)
+            .map(|row| {
+                let mut s = layer(rules);
+                s.run("select.rows", &json!({"layer": "calc", "rows": [row]})).unwrap();
+                s.run("edit.calculateField", &json!({"layer": "calc", "field": "n", "expression": expression})).unwrap();
+                let l = s.map().layer_by_name("calc").unwrap();
+                l.dataset.value(row, n).clone()
+            })
+            .collect();
+        (previewed.into_iter().map(|p| (p.value, p.lost)).collect(), ran)
+    };
+    let clean = |values: [i64; 3]| values.map(|v| (V::Int(v), None)).to_vec();
+    // The rule's result, not the expression's, and the same as the run leaves; a layer with a rule
+    // and no check at all gets it too.
+    let (shown, ran) = both(&[("Tens", "n", "n * 10")], "n + 1");
+    assert_eq!(shown, clean([20, 30, 40]));
+    assert_eq!(ran, [V::Int(20), V::Int(30), V::Int(40)]);
+    // The later of two rules writing the field wins.
+    let (shown, ran) = both(&[("Tens", "n", "n * 10"), ("Five", "n", "n + 5")], "n + 1");
+    assert_eq!(shown, clean([25, 35, 45]));
+    assert_eq!(ran, [V::Int(25), V::Int(35), V::Int(45)]);
+    // A rule on another field leaves the value, and what writing it loses, as they were.
+    let (shown, ran) = both(&[("Place", "m", "n * 10")], "n + 1");
+    assert_eq!(shown, clean([2, 3, 4]));
+    assert_eq!(ran, [V::Int(2), V::Int(3), V::Int(4)]);
+    // What the rule's own write loses is what the preview says: a fraction its whole-number field
+    // drops (the second row: 3 * 0.5), and an error that made it null.
+    let (shown, ran) = both(&[("Half", "n", "n * 0.5")], "n + 1");
+    assert_eq!(shown, vec![(V::Int(1), None), (V::Int(1), Some(PreviewLoss::Fraction)), (V::Int(2), None)]);
+    assert_eq!(ran, [V::Int(1), V::Int(1), V::Int(2)]);
+    let (shown, ran) = both(&[("Zero", "n", "n / 0")], "n + 1");
+    assert_eq!(shown, vec![(V::Null, Some(PreviewLoss::Error(Fault::DivisionByZero))); 3]);
+    assert_eq!(ran, vec![V::Null; 3]);
+    // A rule's clean result over Calculate's lossy one loses nothing in the field.
+    let (shown, ran) = both(&[("Tens", "n", "n * 10")], "n + 0.5");
+    assert_eq!(shown, clean([10, 20, 30]));
+    assert_eq!(ran, [V::Int(10), V::Int(20), V::Int(30)]);
+    // A rule reading `@row_number` reads the layer's row in the preview's copy: 1, 2, 3.
+    let (shown, ran) = both(&[("Place", "n", "@row_number * 10")], "n + 1");
+    assert_eq!(shown, clean([10, 20, 30]));
+    assert_eq!(ran, [V::Int(10), V::Int(20), V::Int(30)]);
+    // A rule that no longer reads is skipped, as the run skips it: the others still apply.
+    let (shown, ran) = both(&[("Gone", "n", "nosuch + 1")], "n + 1");
+    assert_eq!(shown, clean([2, 3, 4]));
+    assert_eq!(ran, [V::Int(2), V::Int(3), V::Int(4)]);
+    let (shown, ran) = both(&[("Gone", "n", "nosuch + 1"), ("Tens", "n", "n * 10")], "n + 1");
+    assert_eq!(shown, clean([20, 30, 40]));
+    assert_eq!(ran, [V::Int(20), V::Int(30), V::Int(40)]);
+    // A rule on another field feeding a domain it breaks still refuses the row, as the run does.
+    let mut with_domain = layer(&[("Place", "m", "n * 10")]);
+    with_domain.run("data.domain", &json!({"layer": "calc", "field": "m", "min": 0, "max": 25})).unwrap();
+    let l = with_domain.map().layer_by_name("calc").unwrap();
+    let n = l.dataset.field_index("n").unwrap();
+    let previewed = preview_calculation("n", &l.dataset, n, &[0, 1, 2], Some(&l.design)).unwrap();
+    assert_eq!(previewed.iter().map(|p| p.refused.is_some()).collect::<Vec<_>>(), [false, false, true], "30 is past the domain");
+    assert_eq!(previewed.iter().map(|p| p.value.clone()).collect::<Vec<_>>(), [V::Int(1), V::Int(2), V::Int(3)]);
+    // No rule: the expression's value, as before; no rows: nothing previewed.
+    let (shown, _) = both(&[], "n + 1");
+    assert_eq!(shown, clean([2, 3, 4]));
+    let s = layer(&[("Tens", "n", "n * 10")]);
+    let l = s.map().layer_by_name("calc").unwrap();
+    let n = l.dataset.field_index("n").unwrap();
+    assert_eq!(preview_calculation("n + 1", &l.dataset, n, &[], Some(&l.design)).unwrap(), vec![]);
+}
+
 /// Calculate Field keeps a decimal result as it is in a decimal field, rather than rounding it to
 /// the six places its text shows, and says what a whole-number field cuts: a fraction, or a number
 /// past the 64-bit range (null). Results the field holds give no notice.
