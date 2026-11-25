@@ -139,6 +139,19 @@ pub(crate) fn changed(r: &Response) -> bool {
     r.changed() && !escaped(r)
 }
 
+/// The cursor (and selection) of the text box `id`, in characters; `None` before it has one.
+pub(crate) fn cursor_range(ctx: &egui::Context, id: egui::Id) -> Option<egui::text::CCursorRange> {
+    egui::widgets::text_edit::TextEditState::load(ctx, id)?.cursor.char_range()
+}
+
+/// Puts the cursor (and selection) of the text box `id` at `range`, keeping what else its state
+/// holds (the undo history).
+pub(crate) fn set_cursor_range(ctx: &egui::Context, id: egui::Id, range: egui::text::CCursorRange) {
+    let mut state = egui::widgets::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+    state.cursor.set_char_range(Some(range));
+    state.store(ctx, id);
+}
+
 pub fn text_w(ui: &Ui, s: &str, font: egui::FontId) -> f32 {
     ui.ctx().fonts_mut(|f| f.layout_no_wrap(s.to_string(), font, egui::Color32::WHITE).size().x)
 }

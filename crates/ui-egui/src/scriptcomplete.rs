@@ -2883,10 +2883,8 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Label, "round(x[, places])").is_some(), "another command's call");
         // Straight back into the first command's braces (a click there).
         let id = egui::Id::unique("script_text");
-        let mut state = egui::widgets::text_edit::TextEditState::load(&h.ctx, id).unwrap_or_default();
         let back = egui::text::CCursorRange::one(egui::text::CCursor::new("labels.style {".chars().count()));
-        state.cursor.set_char_range(Some(back));
-        state.store(&h.ctx, id);
+        crate::widgets::set_cursor_range(&h.ctx, id, back);
         h.run();
         h.get_by_label(&styled);
     }

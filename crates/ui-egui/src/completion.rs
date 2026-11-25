@@ -9,7 +9,7 @@
 //! is each language's.
 
 use egui::text::CCursor;
-use egui::widgets::text_edit::{TextEditOutput, TextEditState};
+use egui::widgets::text_edit::TextEditOutput;
 use egui::{Id, Key, Modifiers, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -309,7 +309,7 @@ impl Asked {
         if !ui.memory(|m| m.has_focus(id)) || !ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Space)) {
             return false;
         }
-        let at = TextEditState::load(ui.ctx(), id).and_then(|s| s.cursor.char_range()).map(|r| r.primary.index.0);
+        let at = crate::widgets::cursor_range(ui.ctx(), id).map(|r| r.primary.index.0);
         self.0 = at.map(|at| (egui::util::hash(text), at));
         true
     }
@@ -1059,7 +1059,7 @@ pub(crate) fn before(ui: &Ui, box_id: Id, text: &str) -> Option<Before> {
     if !ui.memory(|m| m.has_focus(box_id)) {
         return None;
     }
-    let at = TextEditState::load(ui.ctx(), box_id)?.cursor.char_range().filter(|r| r.is_empty())?.primary.index.0;
+    let at = crate::widgets::cursor_range(ui.ctx(), box_id).filter(|r| r.is_empty())?.primary.index.0;
     Some(Before { at, prev: at.checked_sub(1).and_then(|i| char_at(text, i)), len: text.len() })
 }
 

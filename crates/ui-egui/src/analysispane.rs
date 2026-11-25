@@ -2300,13 +2300,20 @@ fn script(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, fit: bool) {
     // `out.cursor_range` is None while the box isn't focused.
     let size = vec2(ui.available_width(), script_cursor_height(ui));
     ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        // The row keeps only what's drawn in it: its height, with no label in it yet.
+        // An empty row takes no height: without this the buttons below move when the first cursor
+        // appears.
         ui.set_min_height(size.y);
-        let cursor = egui::widgets::text_edit::TextEditState::load(ui.ctx(), box_id).and_then(|s| s.cursor.char_range());
-        if let Some(range) = cursor {
+        if let Some(range) = crate::widgets::cursor_range(ui.ctx(), box_id) {
             let (line, col) = line_col(&app.workflow.script, range.primary.index.0);
-            let at = crate::i18n::fmt("Ln {line}, Col {col}", &[("line", &line.to_string()), ("col", &col.to_string())]);
-            ui.label(egui::RichText::new(at).small().weak()).on_hover_text(tl!("The cursor's line and column"));
+            let selected = range.primary.index.0.abs_diff(range.secondary.index.0);
+            let (line, col, n) = (line.to_string(), col.to_string(), selected.to_string());
+            let place = if selected > 0 {
+                crate::i18n::fmt("Ln {line}, Col {col} ({n} selected)", &[("line", &line), ("col", &col), ("n", &n)])
+            } else {
+                crate::i18n::fmt("Ln {line}, Col {col}", &[("line", &line), ("col", &col)])
+            };
+            ui.label(egui::RichText::new(place).small().weak())
+                .on_hover_text(tl!("The cursor's line and column, and how many characters are selected"));
         }
     });
     ui.horizontal(|ui| {
@@ -2448,9 +2455,7 @@ fn paint_stopped(ui: &Ui, out: &egui::text_edit::TextEditOutput, at: StoppedAt) 
 /// on the next frame (as it lays the box out: [`paint_stopped`]'s caller).
 fn go_to_stopped(ui: &Ui, box_id: egui::Id, index: usize) {
     use egui::text::{CCursor, CCursorRange};
-    let mut state = egui::widgets::text_edit::TextEditState::load(ui.ctx(), box_id).unwrap_or_default();
-    state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(index))));
-    state.store(ui.ctx(), box_id);
+    crate::widgets::set_cursor_range(ui.ctx(), box_id, CCursorRange::one(CCursor::new(index)));
     ui.memory_mut(|m| m.request_focus(box_id));
     ui.data_mut(|d| d.insert_temp(box_id.with("go_to_stopped"), true));
 }
@@ -3126,18 +3131,14 @@ mod tests {
             .build_ui_state(|ui, app: &mut RustGisApp| script_pane(app, ui, &Tokens::light()), app);
         h.run();
         let box_id = egui::Id::unique("script_text");
-        let cursor = |h: &egui_kittest::Harness<'_, RustGisApp>| {
-            egui::widgets::text_edit::TextEditState::load(&h.ctx, box_id).and_then(|s| s.cursor.char_range()).map(|r| r.primary.index.0)
-        };
+        let cursor = |h: &egui_kittest::Harness<'_, RustGisApp>| crate::widgets::cursor_range(&h.ctx, box_id).map(|r| r.primary.index.0);
         assert_ne!(cursor(&h), Some(7 + 13 + 23));
         h.get_by_label(&e).click();
         h.run();
         assert_eq!(cursor(&h), Some(7 + 13 + 23), "line 3, column 24");
         assert!(h.ctx.memory(|m| m.has_focus(box_id)));
         // From the keyboard: the error takes the focus (Tab), and Enter goes there too.
-        let mut state = egui::widgets::text_edit::TextEditState::load(&h.ctx, box_id).unwrap_or_default();
-        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(0))));
-        state.store(&h.ctx, box_id);
+        crate::widgets::set_cursor_range(&h.ctx, box_id, egui::text::CCursorRange::one(egui::text::CCursor::new(0)));
         h.get_by_label(&e).focus();
         h.run();
         assert_eq!(cursor(&h), Some(0), "moved away first");
@@ -3193,15 +3194,17 @@ mod tests {
             .with_size(vec2(300.0, 800.0))
             .build_ui_state(|ui, app: &mut RustGisApp| script_pane(app, ui, &Tokens::light()), app);
         h.run();
+        // Any label of the row. The exact text is pinned below, once the box has a cursor.
         assert!(h.query_by_label_contains("Ln ").is_none(), "no cursor yet");
         let no_cursor = h.get_by_label("Clear").rect();
         let box_id = egui::Id::unique("script_text");
         let set = |h: &mut egui_kittest::Harness<'_, RustGisApp>, range: CCursorRange| {
-            let mut state = egui::widgets::text_edit::TextEditState::load(&h.ctx, box_id).unwrap_or_default();
-            state.cursor.set_char_range(Some(range));
-            state.store(&h.ctx, box_id);
+            crate::widgets::set_cursor_range(&h.ctx, box_id, range);
             h.run();
         };
+        // The first position, once the box has a cursor: no selection, so no count.
+        set(&mut h, CCursorRange::one(CCursor::new(0)));
+        assert!(h.query_by_label("Ln 1, Col 1").is_some(), "the first position");
         // On the wrapped line, past its first row: one line, its column from the line's start.
         set(&mut h, CCursorRange::one(CCursor::new(13 + 250)));
         assert!(h.query_by_label("Ln 2, Col 251").is_some(), "on a wrapped line");
@@ -3224,7 +3227,29 @@ mod tests {
         assert!(h.query_by_label("Ln 1, Col 6").is_some(), "typed");
         // A selection made backwards, from line 2 up to line 1: where its caret is, not its end.
         set(&mut h, CCursorRange { primary: CCursor::new(1), secondary: CCursor::new(14 + 4), h_pos: None });
-        assert!(h.query_by_label("Ln 1, Col 2").is_some(), "a selection's caret");
+        assert!(
+            h.query_by_label("Ln 1, Col 2 (17 selected)").is_some(),
+            "a selection's caret, its count to the other end, a line break in it"
+        );
+        let label = h.get_by_label("Ln 1, Col 2 (17 selected)").rect();
+        let clear = h.get_by_label("Clear").rect();
+        assert!(
+            !label.intersects(clear) && label.bottom() <= clear.top(),
+            "the longer label still clear of the buttons: {label:?} {clear:?}"
+        );
+        // Forwards, within a line; then all of it.
+        set(&mut h, CCursorRange { primary: CCursor::new(5), secondary: CCursor::new(1), h_pos: None });
+        assert!(h.query_by_label("Ln 1, Col 6 (4 selected)").is_some(), "forwards");
+        let script = h.state().workflow.script.clone();
+        let all = script.chars().count();
+        let last_line = script.rsplit('\n').next().map_or(0, |l| l.chars().count());
+        set(&mut h, CCursorRange { primary: CCursor::new(all), secondary: CCursor::new(0), h_pos: None });
+        let lines = script.matches('\n').count() + 1;
+        assert!(h.query_by_label(&format!("Ln {lines}, Col {} ({all} selected)", last_line + 1)).is_some(), "everything");
+        // A script loaded from a Windows file: the count is the cursor's, so the line break is two.
+        h.state_mut().workflow.script = "a\r\nb".into();
+        set(&mut h, CCursorRange { primary: CCursor::new(4), secondary: CCursor::new(0), h_pos: None });
+        assert!(h.query_by_label("Ln 2, Col 2 (4 selected)").is_some(), "a CRLF line break counts two");
     }
 
     /// Details… opens the last run in a window of its own, each line folded: a result the pane cuts

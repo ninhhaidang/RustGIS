@@ -1217,9 +1217,7 @@ mod tests {
         h.run();
         h.ctx.memory_mut(|m| m.request_focus(id));
         let at = |h: &mut egui_kittest::Harness<'_, String>, i: usize| {
-            let mut state = TextEditState::load(&h.ctx, id).unwrap_or_default();
-            state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(i))));
-            state.store(&h.ctx, id);
+            crate::widgets::set_cursor_range(&h.ctx, id, CCursorRange::one(CCursor::new(i)));
             h.run();
         };
         let shows = |h: &egui_kittest::Harness<'_, String>, sig: &str| h.query_by_role_and_label(Role::Label, sig).is_some();
@@ -1241,9 +1239,7 @@ mod tests {
         // Text selected in the call, then the cursor back in it: still closed.
         h.key_press(Key::Escape);
         h.run();
-        let mut state = TextEditState::load(&h.ctx, id).unwrap_or_default();
-        state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(6), CCursor::new(7))));
-        state.store(&h.ctx, id);
+        crate::widgets::set_cursor_range(&h.ctx, id, CCursorRange::two(CCursor::new(6), CCursor::new(7)));
         h.run();
         at(&mut h, 7);
         assert!(!shows(&h, round), "a selection in the call keeps it closed");
@@ -1493,9 +1489,7 @@ mod tests {
         let mut h = boxed(id, Some(ds()), &start);
         h.run();
         h.ctx.memory_mut(|m| m.request_focus(id));
-        let mut state = TextEditState::load(&h.ctx, id).unwrap_or_default();
-        state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(start.chars().count()))));
-        state.store(&h.ctx, id);
+        crate::widgets::set_cursor_range(&h.ctx, id, CCursorRange::one(CCursor::new(start.chars().count())));
         h.run();
         h.event(egui::Event::Text("o".into()));
         h.run();
@@ -1604,9 +1598,7 @@ mod tests {
         let mut h = boxed(id, None, "x");
         h.run();
         h.ctx.memory_mut(|m| m.request_focus(id));
-        let mut state = TextEditState::load(&h.ctx, id).unwrap_or_default();
-        state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(1))));
-        state.store(&h.ctx, id);
+        crate::widgets::set_cursor_range(&h.ctx, id, CCursorRange::one(CCursor::new(1)));
         h.run();
         h.event(egui::Event::Text("(".into()));
         h.run();

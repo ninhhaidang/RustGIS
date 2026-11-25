@@ -109,7 +109,7 @@ pub fn play(app: &mut RustGisApp, ctx: &Context) {
     if ctx.input(|i| i.pointer.button_pressed(PointerButton::Secondary)) {
         let hovered: Vec<Id> = ctx.interaction_snapshot(|s| s.hovered.iter().copied().collect());
         menu.kept = hovered.into_iter().find_map(|id| {
-            let range = TextEditState::load(ctx, id)?.cursor.char_range()?;
+            let range = crate::widgets::cursor_range(ctx, id)?;
             (!range.is_empty()).then_some((id, range))
         });
     }
