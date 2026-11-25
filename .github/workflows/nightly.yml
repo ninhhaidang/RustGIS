@@ -125,6 +125,7 @@ jobs:
         run: |
           cargo test --locked -p rustgis-engine --test integration never_silent_roundtrip::
           PROPERTY_CASES=200 cargo test --locked -p rustgis-analysis --test parallel_serial
+          cargo test --locked -p rustgis-analysis --test overlay_identities
           cargo test --locked -p rustgis-engine --test integration project_save_roundtrip::
           PROPERTY_CASES=200000 cargo test --locked -p rustgis-data --test integration reprojection_round_trip::
           PROPERTY_CASES=100000 cargo test --locked -p rustgis-geom --test geodesic_identities
