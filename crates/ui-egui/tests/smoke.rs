@@ -682,6 +682,38 @@ fn polygon_clip_defaults_to_selection_and_honors_opt_out() {
     assert_eq!(h.state().workflow.selected_only, Some(true));
 }
 
+/// Process (clip and resample) is on the Analyze tab and in the Workflows pane whether or not the
+/// Imagery extension is on (#2823), and not on its tab.
+#[test]
+fn process_is_on_the_analyze_tab_with_imagery_off_and_on() {
+    for (on, command) in [(false, "extension.disable"), (true, "extension.enable")] {
+        let mut h = harness();
+        h.set_size(egui::vec2(2400.0, 860.0));
+        h.state_mut().run(command, json!({"id": "imagery"})).unwrap();
+        h.state_mut().run("ui.tab", json!({"tab": "Analyze"})).unwrap();
+        h.run_steps(4);
+        h.get_by_label("Process").click();
+        h.run_steps(4);
+        assert_eq!((h.state().workflow.section, h.state().ui.right), ("process", Some(rustgis_ui_egui::RightPane::Workflows)));
+        // The pane's list of sections.
+        let rows = |h: &egui_kittest::Harness<'_, RustGisApp>, label| h.query_all_by_label(label).count();
+        let (process, indices) = (rows(&h, "Process"), rows(&h, "Indices"));
+        h.query_all_by_role(egui::accesskit::Role::ComboBox).find(|n| n.value().as_deref() == Some("Process")).unwrap().click();
+        h.run_steps(4);
+        assert_eq!(rows(&h, "Process"), process + 1, "Imagery {on}");
+        assert_eq!(rows(&h, "Indices"), indices + usize::from(on), "Imagery {on}");
+        if on {
+            h.key_press(egui::Key::Escape);
+            h.run_steps(2);
+            h.state_mut().ui.right = None;
+            h.state_mut().run("ui.tab", json!({"tab": "extension:imagery"})).unwrap();
+            h.run_steps(4);
+            assert!(h.query_by_label("Pixel Editor").is_some());
+            assert!(h.query_by_label("Process").is_none(), "the button is on Analyze alone");
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn mcp_relay_early_start_wakes_queued_request_and_updates_ui() {

@@ -35,7 +35,8 @@ pub struct Extension {
 }
 
 /// Imagery: orthomosaics, surface models, georeferencing, image analysis and classification,
-/// deep learning, mensuration and hosted imagery, on a tab of its own.
+/// deep learning, mensuration and hosted imagery, on a tab of its own. Clip, resample, mosaic, project
+/// and rasterize serve any raster, so no extension owns them (#2823).
 pub const IMAGERY: Extension = Extension {
     id: "imagery",
     name: "Imagery",
@@ -55,8 +56,6 @@ pub const IMAGERY: Extension = Extension {
         "raster.classify",
         "raster.classifySupervised",
         "raster.index",
-        "raster.process",
-        "raster.mosaic",
         "raster.editPixels",
         "raster.measure",
         "raster.measurements",
@@ -239,6 +238,21 @@ mod tests {
         assert!(apps.blocks("raster.classify").is_some());
         let (chosen, _) = State::from_setting(Some(r#"{"imagery": true}"#));
         assert!(chosen.is_on("imagery"));
+    }
+
+    /// Clip, resample, mosaic, project and rasterize serve any raster (#2823): no extension owns them.
+    #[test]
+    fn general_raster_commands_are_in_no_extension() {
+        let (apps, _) = State::from_setting(None);
+        let registry = crate::cmd::all();
+        for c in ["raster.process", "raster.mosaic", "raster.project", "raster.rasterize"] {
+            assert_eq!(owner(c).map(|e| e.id), None, "{c}");
+            assert_eq!(apps.blocks(c), None);
+            assert_eq!(registry.iter().find(|s| s.id == c).map(|s| s.location), Some("Analyze › Raster"), "{c}");
+        }
+        for c in IMAGERY.commands {
+            assert!(apps.blocks(c).is_some_and(|w| w.starts_with(c)), "{c}");
+        }
     }
 
     #[test]

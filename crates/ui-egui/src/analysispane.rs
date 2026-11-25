@@ -649,8 +649,8 @@ pub const SECTIONS: &[(&str, &str)] = &[
 /// extension is off.
 pub fn section_extension(section: &str) -> Option<&'static str> {
     match section {
-        "georeference" | "change" | "spectral" | "classify" | "supervised" | "deepLearning" | "hosted" | "indices" | "process"
-        | "pixels" | "mensuration" | "ortho" | "reality" => Some(rustgis_engine::extensions::IMAGERY.id),
+        "georeference" | "change" | "spectral" | "classify" | "supervised" | "deepLearning" | "hosted" | "indices" | "pixels"
+        | "mensuration" | "ortho" | "reality" => Some(rustgis_engine::extensions::IMAGERY.id),
         _ => None,
     }
 }

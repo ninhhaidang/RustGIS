@@ -1885,7 +1885,7 @@ fn analysis_groups(app: &mut RustGisApp, ui: &mut Ui) {
                 let shown: Vec<&(&str, &str)> = crate::analysispane::SECTIONS
                     .iter()
                     .filter(|s| {
-                        !matches!(s.0, "rasterFunctions" | "functionEditor" | "environments" | "models")
+                        !matches!(s.0, "rasterFunctions" | "functionEditor" | "process" | "environments" | "models")
                             && crate::analysispane::section_shown(&app.session, s.0)
                     })
                     .collect();
@@ -1915,6 +1915,16 @@ fn analysis_groups(app: &mut RustGisApp, ui: &mut Ui) {
                 "Chain raster functions.",
                 "ui.pane.workflows",
                 json!({"section": "functionEditor"}),
+                false,
+            );
+            small(
+                ui,
+                app,
+                "resample",
+                "Process",
+                "Clip a raster to polygons or the view, or resample it.",
+                "ui.pane.workflows",
+                json!({"section": "process"}),
                 false,
             );
         });
@@ -4886,7 +4896,6 @@ fn imagery_groups(app: &mut RustGisApp, ui: &mut Ui) {
     });
     group(ui, "Imagery Tools", |ui| {
         col(ui, |ui| {
-            small(ui, app, "resample", "Process", "Clip a raster to the view, or resample it.", "ui.pane.workflows", wf("process"), false);
             small(ui, app, "stretch", "Indices", "NDVI, NDWI, SAVI, NBR, NDBI, EVI.", "ui.pane.workflows", wf("indices"), false);
             small(ui, app, "edit", "Pixel Editor", "Set the pixels inside a polygon.", "ui.pane.workflows", wf("pixels"), false);
         });

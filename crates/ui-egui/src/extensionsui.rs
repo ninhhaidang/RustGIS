@@ -180,6 +180,9 @@ mod tests {
         assert!(crate::analysispane::section_shown(&app.session, "rasterFunctions"));
         let why = app.run("raster.classify", json!({})).unwrap_err();
         assert!(why.contains("Imagery extension, which is off"), "{why}");
+        // Clip and resample are no extension's (#2823).
+        app.run("ui.pane.workflows", json!({"section": "process"})).unwrap();
+        assert_eq!(app.workflow.section, "process");
 
         // Saved with what a newer version wrote, and read again at the next start.
         persist(&mut app);
@@ -251,6 +254,13 @@ mod tests {
         assert_eq!(app.ui.tab, "Home");
         assert!(said.contains("Imagery extension, which is off"), "{said}");
         assert!(app.ui.show_me.is_none());
+        // Clip, resample and mosaic are Analyze's (#2823), with the extension off too.
+        for id in ["raster.process", "raster.mosaic"] {
+            app.run("ui.tab", json!({"tab": "Home"})).unwrap();
+            let said = crate::showme::start(&mut app, &step(id));
+            assert_eq!(app.ui.tab, "Analyze", "{said}");
+            assert!(app.ui.show_me.is_some(), "{said}");
+        }
     }
 
     #[test]

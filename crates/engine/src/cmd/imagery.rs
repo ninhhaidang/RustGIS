@@ -73,9 +73,9 @@ pub fn commands() -> Vec<C> {
         C::new("raster.index", "Indices", "Imagery › Imagery Tools", index).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layer": raster, "index": "ndvi"|"ndwi"|"savi"|"nbr"|"ndbi"|"evi", "red"?, "green"?, "blue"?, "nir"?, "swir"?: band numbers, "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#,
         ),
-        C::new("raster.process", "Process", "Imagery › Imagery Tools", process).inputs(process_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
+        C::new("raster.process", "Process", "Analyze › Raster", process).inputs(process_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"layer": raster, "operation": "clip"|"resample", "extent"?: [minLon, minLat, maxLon, maxLat] (clip; the view when omitted), "polygon"?: polygon layer (clip to its selected or all polygons; cells outside become no-data, or see-through in a raster with alpha or a three-band colour one without no-data), "selectedOnly"?: bool (clip to selected polygons when true, all when false), "factor"?: n (resample: n×n pixels become one), "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#),
-        C::new("raster.mosaic", "Mosaic Rasters", "Imagery › Imagery Tools", raster_mosaic).inputs(mosaic_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(
+        C::new("raster.mosaic", "Mosaic Rasters", "Analyze › Raster", raster_mosaic).inputs(mosaic_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(
             r#"{"inputs": [raster layer or file path, …] (two or more, in one coordinate system and cell size; where they overlap the first wins), "name"?: output, "path"?: GeoTIFF to write the mosaic to}"#,
         ),
         C::new("raster.editPixels", "Pixel Editor", "Imagery › Imagery Tools", edit_pixels).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE)

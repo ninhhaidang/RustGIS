@@ -1784,6 +1784,21 @@ pub fn notices(app: &mut RustGisApp, ctx: &egui::Context) {
 mod tests {
     use super::*;
 
+    /// A command and the Workflows section it opens are one extension's or no extension's, so
+    /// Command Search never offers a command whose section is refused, nor hides one whose isn't.
+    #[test]
+    fn a_command_and_its_workflows_section_are_in_one_extension() {
+        let app = RustGisApp::with_sample();
+        let mut seen = 0;
+        for c in &app.session.registry.commands {
+            let Some(SearchAction::Workflow(section)) = search_action(c.id) else { continue };
+            let owner = rustgis_engine::extensions::owner(c.id).map(|e| e.id);
+            assert_eq!(owner, crate::analysispane::section_extension(section), "{} and {section}", c.id);
+            seen += 1;
+        }
+        assert!(seen > 20, "{seen}");
+    }
+
     #[test]
     fn command_search_matches_localized_labels_and_locations() {
         let app = RustGisApp::with_sample();

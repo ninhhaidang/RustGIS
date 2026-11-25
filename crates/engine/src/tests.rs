@@ -20862,6 +20862,86 @@ fn plugin_mosaics_of_project_layers_need_no_files() {
     rustgis_plugins::unload("eng-mosaic");
 }
 
+/// Clip, resample and mosaic run while the Imagery extension is off (#2823), whoever asks: the user,
+/// a script, a saved task, or a plugin, which can't turn the extension on. Imagery's own commands
+/// stay refused.
+#[test]
+fn clip_resample_and_mosaic_run_with_imagery_off() {
+    use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+    let mut s = world();
+    for (name, x0) in [("west", 0.0), ("east", 1.0)] {
+        let gt = GeoTransform { origin_x: x0, origin_y: 1.0, pixel_width: 0.1, pixel_height: -0.1 };
+        let r = Raster::new(name, 10, 10, vec![vec![1.0; 100]], gt, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap();
+        let bytes = geotiff::write(&r, 0).unwrap();
+        crate::cmd::raster::add_raster(&mut s, name, rustgis_map::RasterLayer::from_bytes(r, format!("{name}.tif"), bytes)).unwrap();
+    }
+    s.run("layer.template", &json!({"template": "polygons", "name": "Area"})).unwrap();
+    // Around the cell centres of 4 columns and 5 rows.
+    let ring = json!([[0.2, 0.3], [0.6, 0.3], [0.6, 0.8], [0.2, 0.8], [0.2, 0.3]]);
+    s.run("edit.addFeature", &json!({"layer": "Area", "geometry": {"type": "Polygon", "coordinates": [ring]}})).unwrap();
+    s.run("extension.disable", &json!({"id": "imagery"})).unwrap();
+
+    let commands = |by: &str| {
+        [
+            ("raster.process", json!({"layer": "west", "operation": "clip", "polygon": "Area", "name": format!("{by} clip")})),
+            ("raster.process", json!({"layer": "west", "operation": "resample", "factor": 2, "name": format!("{by} half")})),
+            ("raster.mosaic", json!({"inputs": ["west", "east"], "name": format!("{by} both")})),
+        ]
+    };
+    let check = |s: &Session, by: &str| {
+        for (kind, size, cells) in [("clip", (4, 5), 20), ("half", (5, 5), 25), ("both", (20, 10), 200)] {
+            let name = format!("{by} {kind}");
+            let layer = s.map().layer_by_name(&name).unwrap_or_else(|| panic!("no {name}"));
+            let r = layer.raster.as_ref().unwrap().data.as_ref().unwrap();
+            assert_eq!(((r.width, r.height), r.bands[0].stats.count), (size, cells), "{name}");
+        }
+    };
+    for (id, p) in commands("user") {
+        s.run(id, &p).unwrap();
+    }
+    check(&s, "user");
+    let script = commands("script").map(|(id, p)| format!("{id} {p}")).join("\n");
+    s.run("script.run", &json!({"script": script})).unwrap();
+    check(&s, "script");
+    let steps = commands("task").map(|(id, p)| json!({"title": id, "command": id, "params": p}));
+    s.run("task.new", &json!({"name": "Raster steps", "steps": steps})).unwrap();
+    s.run("task.run", &json!({"task": "Raster steps"})).unwrap();
+    check(&s, "task");
+    plugin("eng-imagery-off", &["edit"]);
+    for (id, p) in commands("plugin") {
+        forward(&mut s, "eng-imagery-off", id, p).unwrap();
+    }
+    check(&s, "plugin");
+    // As the desktop app runs clip and resample: worked out on a thread, landed, then added by the
+    // command. A mosaic has no such run.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use crate::cmd::workflows::{raster_land, raster_start};
+        for (id, p) in commands("app") {
+            if id == "raster.mosaic" {
+                s.run(id, &p).unwrap();
+                continue;
+            }
+            let run = raster_start(&mut s, id, &p).unwrap();
+            let ran = run.id;
+            let made = std::thread::spawn(move || run.run(&rustgis_analysis::control::Control::new())).join().unwrap().unwrap();
+            assert_eq!(raster_land(&mut s, ran, made), Ok(true));
+            s.finish_raster(id, ran, &p).unwrap();
+        }
+        check(&s, "app");
+    }
+
+    for id in ["raster.classify", "raster.index", "raster.change", "raster.editPixels"] {
+        let p = json!({"layer": "west"});
+        for e in [s.run(id, &p).unwrap_err(), forward(&mut s, "eng-imagery-off", id, p).unwrap_err()] {
+            assert!(e.contains("Imagery extension, which is off"), "{id}: {e}");
+        }
+    }
+    forward(&mut s, "eng-imagery-off", "extension.enable", json!({"id": "imagery"})).unwrap_err();
+    assert!(!s.extensions().is_on("imagery"), "a plugin can't turn it on");
+    rustgis_plugins::unload("eng-imagery-off");
+}
+
 #[test]
 fn plugin_tile_layers_need_network() {
     let mut s = world();
