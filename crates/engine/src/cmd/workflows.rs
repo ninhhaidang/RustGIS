@@ -1582,14 +1582,11 @@ pub fn script_error_at(script: &str, error: &str) -> Option<(usize, Option<usize
 /// [`crate::script_line`] reads it; `None` when it reads or there is none. serde counts its column
 /// in bytes from the JSON's start.
 fn json_error_column(line: &str) -> Option<usize> {
-    let (_, rest) = crate::parameters::split_script_id(line.trim());
-    let json = rest.trim();
+    let (_, json, start) = crate::parameters::script_parts(line);
     if json.is_empty() {
         return None;
     }
     let e = serde_json::from_str::<Value>(json).err()?;
-    // `rest` ends where the trimmed line does.
-    let start = line.trim_end().len() - rest.trim_start().len();
     let mut at = (start + e.column().saturating_sub(1)).min(line.len());
     while !line.is_char_boundary(at) {
         at -= 1;

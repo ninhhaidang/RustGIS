@@ -3456,6 +3456,8 @@ fn a_scripts_error_says_where_it_stopped() {
     assert_eq!(stop(&mut s, "script.run {}", "line 1: "), Some((1, None)));
     // JSON that doesn't read: the column of its error in the line, after indentation and `id=`.
     assert_eq!(stop(&mut s, "map.zoomFull\n  layer.rename= {\"layer\": }", "line 2: "), Some((2, Some(27))));
+    // The same after characters past ASCII, counted as characters, not bytes.
+    assert_eq!(stop(&mut s, "layer.rename {\"layer\": \"é\", \"name\": }", "line 1: "), Some((1, Some(37))));
     // Counted in characters: `á` is two bytes.
     assert_eq!(stop(&mut s, "layer.rename {\"name\": \"Bogotá\", }", "line 1: "), Some((1, Some(33))));
     // JSON cut short: its last character, never past the line.

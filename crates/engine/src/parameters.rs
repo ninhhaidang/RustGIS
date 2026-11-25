@@ -30,6 +30,17 @@ pub fn split_script_id(line: &str) -> (&str, &str) {
     }
 }
 
+/// A script line's command id and its JSON text, trimmed as [`script_line`] reads them, and where
+/// that text starts in `line`, in bytes (for a column in the line, as an error's).
+pub(crate) fn script_parts(line: &str) -> (&str, &str, usize) {
+    let trimmed = line.trim();
+    let (id, rest) = split_script_id(trimmed);
+    let json = rest.trim_start();
+    // `trimmed` ends where `line`'s text does; the JSON ends where `trimmed` does.
+    let start = (line.len() - line.trim_start().len()) + (trimmed.len() - json.len());
+    (id, json, start)
+}
+
 /// One executable script line, preserving the executor's `id[=] {json}` grammar. Unlike an
 /// adapter envelope, a script's JSON value is passed as written; no parameters means null.
 /// Blank and comment lines have no command. Errors are annotated with line numbers by callers.
@@ -38,11 +49,11 @@ pub fn script_line(line: &str) -> Option<Result<(String, Value), String>> {
     if line.is_empty() || line.starts_with('#') {
         return None;
     }
-    let (id, rest) = split_script_id(line);
-    let params = if rest.trim().is_empty() {
+    let (id, json, _) = script_parts(line);
+    let params = if json.is_empty() {
         Value::Null
     } else {
-        match serde_json::from_str(rest.trim()) {
+        match serde_json::from_str(json) {
             Ok(value) => value,
             Err(e) => return Some(Err(e.to_string())),
         }
