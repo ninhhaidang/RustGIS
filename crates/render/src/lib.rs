@@ -14880,6 +14880,58 @@ mod tests {
         }
     }
 
+    /// A selected picture marker's frame (a 3.5 pt stroke round its image, 1.75 pt of it outside)
+    /// shows while only the frame is in the view, for a point and for a line whose stroke is 0 pt
+    /// wide: the frame doesn't go by the reach `marked_in` culls the marker by, nor by the cull
+    /// margin, so nothing needs the two to agree.
+    #[test]
+    fn a_selected_picture_markers_frame_shows_when_only_the_frame_is_in_the_view() {
+        use base64::Engine;
+        use rustgis_map::{LineMark, LineMarkers, LineStroke, Picture};
+        let cyan = |p: tiny_skia::PremultipliedColorU8| p.red() < 120 && p.green() > 150 && p.blue() > 150 && p.alpha() > 200;
+        // A red image ten times as tall as wide: 10 pt wide, it reaches 50 px either side of the
+        // point. Centred 150.5 px north of a 200 px view's centre, its foot is 0.5 px above the
+        // view and the frame goes 1.25 px into it: row 0.
+        let mut tall = tiny_skia::Pixmap::new(4, 40).unwrap();
+        tall.fill(tiny_skia::Color::from_rgba8(255, 0, 0, 255));
+        let tall = Picture::new(&base64::engine::general_purpose::STANDARD.encode(tall.encode_png().unwrap()));
+        let lat = 150.5 * 1500.0 / 111_319.49;
+        let camera = Camera { center: lonlat_to_merc(Coord::new(0.0, 0.0)), res: 1500.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        let none = Rgba::new(0, 0, 0, 0);
+        let top_row = |m: &mut Map| {
+            let r = render(m, &view).unwrap();
+            (0..200).filter(|x| r.pixmap.pixel(*x, 0).is_some_and(cyan)).count()
+        };
+        // A point.
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("icons", GeometryType::Point, vec![]);
+        d.push(Some(Geometry::Point(Coord::new(0.0, lat))), vec![]);
+        let id = m.add_dataset(d);
+        m.layer_mut(id).unwrap().renderer = rustgis_map::Renderer::Single(Symbol {
+            fill: none,
+            stroke: none,
+            stroke_width: 0.0,
+            size: 10.0,
+            marker: Marker::Picture(tall),
+        });
+        assert_eq!(top_row(&mut m), 0, "nothing of it is in the view while it isn't selected");
+        m.layer_mut(id).unwrap().selection = vec![0];
+        assert!(top_row(&mut m) >= 10, "the frame shows once it is");
+        // A line, its markers along it on a stroke of no width.
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("rail", GeometryType::Polyline, vec![]);
+        d.push(Some(Geometry::Line(vec![vec![Coord::new(-1.0, lat), Coord::new(1.0, lat)]])), vec![]);
+        let id = m.add_dataset(d);
+        let images = LineMarkers { mark: LineMark::Marker(Marker::Picture(tall)), size: 10.0, interval: 30.0, ..LineMarkers::default() };
+        m.layer_mut(id).unwrap().line_strokes = vec![LineStroke { width: Some(0.0), markers: Some(images), ..LineStroke::default() }];
+        assert_eq!(top_row(&mut m), 0, "nothing of them is in the view while it isn't selected");
+        m.layer_mut(id).unwrap().selection = vec![0];
+        assert!(top_row(&mut m) >= 10, "the frames show once it is");
+    }
+
     /// A picture marker drawn at many places, along lines and at points, is one picture to a vector
     /// export: kept once in the frame's drawing, written once into a PDF.
     #[test]
@@ -14944,6 +14996,61 @@ mod tests {
         assert_eq!(written.len(), 1, "the image written once: {written:?}");
         let placed: usize = objects.iter().map(|o| String::from_utf8_lossy(&o.1).matches(" Do\n").count()).sum();
         assert!(placed >= shared.len(), "and placed at each: {placed}");
+    }
+
+    /// The same picture marker placed on every page of a PDF is one image object, listed in each
+    /// page's resources and drawn on each (`pdf::Doc::images` is the document's, not a page's).
+    #[test]
+    fn a_picture_marker_is_one_image_object_across_the_pages_of_a_pdf() {
+        use base64::Engine;
+        use rustgis_map::Picture;
+        // Noise, which compresses little, so a second copy would not pass for the first.
+        let mut noise = tiny_skia::Pixmap::new(120, 60).unwrap();
+        let mut seed = 11u32;
+        for px in noise.pixels_mut() {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let [r, g, b, _] = seed.to_le_bytes();
+            *px = tiny_skia::ColorU8::from_rgba(r, g, b, 255).premultiply();
+        }
+        let picture = Picture::new(&base64::engine::general_purpose::STANDARD.encode(noise.encode_png().unwrap()));
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("icons", GeometryType::Point, vec![]);
+        for x in [-0.5, 0.5] {
+            d.push(Some(Geometry::Point(Coord::new(x, 0.0))), vec![]);
+        }
+        let id = m.add_dataset(d);
+        let none = Rgba::new(0, 0, 0, 0);
+        m.layer_mut(id).unwrap().renderer = rustgis_map::Renderer::Single(Symbol {
+            fill: none,
+            stroke: none,
+            stroke_width: 0.0,
+            size: 20.0,
+            marker: Marker::Picture(picture),
+        });
+        let camera = Camera { center: lonlat_to_merc(Coord::new(0.0, 0.0)), res: 1500.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        let mut record = || render_complete_recorded(&mut m, &view, &mut None).unwrap().recorded.unwrap().into_drawing().unwrap();
+        // Two frames recorded on their own: each drawing holds the marker's image, and they are
+        // the same one (the marker keeps its compressed copy for the run).
+        let pdf = pdf::write(&[pdf::Page::drawing(record(), 50.0, 50.0), pdf::Page::drawing(record(), 50.0, 50.0)], "");
+        let objects = pdf::tests::objects(&pdf);
+        let image: Vec<usize> = objects.iter().enumerate().filter(|(_, o)| o.0.contains("/Subtype /Image")).map(|(i, _)| i + 1).collect();
+        assert_eq!(image.len(), 1, "one image object for both pages: {image:?}");
+        let pages: Vec<&String> = objects.iter().map(|o| &o.0).filter(|dict| dict.contains("/Type /Page ")).collect();
+        assert_eq!(pages.len(), 2, "two pages");
+        let named = format!("/X{} {} 0 R", image[0], image[0]);
+        let placed = format!("/X{} Do\n", image[0]);
+        // The object a page's dictionary names after `key` (`/Resources 7 0 R`: an object of its own).
+        let object = |page: &str, key: &str| -> usize {
+            page.split(key).nth(1).and_then(|s| s.split(' ').next()).and_then(|n| n.parse().ok()).unwrap()
+        };
+        for page in &pages {
+            let resources = &objects[object(page, "/Resources ") - 1];
+            assert!(resources.0.contains(&named), "each page lists it in its resources: {}", resources.0);
+            let contents = &objects[object(page, "/Contents ") - 1];
+            assert!(String::from_utf8_lossy(&contents.1).contains(&placed), "and its own content draws it: {page}");
+        }
     }
 
     #[test]
