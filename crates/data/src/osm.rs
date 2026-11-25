@@ -436,10 +436,12 @@ fn block(osm: &mut Osm, data: &[u8]) -> Result<()> {
                         })
                         .collect();
                     let t = tags(&strings, &k, &vv);
-                    // Only the relations drawn are kept.
-                    if osm.relations.len() >= MAX_RELATIONS {
+                    // Only the relations drawn are kept, so only they meet the cap: one of
+                    // another type is left out either way.
+                    let drawn = matches!(tag(&t, "type"), Some("multipolygon" | "boundary"));
+                    if drawn && osm.relations.len() >= MAX_RELATIONS {
                         osm.capped = true;
-                    } else if matches!(tag(&t, "type"), Some("multipolygon" | "boundary")) {
+                    } else if drawn {
                         if roles.len() != mems.len() || types.len() != mems.len() {
                             return Err(DataError::Format(format!(
                                 "OSM relation {id} has mismatched member arrays (IDs: {}, roles: {}, types: {})",
@@ -448,7 +450,9 @@ fn block(osm: &mut Osm, data: &[u8]) -> Result<()> {
                                 types.len()
                             )));
                         }
-                        let omitted = mems.len().saturating_sub(MAX_MEMBERS) as u64;
+                        // Node members are never read, so only the others past the limit are
+                        // left out by it.
+                        let omitted = types.iter().skip(MAX_MEMBERS).filter(|ty| **ty != 0).count() as u64;
                         osm.omitted_members = osm.omitted_members.saturating_add(omitted);
                         let members = mems
                             .into_iter()
@@ -768,7 +772,10 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
     let mut report = ReadReport { skipped: missing + short_ways + no_closed_outer, ..ReadReport::default() };
     if osm.omitted_members > 0 {
         let members = if osm.omitted_members == 1 { "relation member" } else { "relation members" };
-        report.messages.push(format!("{} {members} left out at the per-relation limit of {MAX_MEMBERS}", osm.omitted_members));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("{} {members} left out at the per-relation limit of {MAX_MEMBERS}", osm.omitted_members),
+        ));
     }
     if short_ways > 0 {
         let subject = if short_ways == 1 { "tagged way left out because it has" } else { "tagged ways left out because they have" };
@@ -1246,7 +1253,13 @@ pub(crate) mod tests {
         assert_eq!(layers[1].0.features.iter().collect::<Vec<_>>(), clean[1].0.features.iter().collect::<Vec<_>>());
         assert_eq!(layers[0].1.skipped, 0, "a member is not a whole skipped feature");
         assert_eq!(layers[0].1.messages.texts().collect::<Vec<_>>(), ["1 relation member left out at the per-relation limit of 100000"]);
+        assert_eq!(layers[0].1.messages[0].loss, Some(crate::loss::LossCode::DroppedOverLimit));
         assert!(layers[1].1.messages.is_empty());
+        // A node member past the limit is never read either way, so nothing is left out by it.
+        members.pop();
+        members.push((5, 0, 8));
+        let nodes = read("finite.pbf", &finite_omission_file(ways, Some(&members))).unwrap();
+        assert!(nodes[0].1.messages.is_empty(), "{:?}", nodes[0].1.messages);
     }
 
     #[test]

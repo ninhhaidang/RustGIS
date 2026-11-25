@@ -502,7 +502,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "a.xml",
             landxml(&cg_points("1 1")),
             landxml(&cg_points("x y")),
-            Said("couldn't be read and were left out"),
+            Expect::Classified(LossCode::DroppedFeature, "couldn't be read and was left out"),
         ),
         case(
             "LandXML: a parcel without geometry",

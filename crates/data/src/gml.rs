@@ -539,17 +539,22 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
                     continue;
                 }
                 let s = g.attribute("srsName").or_else(|| g.descendants().find_map(|d| d.attribute("srsName")));
+                // A system RustGIS doesn't know is said only for a geometry read in it.
+                let mut unknown = None;
                 if let Some(s) = s {
                     match srs(s) {
                         Some(found) => {
                             file_srs.get_or_insert(found);
                         }
-                        None => unknown_srs = Some(s.to_string()),
+                        None => unknown = Some(s.to_string()),
                     }
                 }
                 let (dims, lost) = (Cell::new(false), Cell::new(0));
                 match geometry(&g, &dims, &lost) {
                     Some(gm) => {
+                        if unknown.is_some() {
+                            unknown_srs = unknown;
+                        }
                         zm = dims.get();
                         rings_lost += lost.get();
                         geom = Some(gm);
@@ -730,7 +735,11 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         rep.skipped = kind.skipped;
         if kind.skipped > 0 {
             let what = if kind.skipped == 1 { "feature" } else { "features" };
-            rep.messages.push(format!("{}: {} {what} had geometry that couldn't be read", ds.name, kind.skipped));
+            // Kept, without the geometry.
+            rep.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedGeometry,
+                format!("{}: {} {what} had geometry that couldn't be read", ds.name, kind.skipped),
+            ));
         }
         if unplaced > 0 {
             let what = if unplaced == 1 { "feature has" } else { "features have" };
@@ -799,9 +808,9 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         }
         if unread > 0 {
             let what = if unread == 1 { "property" } else { "properties" };
-            rep.messages.push(format!(
-                "{}: {unread} {what} not read: nested records, other GML values or further shapes ({unread_names})",
-                ds.name
+            rep.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedValue,
+                format!("{}: {unread} {what} not read: nested records, other GML values or further shapes ({unread_names})", ds.name),
             ));
         }
         if kind.repeated > 0 {
@@ -990,7 +999,10 @@ mod tests {
         // Its height is dropped, and said; so is the nested `member` property, not an attribute.
         assert!(ds.zm_dropped && rep.messages.iter().any(|m| m.contains("Z or M values")), "{:?}", rep.messages);
         assert!(
-            rep.messages.iter().any(|m| m == "n: 1 property not read: nested records, other GML values or further shapes (member)"),
+            rep.messages
+                .iter()
+                .any(|m| m.as_str() == "n: 1 property not read: nested records, other GML values or further shapes (member)"
+                    && m.loss == Some(crate::loss::LossCode::DroppedValue)),
             "{:?}",
             rep.messages
         );
@@ -1123,9 +1135,8 @@ mod tests {
         // The first shape is the one kept; the second is said as not read.
         assert_eq!(ds.features[0].geometry, Some(Geometry::Point(Coord::new(10.0, 48.0))));
         assert!(
-            rep.messages
-                .iter()
-                .any(|m| m == "t parks: 3 properties not read: nested records, other GML values or further shapes (owner, built, entrance)"),
+            rep.messages.iter().any(|m| m.as_str()
+                == "t parks: 3 properties not read: nested records, other GML values or further shapes (owner, built, entrance)"),
             "{:?}",
             rep.messages
         );
@@ -1140,7 +1151,9 @@ mod tests {
         let (ds, rep) = &layers[0];
         assert_eq!((ds.features.len(), rep.skipped), (1, 0), "{:?}", rep.messages);
         assert!(
-            rep.messages.iter().any(|m| m == "d: 4 properties not read: nested records, other GML values or further shapes (a, b, c, …)"),
+            rep.messages
+                .iter()
+                .any(|m| m.as_str() == "d: 4 properties not read: nested records, other GML values or further shapes (a, b, c, …)"),
             "{:?}",
             rep.messages
         );
@@ -1424,6 +1437,31 @@ mod tests {
         assert!(!said(&lossy[0], "couldn't be read") && said(&lossy[1], "t parks: 1 feature had geometry that couldn't be read"));
         let clean = read("t.gml", two("<gml:Point><gml:pos>10 49</gml:pos></gml:Point>").as_bytes()).unwrap();
         assert!(clean.iter().all(|l| l.1.skipped == 0 && !said(l, "couldn't be read")));
+        // The feature is kept, without its geometry.
+        assert_eq!(lossy[1].0.features.len(), 1);
+        let note = lossy[1].1.messages.iter().find(|m| m.contains("couldn't be read")).unwrap();
+        assert_eq!(note.loss, Some(crate::loss::LossCode::DroppedGeometry));
+    }
+
+    /// A system RustGIS doesn't know is said, as assumed, only for a geometry read in it: one that
+    /// names it and can't be read places nothing there.
+    #[test]
+    fn an_unknown_system_is_said_only_for_a_geometry_read_in_it() {
+        let member = |g: &str| doc(&format!("<wfs:member><app:roads><app:g>{g}</app:g></app:roads></wfs:member>"));
+        let unknown = |layers: &[(Dataset, ReadReport)]| {
+            layers
+                .iter()
+                .flat_map(|l| l.1.messages.iter())
+                .filter(|m| m.contains("unknown coordinate system"))
+                .map(|m| m.loss)
+                .collect::<Vec<_>>()
+        };
+        let read_in_it =
+            read("t.gml", member(r#"<gml:Point srsName="urn:x-unknown:99"><gml:pos>10 48</gml:pos></gml:Point>"#).as_bytes()).unwrap();
+        assert_eq!(unknown(&read_in_it), [Some(crate::loss::LossCode::AssumedCrs)]);
+        let failed =
+            read("t.gml", member(r#"<gml:Point srsName="urn:x-unknown:99"><gml:pos>bad</gml:pos></gml:Point>"#).as_bytes()).unwrap();
+        assert!(unknown(&failed).is_empty(), "{:?}", failed[0].1.messages);
     }
 
     /// #1620: unread property names come in document order, and a `gml:description` value is no shape.

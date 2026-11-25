@@ -81,6 +81,8 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
     }
     let mut skipped = 0usize;
     let mut short_segments = 0usize;
+    // Route points without usable coordinates: vertices left out of their route, not features.
+    let mut route_points = 0usize;
     let point_fields = |extra: &[(&str, FieldType)]| {
         let mut f: Vec<Field> = extra.iter().map(|(n, t)| Field::new(*n, *t)).collect();
         f.extend(["name", "ele", "time", "desc", "cmt", "sym", "type"].iter().map(|n| Field::new(*n, FieldType::Text)));
@@ -110,17 +112,19 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
     };
     let mut routes = Dataset::new(format!("{name} routes"), GeometryType::Polyline, line_fields());
     for r in children(&gpx, "rte") {
-        let mut pts = Vec::new();
+        let (mut pts, mut unplaced) = (Vec::new(), 0usize);
         for p in children(&r, "rtept") {
             match coord(&p) {
                 Some(c) => pts.push(c),
-                None => skipped += 1,
+                None => unplaced += 1,
             }
         }
         let n = pts.len();
         if n >= 2 {
             routes.push_next(Some(Geometry::Line(vec![pts])), line_attrs(&r, n));
+            route_points += unplaced;
         } else {
+            // Left out whole, said with the routes; its points aren't also a kept route's loss.
             skipped += 1;
         }
     }
@@ -196,11 +200,29 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
             } else {
                 ("segments", "were left out of tracks; their points remain in track points")
             };
-            report.messages.push(format!("{name}: {short_segments} GPX track {segment} with fewer than two usable points {action}"));
+            report.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedGeometry,
+                format!("{name}: {short_segments} GPX track {segment} with fewer than two usable points {action}"),
+            ));
+        }
+        if route_points > 0 {
+            let what = if route_points == 1 {
+                "point without usable coordinates was left out of its route"
+            } else {
+                "points without usable coordinates were left out of their routes"
+            };
+            report
+                .messages
+                .push(crate::loss::Note::loss(crate::loss::LossCode::DroppedGeometry, format!("{name}: {route_points} GPX route {what}")));
         }
         report.skipped = skipped;
         if skipped > 0 {
-            report.messages.push(format!("{name}: {skipped} points, routes or tracks without usable geometry were skipped"));
+            let what = if skipped == 1 {
+                "point, route or track without usable geometry was skipped"
+            } else {
+                "points, routes or tracks without usable geometry were skipped"
+            };
+            report.messages.push(crate::loss::Note::loss(crate::loss::LossCode::DroppedFeature, format!("{name}: {skipped} {what}")));
         }
     }
     if out.is_empty() {
@@ -224,9 +246,10 @@ mod tests {
         assert_eq!(layers[1].0.features[2].geometry, Some(Geometry::Point(Coord::new(6.0, 5.0))));
         assert_eq!(layers[1].0.value(2, 1), &Value::Int(2));
         assert_eq!(
-            layers[0].1.messages,
+            layers[0].1.messages.texts().collect::<Vec<_>>(),
             ["a: 1 GPX track segment with fewer than two usable points was left out of tracks; its point remains in track points"]
         );
+        assert_eq!(layers[0].1.messages[0].loss, Some(crate::loss::LossCode::DroppedGeometry));
         assert!(layers[1].1.messages.is_empty());
         let clean =
             read("a.gpx", br#"<gpx><trk><trkseg><trkpt lat="1" lon="2"/><trkpt lat="3" lon="4"/></trkseg><trkseg/></trk></gpx>"#).unwrap();
@@ -244,6 +267,26 @@ mod tests {
     <trkseg><trkpt lat="45.01" lon="6.01"/><trkpt lat="45.02" lon="6.02"/><trkpt lat="x" lon="6"/></trkseg>
   </trk>
 </gpx>"#;
+
+    /// A route point without usable coordinates is left out of a route that is kept: its geometry
+    /// lost a vertex, said apart from the points, routes and tracks left out whole.
+    #[test]
+    fn a_route_point_without_coordinates_is_a_vertex_left_out() {
+        let xml = br#"<gpx><rte><name>kept</name><rtept lat="1" lon="1"/><rtept lat="x" lon="1"/><rtept lat="2" lon="2"/></rte><wpt lat="91" lon="2"/></gpx>"#;
+        let layers = read("a.gpx", xml).unwrap();
+        let (routes, _) = layers.iter().find(|(d, _)| d.name == "a routes").unwrap();
+        assert_eq!(routes.features.len(), 1);
+        let report = &layers[0].1;
+        assert_eq!(report.skipped, 1, "only the waypoint off the globe is a feature left out");
+        let said: Vec<_> = report.messages.iter().map(|m| (m.as_str(), m.loss)).collect();
+        assert_eq!(
+            said,
+            [
+                ("a: 1 GPX route point without usable coordinates was left out of its route", Some(crate::loss::LossCode::DroppedGeometry)),
+                ("a: 1 point, route or track without usable geometry was skipped", Some(crate::loss::LossCode::DroppedFeature)),
+            ]
+        );
+    }
 
     #[test]
     fn splits_into_layers() {

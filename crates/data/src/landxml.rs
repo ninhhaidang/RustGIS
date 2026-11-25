@@ -80,6 +80,10 @@ pub fn read(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Vec<(Data
     }
     let mut skipped = 0usize;
     let mut missing_parcels = 0usize;
+    let mut missing_alignments = 0usize;
+    // Point references (a Start or End) left out of a shape that is kept, unreadable or naming a
+    // point that isn't there: geometry lost, not features, which `skipped` counts.
+    let mut vertices = 0usize;
 
     // Coordinate geometry points, by name too (parcels and alignments may refer to them).
     let mut points = Dataset::new(
@@ -113,7 +117,8 @@ pub fn read(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Vec<(Data
         named.get(n.attribute("pntRef")?).copied()
     };
     // The points along a CoordGeom: each Line, Curve or Spiral's start (and end).
-    let path = |cg: &Node, skipped: &mut usize| -> Vec<Coord> {
+    // `unread` counts the point references (a Start or End) that can't be read.
+    let path = |cg: &Node, unread: &mut usize| -> Vec<Coord> {
         let mut pts: Vec<Coord> = Vec::new();
         for seg in cg.children().filter(|c| c.is_element() && matches!(local(c), "Line" | "Curve" | "Spiral" | "IrregularLine")) {
             // A curve's PI (where its tangents meet) is off the curve: its chord runs Start to End.
@@ -122,7 +127,7 @@ pub fn read(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Vec<(Data
                     match pt(&n) {
                         Some(c) if pts.last() != Some(&c) => pts.push(c),
                         Some(_) => {}
-                        None => *skipped += 1,
+                        None => *unread += 1,
                     }
                 }
             }
@@ -140,7 +145,8 @@ pub fn read(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Vec<(Data
             missing_parcels += 1;
             continue;
         };
-        let mut ring = path(&cg, &mut skipped);
+        let mut unread = 0usize;
+        let mut ring = path(&cg, &mut unread);
         if ring.first() != ring.last()
             && let Some(f) = ring.first().copied()
         {
@@ -150,6 +156,7 @@ pub fn read(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Vec<(Data
             skipped += 1;
             continue;
         }
+        vertices += unread;
         let area = p.attribute("area").and_then(|a| a.parse::<f64>().ok()).map(Value::Float).unwrap_or_default();
         let attr = |k: &str| p.attribute(k).map(|v| Value::Text(v.to_string())).unwrap_or_default();
         parcels.push_next(Some(Geometry::Polygon(vec![vec![ring]])), vec![attr("name"), area, attr("desc")]);
@@ -161,12 +168,19 @@ pub fn read(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Vec<(Data
         vec![Field::new("name", FieldType::Text), Field::new("length", FieldType::Double), Field::new("staStart", FieldType::Double)],
     );
     for a in elements(&root, "Alignment") {
-        let Some(cg) = a.children().find(|c| c.is_element() && local(c) == "CoordGeom") else { continue };
-        let line = path(&cg, &mut skipped);
+        // An alignment without its CoordGeom has no shape to draw: left out, and counted, as a
+        // parcel without one is.
+        let Some(cg) = a.children().find(|c| c.is_element() && local(c) == "CoordGeom") else {
+            missing_alignments += 1;
+            continue;
+        };
+        let mut unread = 0usize;
+        let line = path(&cg, &mut unread);
         if line.len() < 2 {
             skipped += 1;
             continue;
         }
+        vertices += unread;
         let num = |k: &str| a.attribute(k).and_then(|v| v.parse::<f64>().ok()).map(Value::Float).unwrap_or_default();
         alignments.push_next(
             Some(Geometry::Line(vec![line])),
@@ -180,24 +194,33 @@ pub fn read(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Vec<(Data
         GeometryType::Polygon,
         vec![Field::new("surface", FieldType::Text), Field::new("elevation", FieldType::Double)],
     );
+    // Surface points that can't be read (`P` without an id or coordinates).
+    let mut surface_points = 0usize;
+    // The surfaces cut at the face limit, said together after them.
+    let mut over_limit: Vec<String> = Vec::new();
+    let mut faces_left_out = 0usize;
     for s in elements(&root, "Surface") {
         let sname = s.attribute("name").unwrap_or("").to_string();
         let mut pnts: HashMap<&str, (Coord, Option<f64>)> = HashMap::new();
         for p in elements(&s, "P") {
+            // A point that can't be read isn't kept. The faces that name it are left out, and
+            // counted as features, so the point is said on its own without a code.
             match (p.attribute("id"), nez(&text_of(&p))) {
                 (Some(id), Some(v)) => {
                     pnts.insert(id, v);
                 }
-                _ => skipped += 1,
+                _ => surface_points += 1,
             }
         }
-        for (i, f) in elements(&s, "F").enumerate() {
+        // Invisible faces (i="1") are holes in the surface, never read, so the cap counts the
+        // faces that are.
+        for (i, f) in elements(&s, "F").filter(|f| f.attribute("i") != Some("1")).enumerate() {
+            // Past the limit, a face is only counted, so the notice says how many are left out.
             if i >= MAX_FACES {
-                report.messages.push(format!("surface '{sname}' has more than {MAX_FACES} faces: the rest are left out"));
-                break;
-            }
-            // Invisible faces (i="1") are holes in the surface.
-            if f.attribute("i") == Some("1") {
+                if i == MAX_FACES {
+                    over_limit.push(sname.clone());
+                }
+                faces_left_out += 1;
                 continue;
             }
             let tri: Option<Vec<(Coord, Option<f64>)>> = text_of(&f).split_whitespace().map(|id| pnts.get(id).copied()).collect();
@@ -215,6 +238,29 @@ pub fn read(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Vec<(Data
         }
     }
 
+    if surface_points > 0 {
+        let what = if surface_points == 1 { "surface point couldn't be read and was" } else { "surface points couldn't be read and were" };
+        report.messages.push(format!("{surface_points} LandXML {what} left out"));
+    }
+    match over_limit.as_slice() {
+        [] => {}
+        [one] => report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("surface '{one}' has more than {MAX_FACES} faces: the {faces_left_out} past the limit are left out"),
+        )),
+        many => {
+            let shown: Vec<String> = many.iter().take(10).map(|n| format!("'{n}'")).collect();
+            let more = if many.len() > 10 { format!(" and {} more", many.len() - 10) } else { String::new() };
+            report.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedOverLimit,
+                format!(
+                    "{} surfaces ({}{more}) have more than {MAX_FACES} faces: the {faces_left_out} past the limit are left out",
+                    many.len(),
+                    shown.join(", ")
+                ),
+            ));
+        }
+    }
     if missing_parcels > 0 {
         let (parcels, verb) = if missing_parcels == 1 { ("parcel", "was") } else { ("parcels", "were") };
         report.messages.push(crate::loss::Note::loss(
@@ -222,9 +268,31 @@ pub fn read(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Vec<(Data
             format!("{missing_parcels} LandXML {parcels} without CoordGeom {verb} left out"),
         ));
     }
-    report.skipped = skipped + missing_parcels;
+    if missing_alignments > 0 {
+        let (alignments, verb) = if missing_alignments == 1 { ("alignment", "was") } else { ("alignments", "were") };
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedFeature,
+            format!("{missing_alignments} LandXML {alignments} without CoordGeom {verb} left out"),
+        ));
+    }
+    report.skipped = skipped + missing_parcels + missing_alignments;
     if skipped > 0 {
-        report.messages.push(format!("{skipped} points, faces or figures couldn't be read and were left out"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedFeature,
+            if skipped == 1 {
+                "1 point, face or figure couldn't be read and was left out".to_string()
+            } else {
+                format!("{skipped} points, faces or figures couldn't be read and were left out")
+            },
+        ));
+    }
+    if vertices > 0 {
+        let what = if vertices == 1 {
+            "point reference (a Start or End) couldn't be read and was left out of its shape"
+        } else {
+            "point references (a Start or End) couldn't be read and were left out of their shapes"
+        };
+        report.messages.push(crate::loss::Note::loss(crate::loss::LossCode::DroppedGeometry, format!("{vertices} LandXML {what}")));
     }
     let mut out: Vec<(Dataset, ReadReport)> = Vec::new();
     let transformer = match crs.filter(|c| *c != Crs::LonLat) {
@@ -301,6 +369,61 @@ mod tests {
 </Pnts><Faces><F>1 2 3</F><F>1 3 4</F><F i="1">1 2 4</F><F>1 2 9</F></Faces></Definition></Surface></Surfaces>
 </LandXML>"#;
 
+    /// A surface point that can't be read is said, without a code: the faces that name it are
+    /// counted as the features left out.
+    #[test]
+    fn an_unreadable_surface_point_is_said() {
+        let xml = r#"<LandXML><Surfaces><Surface name="g"><Definition surfType="TIN"><Pnts>
+  <P id="1">0 0 1</P><P id="2">0 1 1</P><P id="3">1 0 1</P><P id="4">x y</P>
+</Pnts><Faces><F>1 2 3</F></Faces></Definition></Surface></Surfaces></LandXML>"#;
+        let layers = read("s.xml", xml.as_bytes(), None).unwrap();
+        let said: Vec<_> = layers[0].1.messages.iter().filter(|m| m.contains("surface point")).map(|m| (m.as_str(), m.loss)).collect();
+        assert_eq!(said, [("1 LandXML surface point couldn't be read and was left out", None)]);
+    }
+
+    /// An alignment without its CoordGeom has no shape: it is left out, and said with the
+    /// features left out.
+    #[test]
+    fn an_alignment_without_coordgeom_is_said_left_out() {
+        let xml = r#"<LandXML><Alignments><Alignment name="no shape"/></Alignments><CgPoints><CgPoint name="1">0 0</CgPoint></CgPoints></LandXML>"#;
+        let layers = read("a.xml", xml.as_bytes(), None).unwrap();
+        assert_eq!(layers[0].1.skipped, 1);
+        let said: Vec<_> = layers[0].1.messages.iter().filter(|m| m.contains("left out")).map(|m| (m.as_str(), m.loss)).collect();
+        assert_eq!(said, [("1 LandXML alignment without CoordGeom was left out", Some(crate::loss::LossCode::DroppedFeature))]);
+    }
+
+    /// A point reference (a Start or End) a parcel's CoordGeom gives that can't be read is left
+    /// out of a parcel that is still kept: its geometry's loss, said apart from the features left
+    /// out. Each reference counts once, as the notice says, whether or not two of them meant the
+    /// same point.
+    #[test]
+    fn a_point_reference_left_out_is_said_apart_from_features() {
+        let xml = r#"<LandXML><Parcels><Parcel name="kept"><CoordGeom>
+  <Line><Start>0 0</Start><End>1 0</End></Line>
+  <Line><Start pntRef="missing"/><End>1 1</End></Line>
+  <Line><Start>1 1</Start><End>0 1</End></Line>
+</CoordGeom></Parcel></Parcels></LandXML>"#;
+        let layers = read("v.xml", xml.as_bytes(), None).unwrap();
+        assert_eq!(layers[0].0.features.len(), 1, "the parcel is kept");
+        assert_eq!(layers[0].1.skipped, 0, "no feature is left out");
+        let said: Vec<_> = layers[0].1.messages.iter().filter(|m| m.contains("left out")).map(|m| (m.as_str(), m.loss)).collect();
+        assert_eq!(
+            said,
+            [(
+                "1 LandXML point reference (a Start or End) couldn't be read and was left out of its shape",
+                Some(crate::loss::LossCode::DroppedGeometry)
+            )]
+        );
+        // One line's End and the next one's Start, both unreadable: two references.
+        let junction = xml.replace(
+            "<Start pntRef=\"missing\"/><End>1 1</End>",
+            "<Start>1 0</Start><End>x y</End></Line><Line><Start>x y</Start><End>1 1</End>",
+        );
+        let layers = read("j.xml", junction.as_bytes(), None).unwrap();
+        let said: Vec<_> = layers[0].1.messages.texts().filter(|m| m.contains("point reference")).collect();
+        assert_eq!(said, ["2 LandXML point references (a Start or End) couldn't be read and were left out of their shapes"]);
+    }
+
     #[test]
     fn reads_landxml() {
         assert!(looks_like_landxml(LANDXML));
@@ -326,6 +449,9 @@ mod tests {
         assert_eq!(faces.features.len(), 2, "the invisible face is a hole; the face naming a missing point is skipped");
         assert_eq!(faces.features[0].attrs[1], Value::Float(102.0));
         assert!(layers[0].1.skipped >= 2);
+        // The point and the face left out are features; nothing in this file loses a vertex.
+        let said: Vec<_> = layers[0].1.messages.iter().filter(|m| m.contains("left out")).map(|m| (m.as_str(), m.loss)).collect();
+        assert_eq!(said, [("2 points, faces or figures couldn't be read and were left out", Some(crate::loss::LossCode::DroppedFeature))]);
         assert!(looks_like_landxml(&format!("<LandXML>{}é", " ".repeat(4087))), "a head cut inside a character");
         // A given system wins; none at all keeps the coordinates.
         let plain = LANDXML.replace("<CoordinateSystem epsgCode=\"32633\"/>", "");
