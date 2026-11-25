@@ -19,6 +19,7 @@ mod private_ca;
 mod project_save;
 mod project_save_roundtrip;
 mod raster_crs_notices;
+mod read_routes;
 mod recovery_paths;
 mod snapping_point_types;
 mod vertex_snap_identity;

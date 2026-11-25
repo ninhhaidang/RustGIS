@@ -9,7 +9,7 @@
 //! Losses no reader says yet are listed as [`Expect::Silent`] with what is lost. They are the
 //! roadmap's known silent losses (ROADMAP.md › Correct results); a reader that starts saying one
 //! fails here until the case is moved to [`Expect::Said`], so the list only shrinks. Exports have
-//! their own test, `never_silent_roundtrip.rs`.
+//! their own test, `never_silent_roundtrip.rs`; `read_routes.rs` reads these files by every route.
 //!
 //! The table includes text, CityJSON, CityGML, KMZ, GeoPackage, FlatGeobuf, GeoParquet, FileGDB,
 //! Shapefile, XLSX, ODS, XLS, XLSB, OSM PBF and feature-service PBF. More formats and loss kinds remain to add (ROADMAP.md); one loss
@@ -80,15 +80,15 @@ fn check_csv_extra(ds: &rustgis_engine::data::Dataset) -> std::io::Result<()> {
 }
 
 /// A clean file and the same file with a loss in it.
-struct Case {
+pub(super) struct Case {
     /// The reader and the loss, to name a failure.
-    name: &'static str,
+    pub(super) name: &'static str,
     /// The file name, whose extension picks the reader.
-    file: &'static str,
-    clean: Vec<u8>,
-    lossy: Vec<u8>,
+    pub(super) file: &'static str,
+    pub(super) clean: Vec<u8>,
+    pub(super) lossy: Vec<u8>,
     /// Files beside the clean and lossy inputs (binary indexes can differ).
-    beside: [Vec<(&'static str, Vec<u8>)>; 2],
+    pub(super) beside: [Vec<(&'static str, Vec<u8>)>; 2],
     expect: Expect,
     /// Additional exact notices for this case's lossy input, in report order before its primary notice.
     extra_notices: &'static [&'static str],
@@ -186,7 +186,7 @@ fn shapefile_zip(name: &[u8]) -> Vec<u8> {
 }
 
 /// Builds paired inputs, keeping sidecars specific to each input when their binary layout differs.
-fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
+pub(super) fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
     let point = r#"{"type":"Point","coordinates":[1,2]}"#;
     let topo_line = |arcs: &str| format!(r#"{{"type":"Topology","objects":{{"o":{{"type":"LineString","arcs":[0]}}}},"arcs":[{arcs}]}}"#);
     // Quantized and delta-encoded.
