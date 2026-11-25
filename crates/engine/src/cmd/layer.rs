@@ -2518,6 +2518,19 @@ fn streams_by_count(count: Option<u64>) -> bool {
     count.is_none_or(|c| c > rustgis_map::source::STREAM_ABOVE)
 }
 
+/// Whether Add Data asks whether to copy the file at `path` into the project or link to it
+/// (#2350): a `.geojson` file, a Shapefile, and a source read in place
+/// ([`rustgis_data::source::EXTENSIONS`]) but LiDAR. The one list of those formats: the dialog
+/// asks by it and [`link_choice`] decides by it. Not asked: a `.json` (it may be a city model),
+/// LiDAR (always linked), files read whole. Case doesn't count; the path is read as given, so the
+/// dialog trims what was typed before it asks.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn asks_link(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let ends = |ext: &str| lower.strip_suffix(ext).is_some_and(|rest| rest.ends_with('.'));
+    ends("geojson") || ends("shp") || rustgis_data::source::EXTENSIONS.iter().any(|e| !matches!(*e, "las" | "laz") && ends(e))
+}
+
 /// What Add Data's question, copy a file into the project or link to it (#2350), starts from:
 /// `{"linked", "copy"}`, or `None` for a file it doesn't ask about. Asked about: a `.geojson`
 /// file, a Shapefile, a GeoPackage (one choice for all of `tables`), GeoParquet and FlatGeobuf.
@@ -2534,6 +2547,9 @@ fn streams_by_count(count: Option<u64>) -> bool {
 /// [`rustgis_data::io::max_bytes`]; a source's whole read is bounded where it is read.
 #[cfg(not(target_arch = "wasm32"))]
 fn link_choice(path: &str, tables: &[String]) -> Option<Value> {
+    if !asks_link(path) {
+        return None;
+    }
     let lower = path.to_ascii_lowercase();
     let unset = json!({});
     let fits = |p: &Path| std::fs::metadata(p).is_ok_and(|m| m.len() <= rustgis_data::io::max_bytes());
@@ -2543,7 +2559,8 @@ fn link_choice(path: &str, tables: &[String]) -> Option<Value> {
         let shp = Path::new(path);
         let linked = past_cap_shapefile(path, &unset).is_some() || streams_shapefile(&unset, path);
         (linked, fits(shp) && fits(&rustgis_data::io::dbf_sidecar(shp)))
-    } else if rustgis_data::source::is_source_name(path) && !lower.ends_with(".las") && !lower.ends_with(".laz") {
+    } else {
+        // What is left to ask about is a source read in place ([`asks_link`]).
         let gpkg = lower.ends_with(".gpkg");
         let mut linked = false;
         for table in tables.iter().map(|t| gpkg.then_some(t.as_str())) {
@@ -2559,8 +2576,6 @@ fn link_choice(path: &str, tables: &[String]) -> Option<Value> {
         // And after the last one opened: a Cancel that came while it opened gives no question.
         rustgis_data::progress::check().ok()?;
         (linked, true)
-    } else {
-        return None;
     };
     Some(json!({"linked": linked, "copy": copy}))
 }
@@ -8500,5 +8515,42 @@ mod geodatabase_tests {
         assert_eq!(LiveTable::Sqlserver(t).display(), "Mains");
         let e = super::class_table(&item, &[], None).unwrap_err().to_string();
         assert!(e.contains("utility.gis.Mains is stored in a format RustGIS doesn't read (SDEBINARY"), "{e}");
+    }
+
+    /// Add Data's question (#2350) is asked about the six formats read in place, in any case; not
+    /// about a `.json`, LiDAR, files read whole, no extension, a folder or a path with spaces.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn asks_link_names_the_formats_read_in_place() {
+        for ext in ["geojson", "shp", "gpkg", "parquet", "geoparquet", "fgb"] {
+            for path in [format!("a.{ext}"), format!("A.{}", ext.to_ascii_uppercase())] {
+                assert!(super::asks_link(&path), "{path:?} asks");
+            }
+        }
+        for path in ["a.json", "a.las", "a.laz", "a.LAZ", "a.csv", "a.kml", "a.tif", "a", "", "data.parquet/", "a.gpkg "] {
+            assert!(!super::asks_link(path), "{path:?} doesn't ask");
+        }
+    }
+
+    /// A format added to the sources that are read in place asks with no other edit.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn asks_link_follows_the_source_extensions() {
+        for ext in rustgis_data::source::EXTENSIONS.iter().filter(|e| !matches!(**e, "las" | "laz")) {
+            assert!(super::asks_link(&format!("a.{ext}")), "{ext}");
+        }
+    }
+
+    /// `link_choice` makes no question for a path `asks_link` says no to, and one for a `.geojson`
+    /// file or Shapefile it says yes to.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn link_choice_asks_where_asks_link_does() {
+        for path in ["a.json", "a.las", "a.laz", "a.csv", "a.kml", "a.tif", "a", "", "data.parquet/"] {
+            assert!(!super::asks_link(path) && super::link_choice(path, &[]).is_none(), "{path:?}");
+        }
+        for path in ["a.geojson", "A.SHP"] {
+            assert!(super::asks_link(path) && super::link_choice(path, &[]).is_some(), "{path:?}");
+        }
     }
 }

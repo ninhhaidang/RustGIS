@@ -50,8 +50,15 @@ struct Link {
 /// reads in place on the desktop (`info.fileLayers` says how, [`Link`]). A `.json` may be a city
 /// model, and LiDAR is always linked: neither asks. The browser has no paths to link.
 fn links(path: &str) -> bool {
-    let lower = path.trim().to_ascii_lowercase();
-    !cfg!(target_arch = "wasm32") && [".geojson", ".shp", ".gpkg", ".parquet", ".geoparquet", ".fgb"].iter().any(|e| lower.ends_with(e))
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        rustgis_engine::cmd::layer::asks_link(path.trim())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        false
+    }
 }
 
 /// Whether a file lists its layers without reading their features, so it can ask which to add:
@@ -456,6 +463,15 @@ mod tests {
         h.run_steps(2);
         assert!(h.state().ui.choosing.is_empty());
         assert_eq!(h.state().session.map().layers.len(), fresh);
+    }
+
+    /// The dialog asks by the engine's list ([`rustgis_engine::cmd::layer::asks_link`]), reading
+    /// a typed path without the spaces around it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_dialog_asks_by_the_engines_list_of_formats() {
+        assert!(super::links("roads.gpkg") && super::links("  ROADS.GeoJSON "));
+        assert!(!super::links("roads.json") && !super::links(" scan.laz ") && !super::links(""));
     }
 
     /// A file Add Data can link asks whether to copy it into the project or link to it (#2350),
