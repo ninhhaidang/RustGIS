@@ -36,6 +36,5 @@ ignore = true
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# terrio-crs, pinned by `rev` in Cargo.toml until a release after 0.2.4 (opengeos/RustGIS#2032).
-allow-git = ["https://github.com/opengeos/terrio"]
+allow-git = []
 required-git-spec = "rev"

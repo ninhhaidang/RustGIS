@@ -519,13 +519,18 @@ fn read_root(root: &Node, code: Option<u32>, text: &str) -> Result<(Crs, Option<
 /// WGS 84 that is its code's transformation then reads as the code. Only there: the text RustGIS
 /// writes for some codes approximates them away from it (Guam's projection, EPSG:3993, 1.5 cm at
 /// 0.1°) and is read back as the code; and a shift on WGS 84 itself, which a WGS 84 or Web
-/// Mercator code's file may give, is none for PROJ 9.8.1 anywhere.
+/// Mercator code's file may give, is none for PROJ anywhere. Web Mercator, which has no area of
+/// use to take the centre of, is compared at 10°E 45°N.
 pub(crate) fn places_as(text: &str, crs: Crs) -> bool {
     let (Ok(file), Ok(code)) = (super::crs::transformer_of_wkt(text), super::crs::not_waiting_for_grids(|| crs.transformer())) else {
         return false;
     };
     let centre = match crs {
         Crs::Epsg(c) => super::crs::area_centre(c),
+        // Away from the equator, where Web Mercator's sphere and an ellipsoid's Mercator (World
+        // Mercator, or GDAL 1's EPSG:900913 without its `PROJ4` extension, as PROJ reads it) are
+        // 21 km apart at 45°; at the origin they meet.
+        Crs::WebMercator => Some(rustgis_geom::Coord::new(10.0, 45.0)),
         _ => None,
     }
     .unwrap_or(rustgis_geom::Coord::new(0.0, 0.0));
@@ -4882,7 +4887,15 @@ pub(crate) mod tests {
         let utm = format!(r#"{},AUTHORITY["EPSG","32631"]]"#, ESRI_32631.strip_suffix(']').unwrap());
         let towgs84 = |t: &str| utm.replace("298.257223563]]", &format!("298.257223563],{t}]"));
         assert_eq!(crs_from_wkt(&towgs84("TOWGS84[0,0,0]")), Ok(Crs::Epsg(32631)));
-        assert!(matches!(crs_from_wkt(&towgs84("TOWGS84[1,2,3]")), Ok(Crs::Custom(_))));
+        // Nor with another: a shift on WGS 84 itself is none. PROJ 9.9.0 reads this text as a
+        // bound CRS and transforms it to EPSG:4326 without the shift (conda-forge PROJ 9.9.0 with
+        // pyproj 3.8.0 built on it, network off: `Transformer.from_crs(CRS.from_wkt(text),
+        // "EPSG:4326", always_xy=True).transform(500000, 5000000)` is 3°E 45.1534772°N), as
+        // EPSG:32631 does.
+        let shifted = crs_from_wkt(&towgs84("TOWGS84[1,2,3]"));
+        assert_eq!(shifted, Ok(Crs::Epsg(32631)));
+        let ll = Crs::Epsg(32631).transformer().unwrap().to_lonlat(Coord::new(500_000.0, 5_000_000.0)).unwrap();
+        assert!((ll.x - 3.0).abs() < 1e-9 && (ll.y - 45.153_477_2).abs() < 1e-7, "{ll:?}");
     }
 
     /// Another body's system with an EPSG code (the Earth's) is read from its parameters, not as
@@ -5117,6 +5130,20 @@ pub(crate) mod tests {
         assert_eq!(crs_from_wkt(&shifted), Ok(Crs::WebMercator));
         let shifted = without_proj4_extension(&shifted).unwrap();
         assert!(matches!(crs_from_wkt(&shifted), Ok(Crs::Custom(_))), "{:?}", crs_from_wkt(&shifted));
+        // Without the extension it is Mercator on the WGS 84 ellipsoid, as PROJ 9.9.0 reads it
+        // (conda-forge PROJ 9.9.0 with pyproj 3.8.0 built on it, network off:
+        // `Transformer.from_crs(CRS.from_wkt(text), "EPSG:4326", always_xy=True)` puts
+        // 6 679 169.4476 m E, 5 621 521.4862 m N at 60°E 45.1923152°N, with or without the
+        // shift), not Web Mercator's sphere (45°N).
+        for text in [without_proj4_extension(google).unwrap(), shifted] {
+            let ll = crs_from_wkt(&text)
+                .unwrap()
+                .transformer()
+                .unwrap()
+                .to_lonlat(Coord::new(6_679_169.447_596_414, 5_621_521.486_192_066))
+                .unwrap();
+            assert!((ll.y - 45.192_315).abs() < 1e-4, "{ll:?}");
+        }
         // A system named and projected as Web Mercator stays Web Mercator, and a shift its file
         // gives is said to be set aside.
         let esri = ESRI_3857.replace("6378137.0,298.257223563]]", "6378137.0,298.257223563],TOWGS84[1,2,3]]");

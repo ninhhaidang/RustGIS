@@ -80,9 +80,8 @@ weezl = "0.2"
 # The tests' Zstandard-compressed GeoTIFFs (the version the tiff crate decodes with).
 zstd = { version = "0.14", default-features = false }
 # Coordinate systems and transformations: EPSG, ESRI and IAU tables, datum shifts and grids, in pure
-# Rust (opengeos/RustGIS#2032). From opengeos/terrio until a release after terrio-crs 0.2.4 carries
-# the WKT reading RustGIS uses (opengeos/terrio#1012).
-terrio-crs = { git = "https://github.com/opengeos/terrio", rev = "bbc0aaef92c21844c4adfaa8808e9ba15f0faa8f", default-features = false }
+# Rust (opengeos/RustGIS#2032).
+terrio-crs = { version = "0.3.0", default-features = false }
 base64 = "0.23"
 # Deflate for PDF image streams.
 miniz_oxide = "0.9"
