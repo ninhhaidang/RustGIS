@@ -147,6 +147,12 @@ impl Input {
         &self.held
     }
 
+    /// The layer's name and its file, for a layer read in place from a file on this computer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn file(&self) -> Option<(&str, &str)> {
+        self.file.as_ref().map(|(name, path)| (name.as_str(), path.as_str()))
+    }
+
     /// The raster the work reads: within a run ([`reading_files`]), a layer read in place from a
     /// file on this computer is read again from it, at the finest level the run can hold (the
     /// full image when it fits), once for the run however many inputs name it; otherwise, and for
@@ -413,10 +419,18 @@ pub(crate) fn made_layer(name: String, layer: rustgis_map::RasterLayer, extra: O
 /// what the command says besides (`extra`), and what it does then.
 pub(crate) fn add_made(s: &mut Session, m: Made) -> CmdResult {
     let Made { name, layer, extra, then, inputs, staged, .. } = m;
-    if let Some((file, said)) = staged {
-        let path = file.destination().display().to_string();
-        file.commit().map_err(|e| if said.is_empty() { format!("{path}: {e}") } else { format!("{path}: {e} ({})", said.join("; ")) })?;
-    }
+    let layer = match staged {
+        Some((file, said)) => {
+            let dest = file.destination().to_path_buf();
+            let path = dest.display().to_string();
+            file.commit()
+                .map_err(|e| if said.is_empty() { format!("{path}: {e}") } else { format!("{path}: {e} ({})", said.join("; ")) })?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let layer = installed(layer, &dest);
+            layer
+        }
+        None => layer,
+    };
     rustgis_data::provenance::record(inputs);
     let mut v = super::raster::add_raster(s, &name, layer)?;
     if let (Some(Value::Object(more)), Some(o)) = (extra, v.as_object_mut()) {
@@ -426,6 +440,19 @@ pub(crate) fn add_made(s: &mut Session, m: Made) -> CmdResult {
         then(s, &mut v);
     }
     Ok(v)
+}
+
+/// `layer`, made to read the file just installed at `dest`: one read in place pairs its reads of
+/// the file with the file as installed, as one added from it does, so a command can read it at
+/// once.
+#[cfg(not(target_arch = "wasm32"))]
+fn installed(mut layer: rustgis_map::RasterLayer, dest: &std::path::Path) -> rustgis_map::RasterLayer {
+    if layer.tiled
+        && let (Some(revision), Some(held)) = (rustgis_data::raster::FileRevision::of(dest), layer.data.as_mut())
+    {
+        std::sync::Arc::make_mut(held).set_source_revision(revision);
+    }
+    layer
 }
 
 /// What the remaps of a raster function, a chain or a suitability met: their ranges that match

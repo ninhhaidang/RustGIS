@@ -1332,6 +1332,49 @@ pub fn stage_streamed<T, E: From<std::io::Error>>(
     stage_at(link_target(path)?, 1 << 20, write)
 }
 
+/// [`stage_streamed`] to a destination nothing holds yet: it is reserved first, an empty file
+/// made in its place only if nothing is there (an `AlreadyExists` error otherwise, before
+/// anything is written), so two writes never pick the same file. [`StagedWrite::commit`] puts
+/// the file there; dropping the result, or an error, removes the reservation, and `folder` (one
+/// the caller just made for it) when nothing else is in it.
+pub fn stage_streamed_new<T, E: From<std::io::Error>>(
+    path: &Path,
+    folder: Option<&Path>,
+    write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> std::result::Result<T, E>,
+) -> std::result::Result<(StagedWrite, T), E> {
+    std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    let mut held = Reserved { path: Some(path.to_path_buf()), folder: folder.map(Path::to_path_buf) };
+    let (mut staged, value) = stage_at(path.to_path_buf(), 1 << 20, write)?;
+    (staged.reserved, staged.folder) = (held.path.take(), held.folder.take());
+    Ok((staged, value))
+}
+
+/// A destination reserved for a write ([`stage_streamed_new`]), and a folder made for it, removed
+/// while the write isn't installed: the reservation while it is still empty, the folder while
+/// nothing else is in it.
+struct Reserved {
+    path: Option<std::path::PathBuf>,
+    folder: Option<std::path::PathBuf>,
+}
+
+impl Drop for Reserved {
+    fn drop(&mut self) {
+        unreserve(self.path.take(), self.folder.take());
+    }
+}
+
+/// Removes a reserved destination still empty, then `folder` if nothing else is in it.
+fn unreserve(path: Option<std::path::PathBuf>, folder: Option<std::path::PathBuf>) {
+    if let Some(p) = path
+        && std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_file() && m.len() == 0)
+    {
+        let _ = std::fs::remove_file(p);
+    }
+    if let Some(f) = folder {
+        let _ = std::fs::remove_dir(f);
+    }
+}
+
 /// Stages and installs a write, retaining the old file on error or cancellation.
 fn atomic_write_at<T, E: From<std::io::Error>>(
     path: std::path::PathBuf,
@@ -1353,7 +1396,7 @@ fn stage_at<T, E: From<std::io::Error>>(
     let tmp = temp_beside(&path)?;
     // Opened before the guard, so a name already taken is never removed.
     let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-    let staged = StagedWrite { path, tmp: Some(tmp) };
+    let staged = StagedWrite { path, tmp: Some(tmp), reserved: None, folder: None };
     // The new file takes the old one's mode before any content is written, so a private file
     // (0600) never becomes readable by others. On Windows a new file inherits its folder's access
     // rules, and copying a read-only flag would only make the rename fail.
@@ -1381,10 +1424,14 @@ fn stage_at<T, E: From<std::io::Error>>(
     Ok((staged, value))
 }
 
-/// An atomic write awaiting installation. An error or drop removes its temporary file.
+/// An atomic write awaiting installation. An error or drop removes its temporary file, and what
+/// [`stage_streamed_new`] reserved for it.
 pub struct StagedWrite {
     path: std::path::PathBuf,
     tmp: Option<std::path::PathBuf>,
+    /// The destination reserved, and the folder made for it ([`stage_streamed_new`]).
+    reserved: Option<std::path::PathBuf>,
+    folder: Option<std::path::PathBuf>,
 }
 
 impl StagedWrite {
@@ -1402,6 +1449,7 @@ impl StagedWrite {
         if let Some(tmp) = &self.tmp {
             std::fs::rename(tmp, &self.path)?;
             self.tmp = None;
+            (self.reserved, self.folder) = (None, None);
             sync_folder(&self.path);
         }
         Ok(())
@@ -1413,6 +1461,7 @@ impl Drop for StagedWrite {
         if let Some(tmp) = &self.tmp {
             let _ = std::fs::remove_file(tmp);
         }
+        unreserve(self.reserved.take(), self.folder.take());
     }
 }
 
@@ -5803,6 +5852,28 @@ pub(crate) fn group_rings(rings: Vec<(Vec<Coord>, bool)>) -> Geometry {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// A write to a name nothing holds reserves it first: a second write to it is refused before
+    /// anything is written, and dropping the write removes the reservation and the folder made for
+    /// it; once installed, both stay (#2865).
+    #[test]
+    fn a_new_staged_file_reserves_its_name_and_leaves_nothing_when_dropped() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Survey.rgis.data");
+        std::fs::create_dir(&folder).unwrap();
+        let dest = folder.join("index.tif");
+        let (staged, ()) = stage_streamed_new::<_, std::io::Error>(&dest, Some(&folder), |w| w.write_all(b"pixels")).unwrap();
+        assert!(dest.is_file(), "reserved");
+        let taken = stage_streamed_new::<(), std::io::Error>(&dest, None, |_| panic!("written to a name another holds"));
+        assert_eq!(taken.err().map(|e| e.kind()), Some(std::io::ErrorKind::AlreadyExists));
+        drop(staged);
+        assert!(!dest.exists() && !folder.exists(), "the reservation and its folder go with it");
+        std::fs::create_dir(&folder).unwrap();
+        let (staged, ()) = stage_streamed_new::<_, std::io::Error>(&dest, Some(&folder), |w| w.write_all(b"pixels")).unwrap();
+        staged.commit().unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"pixels");
+    }
 
     /// Each extra cell is counted, including empty ones, and each affected row once, preserving named data.
     #[test]

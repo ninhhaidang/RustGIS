@@ -1608,6 +1608,11 @@ pub(crate) fn index_work(s: &Session, p: &Value) -> Result<super::workflows::Wor
     let idx = ps(p, "index").ok_or("index is required")?;
     let expr = index_expression(idx, blue, green, red, nir, swir)?;
     let out = name(p, format!("{}_{idx}", r.held().name))?;
+    // A file too large to read whole at its full size: a block at a time (#2865).
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(blocks) = super::in_blocks::plan(s, &r, &out)? {
+        return Ok(Box::new(move || blocks.run(|block| rasterops::band_math(block, &expr))));
+    }
     Ok(Box::new(move || {
         let r = r.read()?;
         super::workflows::made(rasterops::derive(&r, &out, vec![rasterops::band_math(&r, &expr)?])?, None)

@@ -25,6 +25,8 @@ pub struct Control {
     cancel_at_start: bool,
     /// How often the work looked at the flag ([`Control::looked`]).
     looked: AtomicU64,
+    /// How many [`uncounted`] parts of the work are running: their steps don't count.
+    quiet: AtomicU64,
     /// Cancelled at its `n`th look ([`Control::cancelled_at_look`]); 0 for never.
     #[cfg(any(test, feature = "testing"))]
     cancel_at_look: u64,
@@ -112,12 +114,45 @@ impl rustgis_data::progress::Probe for Control {
         self.looked_at()
     }
     fn begin(&self, total: u64) {
-        self.done.store(0, Ordering::Relaxed);
-        self.total.store(total, Ordering::Relaxed);
+        if self.counting() {
+            self.done.store(0, Ordering::Relaxed);
+            self.total.store(total, Ordering::Relaxed);
+        }
     }
     fn advance(&self, n: u64) {
-        self.done.fetch_add(n, Ordering::Relaxed);
+        if self.counting() {
+            self.done.fetch_add(n, Ordering::Relaxed);
+        }
     }
+}
+
+impl Control {
+    /// Whether the work's steps count: none of it runs [`uncounted`].
+    fn counting(&self) -> bool {
+        self.quiet.load(Ordering::Relaxed) == 0
+    }
+}
+
+/// Runs `work` without counting its steps in the progress of the run on this thread, whose looks
+/// at Cancel still stop it: for a piece of a step its caller counts itself (a block of a raster
+/// made a block at a time), whose own steps would start the count again at each piece. Its
+/// threads ([`crate::parallel`]) share the run's control, so they don't count either.
+pub fn uncounted<T>(work: impl FnOnce() -> T) -> T {
+    /// Counts the part as running while it lives, also as it unwinds.
+    struct Quiet(Option<Arc<Control>>);
+    impl Drop for Quiet {
+        fn drop(&mut self) {
+            if let Some(c) = &self.0 {
+                c.quiet.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
+    let control = current();
+    if let Some(c) = &control {
+        c.quiet.fetch_add(1, Ordering::Relaxed);
+    }
+    let _quiet = Quiet(control);
+    work()
 }
 
 /// Carries the initiating request predicate to the data writer's last commit check as well as
@@ -238,7 +273,7 @@ pub(crate) fn check() -> Result<(), Cancelled> {
 /// Starts counting a step of `total` items (rows, features) for the progress, from none done.
 pub(crate) fn begin(total: usize) {
     CURRENT.with(|c| {
-        if let Some(c) = c.borrow().as_ref() {
+        if let Some(c) = c.borrow().as_ref().filter(|c| c.counting()) {
             c.done.store(0, Ordering::Relaxed);
             c.total.store(total as u64, Ordering::Relaxed);
         }
@@ -249,7 +284,7 @@ pub(crate) fn begin(total: usize) {
 /// (its index).
 pub(crate) fn reached(done: usize) {
     CURRENT.with(|c| {
-        if let Some(c) = c.borrow().as_ref() {
+        if let Some(c) = c.borrow().as_ref().filter(|c| c.counting()) {
             c.done.store(done as u64, Ordering::Relaxed);
         }
     });
@@ -259,7 +294,7 @@ pub(crate) fn reached(done: usize) {
 /// otherwise ends one short).
 pub(crate) fn finish() {
     CURRENT.with(|c| {
-        if let Some(c) = c.borrow().as_ref() {
+        if let Some(c) = c.borrow().as_ref().filter(|c| c.counting()) {
             c.done.store(c.total.load(Ordering::Relaxed), Ordering::Relaxed);
         }
     });
@@ -268,7 +303,7 @@ pub(crate) fn finish() {
 /// Counts `n` more items of the step done.
 pub(crate) fn advance(n: usize) {
     CURRENT.with(|c| {
-        if let Some(c) = c.borrow().as_ref() {
+        if let Some(c) = c.borrow().as_ref().filter(|c| c.counting()) {
             c.done.fetch_add(n as u64, Ordering::Relaxed);
         }
     });

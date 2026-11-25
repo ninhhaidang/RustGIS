@@ -94,6 +94,11 @@ pub(super) fn declared(spec: &CommandSpec, params: &Value) -> Effects {
 /// Adds only source reach of the actual current execution targets, without opening them.
 pub(super) fn command(s: &crate::cmd::InputContext<'_>, spec: &CommandSpec, params: &Value, layer: Option<&rustgis_map::Layer>) -> Effects {
     let mut effects = declared(spec, params);
+    // A result too large to hold, made a block at a time, is written to the results folder (#2865).
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::cmd::in_blocks::writes_file(s, spec.id, params) {
+        effects = effects.with(Effect::Files);
+    }
     effects = effects.union(match spec.id {
         "map.zoomToTiles" => crate::cmd::tiles::metadata_reach(s, params),
         "map.search" => crate::cmd::search::metadata_reach(s, params),

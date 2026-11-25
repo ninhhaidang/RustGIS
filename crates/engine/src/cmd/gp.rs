@@ -1681,6 +1681,11 @@ impl ReadNote {
         let overview = r.overview.map(|_| (level, full));
         ReadNote { name: name.to_string(), rounded: r.rounded.iter().sum(), overview, part: Some((r.width, r.height)) }
     }
+
+    /// Of a file read at its full size in pieces, `rounded` of its values rounded as they were.
+    pub(crate) fn rounded(name: &str, rounded: u64) -> ReadNote {
+        ReadNote { name: name.to_string(), rounded, overview: None, part: None }
+    }
 }
 
 /// What a run says of the raster files read in place it read again from their file

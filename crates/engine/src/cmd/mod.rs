@@ -29,6 +29,8 @@ pub mod graphics;
 pub mod group;
 pub mod history;
 pub mod imagery;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod in_blocks;
 pub mod items;
 pub mod labels;
 pub mod layer;

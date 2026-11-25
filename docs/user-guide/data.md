@@ -1684,6 +1684,16 @@ so reading it takes as long as decoding the whole file once. A cloud-optimised G
 web address is read in place instead, a tile at a time (see [Files on the
 web](data-formats.md#files-on-the-web)).
 
+On the desktop, a tiled GeoTIFF on this computer too large to hold, with overviews, is read in
+place too: the map draws the part in view at the level it needs. Commands that make a raster from
+it read the file again as they run. **Clip** by an extent reads only the part under the extent,
+at the file's full resolution when that part fits. **Indices** work a block of tiles at a time at
+the file's full resolution. A result of up to 120 million pixels is held, as any other; a larger
+one is written to a tiled GeoTIFF in the project's results folder beside it (`Survey.rgis.data`
+for `Survey.rgis`), or in RustGIS's own folder for a project not saved yet, and the new layer
+reads it in place; a notice says where it is. The other commands read the finest level of the file
+they can hold, and say which.
+
 The web app opens a picked or dropped file of up to 256 MB whole. A larger GeoTIFF is read a part
 at a time instead: its header, then only the tiles of the overview it opens from. A
 cloud-optimised file opens however large it is, as long as those parts fit in 256 MB (a 436 MB

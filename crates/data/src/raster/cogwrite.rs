@@ -1087,6 +1087,326 @@ pub fn write_staged(r: &Raster, band: usize, path: &Path) -> Result<(CogInfo, cr
     Ok((info, staged))
 }
 
+/// A tiled GeoTIFF of one band of 32-bit floats written a row of tiles at a time, for a raster
+/// made in pieces too large to hold whole (#2865). The caller gives the full image's rows, top to
+/// bottom, in as many calls as it likes ([`TileStream::put`]); each full row of tiles is
+/// compressed and written as it is complete, and the rows of the overviews are made from it as
+/// they go, each level averaging two by two the pixels of the one before (the pixels with a value
+/// among the four, as [`write_to`] averages, but from the level before rather than the full
+/// image). Its layout is a tiled GeoTIFF's, every level's directory first: not a cloud-optimised
+/// one, whose tiles go smallest level first, but one this computer's reader reads in place.
+///
+/// Memory: at most two rows of tiles of each level wait to be written, about
+/// `width × TILE × 4 × 2 × 4 / 3` bytes, and a few compressed tiles a thread.
+pub struct TileStream<'a, W: Write + Seek> {
+    out: &'a mut W,
+    levels: Vec<Level>,
+    /// Each level's rows given and not yet written as a row of tiles, its width each.
+    pending: Vec<Vec<f32>>,
+    /// How many rows of each level have been given.
+    given: Vec<u64>,
+    places: Vec<Vec<(u64, u64)>>,
+    patches: Vec<Patch>,
+    big: bool,
+    pos: u64,
+    /// The value of a pixel with none, written for pixels past the image's edge too.
+    nodata: f32,
+    /// The level kept as it is written ([`TileStream::keeping`]), and its rows so far.
+    kept: Option<(usize, Vec<f32>)>,
+    /// What the kept level is made into: the template's name, place and no-data.
+    template: Raster,
+}
+
+impl<'a, W: Write + Seek> TileStream<'a, W> {
+    /// A stream of a `width` × `height` raster into `out` (which must be empty: offsets are from
+    /// its start), placed, named and with the no-data value of `template` (its first band's name,
+    /// its transform's corner and pixel size, its system and rights holder; its own pixels and
+    /// size aren't written). A template without a no-data value marks pixels with none NaN.
+    pub fn new(template: &Raster, width: u32, height: u32, out: &'a mut W) -> Result<TileStream<'a, W>> {
+        template.require_coordinates().map_err(err)?;
+        let gt = template.transform;
+        if gt.pixel_height > 0.0 || gt.pixel_width < 0.0 {
+            return Err(err("only north-up rasters can be exported for now"));
+        }
+        if width == 0 || height == 0 {
+            return Err(err("the raster has no pixels to write"));
+        }
+        let plan = stream_plan();
+        let geo = geo_keys(template)?;
+        let mut levels = vec![Level::new(width, height, 1)];
+        while let Some(last) = levels.last().filter(|l| l.w.max(l.h) > TILE) {
+            if levels.len() >= MAX_LEVELS {
+                return Err(err("too many overviews"));
+            }
+            let (w, h, f) = (last.w.div_ceil(2), last.h.div_ceil(2), last.factor * 2);
+            levels.push(Level::new(w, h, f));
+        }
+        let tiles: usize = levels.iter().map(Level::tiles).sum();
+        // The worst a file can come to, as [`write_to`] reckons it.
+        let raw = (tiles as u64).saturating_mul(u64::from(TILE) * u64::from(TILE) * 4);
+        let worst = raw.saturating_add(raw / 512).saturating_add(tiles as u64 * 64).saturating_add(1 << 20);
+        let big = worst >= u64::from(u32::MAX);
+        // A header past what a reader takes at a file's start couldn't be read in place: its
+        // tiles' tables alone, an offset and a count each, refused before they are made.
+        let table_bytes = (tiles as u64).saturating_mul(if big { 16 } else { 8 });
+        if table_bytes > super::cog::MAX_HEADER {
+            return Err(err(format!(
+                "its tables of {tiles} tiles ({} MB) are more than a reader takes at a file's start: clip it to a smaller area first",
+                table_bytes >> 20
+            )));
+        }
+        let nodata = template.nodata.map_or(f32::NAN, |d| d as f32);
+        let ifds: Vec<Vec<Entry>> = levels
+            .iter()
+            .enumerate()
+            .map(|(i, lv)| {
+                let mut e = entries(template, &plan, lv, i == 0, &geo, big);
+                if i == 0 {
+                    // What marks a pixel with none: the template's value, else NaN (its own
+                    // pixels, which `entries` looks at, aren't the stream's).
+                    e.retain(|e| e.tag != 42113);
+                    e.push(ascii(42113, &template.nodata.map_or_else(|| "nan".to_string(), |d| d.to_string())));
+                }
+                e
+            })
+            .collect();
+        let head = build_head(&ifds, big);
+        // A header past what a reader takes at its start couldn't be read in place.
+        if head.bytes.len() as u64 > super::cog::MAX_HEADER {
+            return Err(err(format!(
+                "its tables of {tiles} tiles ({} MB) are more than a reader takes at a file's start: clip it to a smaller area first",
+                head.bytes.len() >> 20
+            )));
+        }
+        out.seek(SeekFrom::Start(0)).map_err(err)?;
+        out.write_all(&head.bytes).map_err(err)?;
+        let n = levels.len();
+        Ok(TileStream {
+            out,
+            pos: head.bytes.len() as u64,
+            places: levels.iter().map(|l| Vec::with_capacity(l.tiles())).collect(),
+            levels,
+            pending: vec![Vec::new(); n],
+            given: vec![0; n],
+            patches: head.patches,
+            big,
+            nodata,
+            kept: None,
+            template: template.clone(),
+        })
+    }
+
+    /// Keeps, as it is written, the finest level whose tiles hold at most `samples` pixels, their
+    /// padding counted (the coarsest when none does), which [`TileStream::finish`] gives as a
+    /// raster: an overview of the file to hold, the one a layer reading the file in place picks
+    /// with the same budget, without reading it back.
+    pub fn keeping(mut self, samples: usize) -> TileStream<'a, W> {
+        let tile = TILE as usize * TILE as usize;
+        let fits = self.levels.iter().position(|l| l.tiles().saturating_mul(tile) <= samples);
+        let level = fits.unwrap_or(self.levels.len().saturating_sub(1));
+        self.kept = Some((level, Vec::new()));
+        self
+    }
+
+    /// The most bytes a stream of a `width` × `height` image holds at once, keeping an overview of
+    /// at most `kept` samples ([`TileStream::keeping`]), given its rows a row of tiles at a time:
+    /// each level's rows waiting for their row of tiles (none at the full size, which is written
+    /// from the rows given; less than a row of tiles of each level after it, and the rows made
+    /// for it), the tiles' tables, the overview kept, and the tiles being compressed.
+    pub fn peak(width: u32, height: u32, kept: usize) -> u64 {
+        let row = u64::from(width).saturating_mul(u64::from(TILE)).saturating_mul(4);
+        // The tiles of every level, each with an offset and a count of 8 bytes, held three times
+        // as the header is laid out, and once more where each tile went.
+        let (mut tiles, (mut w, mut h)) = (0u64, (width, height));
+        loop {
+            tiles = tiles.saturating_add(u64::from(w.div_ceil(TILE)).saturating_mul(u64::from(h.div_ceil(TILE))));
+            if w.max(h) <= TILE {
+                break;
+            }
+            (w, h) = (w.div_ceil(2), h.div_ceil(2));
+        }
+        // Rows waiting at each level after the first: at most a row of tiles of that level and the
+        // half-size rows just made for it, each level half as wide as the one before, so two
+        // full-width rows hold them all.
+        let levels = row.saturating_mul(2);
+        let tables = tiles.saturating_mul(64);
+        let compressing = (crate::threads::max() as u64).saturating_mul(u64::from(TILE) * u64::from(TILE) * 4 * (2 + AHEAD as u64));
+        levels.saturating_add(tables).saturating_add((kept as u64).saturating_mul(4)).saturating_add(compressing)
+    }
+
+    /// The full image's next rows, whole rows of its width, top to bottom: each row of tiles they
+    /// complete is written, and its overviews' rows made. More rows than the image has are an error.
+    pub fn put(&mut self, rows: &[f32]) -> Result<()> {
+        self.put_level(0, rows)
+    }
+
+    /// [`TileStream::put`] at level `i`.
+    fn put_level(&mut self, i: usize, rows: &[f32]) -> Result<()> {
+        let Some(lv) = self.levels.get(i) else { return Ok(()) };
+        let w = lv.w as usize;
+        if !rows.len().is_multiple_of(w) {
+            return Err(err("rows must be whole rows of the image's width"));
+        }
+        let count = (rows.len() / w) as u64;
+        let given = self.given.get(i).copied().unwrap_or(0).saturating_add(count);
+        if given > u64::from(lv.h) {
+            return Err(err(format!("more than the image's {} rows were given", lv.h)));
+        }
+        if let Some(g) = self.given.get_mut(i) {
+            *g = given;
+        }
+        if let Some((_, kept)) = self.kept.as_mut().filter(|(level, _)| *level == i) {
+            kept.try_reserve(rows.len()).map_err(|_| err("too little memory for the overview kept"))?;
+            kept.extend_from_slice(rows);
+        }
+        let tile_rows = TILE as usize * w;
+        // Taken while its rows are written, which give the next level its own.
+        let mut pending = self.pending.get_mut(i).map(std::mem::take).unwrap_or_default();
+        let mut rest = rows;
+        let room = |n: usize, pending: &mut Vec<f32>| {
+            pending.try_reserve(n).map_err(|_| err("too little memory for the rows of a level waiting to be written"))
+        };
+        // A row of tiles begun: finished from the rows given, and written.
+        if !pending.is_empty() {
+            let (head, after) = rest.split_at(tile_rows.saturating_sub(pending.len()).min(rest.len()));
+            room(head.len(), &mut pending)?;
+            pending.extend_from_slice(head);
+            rest = after;
+            if pending.len() == tile_rows {
+                self.write_row(i, &pending)?;
+                pending.clear();
+            }
+        }
+        // Whole rows of tiles are written from the rows given, not copied first.
+        while pending.is_empty() && rest.len() >= tile_rows {
+            let (row, after) = rest.split_at(tile_rows);
+            self.write_row(i, row)?;
+            rest = after;
+        }
+        room(rest.len(), &mut pending)?;
+        pending.extend_from_slice(rest);
+        if let Some(p) = self.pending.get_mut(i) {
+            *p = pending;
+        }
+        Ok(())
+    }
+
+    /// Writes `rows` (at most [`TILE`] of level `i`'s rows, the last row of tiles when fewer) as
+    /// the level's next row of tiles, then gives the next level their average two by two.
+    fn write_row(&mut self, i: usize, rows: &[f32]) -> Result<()> {
+        let Some(lv) = self.levels.get(i) else { return Ok(()) };
+        let (w, across) = (lv.w as usize, lv.across as usize);
+        let (t, nodata) = (TILE as usize, self.nodata);
+        let plan = stream_plan();
+        let line = t * 4;
+        let make = |scratch: &mut Vec<u8>, tx: usize| -> Result<Vec<u8>> {
+            let mut raw = Vec::with_capacity(t * t * 4);
+            for y in 0..t {
+                for x in 0..t {
+                    let col = tx * t + x;
+                    let v = if col < w { rows.get(y * w + col).copied().unwrap_or(nodata) } else { nodata };
+                    let v = if v.is_nan() { nodata } else { v };
+                    raw.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            predict_rows(&mut raw, line, 1, Sample::Float, predictor(&plan), scratch);
+            Ok(miniz_oxide::deflate::compress_to_vec_zlib(&raw, DEFLATE_FAST))
+        };
+        let (big, out, pos, places) = (self.big, &mut *self.out, &mut self.pos, &mut self.places);
+        // The run's progress counts the caller's pieces, not these tiles.
+        crate::progress::without_counting(|| {
+            in_order(across, t * t * 4, err, Vec::new, make, |_, zipped| {
+                if !big && *pos + zipped.len() as u64 > u64::from(u32::MAX) {
+                    return Err(err("the file is too large for classic TIFF"));
+                }
+                out.write_all(&zipped).map_err(err)?;
+                if let Some(p) = places.get_mut(i) {
+                    p.push((*pos, zipped.len() as u64));
+                }
+                *pos += zipped.len() as u64;
+                Ok(())
+            })
+        })?;
+        // The next level's rows: each the average of two of these (the last alone when they are
+        // odd), two pixels across at a time.
+        if i + 1 < self.levels.len() {
+            let half = average_rows(rows, w, nodata);
+            self.put_level(i + 1, &half)?;
+        }
+        Ok(())
+    }
+
+    /// Writes what is left of each level once every row is given, and fills in the tile tables:
+    /// what was written, and the level kept ([`TileStream::keeping`]), placed as a reader of the
+    /// file places it, with `overview` the full image's size when it is coarser.
+    pub fn finish(mut self) -> Result<(CogInfo, Option<Raster>)> {
+        if self.given.first().copied() != self.levels.first().map(|l| u64::from(l.h)) {
+            return Err(err("the image's rows weren't all given"));
+        }
+        for i in 0..self.levels.len() {
+            let rest = self.pending.get_mut(i).map(std::mem::take).unwrap_or_default();
+            if !rest.is_empty() {
+                self.write_row(i, &rest)?;
+            }
+        }
+        for (lv, p) in self.levels.iter().zip(&self.places) {
+            if p.len() != lv.tiles() {
+                return Err(err(format!("{} of the {} tiles of a level were written", p.len(), lv.tiles())));
+            }
+        }
+        fill_tables(self.out, &self.patches, &self.places, self.big, self.pos, err)?;
+        let info = CogInfo { big: self.big, levels: self.levels.iter().map(|l| (l.w, l.h)).collect(), bytes: self.pos };
+        let (Some((level, data)), Some(full)) = (self.kept, self.levels.first()) else { return Ok((info, None)) };
+        let Some(lv) = self.levels.get(level) else { return Ok((info, None)) };
+        let t = &self.template;
+        // A reader of the file spreads a coarser level over the full image's ground.
+        let (sx, sy) = (f64::from(full.w) / f64::from(lv.w.max(1)), f64::from(full.h) / f64::from(lv.h.max(1)));
+        let gt =
+            super::GeoTransform { pixel_width: t.transform.pixel_width * sx, pixel_height: t.transform.pixel_height * sy, ..t.transform };
+        let mut r = Raster::new(t.name.clone(), lv.w, lv.h, vec![data], gt, t.crs, t.nodata, ColorHint::Gray, "Float32")?;
+        if level > 0 {
+            r.overview = Some((full.w, full.h));
+        }
+        if let (Some(b), Some(tb)) = (r.bands.first_mut(), t.bands.first()) {
+            b.name.clone_from(&tb.name);
+        }
+        Ok((info, Some(r)))
+    }
+}
+
+/// What a [`TileStream`] writes: one band of 32-bit floats, averaged in its overviews.
+fn stream_plan() -> Plan {
+    Plan { bands: vec![0], sample: Sample::Float, rgb: false, alpha: None, nodata_int: None, palette: None, categorical: false }
+}
+
+/// `rows` of `w` pixels made half the size each way: each pixel the mean of the up to four it
+/// covers that have a value (not NaN, nor `nodata`), else `nodata`; an odd last row or column
+/// covers itself alone.
+fn average_rows(rows: &[f32], w: usize, nodata: f32) -> Vec<f32> {
+    let h = rows.len() / w.max(1);
+    let (hw, hh) = (w.div_ceil(2), h.div_ceil(2));
+    let valid = |v: f32| v.is_finite() && v != nodata;
+    let mut out = Vec::with_capacity(hw * hh);
+    for y in 0..hh {
+        for x in 0..hw {
+            let (mut sum, mut n) = (0.0f64, 0u32);
+            for (dy, dx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                let (yy, xx) = (2 * y + dy, 2 * x + dx);
+                if yy < h
+                    && xx < w
+                    && let Some(&v) = rows.get(yy * w + xx)
+                    && valid(v)
+                {
+                    sum += f64::from(v);
+                    n += 1;
+                }
+            }
+            out.push(if n > 0 { (sum / f64::from(n)) as f32 } else { nodata });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -1100,6 +1420,73 @@ mod tests {
     fn utm(w: u32, h: u32, bands: Vec<Vec<f32>>, color: ColorHint, data_type: &str, nodata: Option<f64>) -> Raster {
         let gt = GeoTransform { origin_x: 500_000.0, origin_y: 4_000_000.0, pixel_width: 30.0, pixel_height: -30.0 };
         Raster::new("t", w, h, bands, gt, Crs::from_epsg(32617).unwrap(), nodata, color, data_type).unwrap()
+    }
+
+    /// An overview's pixel is the mean of the pixels with a value it covers: none, NaN or infinite
+    /// left out, an odd last row or column covering itself alone, and no-data where it covers
+    /// none with one.
+    #[test]
+    fn overview_rows_average_the_pixels_with_a_value() {
+        let nd = -9999.0;
+        assert_eq!(average_rows(&[1.0, f32::NAN, 5.0], 3, nd), [1.0, 5.0]);
+        assert_eq!(average_rows(&[f32::INFINITY, 2.0, 4.0, 6.0], 2, nd), [4.0]);
+        assert_eq!(average_rows(&[nd, f32::NAN, 3.0, 8.0, nd, nd], 3, nd), [8.0, 3.0]);
+        assert_eq!(average_rows(&[nd, nd, 1.0, 3.0], 2, nd), [2.0]);
+        assert_eq!(average_rows(&[nd, f32::NEG_INFINITY], 2, nd), [nd]);
+    }
+
+    /// A raster streamed in pieces of uneven rows (#2865) reads back pixel for pixel, its no-data
+    /// value kept, and each overview the average two by two of the level before; the layout's
+    /// reader finds every level.
+    #[test]
+    fn a_streamed_raster_reads_back_with_its_overviews() {
+        let (w, h) = (1300u32, 1100u32);
+        let value = |x: u32, y: u32| if (x * 7 + y * 3).is_multiple_of(97) { f32::NAN } else { (x as f32) * 0.5 - (y as f32) * 0.25 };
+        let data: Vec<f32> = (0..h).flat_map(|y| (0..w).map(move |x| value(x, y))).collect();
+        let template = utm(1, 1, vec![vec![0.0]], ColorHint::Gray, "Float32", Some(-9999.0));
+        let mut out = Cursor::new(Vec::new());
+        let mut stream = TileStream::new(&template, w, h, &mut out).unwrap();
+        let mut at = 0usize;
+        for rows in [1usize, 300, 511, 7, 281] {
+            let n = rows * w as usize;
+            stream.put(&data[at..at + n]).unwrap();
+            at += n;
+        }
+        assert!(stream.put(&data[..w as usize]).is_err(), "a row past the image");
+        let (info, kept) = stream.finish().unwrap();
+        assert_eq!(info.levels, vec![(1300, 1100), (650, 550), (325, 275)]);
+        assert!(kept.is_none(), "nothing kept unless asked");
+        let bytes = out.into_inner();
+        let back = geotiff::read(Cursor::new(&bytes), "back").unwrap();
+        assert_eq!((back.width, back.height, back.nodata, back.transform), (w, h, Some(-9999.0), template.transform));
+        for y in 0..h {
+            for x in 0..w {
+                let want = value(x, y);
+                let got = back.value(0, i64::from(x), i64::from(y));
+                assert_eq!(got, (!want.is_nan()).then_some(want), "{x},{y}");
+            }
+        }
+        // Each overview is its level before averaged two by two.
+        let mut before = data.iter().map(|v| if v.is_nan() { -9999.0 } else { *v }).collect::<Vec<f32>>();
+        let mut bw = w as usize;
+        for (lw, lh) in [(650u32, 550u32), (325, 275)] {
+            let want = average_rows(&before, bw, -9999.0);
+            let level = geotiff::read_limited(geotiff::reader(Cursor::new(&bytes)).unwrap(), "o", (lw * lh) as usize, None).unwrap();
+            assert_eq!((level.width, level.height), (lw, lh));
+            assert_eq!(level.bands[0].data, want, "the {lw} × {lh} overview");
+            (before, bw) = (want, lw as usize);
+        }
+        let Ok(crate::raster::cog::Parse::Done(layout)) = crate::raster::cog::layout(&crate::raster::cog::Sparse::default().with(0, bytes))
+        else {
+            panic!("not a tiled GeoTIFF the reader reads in place");
+        };
+        assert_eq!(layout.levels.len(), 3);
+        // Rows that aren't whole rows, and an image left short, are errors.
+        let mut out = Cursor::new(Vec::new());
+        let mut stream = TileStream::new(&template, w, h, &mut out).unwrap();
+        assert!(stream.put(&data[..5]).is_err());
+        stream.put(&data[..w as usize]).unwrap();
+        assert!(stream.finish().is_err());
     }
 
     /// 3000 × 2000 colour pixels: red rises across, green down, blue is a checker of 2 × 2 blocks.
