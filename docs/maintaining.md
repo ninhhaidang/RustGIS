@@ -146,6 +146,11 @@ The same containers require `dggs-system` when Generate Tessellation or Aggregat
 reader would make A5 cells, warning only that it ignored the key. A blank `system`, `A5` or none
 needs nothing.
 
+Every capability a saved command can need, except `table-export-order` (no tool node runs
+`share.exportTable`), also reads a `model.run` whose `graph` is given inline, in a saved task step,
+script line, notebook cell or history entry: each of the graph's tool nodes needs what the same
+tool as a step needs.
+
 Projects with a background on a layout element, or a saved task step, script, notebook command
 cell or history entry that gives one (`layout.addElement` or `layout.update` with a
 `background` other than `null`), require `layout-element-background`, so an older reader
