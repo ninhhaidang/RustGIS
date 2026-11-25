@@ -488,7 +488,8 @@ Right-click a map or layout tab (or its entry in Browser) to **Rename**, **Dupli
 at least one map. Drag a map or layout tab to another place to change the order of the maps or
 the layouts (maps stay before layouts); near the ends of a strip whose tabs don't all fit, the
 tabs scroll. In Browser, drag a map or layout up or down its list the same way; near the
-Browser's top or bottom, the list scrolls. The map or layout in view stays in view, each move is
+Browser's top or bottom, the list scrolls, the row you drag is filled, and a line across the list
+shows where it will land. The map or layout in view stays in view, each move is
 one undo step, and the order is saved with the project. From scripts: `map.move` and
 `layout.move`, with the name and the new place (`"to"`: 0 for the first).
 

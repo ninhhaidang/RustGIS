@@ -2644,6 +2644,14 @@ fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
 // ---------------------------------------------------------------------------------------------
 // Catalog
 
+/// Fills the `row` of a Maps or Layouts entry of the Browser while it is `dragging` (what
+/// `drag_tab` answered), behind its icon and name: `fill` is the shape reserved before it was drawn.
+fn fill_dragged_row(ui: &Ui, fill: egui::layers::ShapeIdx, dragging: bool, row: Rect, t: &Tokens) {
+    if dragging {
+        ui.painter().set(fill, egui::Shape::rect_filled(row, CornerRadius::same(5), t.hover));
+    }
+}
+
 /// Draws the Browser; toolbox identities use source names so translations can share labels.
 fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -2652,18 +2660,24 @@ fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 let maps: Vec<String> = app.session.project.maps.iter().map(|m| m.name.clone()).collect();
                 let mut rows = Vec::with_capacity(maps.len());
                 for (i, m) in maps.iter().enumerate() {
+                    // The row spans the list, so the drop line (#2829) and the fill do too (#2956); the fill
+                    // is painted once the row's rectangle is known, behind its icon and name.
+                    let fill = ui.painter().add(egui::Shape::Noop);
                     let row = ui.horizontal(|ui| {
+                        ui.set_min_width(ui.available_width());
                         let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
                         icons::paint(ui.painter(), r, "map", t.icon, t.accent);
                         let active = i == app.session.project.active_map;
                         // Dragged to another place among the maps, as its tab is (#2829).
                         let resp = ui.selectable_label(active, m).interact(Sense::drag());
-                        crate::mapview::drag_tab(ui, &resp, false, m);
+                        let dragging = crate::mapview::drag_tab(ui, &resp, false, m);
                         if resp.clicked() {
                             let _ = app.run("map.activate", json!({"name": m}));
                         }
                         resp.context_menu(|ui| map_menu(app, ui, m));
+                        dragging
                     });
+                    fill_dragged_row(ui, fill, row.inner, row.response.rect, t);
                     rows.push(row.response.rect);
                 }
                 crate::mapview::tab_drop(app, ui, t, &rows, &maps, false, true);
@@ -2704,7 +2718,9 @@ fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 egui::CollapsingHeader::new(egui::RichText::new(tl!("Layouts")).font(semibold(12.5))).default_open(true).show(ui, |ui| {
                     let mut rows = Vec::with_capacity(layouts.len());
                     for n in &layouts {
+                        let fill = ui.painter().add(egui::Shape::Noop);
                         let row = ui.horizontal(|ui| {
+                            ui.set_min_width(ui.available_width());
                             let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
                             icons::paint(ui.painter(), r, "new_layout", t.icon, t.accent);
                             let resp = ui
@@ -2717,13 +2733,15 @@ fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                                     n,
                                 )
                                 .interact(Sense::drag());
-                            crate::mapview::drag_tab(ui, &resp, true, n);
+                            let dragging = crate::mapview::drag_tab(ui, &resp, true, n);
                             if resp.clicked() {
                                 let _ = app.run("layout.activate", json!({"name": n}));
                                 app.ui.tab = "Publish".into();
                             }
                             resp.context_menu(|ui| layout_menu(app, ui, n));
+                            dragging
                         });
+                        fill_dragged_row(ui, fill, row.inner, row.response.rect, t);
                         rows.push(row.response.rect);
                     }
                     crate::mapview::tab_drop(app, ui, t, &rows, &layouts, true, true);

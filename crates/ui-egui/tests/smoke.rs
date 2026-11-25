@@ -1551,6 +1551,87 @@ fn dragging_browser_rows_reorders_maps_or_layouts_in_one_undo_step() {
     assert_eq!(active_view(&h), "M2");
 }
 
+/// Every shape the last frame drew, nested ones flattened.
+fn drawn_shapes(h: &egui_kittest::Harness<'_, RustGisApp>) -> Vec<egui::Shape> {
+    fn flatten(s: &egui::Shape, out: &mut Vec<egui::Shape>) {
+        match s {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| flatten(s, out)),
+            s => out.push(s.clone()),
+        }
+    }
+    let mut out = Vec::new();
+    h.output().shapes.iter().for_each(|c| flatten(&c.shape, &mut out));
+    out
+}
+
+/// While a Browser row is dragged it is filled, as a tab and a layer are, and the line where it
+/// would land spans the list, not just the name of the last row; let go, the fill goes (#2956).
+#[test]
+fn a_browser_row_being_dragged_is_filled_and_its_drop_line_spans_the_list() {
+    let mut h = harness();
+    h.state_mut().run("ui.pane.catalog", json!(null)).unwrap();
+    activate_world(&mut h);
+    for n in ["M2", "M3"] {
+        h.state_mut().run("map.new", json!({"name": n})).unwrap();
+    }
+    for n in ["L1", "L2"] {
+        h.state_mut().run("layout.new", json!({"name": n})).unwrap();
+    }
+    activate_world(&mut h);
+    settle(&mut h);
+    let t = rustgis_ui_egui::theme::Tokens::get(&h.ctx);
+    // Rects of at least this width are a row's fill or a line across the list: a name is narrower.
+    let wide = 120.0;
+    let fills = |h: &egui_kittest::Harness<'_, RustGisApp>, y: f32| {
+        drawn_shapes(h)
+            .iter()
+            .filter(|s| matches!(s, egui::Shape::Rect(r) if r.fill == t.hover && r.rect.width() >= wide && r.rect.y_range().contains(y)))
+            .count()
+    };
+    let lines = |h: &egui_kittest::Harness<'_, RustGisApp>| {
+        let across = |s: &egui::Shape| match s {
+            egui::Shape::LineSegment { points, stroke } => {
+                stroke.color == t.accent && stroke.width == 2.0 && points[0].y == points[1].y && (points[0].x - points[1].x).abs() >= wide
+            }
+            _ => false,
+        };
+        drawn_shapes(h).iter().filter(|s| across(s)).count()
+    };
+    let button =
+        |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    // `dragged` held over the upper half of `onto`'s row: `dragged` filled, one line across the list.
+    // Then let go (the pointer leaves) and nothing stays marked.
+    let hold_and_drop = |h: &mut egui_kittest::Harness<'_, RustGisApp>, dragged: &str, onto: &str| {
+        let (row, target) = (browser_row(h, dragged), browser_row(h, onto));
+        assert_eq!((fills(h, row.center().y), lines(h)), (0, 0), "nothing marked before a drag");
+        let (from, to) = (row.center(), egui::pos2(target.center().x, target.min.y + 3.0));
+        h.event(egui::Event::PointerMoved(from));
+        h.event(button(from, true));
+        h.step();
+        for i in 1..=6 {
+            h.event(egui::Event::PointerMoved(from + (to - from) * (i as f32 / 6.0)));
+            h.step();
+        }
+        h.event(egui::Event::PointerMoved(to));
+        h.step();
+        assert_eq!(fills(h, row.center().y), 1, "{dragged} being dragged is filled");
+        assert_eq!(lines(h), 1, "the drop line spans the list");
+        h.event(button(to, false));
+        settle(h);
+        h.event(egui::Event::PointerMoved(egui::pos2(5.0, 5.0)));
+        settle(h);
+        let moved = browser_row(h, dragged);
+        assert_eq!((fills(h, moved.center().y), lines(h)), (0, 0), "nothing marked once let go");
+    };
+    hold_and_drop(&mut h, "M3", "World");
+    assert_eq!(map_names(&h), ["M3", "World", "M2"]);
+    // The map in view is dragged like any other.
+    hold_and_drop(&mut h, "World", "M3");
+    assert_eq!(map_names(&h), ["World", "M3", "M2"]);
+    hold_and_drop(&mut h, "L2", "L1");
+    assert_eq!(layout_names(&h), ["L2", "L1"]);
+}
+
 /// Held near the Browser's bottom edge, a dragged map row scrolls the list down past the rows in
 /// view, and lands there when let go (#2829).
 #[test]
