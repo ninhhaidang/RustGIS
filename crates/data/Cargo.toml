@@ -50,6 +50,12 @@ ruzstd = { workspace = true }
 lerc-reader = { workspace = true }
 lerc-core = { workspace = true }
 
+# A Shapefile's `.dbf` header holds the day it was written, which `dbase` reads from `time`'s
+# clock. Without this feature that clock is std's, which panics in the browser, so a Shapefile
+# export stopped the web app (opengeos/GeoLibre#3648); with it, the clock is JavaScript's.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+time = { version = "0.3", default-features = false, features = ["wasm-bindgen"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusqlite = { workspace = true }
 postgres = { workspace = true }

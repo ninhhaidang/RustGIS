@@ -5263,6 +5263,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tiberius",
  "tiff",
+ "time",
  "tokio",
  "tokio-postgres-rustls",
  "tokio-util",
@@ -6468,6 +6469,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
 dependencies = [
  "deranged",
+ "js-sys",
  "num-conv",
  "powerfmt",
  "serde_core",
