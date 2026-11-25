@@ -1466,9 +1466,10 @@ fn edit_vertex(s: &mut Session, p: &Json) -> CmdResult {
 /// same system that one of its other places reads exactly as (a vertex snapped to, a feature
 /// pasted where it was copied from). Each other place is converted on its own to find what is
 /// stored near it, so no stored place is missed however large the edit, and only stored places
-/// one of them reads as are held. The search reads the box of every feature of the layers in its
-/// system, each from its vertices, once a command (an added feature, a paste): work that grows
-/// with those layers, which C2 is to take to a spatial index.
+/// one of them reads as are held. The features near them are found through each layer's grid of
+/// boxes ([`rustgis_map::Layer::rows_touching`]), made once until that layer's rows change: the
+/// first search after an edit walks the edited layer's rows again to make its grid (as the search
+/// before the grid did each time), the other layers of its system keep theirs.
 /// Empty while the layer is in longitude/latitude: its edits are written as they are.
 pub(crate) fn held_places(s: &Session, id: u32, originals: &[&Geometry], edited: &[&Geometry]) -> rustgis_data::HeldPlaces {
     let mut held = rustgis_data::HeldPlaces::default();
@@ -1498,8 +1499,8 @@ pub(crate) fn held_places(s: &Session, id: u32, originals: &[&Geometry], edited:
         return held;
     }
     for m in s.map().layers.iter().filter(|m| !m.is_raster() && m.dataset.coord_crs() == system) {
-        for f in &m.dataset.features {
-            if let Some(g) = &f.geometry
+        for row in m.rows_touching(&within) {
+            if let Some(g) = m.dataset.features.geometry(row)
                 && g.extent().intersects(&within)
             {
                 m.dataset.hold_places(g, Some(&within), &mut held);

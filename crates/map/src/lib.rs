@@ -27,6 +27,7 @@ pub mod projection;
 pub mod qgis;
 pub mod raster;
 pub mod report;
+mod row_boxes;
 pub mod rows;
 pub mod shadow;
 pub mod slots;
@@ -350,6 +351,9 @@ pub struct Layer {
     /// place of a layer held in another system takes long enough not to do it each frame.
     #[serde(skip)]
     extent_cache: ExtentCache,
+    /// A grid of its rows' boxes in its own coordinates, as last made ([`Layer::rows_touching`]).
+    #[serde(skip)]
+    row_boxes: row_boxes::Cache,
     /// Whether its projected or longitude/latitude copy was used since the map was detached for a
     /// drawing ([`Map::detach_reads`]): what an export drew, and so can say of itself.
     /// Hit-testing and snapping use them too, but on the live map, which no export reads this
@@ -565,6 +569,7 @@ impl Layer {
             unplaced: Unplaced::default(),
             flat_unplaced: Unplaced::default(),
             extent_cache: ExtentCache::default(),
+            row_boxes: Default::default(),
             drawn: DrawnBy::default(),
             geometry_rev: 0,
             view_memory: Default::default(),
@@ -1687,6 +1692,14 @@ impl Layer {
     pub fn query_rows_with(&self, dataset: &Dataset, env: &rustgis_data::query::Env) -> Option<Vec<bool>> {
         let query = rustgis_data::rows::Query::compile(self.definition_query.as_deref(), dataset).ok()?;
         query.is_filtered().then(|| (0..dataset.features.len()).map(|row| query.matches(dataset, row, env)).collect())
+    }
+
+    /// The rows whose shape's box, in the layer's own coordinates ([`Dataset::coord_crs`]), may
+    /// meet `within`: every row whose box does, perhaps some whose box doesn't, never one without
+    /// a shape; each once, in order. Looked up in a grid kept until the rows change (#2032
+    /// C2f-6), so a search near an edit doesn't read every feature.
+    pub fn rows_touching(&self, within: &Extent) -> Vec<usize> {
+        self.row_boxes.touching(&self.dataset.features, within)
     }
 
     /// Extent in longitude/latitude.
@@ -3735,6 +3748,7 @@ impl Layer {
             unplaced: _,
             flat_unplaced: _,
             extent_cache: _,
+            row_boxes: _,
             drawn: _,
             view_memory: _,
             geometry_kinds: _,
