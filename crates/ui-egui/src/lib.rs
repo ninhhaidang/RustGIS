@@ -5598,7 +5598,7 @@ impl RustGisApp {
                 use rustgis_engine::data::io;
                 let (crs, default_note) = io::default_export_in(&ds, &name, self.session.project.coordinate_system);
                 let written = io::write_bytes_noted(&ds, &ext, crs, &name).map_err(|e| e.to_string());
-                let (bytes, left_out, unplaced) = match written {
+                let (bytes, left_out, unplaced, extent) = match written {
                     Ok(w) => w,
                     Err(e) => {
                         self.session.notify(e.clone(), true);
@@ -5607,9 +5607,9 @@ impl RustGisApp {
                 };
                 let ext = download_ext;
                 // The features written, read whole, give their own extent, in longitude/latitude
-                // (not a raster's, or the one a streamed layer's source declares).
-                let mut notes: rustgis_engine::data::loss::Notes =
-                    rustgis_engine::data::export_notes([(ds.as_ref(), ds.lonlat_extent())], &name, crs);
+                // (not a raster's, or the one a streamed layer's source declares), taken from the
+                // places converted for the download when it is written there.
+                let mut notes: rustgis_engine::data::loss::Notes = rustgis_engine::data::export_notes([(ds.as_ref(), extent)], &name, crs);
                 rustgis_engine::cmd::share::coalesce_read_zm(&mut notes, &name, &ds, &lost);
                 notes.extend(unplaced);
                 // Which system it is written in, where that isn't the layer's own, as share.exportLayer says.

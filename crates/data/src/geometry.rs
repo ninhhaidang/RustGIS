@@ -164,6 +164,16 @@ impl Geometry {
         }
     }
 
+    /// Calls `f` with every coordinate, to change it where it lies.
+    pub fn for_each_coord_mut(&mut self, mut f: impl FnMut(&mut Coord)) {
+        match self {
+            Geometry::Point(c) => f(c),
+            Geometry::MultiPoint(v) => v.iter_mut().for_each(f),
+            Geometry::Line(parts) => parts.iter_mut().flatten().for_each(f),
+            Geometry::Polygon(polys) => polys.iter_mut().flatten().flatten().for_each(f),
+        }
+    }
+
     /// Whether every coordinate is a number: none is NaN (which some writers use for an empty
     /// point) or infinite, which have no place and which a saved project can't hold (#1985).
     pub fn is_finite(&self) -> bool {

@@ -722,6 +722,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, project: 
     // Whether a CSV has coordinate columns: a streamed layer that declares no type takes its
     // first geometry's, which the chunks written say.
     let mut csv_points = ds.geometry_type == rustgis_data::GeometryType::Point;
+    let mut lonlat_extent = None;
     let (written, left_out, skipped, table, unfit, null_numbers, moved, format_notes, dates) = match &chunks {
         Some((src, layer)) => {
             let (e, table) = rustgis_data::export::write_source_filtered(src.as_ref(), layer, Path::new(&path), crs, &gpkg, query)
@@ -767,7 +768,11 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, project: 
         None => {
             let mut format_notes = rustgis_data::io::export_losses_notes_in(ds, &ext, rustgis_data::io::name_field(ds), path, crs)
                 .map_err(|e| e.to_string())?;
-            let (left_out, table, placed) = rustgis_data::io::write_path_to(ds, Path::new(&path), crs, &gpkg).map_err(|e| e.to_string())?;
+            // The layer's box in longitude/latitude comes back with the write, taken from the places
+            // converted for the file when it is written there, so each is converted once.
+            let (left_out, table, placed, lonlat) =
+                rustgis_data::io::write_path_placed(ds, Path::new(&path), crs, &gpkg).map_err(|e| e.to_string())?;
+            lonlat_extent = Some(lonlat);
             // Old parts of a Shapefile written over that couldn't be removed.
             format_notes.extend(placed);
             let unfit = if parquet { rustgis_data::source::parquet::values_note(ds, path) } else { None };
@@ -781,7 +786,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, project: 
     // a chunk at a time has none at hand: its vertices beyond 85.05° in Web Mercator are counted
     // as they're written (`e.beyond_web_mercator`), and its source's extent only serves the
     // out-of-place check. A raster layer's extent is its raster's, which the file doesn't hold.
-    let extent = if chunks.is_some() { l.extent() } else { ds.lonlat_extent() };
+    let extent = lonlat_extent.unwrap_or_else(|| l.extent());
     let mut notes: rustgis_data::loss::Notes = rustgis_data::export_notes([(ds, extent)], path, crs);
     coalesce_read_zm(&mut notes, path, ds, &unreadable);
     notes.extend(default_note);
