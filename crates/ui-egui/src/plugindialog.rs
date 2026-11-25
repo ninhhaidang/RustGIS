@@ -263,6 +263,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     let fields = c.form.iter().any(|f| !is_tabs(f));
 
     let mut open = true;
+    let screen = ctx.content_rect();
     let title = crate::i18n::fmt(
         "{plugin} › {command}",
         &[("plugin", m.translate(&lang, &m.name)), ("command", &m.translate(&lang, &c.label).replace('\n', " "))],
@@ -273,8 +274,13 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         .collapsible(false)
         .resizable(true)
         .default_width(460.0)
+        // As tall as the screen allows, not egui's default: the help is laid out first, so the
+        // fields get what it leaves, and a long one left them two rows (#2816). The window
+        // still shrinks to its content, and egui keeps a window on a screen shorter than 420
+        // points (`a_long_form_in_a_short_window_stays_on_screen`).
+        .default_height((screen.height() - 80.0).max(420.0))
         .pivot(Align2::CENTER_CENTER)
-        .default_pos(ctx.content_rect().center())
+        .default_pos(screen.center())
         .show(ctx, |ui| {
             if let Some(f) = tabbed {
                 tab_clicked = tab_row(ui, f, &mut d.values, m, &lang);
@@ -624,6 +630,12 @@ mod tests {
         commands.push(json!({"id": "qw", "label": "Echo Long", "form":
             (0..64).map(|i| json!({"name": format!("p{i}"), "label": format!("Field {i}"), "kind": "text"}))
                 .collect::<Vec<_>>()}));
+        // A long help over four fields, and a short one over three (#2816).
+        let fields = |n: usize| -> Vec<Value> {
+            (0..n).map(|i| json!({"name": format!("p{i}"), "label": format!("Field {i}"), "kind": "text"})).collect()
+        };
+        commands.push(json!({"id": "qh", "label": "Echo Help", "help": "A long help of words. ".repeat(60), "form": fields(4)}));
+        commands.push(json!({"id": "qs", "label": "Echo Short", "help": "A short help.", "form": fields(3)}));
         // Echoes too (the test plugin answers by the id's first letter), with optional fields only.
         commands.push(json!({"id": "qq", "label": "Echo Optional", "form": [
             {"name": "count", "label": "Count", "kind": "number"},
@@ -767,6 +779,55 @@ mod tests {
         let run = h.get_by_label("Run").rect();
         assert!(run.max.y <= h.ctx.content_rect().max.y, "Run is off screen with a result: {run:?}");
         plugins::unload("ui-dialog-short");
+    }
+
+    /// The dialog's top and Run's bottom: the window's height, as far as the test can see.
+    fn window_span(h: &egui_kittest::Harness<'static, RustGisApp>, title: &str) -> (f32, f32) {
+        (h.get_by_label_contains(title).rect().min.y, h.get_by_label("Run").rect().max.y)
+    }
+
+    /// A long help over a few fields, on a tall screen: every field is in view, above Run and
+    /// inside the screen, with nothing to scroll to (#2816).
+    #[test]
+    fn a_long_help_leaves_the_fields_in_view() {
+        let mut h = launch("ui-dialog-help");
+        h.state_mut().run_by_user("plugin:ui-dialog-help/qh", Value::Null).unwrap();
+        h.run();
+        let run = h.get_by_label("Run").rect();
+        let screen = h.ctx.content_rect();
+        for i in 0..4 {
+            let field = h.get_by_label(&format!("Field {i}")).rect();
+            assert!(field.max.y <= run.min.y, "Field {i} is out of view, below Run: {field:?}, Run {run:?}");
+            assert!(screen.contains_rect(field), "Field {i} is off the screen: {field:?} in {screen:?}");
+        }
+        plugins::unload("ui-dialog-help");
+    }
+
+    /// On a screen shorter than the window would start, a form of many fields scrolls: the window
+    /// stays on the screen with Run in it, whatever the screen's height.
+    #[test]
+    fn a_long_form_in_a_short_window_stays_on_screen() {
+        for height in [240.0, 300.0, 360.0, 420.0, 435.0, 440.0] {
+            let plugin = format!("ui-dialog-form-short-{height}");
+            let mut h = launch_in(&plugin, height);
+            h.state_mut().run_by_user(&format!("plugin:{plugin}/qw"), Value::Null).unwrap();
+            h.run();
+            let screen = h.ctx.content_rect();
+            let (top, bottom) = window_span(&h, "Echo Long");
+            assert!(top >= screen.min.y && bottom <= screen.max.y, "the window leaves the screen: {top}..{bottom} in {screen:?}");
+            plugins::unload(&plugin);
+        }
+    }
+
+    /// A short help and a few fields keep the small window they open in today.
+    #[test]
+    fn a_short_help_keeps_the_dialog_small() {
+        let mut h = launch("ui-dialog-help-small");
+        h.state_mut().run_by_user("plugin:ui-dialog-help-small/qs", Value::Null).unwrap();
+        h.run();
+        let (top, bottom) = window_span(&h, "Echo Short");
+        assert!(bottom - top < 300.0, "the dialog opens {} points tall for three fields", bottom - top);
+        plugins::unload("ui-dialog-help-small");
     }
 
     /// While the dialog's run waits to start, an answer of the same command run with other
