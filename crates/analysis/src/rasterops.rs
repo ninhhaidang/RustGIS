@@ -269,14 +269,28 @@ pub fn hillshade(r: &Raster, b: usize, azimuth: f64, altitude: f64, zf: f64) -> 
 }
 
 /// [`hillshade`], as [`slope_on`].
+///
+/// A cell's light is the cosine of the angle between the sun and the ground's normal (Burrough
+/// and McDonnell, *Principles of Geographical Information Systems*, 1998):
+/// cos zenith · cos slope + sin zenith · sin slope · cos(azimuth − aspect), the slope atan p with
+/// p² = gx² + gy² and the aspect atan2(−gx, −gy). With cos slope = 1/√(1 + p²),
+/// sin slope = p/√(1 + p²), cos aspect = −gy/p and sin aspect = −gx/p, that is
+/// (cos zenith − sin zenith · (gy · cos azimuth + gx · sin azimuth)) / √(1 + p²): a square root a
+/// cell and no trigonometry. Where 1 + p² overflows, the angles are taken instead.
 pub fn hillshade_on(r: &Raster, b: usize, azimuth: f64, altitude: f64, zf: f64, ground: Option<&Extent>) -> Result<Vec<f32>, String> {
     let d = band(r, b)?;
     let (zen, az) = ((90.0 - altitude).to_radians(), azimuth.to_radians());
     let (cos_zen, sin_zen) = (zen.cos(), zen.sin());
+    let (cos_az, sin_az) = (az.cos(), az.sin());
     terrain_on(None, r, d, zf, ground, |gx, gy| {
-        let slope = gx.hypot(gy).atan();
-        let aspect = (-gx).atan2(-gy);
-        let v = cos_zen * slope.cos() + sin_zen * slope.sin() * (az - aspect).cos();
+        let q = 1.0 + gx * gx + gy * gy;
+        let v = if q.is_finite() {
+            (cos_zen - sin_zen * (gy * cos_az + gx * sin_az)) / q.sqrt()
+        } else {
+            let slope = gx.hypot(gy).atan();
+            let aspect = (-gx).atan2(-gy);
+            cos_zen * slope.cos() + sin_zen * slope.sin() * (az - aspect).cos()
+        };
         (v.max(0.0) * 255.0).round().max(1.0)
     })
 }
