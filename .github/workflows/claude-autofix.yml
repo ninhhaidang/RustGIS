@@ -11,9 +11,10 @@ name: Claude autofix
 #
 # `pull_request_target`, so fork pull requests get the secrets. That makes the fork's code
 # hostile here, and none of it is run:
-#   - A fork's head is only read and edited. Claude has no shell for it, so no build script, test
-#     or toolchain file from the fork runs next to the Claude token. The pull request's CI checks
-#     the result after the push, as it would a contributor's commit.
+#   - A fork's head is only read and edited. Claude has no shell for it (`--tools` leaves Bash out;
+#     --allowedTools alone would not), so no build script, test or toolchain file from the fork runs
+#     next to the Claude token. The pull request's CI checks the result after the push, as it would
+#     a contributor's commit.
 #   - A branch in this repository was pushed by someone with write access, so there Claude may
 #     also run cargo fmt, check, clippy and the tests of the crates it changed.
 #   - Instruction and settings files from the head (AGENTS.md, CLAUDE.md, .claude/, .mcp.json)
@@ -374,12 +375,13 @@ jobs:
         with:
           # GITHUB_TOKEN rather than the OIDC exchange, which fails under pull_request_target (see
           # claude-code-review.yml). Setting allowed_non_write_users also turns on the action's
-          # subprocess env scrub, which keeps the tokens out of the commands Claude runs. The
-          # Claude process holds its own token, so reads of process environments and the runner's
-          # files are denied: a fork's text could otherwise talk Claude into quoting it in a
-          # reply. "Bundle the commits" checks for it as well. Edits to `.git/` and the runner's
-          # temp directory are denied too: the git config and hooks run commands, and the helper
-          # script and the step outputs live in the temp directory.
+          # subprocess env scrub, which keeps the Claude token out of the commands Claude runs (not
+          # GITHUB_TOKEN, read-only in this job). The Claude process holds its own token, so reads
+          # of process environments and the runner's files are denied: a fork's text could otherwise
+          # talk Claude into quoting it in a reply. "Bundle the commits" checks for it as well.
+          # Edits to `.git/` and the runner's temp directory are denied too: the git config and
+          # hooks run commands, and the helper script and the step outputs live in the temp
+          # directory.
           github_token: ${{ github.token }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_non_write_users: "*"
@@ -398,6 +400,7 @@ jobs:
           claude_args: |
             --model claude-haiku-5-5
             --max-turns 120
+            --tools "Read,Grep,Glob,Edit,Write${{ github.event.pull_request.head.repo.full_name == github.repository && ',Bash' || '' }}"
             --disallowedTools "Read(//proc/**),Read(//sys/**),Read(/${{ runner.temp }}/**),Read(~/.claude/**),Read(.git/config),Edit(/${{ runner.temp }}/**),Edit(.git/**),Edit(~/.claude/**),Edit(~/.gitconfig),Edit(~/.config/git/**)"
             --allowedTools "Read,Grep,Glob,Edit,Write${{ github.event.pull_request.head.repo.full_name == github.repository && ',Bash(cargo fmt:*),Bash(cargo check:*),Bash(cargo test:*)' || '' }}"
 
@@ -487,6 +490,7 @@ jobs:
           claude_args: |
             --model claude-haiku-5-5
             --max-turns 120
+            --tools "Read,Grep,Glob,Edit,Write${{ github.event.pull_request.head.repo.full_name == github.repository && ',Bash' || '' }}"
             --disallowedTools "Read(//proc/**),Read(//sys/**),Read(/${{ runner.temp }}/**),Read(~/.claude/**),Read(.git/config),Edit(/${{ runner.temp }}/**),Edit(.git/**),Edit(~/.claude/**),Edit(~/.gitconfig),Edit(~/.config/git/**)"
             --allowedTools "Read,Grep,Glob,Edit,Write${{ github.event.pull_request.head.repo.full_name == github.repository && ',Bash(cargo fmt:*),Bash(cargo check:*),Bash(cargo clippy:*),Bash(cargo test:*)' || '' }}"
 
