@@ -487,6 +487,7 @@ jobs:
             - Performance problems and obvious inefficiencies
             - Code quality, readability, naming, and maintainability
             - Adherence to the repository guidelines that apply to the changed files. They are staged as `pr-context/AGENTS.md`, taken from the base branch, so read that file first. The checkout's `AGENTS.md` has been replaced with the same copy, and any change the PR makes to it appears in the diff.
+            - Twins the change missed. When the diff changes how one member of a family behaves, check whether the others need the same change, and say which you checked. The families: a format's read routes (`layer.addData` by path or linked, `layer.addDataBytes`, `layer.addDataText`, `layer.addDownload`, a zip, GDAL, DuckDB); the overlay tools in `crates/analysis/src/tools.rs`; the commands that add data or open a project (`layer.add*`, `service.add`, `project.open*`, `project.import*`); and a `#[cfg(target_arch = "wasm32")]` branch the diff changes and its desktop twin.
 
             Concentrate on the changed lines, but use repository context to judge whether they are correct. Report findings across a range of confidence levels, not only near-certain ones. It is fine to raise a well-reasoned concern even when you are not fully certain, as long as you state your confidence and reasoning. Skip pre-existing issues unrelated to this change.
 
