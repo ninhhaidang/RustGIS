@@ -1560,9 +1560,13 @@ pub fn script_commands(script: &str) -> Result<Vec<(usize, String, Value)>, Stri
 /// doesn't read, the column of its error in the line (1-based, in characters, as an editor counts).
 /// `None` for an error that names no line of `script`. The Script pane marks the line and goes to
 /// it (#2815). It reads the `line {n}` that `run_script`'s and [`script_commands`]' stops at a line
-/// start with (the line cap and a run ahead's refusal name none, so they leave no mark), rather
-/// than the run returning the line apart, which would change the error type every caller of a
-/// command shares; `a_scripts_error_says_where_it_stopped` pins each message.
+/// start with, rather than the run returning the line apart, which would change the error type
+/// every caller of a command shares; `a_scripts_error_says_where_it_stopped` pins the stops that start
+/// with a line (except the `check_prepared_prefix` refusal) and the line cap.
+/// Of the stops of a run of a script's lines, three name no line, so they leave no mark: the line
+/// cap, `NOT_AHEAD`, and the refusal of a script that can't prepare its queries or table writes
+/// under its permissions. The refusal of `check_prepared_prefix`, from a run ahead or the run that
+/// uses it, does name its line and is marked like any other stop.
 pub fn script_error_at(script: &str, error: &str) -> Option<(usize, Option<usize>)> {
     let rest = error.strip_prefix("line ")?;
     let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
