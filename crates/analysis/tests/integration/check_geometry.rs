@@ -20,6 +20,11 @@ impl Inputs for Layer {
 
 type Ring<'a> = &'a [(f64, f64)];
 
+/// What a run says: its messages, then its losses, each after its code.
+fn said(r: &ToolResult) -> Vec<String> {
+    r.messages.iter().cloned().chain(r.losses.iter().map(|l| format!("{:?}: {}", l.code, l.text))).collect()
+}
+
 fn layer(ty: GeometryType) -> Layer {
     Layer { ds: Dataset::new("input", ty, vec![Field::new("name", FieldType::Text)]), selected: vec![] }
 }
@@ -323,10 +328,10 @@ fn non_finite_coordinates_are_written_without_geometry() {
     assert!(ds.extent().is_empty(), "nothing to spoil the extent");
     assert_eq!(text(ds, 0, "detail"), "2 non-finite coordinates, the first in exterior ring of part 1; written without geometry");
     assert_eq!(
-        r.messages,
+        said(&r),
         [
             "Check Geometry: 1 of 1 feature has problems (non_finite_coordinate: 1)",
-            "Check Geometry: 1 feature with non-finite coordinates is written without geometry",
+            "DroppedGeometry: Check Geometry: 1 feature with non-finite coordinates is written without geometry",
         ]
     );
     // Several: plural. A bowtie in another part is still found; the parts aren't related, which
@@ -338,11 +343,11 @@ fn non_finite_coordinates_are_written_without_geometry() {
     assert!(ds.features.iter().all(|f| f.geometry.is_none()));
     assert_eq!(text(ds, 2, "problem"), "non_finite_coordinate, self_intersection");
     assert_eq!(
-        r.messages,
+        said(&r),
         [
             "Check Geometry: 3 of 3 features have problems (non_finite_coordinate: 3, self_intersection: 1)",
-            "Check Geometry: 3 features with non-finite coordinates are written without geometry",
             "Check Geometry: the rings or parts of 1 feature weren't all checked against each other, because some of their rings or parts already have problems of their own (see problem)",
+            "DroppedGeometry: Check Geometry: 3 features with non-finite coordinates are written without geometry",
         ]
     );
 }
@@ -494,8 +499,8 @@ fn extra_attribute_values_are_reported() {
     let ds = dataset(&r);
     assert_eq!(ds.features[0].attrs.len(), 3);
     assert_eq!(
-        r.messages[1],
-        "Check Geometry: 1 feature had more attribute values than the layer has fields; the extra values aren't in the output"
+        said(&r)[1],
+        "DroppedExtraAttributes: Check Geometry: 1 feature had more attribute values than the layer has fields; the extra values aren't in the output"
     );
 }
 

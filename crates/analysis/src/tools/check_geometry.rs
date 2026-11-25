@@ -154,9 +154,9 @@ fn run_with_room(
     }
     out.features = list.into();
 
-    let mut messages = notices(&tally, &problem_field);
+    let (mut messages, losses) = notices(&tally, &problem_field);
     messages.extend(notes);
-    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
+    Ok(ToolResult { losses, output: Output::Layer(out), messages })
 }
 
 /// The memory an output row copying `attrs` (`width` of them, of `out_width` values in the
@@ -183,17 +183,22 @@ pub(super) fn row_bytes(attrs: &[Value], width: usize, out_width: usize, texts: 
 }
 
 /// The run's notices: the result in one line, then one notice per kind of feature not checked
-/// fully or not copied whole. `problem` is the output's problem field.
-fn notices(t: &Tally, problem: &str) -> Vec<String> {
+/// fully or not copied whole, and the losses among them. `problem` is the output's problem field.
+fn notices(t: &Tally, problem: &str) -> (Vec<String>, Vec<rustgis_data::loss::LossMessage>) {
+    use rustgis_data::loss::{LossCode, LossMessage};
     let mut messages = vec![summary(t.found, t.checked, &t.counts)];
+    let mut losses = Vec::new();
     let they = |n: usize| if n == 1 { "it is" } else { "they are" };
     let non_finite = Code::ALL.iter().position(|c| *c == Code::NonFiniteCoordinate).and_then(|k| t.counts.get(k)).copied().unwrap_or(0);
     if non_finite > 0 {
-        messages.push(format!(
-            "{TOOL}: {} with non-finite coordinates {} written without geometry",
-            features(non_finite),
-            if non_finite == 1 { "is" } else { "are" }
-        ));
+        losses.push(LossMessage {
+            code: LossCode::DroppedGeometry,
+            text: format!(
+                "{TOOL}: {} with non-finite coordinates {} written without geometry",
+                features(non_finite),
+                if non_finite == 1 { "is" } else { "are" }
+            ),
+        });
     }
     if t.work_limit > 0 {
         messages.push(format!(
@@ -224,12 +229,15 @@ fn notices(t: &Tally, problem: &str) -> Vec<String> {
         ));
     }
     if t.extra > 0 {
-        messages.push(format!(
-            "{TOOL}: {} had more attribute values than the layer has fields; the extra values aren't in the output",
-            features(t.extra)
-        ));
+        losses.push(LossMessage {
+            code: LossCode::DroppedExtraAttributes,
+            text: format!(
+                "{TOOL}: {} had more attribute values than the layer has fields; the extra values aren't in the output",
+                features(t.extra)
+            ),
+        });
     }
-    messages
+    (messages, losses)
 }
 
 /// "1 feature", "2 features".
@@ -308,14 +316,14 @@ mod tests {
     #[test]
     fn features_not_checked_fully_are_counted_by_reason() {
         assert_eq!(
-            notices(&too_complex(0, 1, 0), "problem"),
+            notices(&too_complex(0, 1, 0), "problem").0,
             [
                 "Check Geometry: 1 of 9 features has problems (too_complex: 1)",
                 "Check Geometry: some rings or parts of 1 feature could not be checked against each other, because geo's relate operation failed on them; it is in the output as too_complex",
             ]
         );
         assert_eq!(
-            notices(&too_complex(2, 3, 1), "problem"),
+            notices(&too_complex(2, 3, 1), "problem").0,
             [
                 "Check Geometry: 4 of 9 features have problems (too_complex: 4)",
                 "Check Geometry: 2 features could not be checked fully (too complex for the work limit); they are in the output as too_complex",
@@ -326,7 +334,7 @@ mod tests {
         for n in [1, 2] {
             memory.memory = n;
             assert_eq!(
-                notices(&memory, "problem").get(1).map(String::as_str),
+                notices(&memory, "problem").0.get(1).map(String::as_str),
                 Some(if n == 1 {
                     "Check Geometry: 1 feature could not be checked fully, because there wasn't enough memory to check it; it is in the output as too_complex"
                 } else {
@@ -336,7 +344,7 @@ mod tests {
         }
         let t = Tally { checked: 2, found: 2, unrelated: 2, ..Tally::default() };
         assert_eq!(
-            notices(&t, "problem_2").last().map(String::as_str),
+            notices(&t, "problem_2").0.last().map(String::as_str),
             Some(
                 "Check Geometry: the rings or parts of 2 features weren't all checked against each other, because some of their rings or parts already have problems of their own (see problem_2)"
             )

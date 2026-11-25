@@ -237,17 +237,44 @@ fn run_with_room(
     let units = if crs.is_geographic() { "degrees of longitude or latitude".to_string() } else { format!("units of {}", crs.label()) };
     let mut messages = notices(&tally, &field, rule, &units);
     messages.extend(notes);
-    let losses = (tally.extra > 0)
-        .then(|| rustgis_data::loss::LossMessage {
-            code: rustgis_data::loss::LossCode::DroppedExtraAttributes,
+    let losses = losses(&tally);
+    Ok(ToolResult { output: Output::Layer(out), messages, losses })
+}
+
+/// The notice for features that couldn't be repaired and are written without geometry, of the
+/// kinds `lost` picks, with the count of each: `None` when there are none.
+fn without_geometry(t: &Tally, lost: bool) -> Option<String> {
+    let kinds = Gone::ALL.iter().zip(t.gone).filter(|(g, n)| *n > 0 && (**g != Gone::Null) == lost);
+    let gone: usize = kinds.clone().map(|(_, n)| n).sum();
+    let by: Vec<String> = kinds.map(|(g, n)| format!("{}: {n}", g.as_str())).collect();
+    (gone > 0).then(|| {
+        format!(
+            "{TOOL}: {} couldn't be repaired and {} written without geometry ({})",
+            features(gone),
+            if gone == 1 { "is" } else { "are" },
+            by.join(", ")
+        )
+    })
+}
+
+/// The run's losses: features whose geometry is left out, and attribute values past the layer's
+/// fields. A feature without geometry to begin with loses none.
+fn losses(t: &Tally) -> Vec<rustgis_data::loss::LossMessage> {
+    use rustgis_data::loss::{LossCode, LossMessage};
+    let mut losses = Vec::new();
+    if let Some(text) = without_geometry(t, true) {
+        losses.push(LossMessage { code: LossCode::DroppedGeometry, text });
+    }
+    if t.extra > 0 {
+        losses.push(LossMessage {
+            code: LossCode::DroppedExtraAttributes,
             text: format!(
                 "{TOOL}: {} had more attribute values than the layer has fields; the extra values aren't in the output",
-                features(tally.extra)
+                features(t.extra)
             ),
-        })
-        .into_iter()
-        .collect();
-    Ok(ToolResult { output: Output::Layer(out), messages, losses })
+        });
+    }
+    losses
 }
 
 /// The run's notices: the result in one line, then one notice per kind of feature not repaired,
@@ -256,18 +283,9 @@ fn run_with_room(
 /// split, coordinates moved. `field` is the output's repairs field.
 fn notices(t: &Tally, field: &str, rule: Rule, units: &str) -> Vec<String> {
     let mut messages = vec![summary(t)];
+    messages.extend(without_geometry(t, false));
     let is = |n: usize| if n == 1 { "is" } else { "are" };
     let was = |n: usize| if n == 1 { "was" } else { "were" };
-    let gone: usize = t.gone.iter().sum();
-    if gone > 0 {
-        let by: Vec<String> = Gone::ALL.iter().zip(t.gone).filter(|(_, n)| *n > 0).map(|(g, n)| format!("{}: {n}", g.as_str())).collect();
-        messages.push(format!(
-            "{TOOL}: {} couldn't be repaired and {} written without geometry ({})",
-            features(gone),
-            is(gone),
-            by.join(", ")
-        ));
-    }
     if t.work > 0 {
         messages.push(format!(
             "{TOOL}: {} {} too complex to repair within the work limit and {} written unchanged, with too_complex in {field}",

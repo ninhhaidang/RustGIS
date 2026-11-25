@@ -23,6 +23,11 @@ impl Inputs for Layer {
 
 type Ring<'a> = &'a [(f64, f64)];
 
+/// What a run says: its messages, then its losses, each after its code.
+fn said(r: &ToolResult) -> Vec<String> {
+    r.messages.iter().cloned().chain(r.losses.iter().map(|l| format!("{:?}: {}", l.code, l.text))).collect()
+}
+
 fn layer(ty: GeometryType) -> Layer {
     Layer { ds: Dataset::new("input", ty, vec![Field::new("name", FieldType::Text)]), selected: vec![] }
 }
@@ -446,16 +451,18 @@ fn a_mixed_layer_says_what_was_done_with_counts() {
     let without: Vec<bool> = ds.features.iter().map(|f| f.geometry.is_none()).collect();
     assert_eq!(without, [false, false, false, true, false, false, false, false, true, true]);
     assert_eq!(
-        r.messages,
+        said(&r),
         [
             "Repair Geometry: repaired 6 of 10 features (too_few_points: 1, ring_not_closed: 1, self_intersection: 1, hole_outside_shell: 1, disconnected_interior: 1, parts_overlap: 1)",
-            "Repair Geometry: 3 features couldn't be repaired and are written without geometry (null_geometry: 1, non_finite_coordinate: 1, no_area: 1)",
+            // A feature without geometry to begin with loses none.
+            "Repair Geometry: 1 feature couldn't be repaired and is written without geometry (null_geometry: 1)",
             "Repair Geometry: 1 ring or part with too few distinct points or no area was dropped from 1 feature",
             "Repair Geometry: holes not inside their exterior ring were taken out of 1 feature; what of a hole is inside its exterior ring stays a hole",
             "Repair Geometry: the parts that overlapped or touched along a line were merged in 1 feature",
             "Repair Geometry: 1 feature whose interior was cut into pieces by rings touching at points is written with each piece as a part of its own",
             // The hole outside makes the largest extent, 21 across: a grid step of 2^-26, five of them.
             "Repair Geometry: 4 features were rebuilt by geo's boolean overlay, which rounds coordinates to a fine grid: they may have moved by up to 7.5e-8 degrees of longitude or latitude, and vertices in the middle of straight edges were left out",
+            "DroppedGeometry: Repair Geometry: 2 features couldn't be repaired and are written without geometry (non_finite_coordinate: 1, no_area: 1)",
         ]
     );
 }

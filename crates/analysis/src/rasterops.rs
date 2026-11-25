@@ -1766,6 +1766,12 @@ pub fn transform_polygon_to_lonlat(rings: &[Vec<Coord>], tr: Option<&Transformer
     Ok(out_rings)
 }
 
+/// Whether a (multi-)polygon has a part whose exterior ring has three points or more: one without
+/// has no area, so nothing is lost when it can't be read.
+pub fn has_a_ring(polys: &[Vec<Vec<Coord>>]) -> bool {
+    polys.iter().any(|part| part.first().is_some_and(|ring| ring.len() >= 3))
+}
+
 /// The polygon parts of a (multi-)polygon feature, checked and taken apart into rings, in the
 /// system they are in: [`transform_feature_polygons_to_lonlat`] with no transformer. It doesn't
 /// look at Cancel: a caller looping over features does, between them.

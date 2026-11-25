@@ -1,5 +1,6 @@
 //! Class-by-zone tables on the same cell-centre masks as Zonal Statistics.
 use super::*;
+use rustgis_data::loss::{LossCode, LossMessage};
 use rustgis_data::{Measure, raster::Raster};
 
 /// Counts or measures every class in each zone. One zone's mask is built as one step without
@@ -88,11 +89,12 @@ pub(super) fn run_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Resu
         let name = unique_field(&out, &format!("class_{class}"));
         out.fields.push(Field::new(name, if count { FieldType::Integer } else { FieldType::Double }));
     }
-    let (mut nodata, mut invalid, mut parts, mut empty) = (0u64, 0usize, 0usize, 0usize);
+    let (mut nodata, mut invalid, mut unreadable, mut parts, mut empty) = (0u64, 0usize, 0usize, 0usize, 0usize);
     for (group, total) in groups.into_iter().zip(totals) {
         crate::control::check()?;
         nodata += total.nodata;
         invalid += total.invalid;
+        unreadable += total.unreadable;
         parts += total.parts;
         empty += usize::from(total.values.iter().all(|v| *v == 0.0));
         let mut attrs = group.key;
@@ -111,15 +113,25 @@ pub(super) fn run_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Resu
         messages.push(format!("{nodata} NoData or non-finite cell(s) inside zones were excluded (counted once per zone)"));
     }
     if invalid > 0 {
-        messages.push(format!("{invalid} zone feature(s) had missing or invalid polygon geometry and were excluded"));
+        messages.push(format!("{invalid} zone feature(s) had no polygon with an area and were excluded"));
+    }
+    let mut losses = Vec::new();
+    if unreadable > 0 {
+        losses.push(LossMessage {
+            code: LossCode::DroppedGeometry,
+            text: format!("{unreadable} zone feature(s) had invalid polygon geometry and were excluded"),
+        });
     }
     if parts > 0 {
-        messages.push(format!("{parts} polygon part(s) could not be projected onto the raster grid; valid parts were retained"));
+        losses.push(LossMessage {
+            code: LossCode::DroppedGeometry,
+            text: format!("{parts} polygon part(s) could not be projected onto the raster grid; valid parts were retained"),
+        });
     }
     if empty > 0 {
         messages.push(format!("{empty} zone(s) contained no valid raster cell centres; their class values are zero"));
     }
-    Ok(ToolResult { losses: Vec::new(), output: Output::Table(out), messages })
+    Ok(ToolResult { losses, output: Output::Table(out), messages })
 }
 
 /// All finite valid band values, sorted numerically. The wide table has Pivot Table's column
@@ -158,6 +170,8 @@ struct Totals {
     values: Vec<f64>,
     nodata: u64,
     invalid: usize,
+    /// Zone features whose polygon couldn't be read.
+    unreadable: usize,
     parts: usize,
 }
 
@@ -172,7 +186,7 @@ fn summarize(
     classes: &HashMap<u32, usize>,
     areas: &CellAreas<'_>,
 ) -> Result<Totals, String> {
-    let mut total = Totals { values: vec![0.0; classes.len()], nodata: 0, invalid: 0, parts: 0 };
+    let mut total = Totals { values: vec![0.0; classes.len()], nodata: 0, invalid: 0, unreadable: 0, parts: 0 };
     let mut polygons = Vec::new();
     for &row in rows {
         crate::control::check()?;
@@ -181,9 +195,12 @@ fn summarize(
             Some(Geometry::Polygon(p)) => crate::rasterops::validated_polygon_parts(p).ok(),
             _ => None,
         };
-        match valid {
-            Some(p) => polygons.extend(p),
-            None => total.invalid += 1,
+        // A polygon that can't be read is lost to its zone; a feature with no polygon, or none
+        // with an area, has no area to lose.
+        match (valid, shape) {
+            (Some(p), _) => polygons.extend(p),
+            (None, Some(Geometry::Polygon(p))) if crate::rasterops::has_a_ring(p) => total.unreadable += 1,
+            (None, _) => total.invalid += 1,
         }
     }
     let mut failures = Vec::new();

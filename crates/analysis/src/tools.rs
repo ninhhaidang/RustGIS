@@ -1787,17 +1787,23 @@ fn buffer_with_limits(inp: &dyn Inputs, p: &Json, limit: usize, bytes: usize) ->
     let units = if s(p, "units").is_empty() { "Kilometers" } else { s(p, "units") };
     let mut r = result(out, format!("Buffer: {n} features at {d} {units}"))?;
     if without > 0 {
-        r.messages.push(format!("{without} of {} features lack geometry, so they have no buffer", picked.len()));
+        let text = format!("{without} of {} features lack geometry, so they have no buffer", picked.len());
+        // Each feature has a row of its own, which these lose; dissolved, they add nothing.
+        if s(p, "dissolve") == "All" {
+            r.messages.push(text);
+        } else {
+            r.losses.push(rustgis_data::loss::LossMessage { code: rustgis_data::loss::LossCode::DroppedFeature, text });
+        }
     }
     if empty > 0 {
         r.messages
             .push(format!("{empty} of {} features made no buffer at {d} {units} (nothing left, or no finite coordinates)", picked.len()));
     }
     if coarse > 0 {
-        r.messages.push(format!(
+        r.losses.push(rustgis_data::loss::LossMessage { code: rustgis_data::loss::LossCode::ApproximatedCurve, text: format!(
             "{coarse} of {} features' buffers have outline edges left with fewer points along them than they need (the points a ring may add ran out, as on a ring of thousands of long edges, or a very long edge was halved as many times as it may be): their sides there can stray from the distance by more than a buffer otherwise keeps to (0.012%, 0.05% along a line or outline buffered in stretches, or 1 cm)",
             picked.len()
-        ));
+        ) });
     }
     Ok(r)
 }
@@ -2373,7 +2379,10 @@ fn clip_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>, cache_bytes: Opti
     let n = out.features.len();
     let mut r = result(out, format!("Clip: {n} features kept"))?;
     if without > 0 {
-        r.messages.push(format!("Clip: {without} feature(s) of '{}' left out: they have no geometry to clip", ds.name));
+        r.losses.push(rustgis_data::loss::LossMessage {
+            code: rustgis_data::loss::LossCode::DroppedFeature,
+            text: format!("Clip: {without} feature(s) of '{}' left out: they have no geometry to clip", ds.name),
+        });
     }
     r.messages.extend(left.notes("Clip", &clip_ds.name));
     if slivers > 0 {
@@ -2934,18 +2943,25 @@ fn update_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolR
     }
     let added = out.features.len() - kept;
     let mut messages = vec![format!("Update: {kept} input features kept, {added} update features added")];
+    let mut losses: Vec<rustgis_data::loss::LossMessage> = Vec::new();
     messages.extend(left_out.notes("Update", &up.name));
     let features = |n: usize| if n == 1 { "1 update feature".to_string() } else { format!("{n} update features") };
     for (f, (n, days)) in ds.fields.iter().zip(unfit) {
         if n > 0 {
-            messages.push(format!("Update: '{}' is null in {}, whose value isn't a {} value", f.name, features(n), f.ty.label()));
+            losses.push(rustgis_data::loss::LossMessage {
+                code: rustgis_data::loss::LossCode::DroppedValue,
+                text: format!("Update: '{}' is null in {}, whose value isn't a {} value", f.name, features(n), f.ty.label()),
+            });
         }
         if days > 0 {
             let their = if days == 1 { "its" } else { "their" };
-            messages.push(format!("Update: '{}' holds dates, so {} kept only {their} day", f.name, features(days)));
+            losses.push(rustgis_data::loss::LossMessage {
+                code: rustgis_data::loss::LossCode::DroppedTime,
+                text: format!("Update: '{}' holds dates, so {} kept only {their} day", f.name, features(days)),
+            });
         }
     }
-    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
+    Ok(ToolResult { losses, output: Output::Layer(out), messages })
 }
 
 /// The most split areas (split polygons, or values of the split field) Split takes: more is an
@@ -3333,13 +3349,14 @@ fn dissolve(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         ));
     }
     let mut messages = vec![format!("Dissolve: {n} features")];
+    let mut losses: Vec<rustgis_data::loss::LossMessage> = Vec::new();
     if not_polygons > 0 {
-        messages.push(format!(
+        losses.push(rustgis_data::loss::LossMessage { code: rustgis_data::loss::LossCode::DroppedFeature, text: format!(
             "Dissolve: {not_polygons} feature(s) left out, with their values: no geometry, an empty polygon, or a point or line rather than a polygon"
-        ));
+        ) });
     }
     messages.extend(rounded_notice(&rounded, out.fields.get(first_added..).unwrap_or_default()));
-    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
+    Ok(ToolResult { losses, output: Output::Layer(out), messages })
 }
 
 /// The farthest (meters, either way) Minimum Bounding Geometry takes a point from the analysis
@@ -3511,7 +3528,14 @@ fn convex_hull(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let n = out.features.len();
     let mut r = result(out, format!("Minimum Bounding Geometry: {n} hulls"))?;
     if skipped > 0 {
-        r.messages.push(format!("Minimum Bounding Geometry: {skipped} feature(s) skipped: no geometry, or no point it can use"));
+        let text = format!("Minimum Bounding Geometry: {skipped} feature(s) skipped: no geometry, or no point it can use");
+        // Each feature has a hull of its own, which these lose; hulled together, a feature without
+        // geometry adds nothing, and one whose points are passed over is said with them.
+        if each {
+            r.losses.push(rustgis_data::loss::LossMessage { code: rustgis_data::loss::LossCode::DroppedFeature, text });
+        } else {
+            r.messages.push(text);
+        }
     }
     r.messages.extend(gaps_note.into_iter().chain(poles_note).map(|n| format!("Minimum Bounding Geometry: {n}")));
     if flat > 0 {
@@ -4326,7 +4350,10 @@ fn points_along_lines(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
     let written = out.features.len();
     let mut r = result(out, format!("{TOOL}: {written} points"))?;
     if missing > 0 {
-        r.messages.push(format!("{TOOL}: {missing} vertex(es) with a coordinate missing or infinite passed over"));
+        r.losses.push(rustgis_data::loss::LossMessage {
+            code: rustgis_data::loss::LossCode::DroppedGeometry,
+            text: format!("{TOOL}: {missing} vertex(es) with a coordinate missing or infinite passed over"),
+        });
     }
     if past_pole > 0 {
         r.messages.push(format!(
@@ -4334,7 +4361,10 @@ fn points_along_lines(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
         ));
     }
     if without_geometry > 0 {
-        r.messages.push(format!("{TOOL}: {without_geometry} feature(s) without geometry skipped"));
+        r.losses.push(rustgis_data::loss::LossMessage {
+            code: rustgis_data::loss::LossCode::DroppedFeature,
+            text: format!("{TOOL}: {without_geometry} feature(s) without geometry skipped"),
+        });
     }
     if point_features > 0 {
         r.messages.push(format!("{TOOL}: {point_features} point feature(s) skipped; only lines and polygon rings produce points"));
@@ -4435,11 +4465,24 @@ fn xy_table_to_point(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         });
     }
     let mut messages = vec![format!("XY Table To Point: {placed} points")];
+    let mut losses: Vec<rustgis_data::loss::LossMessage> = Vec::new();
     messages.extend(crs_note.map(|note| format!("XY Table To Point: its coordinate system: {note}")));
-    if placed < total {
-        messages.push(format!("{} of {total} rows have no usable coordinates; they are in the table without a point", total - placed));
+    // A row without numbers had no place to lose; one whose numbers have no place in the system
+    // has lost it.
+    if read < total {
+        messages.push(format!("{} of {total} rows have no numbers in both fields; they are in the table without a point", total - read));
     }
-    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
+    if placed < read {
+        losses.push(rustgis_data::loss::LossMessage {
+            code: rustgis_data::loss::LossCode::DroppedGeometry,
+            text: format!(
+                "{} of {total} rows have coordinates with no place in {}; they are in the table without a point",
+                read - placed,
+                crs.label()
+            ),
+        });
+    }
+    Ok(ToolResult { losses, output: Output::Layer(out), messages })
 }
 
 /// The distances a Douglas–Peucker run of `n` vertices may measure, `n` times this: far more than
@@ -4861,11 +4904,15 @@ fn simplify_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<Too
         out.push(Some(geometry), f.attrs.clone());
     }
     let mut messages = vec![format!("Simplify: {before} → {after} vertices")];
+    let mut losses: Vec<rustgis_data::loss::LossMessage> = Vec::new();
     messages.extend(notes.messages("Simplify"));
     if without > 0 {
-        messages.push(format!("Simplify: {without} feature(s) left out: they have no geometry to simplify"));
+        losses.push(rustgis_data::loss::LossMessage {
+            code: rustgis_data::loss::LossCode::DroppedFeature,
+            text: format!("Simplify: {without} feature(s) left out: they have no geometry to simplify"),
+        });
     }
-    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
+    Ok(ToolResult { losses, output: Output::Layer(out), messages })
 }
 
 /// A Select by Location selector: its shape and extent in the analysis plane, and the poles it
@@ -6351,16 +6398,17 @@ fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
             }
         }
     }
-    let mut messages = vec![format!("Calculated geometry attributes for {}", ds.name)];
+    let messages = vec![format!("Calculated geometry attributes for {}", ds.name)];
+    let mut losses: Vec<rustgis_data::loss::LossMessage> = Vec::new();
     let unplaced = unplaced.into_inner();
     if unplaced > 0 {
-        messages.push(format!(
+        losses.push(rustgis_data::loss::LossMessage { code: rustgis_data::loss::LossCode::DroppedCalculationResult, text: format!(
             "Calculate Geometry Attributes: {unplaced} feature(s) of {} have a place with no longitude/latitude (beyond the poles, or not convertible from {}), and weren't measured",
             ds.name,
             to.source().label()
-        ));
+        ) });
     }
-    Ok(ToolResult { losses: Vec::new(), output: Output::Update { layer: ds.name.clone(), dataset: out }, messages })
+    Ok(ToolResult { losses, output: Output::Update { layer: ds.name.clone(), dataset: out }, messages })
 }
 
 /// The longest separator CONCATENATE joins values with, in bytes: each value adds one, so a long
@@ -8312,6 +8360,7 @@ fn spatial_join_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result
         })
         .collect();
     let mut messages = vec![format!("Spatial Join: {written_features} features joined ({total_matches} matches)")];
+    let mut losses: Vec<rustgis_data::loss::LossMessage> = Vec::new();
     // The total of `counts` and the output fields with some, or None without any.
     let counted = |counts: &[usize]| -> Option<(usize, String)> {
         let total: usize = counts.iter().sum();
@@ -8320,16 +8369,19 @@ fn spatial_join_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result
     };
     if let Some((total, names)) = counted(&overflowed) {
         let (sums, are, were) = if total == 1 { ("sum", "is", "was") } else { ("sums", "are", "were") };
-        messages.push(format!("{total} {sums} in {names} {are} past the 64-bit integer range and {were} left empty"));
+        losses.push(rustgis_data::loss::LossMessage {
+            code: rustgis_data::loss::LossCode::DroppedCalculationResult,
+            text: format!("{total} {sums} in {names} {are} past the 64-bit integer range and {were} left empty"),
+        });
     }
     if let Some((total, names)) = counted(&left_out) {
         let (numbers, were) = if total == 1 { ("number", "was") } else { ("numbers", "were") };
-        messages.push(format!(
+        losses.push(rustgis_data::loss::LossMessage { code: rustgis_data::loss::LossCode::DroppedValue, text: format!(
             "{total} matched {numbers} in {names} {were} left out: a whole-number sum takes whole numbers in the 64-bit range, the other rules numbers a decimal holds"
-        ));
+        ) });
     }
     messages.extend(rounded_notice(&rounded, &merged_fields));
-    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
+    Ok(ToolResult { losses, output: Output::Layer(out), messages })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8576,14 +8628,21 @@ fn zonal_stats_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<
         },
     )?;
     let mut skipped_features = 0usize;
+    let mut without_polygon = 0usize;
     let mut skipped_parts = 0usize;
     let mut failure_details = Vec::new();
     for (&r_idx, (stats_by_band, feature_valid, failed_parts, detail)) in target_rows.iter().zip(worked) {
         let Some(f) = poly_ds.features.get(r_idx) else { continue };
         skipped_parts += failed_parts;
         failure_details.extend(detail);
+        // A polygon that couldn't be read has lost its statistics; a feature with no polygon, or
+        // none with an area, has none to lose.
         if !feature_valid {
-            skipped_features += 1;
+            if matches!(poly_ds.features.geometry(r_idx), Some(Geometry::Polygon(polys)) if crate::rasterops::has_a_ring(polys)) {
+                skipped_features += 1;
+            } else {
+                without_polygon += 1;
+            }
         }
 
         let mut attrs = f.attrs.clone();
@@ -8606,11 +8665,21 @@ fn zonal_stats_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<
 
     let n_features = out.features.len();
     let mut messages = vec![format!("Calculated zonal statistics for {n_features} feature(s)")];
+    let mut losses: Vec<rustgis_data::loss::LossMessage> = Vec::new();
     if skipped_features > 0 {
-        messages.push(format!("{skipped_features} feature(s) had invalid geometry"));
+        losses.push(rustgis_data::loss::LossMessage {
+            code: rustgis_data::loss::LossCode::DroppedGeometry,
+            text: format!("{skipped_features} feature(s) had invalid geometry, so their statistics are empty"),
+        });
+    }
+    if without_polygon > 0 {
+        messages.push(format!("{without_polygon} feature(s) have no polygon with an area, so their statistics are empty"));
     }
     if skipped_parts > 0 {
-        messages.push(format!("{skipped_parts} polygon part(s) could not be projected onto the raster grid; valid parts were retained"));
+        losses.push(rustgis_data::loss::LossMessage {
+            code: rustgis_data::loss::LossCode::DroppedGeometry,
+            text: format!("{skipped_parts} polygon part(s) could not be projected onto the raster grid; valid parts were retained"),
+        });
     }
     if !failure_details.is_empty() {
         for detail in failure_details.iter().take(5) {
@@ -8620,7 +8689,7 @@ fn zonal_stats_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<
             messages.push(format!("... and {} more feature failure(s)", failure_details.len() - 5));
         }
     }
-    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
+    Ok(ToolResult { losses, output: Output::Layer(out), messages })
 }
 
 /// Returns a borrowed dataset when rows match the full dataset in identity order, or a new dataset containing
@@ -8916,6 +8985,11 @@ mod tests {
             pts.push(Some(Geometry::Point(Coord::new(x, y))), vec![Value::Float(v)]);
         }
         Map(HashMap::from([("polys".to_string(), polys), ("pts".to_string(), pts)]))
+    }
+
+    /// What a run says: its messages, then its losses, each after its code.
+    fn said(r: &ToolResult) -> Vec<String> {
+        r.messages.iter().cloned().chain(r.losses.iter().map(|l| format!("{:?}: {}", l.code, l.text))).collect()
     }
 
     fn layer(r: ToolResult) -> Dataset {
@@ -9390,7 +9464,7 @@ mod tests {
             let input: Vec<String> = lines.features.iter().map(|f| format!("{:?}", f.geometry)).collect();
             let m = Map(HashMap::from([("lines".to_string(), lines)]));
             let res = crate::run("simplify", &m, &serde_json::json!({"input": "lines", "tolerance": tolerance})).unwrap();
-            let messages = res.messages.clone();
+            let messages = said(&res);
             (layer(res), messages, input)
         };
         let (out, messages, input) = run(true, 1.0);
@@ -9420,7 +9494,10 @@ mod tests {
             assert_eq!(&format!("{:?}", f.geometry), before, "feature {k} at 0");
         }
         assert!(!at_zero.iter().any(|m| m.contains("missing or infinite") || m.contains("past a pole")), "{at_zero:?}");
-        assert!(messages.iter().any(|m| m == "Simplify: 1 feature(s) left out: they have no geometry to simplify"), "{messages:?}");
+        assert!(
+            messages.iter().any(|m| m == "DroppedFeature: Simplify: 1 feature(s) left out: they have no geometry to simplify"),
+            "{messages:?}"
+        );
         let (_, clean, _) = run(false, 1.0);
         assert_eq!(clean.len(), 1, "{clean:?}");
     }
@@ -9601,7 +9678,7 @@ mod tests {
             let m = Map(HashMap::from([("polys".to_string(), polys)]));
             let params = serde_json::json!({"input": "polys", "field": "k", "statistics": [{"field": "v", "statistic": "SUM"}]});
             let res = crate::run("dissolve", &m, &params).unwrap();
-            let note = res.messages.iter().find(|m| m.contains("left out")).cloned();
+            let note = said(&res).into_iter().find(|m| m.contains("left out"));
             let out = layer(res);
             (out.features.len(), out.value(0, 1).as_f64(), out.value(0, 2).as_f64(), note)
         };
@@ -9610,7 +9687,7 @@ mod tests {
         assert_eq!(
             note.as_deref(),
             Some(
-                "Dissolve: 4 feature(s) left out, with their values: no geometry, an empty polygon, or a point or line rather than a polygon"
+                "DroppedFeature: Dissolve: 4 feature(s) left out, with their values: no geometry, an empty polygon, or a point or line rather than a polygon"
             )
         );
         assert_eq!(notice(false), (1, Some(2.0), Some(3.0), None));
@@ -10162,10 +10239,10 @@ mod tests {
         // it, and the tool says both, each once.
         let r = run("polys");
         assert_eq!(
-            r.messages[1..],
+            said(&r)[1..],
             [
-                "Points Along Lines: 1 vertex(es) with a coordinate missing or infinite passed over",
-                "Points Along Lines: 1 vertex(es) with a latitude past a pole found (latitudes limited to the poles when measuring segments)"
+                "Points Along Lines: 1 vertex(es) with a latitude past a pole found (latitudes limited to the poles when measuring segments)",
+                "DroppedGeometry: Points Along Lines: 1 vertex(es) with a coordinate missing or infinite passed over"
             ],
         );
         let v = layer(r);
@@ -10178,7 +10255,10 @@ mod tests {
             Geometry::Line(vec![vec![c(0.0, 0.0), c(1.0, 0.0), c(f64::INFINITY, 5.0)]]),
         ]);
         let r = crate::run("pointsAlongLines", &lossy, &serde_json::json!({"input": "lines", "distance": 10})).unwrap();
-        assert_eq!(r.messages[1], "Points Along Lines: 2 vertex(es) with a coordinate missing or infinite passed over");
+        assert_eq!(
+            said(&r).last().map(String::as_str),
+            Some("DroppedGeometry: Points Along Lines: 2 vertex(es) with a coordinate missing or infinite passed over")
+        );
         assert!(!layer(r).features.is_empty());
         // A line whose ends are the same wild coordinate is a ring, closed without a geodesic.
         let wild = vec![c(1e308, 1e300), c(0.0, -95.0), c(-1e308, 0.0), c(1e308, 1e300)];
@@ -10195,10 +10275,10 @@ mod tests {
         let params = serde_json::json!({"input": "lines", "distance": 1});
         let result = crate::run("pointsAlongLines", &inputs, &params).unwrap();
         assert_eq!(
-            result.messages[1..],
+            said(&result)[1..],
             [
-                "Points Along Lines: 1 feature(s) without geometry skipped",
                 "Points Along Lines: 2 point feature(s) skipped; only lines and polygon rings produce points",
+                "DroppedFeature: Points Along Lines: 1 feature(s) without geometry skipped",
             ]
         );
         assert!(!layer(result).features.is_empty());
@@ -10971,7 +11051,12 @@ mod tests {
             // A latitude past 90° has no place: no measures, and a notice; a missing coordinate is
             // measured as before, and said nothing of.
             let beyond = bad.is_finite();
-            assert_eq!(r.messages.iter().any(|m| m.contains("weren't measured")), beyond, "{bad:?}: {:?}", r.messages);
+            assert_eq!(
+                said(&r).iter().any(|m| m.starts_with("DroppedCalculationResult: ") && m.contains("weren't measured")),
+                beyond,
+                "{bad:?}: {:?}",
+                said(&r)
+            );
             let out = layer(r);
             assert_eq!(out.value(0, 0).is_null(), beyond, "{bad:?}");
         }
@@ -11017,7 +11102,7 @@ mod tests {
                 &serde_json::json!({"input": "parcels"}),
             )
             .unwrap();
-            let messages = r.messages.clone();
+            let messages = said(&r);
             let out = layer(r);
             ((0..out.features.len()).map(|i| (out.value(i, 0).clone(), out.value(i, 1).clone())).collect::<Vec<_>>(), messages)
         };
@@ -11389,8 +11474,7 @@ mod tests {
         pts.push(None, vec![Value::Int(-1)]);
         let m = Map(HashMap::from([("p".to_string(), pts)]));
         let r = crate::run("buffer", &m, &serde_json::json!({"input": "p", "distance": 5})).unwrap();
-        assert_eq!(r.messages.len(), 2);
-        assert_eq!(r.messages.get(1).map(String::as_str), Some("1 of 301 features lack geometry, so they have no buffer"));
+        assert_eq!(said(&r)[1..], ["DroppedFeature: 1 of 301 features lack geometry, so they have no buffer"]);
         let b = layer(r);
         assert_eq!(b.features.len(), 300);
         for (k, f) in b.features.iter().enumerate() {
@@ -11398,8 +11482,8 @@ mod tests {
             assert_eq!(f.geometry, geodesic_buffer(&Geometry::Point(at(k as i64)), 5_000.0), "feature {k}");
         }
         let r = crate::run("buffer", &m, &serde_json::json!({"input": "p", "distance": 5, "dissolve": "All"})).unwrap();
-        assert_eq!(r.messages.len(), 2);
-        assert_eq!(r.messages.get(1).map(String::as_str), Some("1 of 301 features lack geometry, so they have no buffer"));
+        // Dissolved, a feature without geometry adds nothing to lose.
+        assert_eq!(said(&r)[1..], ["1 of 301 features lack geometry, so they have no buffer"]);
         assert_eq!(layer(r).features.len(), 1);
         // Points at a negative distance have nothing left, and say so.
         let r = crate::run("buffer", &clean, &serde_json::json!({"input": "p", "distance": -5})).unwrap();
@@ -11872,20 +11956,26 @@ mod tests {
         let stations = Geometry::MultiPoint(vec![Coord::new(-75.0, 40.0), Coord::new(-74.99, 40.0), Coord::new(-75.0, 40.01), gap, far]);
         for group in ["All", "None"] {
             let res = run(vec![Some(stations.clone()), Some(Geometry::Point(gap)), None], group).unwrap_or_else(|e| panic!("{group}: {e}"));
-            let all = res.messages.join(" | ");
+            let all = said(&res).join(" | ");
             assert!(
                 all.contains(
                     "3 vertex(es) passed over: a coordinate missing or infinite, or so far out that the hull can't take it (past about 9 million degrees)"
                 ),
                 "{group}: {all}"
             );
-            assert!(all.contains("2 feature(s) skipped: no geometry, or no point it can use"), "{group}: {all}");
+            assert!(
+                // Coded only when each feature has a hull of its own to lose.
+                all.contains(&format!(
+                    "{}Minimum Bounding Geometry: 2 feature(s) skipped: no geometry, or no point it can use",
+                    if group == "None" { "DroppedFeature: " } else { "" }
+                )),
+                "{group}: {all}"
+            );
             let Output::Layer(out) = res.output else { panic!("{group}: not a layer") };
             assert_eq!(out.features.len(), 1, "{group}: a hull for the stations only");
             let clean = run(vec![Some(Geometry::Point(Coord::new(0.0, 0.0))), Some(Geometry::Point(Coord::new(1.0, 1.0)))], group)
-                .unwrap_or_else(|e| panic!("{group}: {e}"))
-                .messages
-                .join(" | ");
+                .unwrap_or_else(|e| panic!("{group}: {e}"));
+            let clean = said(&clean).join(" | ");
             assert!(!clean.contains("passed over") && !clean.contains("skipped"), "{group}: {clean}");
         }
         for group in ["All", "None"] {
@@ -11964,9 +12054,15 @@ mod tests {
             for dissolve in ["None", "All"] {
                 let params = serde_json::json!({"input": "l", "distance": 1, "units": "Meters", "dissolve": dissolve});
                 let res = crate::run("buffer", &m, &params).unwrap_or_else(|e| panic!("{e}"));
-                let note =
-                    res.messages.iter().find(|m| m.starts_with("1 of 1 features' buffers have outline edges left with fewer points"));
-                assert_eq!(note.is_some(), coarse, "dissolve {dissolve}: {:?}", res.messages);
+                let note = res
+                    .losses
+                    .iter()
+                    .find(|l| {
+                        l.code == rustgis_data::loss::LossCode::ApproximatedCurve
+                            && l.text.starts_with("1 of 1 features' buffers have outline edges left with fewer points")
+                    })
+                    .map(|l| &l.text);
+                assert_eq!(note.is_some(), coarse, "dissolve {dissolve}: {:?}", said(&res));
                 // The note names both reasons an edge can be left coarse.
                 assert!(
                     note.is_none_or(|m| m.contains("the points a ring may add ran out") && m.contains("halved as many times as it may be")),
@@ -13048,7 +13144,14 @@ mod tests {
         let run = |p: serde_json::Value| crate::run("xyTableToPoint", &m, &p);
 
         let r = run(serde_json::json!({"input": "stops", "x": "lon", "y": "lat"})).unwrap();
-        assert_eq!(r.messages.len(), 2, "{:?}", r.messages);
+        // Rows without numbers lose nothing; the one off the globe loses its place.
+        assert_eq!(
+            said(&r)[1..],
+            [
+                "3 of 7 rows have no numbers in both fields; they are in the table without a point",
+                "DroppedGeometry: 1 of 7 rows have coordinates with no place in EPSG:4326; they are in the table without a point"
+            ]
+        );
         let out = layer(r);
         assert_eq!((out.name.as_str(), out.geometry_type), ("stops_Points", GeometryType::Point));
         assert_eq!((out.fields.len(), out.features.len()), (3, 7));
@@ -13083,7 +13186,7 @@ mod tests {
         polar.push(None, vec![Value::Float(0.0), Value::Float(3.0e7)]);
         let m2 = Map(HashMap::from([("polar".to_string(), polar)]));
         let r = crate::run("xyTableToPoint", &m2, &serde_json::json!({"input": "polar", "x": "e", "y": "n", "crs": "EPSG:3857"})).unwrap();
-        assert!(r.messages.iter().any(|m| m.starts_with("1 of 2 rows")), "{:?}", r.messages);
+        assert!(said(&r).iter().any(|m| m.starts_with("DroppedGeometry: 1 of 2 rows")), "{:?}", said(&r));
         assert!(layer(r).features[1].geometry.is_none());
         // Points in longitude/latitude are held there, with no system of their own, as before.
         let lonlat = layer(run(serde_json::json!({"input": "stops", "x": "lon", "y": "lat", "crs": "EPSG:4326"})).unwrap());
@@ -14377,8 +14480,7 @@ mod tests {
         assert_eq!(res.messages.len(), 1, "{:?}", res.messages);
         zones.push(Some(sq(7.0, 0.0, 1.0)), vec![at("2026-03-05T14:30:00+02:00"), Value::Null]);
         let res = crate::run("update", &m(zones), &serde_json::json!({"input": "parcels", "update": "zones"})).unwrap();
-        assert_eq!(res.messages.get(1).map(String::as_str), Some("Update: 'd' holds dates, so 1 update feature kept only its day"));
-        assert_eq!(res.messages.len(), 2);
+        assert_eq!(said(&res)[1..], ["DroppedTime: Update: 'd' holds dates, so 1 update feature kept only its day"]);
     }
 
     #[test]
@@ -14411,11 +14513,7 @@ mod tests {
         let m = Map(HashMap::from([("parcels".to_string(), parcels), ("zones".to_string(), zones)]));
         let res = crate::run("update", &m, &serde_json::json!({"input": "parcels", "update": "zones"})).unwrap();
         // "seven" isn't a whole number: null, and said.
-        assert_eq!(
-            res.messages.get(1).map(String::as_str),
-            Some("Update: 'n' is null in 1 update feature, whose value isn't a Long value")
-        );
-        assert_eq!(res.messages.len(), 2);
+        assert_eq!(said(&res)[1..], ["DroppedValue: Update: 'n' is null in 1 update feature, whose value isn't a Long value"]);
         let out = layer(res);
         let attrs: Vec<&[Value]> = out.features.iter().skip(1).map(|f| f.attrs.as_slice()).collect();
         assert_eq!(
@@ -15022,9 +15120,9 @@ mod tests {
         let m = Map(HashMap::from([("input".to_string(), input), ("clean".to_string(), clean), ("masks".to_string(), masks)]));
         let lossy = clip(&m, &serde_json::json!({"input": "input", "clip": "masks"})).unwrap();
         assert!(
-            lossy.messages.iter().any(|m| m == "Clip: 3 feature(s) of 'input' left out: they have no geometry to clip"),
+            said(&lossy).iter().any(|m| m == "DroppedFeature: Clip: 3 feature(s) of 'input' left out: they have no geometry to clip"),
             "{:?}",
-            lossy.messages
+            said(&lossy)
         );
         let clean = clip(&m, &serde_json::json!({"input": "clean", "clip": "masks"})).unwrap();
         assert!(!clean.messages.iter().any(|m| m.contains("no geometry")), "{:?}", clean.messages);
@@ -16614,13 +16712,26 @@ mod tests {
         let mut zones = Dataset::new("zones", GeometryType::Polygon, vec![]);
         zones.push(Some(sq(0., 0., 2.)), vec![]);
         zones.push(None, vec![]);
+        // A ring of two points has no area; one with a point that isn't finite can't be read, and
+        // its area is lost.
+        zones.push(Some(Geometry::Polygon(vec![vec![vec![Coord::new(0., 0.), Coord::new(1., 0.)]]])), vec![]);
+        zones.push(
+            Some(Geometry::Polygon(vec![vec![vec![Coord::new(0., 0.), Coord::new(f64::NAN, 0.), Coord::new(1., 1.), Coord::new(0., 0.)]]])),
+            vec![],
+        );
         let m = RasterMap { datasets: HashMap::from([("zones".into(), zones)]), rasters: HashMap::from([("cover".into(), &raster)]) };
         let p = serde_json::json!({"raster":"cover", "zones":"zones", "unit":"m2"});
         let one = tabulate_area::run_on(&m, &p, Some(1)).unwrap();
         let many = tabulate_area::run_on(&m, &p, Some(3)).unwrap();
         assert_eq!(one.messages, many.messages);
         assert!(!one.messages.iter().any(|m| m.contains("uses the raster projection")));
-        assert!(one.messages.iter().any(|m| m.starts_with("1 zone feature(s)")));
+        assert!(said(&one).iter().any(|m| m == "2 zone feature(s) had no polygon with an area and were excluded"), "{:?}", said(&one));
+        assert!(
+            said(&one).iter().any(|m| m == "DroppedGeometry: 1 zone feature(s) had invalid polygon geometry and were excluded"),
+            "{:?}",
+            said(&one)
+        );
+        assert_eq!(one.losses, many.losses);
         let (Output::Table(a), Output::Table(b)) = (one.output, many.output) else { panic!("tables") };
         assert_eq!(a.features, b.features);
         let expected =
@@ -17018,7 +17129,12 @@ mod tests {
             rasters: HashMap::from([("elev".to_string(), &raster)]),
         };
         let res_drop_ext = crate::run("zonalStats", &m_drop_ext, &serde_json::json!({"raster": "elev", "polygons": "drop_ext"})).unwrap();
-        assert!(res_drop_ext.messages.iter().any(|m| m.contains("failed coordinate transformation") || m.contains("invalid geometry")));
+        // Its exterior has no area, so nothing is lost: said plain.
+        assert!(
+            said(&res_drop_ext).iter().any(|m| m == "1 feature(s) have no polygon with an area, so their statistics are empty"),
+            "{:?}",
+            said(&res_drop_ext)
+        );
         let out_drop_ext = layer(res_drop_ext);
         let drop_count_idx = out_drop_ext.field_index("elev_count").unwrap();
         let drop_mean_idx = out_drop_ext.field_index("elev_mean").unwrap();
@@ -17041,7 +17157,7 @@ mod tests {
             rasters: HashMap::from([("elev".to_string(), &raster)]),
         };
         let res_nan_ext = crate::run("zonalStats", &m_nan_ext, &serde_json::json!({"raster": "elev", "polygons": "nan_ext"})).unwrap();
-        assert!(res_nan_ext.messages.iter().any(|m| m.contains("failed coordinate transformation") || m.contains("invalid geometry")));
+        assert!(said(&res_nan_ext).iter().any(|m| m.contains("failed coordinate transformation") || m.contains("invalid geometry")));
         let out_nan_ext = layer(res_nan_ext);
         let nan_count_idx = out_nan_ext.field_index("elev_count").unwrap();
         let nan_mean_idx = out_nan_ext.field_index("elev_mean").unwrap();
@@ -17228,7 +17344,7 @@ mod tests {
         };
 
         let res = crate::run("zonalStats", &m, &serde_json::json!({"raster": "elev", "polygons": "mixed_zones"})).unwrap();
-        let messages = res.messages.clone();
+        let messages = said(&res);
         let out = layer(res);
 
         assert_eq!(out.features.len(), 3);
@@ -17248,7 +17364,10 @@ mod tests {
         assert!(out.value(2, mean_idx).as_f64().is_some());
 
         // Messages must explicitly report feature 102 failure
-        assert!(messages.iter().any(|m| m.contains("1 feature(s) had invalid geometry")));
+        assert!(
+            messages.iter().any(|m| m == "DroppedGeometry: 1 feature(s) had invalid geometry, so their statistics are empty"),
+            "{messages:?}"
+        );
         assert!(messages.iter().any(|m| m.contains("feature 102") && m.contains("fewer than 3 vertices")));
     }
 

@@ -41,6 +41,11 @@ fn column(ds: &Dataset, name: &str) -> Vec<Value> {
     let i = field(ds, name);
     ds.features.iter().map(|f| f.attrs[i].clone()).collect()
 }
+/// What a run says: its messages, then its losses, each after its code.
+fn said(r: &ToolResult) -> Vec<String> {
+    r.messages.iter().cloned().chain(r.losses.iter().map(|l| format!("{:?}: {}", l.code, l.text))).collect()
+}
+
 fn layer(r: ToolResult) -> Dataset {
     match r.output {
         Output::Layer(d) => d,
@@ -108,13 +113,13 @@ fn rounded(n: &str, fields: &str) -> String {
 fn min_and_max_pick_whole_numbers_exactly_in_any_order() {
     let layers = Layers::default().with(zones()).with(points());
     let res = join(&layers, json!([{"field": "n", "rule": "max"}, {"field": "m", "rule": "max"}]));
-    assert_eq!(res.messages, [JOINED]);
+    assert_eq!(said(&res), [JOINED]);
     let out = layer(res);
     let big = Value::Int(TWO_53 + 1);
     assert_eq!(column(&out, "join_n"), [big.clone(), big.clone(), big.clone(), Value::Int(3)]);
     assert_eq!(column(&out, "join_m"), [Value::Int(i64::MAX), Value::Int(6), Value::Int(-1), Value::Int(4)]);
     let res = join(&layers, json!([{"field": "n", "rule": "min"}, {"field": "m", "rule": "min"}]));
-    assert_eq!(res.messages, [JOINED]);
+    assert_eq!(said(&res), [JOINED]);
     let out = layer(res);
     let low = Value::Int(TWO_53);
     assert_eq!(column(&out, "join_n"), [low.clone(), low, big, Value::Int(1)]);
@@ -150,7 +155,7 @@ fn min_and_max_pick_whole_numbers_exactly_in_any_order() {
 fn an_integer_sum_past_the_64_bit_range_is_empty_and_said_so() {
     let layers = Layers::default().with(zones()).with(points());
     let res = join(&layers, json!([{"field": "n", "rule": "sum"}, {"field": "m", "rule": "sum"}]));
-    assert_eq!(res.messages, [JOINED, "2 sums in join_m are past the 64-bit integer range and were left empty"]);
+    assert_eq!(said(&res), [JOINED, "DroppedCalculationResult: 2 sums in join_m are past the 64-bit integer range and were left empty"]);
     let out = layer(res);
     assert_eq!(column(&out, "join_m"), [Value::Null, Value::Int(11), Value::Null, Value::Int(6)]);
     // Sums past 2^53 that fit 64 bits are exact.
@@ -160,13 +165,16 @@ fn an_integer_sum_past_the_64_bit_range_is_empty_and_said_so() {
     let p = json!({"target": "zones", "join": "points", "merge": [{"field": "m", "rule": "sum"}]});
     let res = rustgis_analysis::run("spatialJoin", &only_a, &p).unwrap();
     assert_eq!(
-        res.messages,
-        ["Spatial Join: 4 features joined (2 matches)", "1 sum in join_m is past the 64-bit integer range and was left empty"]
+        said(&res),
+        [
+            "Spatial Join: 4 features joined (2 matches)",
+            "DroppedCalculationResult: 1 sum in join_m is past the 64-bit integer range and was left empty"
+        ]
     );
     // Within the range, and the other rules: no notice.
     let clean = Layers::default().with(zones()).with(points()).select("points", &[2, 3, 6, 7]);
     let p = json!({"target": "zones", "join": "points", "merge": [{"field": "m", "rule": "sum"}, {"field": "n", "rule": "sum"}]});
-    assert_eq!(rustgis_analysis::run("spatialJoin", &clean, &p).unwrap().messages, ["Spatial Join: 4 features joined (4 matches)"]);
+    assert_eq!(said(&rustgis_analysis::run("spatialJoin", &clean, &p).unwrap()), ["Spatial Join: 4 features joined (4 matches)"]);
     // Whole numbers written as text in the integer field are added exactly, not as decimals.
     let mut pts = points();
     let m = field(&pts, "m");
@@ -204,11 +212,11 @@ fn an_integer_sum_is_checked_once_and_says_what_it_leaves_out() {
     let layers = Layers::default().with(zones()).with(pts);
     let res = join(&layers, json!([{"field": "n", "rule": "first"}, {"field": "m", "rule": "sum"}]));
     assert_eq!(
-        res.messages,
+        said(&res),
         [
             "Spatial Join: 4 features joined (10 matches)",
-            "1 sum in join_m is past the 64-bit integer range and was left empty",
-            "3 matched numbers in join_m were left out: a whole-number sum takes whole numbers in the 64-bit range, the other rules numbers a decimal holds"
+            "DroppedCalculationResult: 1 sum in join_m is past the 64-bit integer range and was left empty",
+            "DroppedValue: 3 matched numbers in join_m were left out: a whole-number sum takes whole numbers in the 64-bit range, the other rules numbers a decimal holds"
         ]
     );
     assert_eq!(column(&layer(res), "join_m"), [Value::Int(i64::MAX), Value::Null, Value::Null, Value::Int(4)]);
@@ -216,10 +224,10 @@ fn an_integer_sum_is_checked_once_and_says_what_it_leaves_out() {
     let layers = layers.select("points", &[6, 7]);
     let p = json!({"target": "zones", "join": "points", "merge": [{"field": "m", "rule": "sum"}]});
     assert_eq!(
-        rustgis_analysis::run("spatialJoin", &layers, &p).unwrap().messages,
+        said(&rustgis_analysis::run("spatialJoin", &layers, &p).unwrap()),
         [
             "Spatial Join: 4 features joined (2 matches)",
-            "1 matched number in join_m was left out: a whole-number sum takes whole numbers in the 64-bit range, the other rules numbers a decimal holds"
+            "DroppedValue: 1 matched number in join_m was left out: a whole-number sum takes whole numbers in the 64-bit range, the other rules numbers a decimal holds"
         ]
     );
 }
@@ -229,7 +237,7 @@ fn a_whole_mean_a_decimal_cant_hold_is_said_to_be_rounded() {
     let layers = Layers::default().with(zones()).with(points());
     // C's mean of n, 2^53 + 1, is whole and rounded; A's and B's, 2^53 + 0.5, are decimals anyway.
     let res = join(&layers, json!([{"field": "d", "rule": "mean"}, {"field": "m", "rule": "mean"}, {"field": "n", "rule": "mean"}]));
-    assert_eq!(res.messages, [JOINED.to_string(), rounded("1 result", "join_n")]);
+    assert_eq!(said(&res), [JOINED.to_string(), rounded("1 result", "join_n")]);
     let out = layer(res);
     let two_53 = Value::Float(9_007_199_254_740_992.0);
     assert_eq!(column(&out, "join_n"), [two_53.clone(), two_53.clone(), two_53, Value::Float(2.0)]);
@@ -250,7 +258,7 @@ fn a_whole_mean_a_decimal_cant_hold_is_said_to_be_rounded() {
     }
     let layers = Layers::default().with(zones()).with(pts);
     let res = join(&layers, json!([{"field": "n", "rule": "mean"}]));
-    assert_eq!(res.messages, [JOINED.to_string(), rounded("2 results", "join_n")]);
+    assert_eq!(said(&res), [JOINED.to_string(), rounded("2 results", "join_n")]);
     // B's mean of 2^53 + 1 and 2^53 + 2, 2^53 + 1.5, isn't whole: no notice, though its decimal is
     // a whole number. C's of 2^53 + 1 three times is rounded once, to 2^53, not from a rounded sum
     // (3 * 2^53 + 4, over 3, would give 2^53 + 2).
@@ -266,13 +274,13 @@ fn a_whole_mean_a_decimal_cant_hold_is_said_to_be_rounded() {
     pts.push(fourth.geometry, fourth.attrs);
     let layers = Layers::default().with(zones()).with(pts);
     let res = join(&layers, json!([{"field": "n", "rule": "mean"}]));
-    assert_eq!(res.messages, ["Spatial Join: 4 features joined (10 matches)".to_string(), rounded("1 result", "join_n")]);
+    assert_eq!(said(&res), ["Spatial Join: 4 features joined (10 matches)".to_string(), rounded("1 result", "join_n")]);
     let out = layer(res);
     assert_eq!(column(&out, "join_n")[1..3], [Value::Float(9_007_199_254_740_994.0), Value::Float(9_007_199_254_740_992.0)]);
     // Means within 2^53: no notice.
     let clean = Layers::default().with(zones()).with(points()).select("points", &[6, 7]);
     let p = json!({"target": "zones", "join": "points", "merge": [{"field": "n", "rule": "mean"}, {"field": "m", "rule": "mean"}]});
-    assert_eq!(rustgis_analysis::run("spatialJoin", &clean, &p).unwrap().messages, ["Spatial Join: 4 features joined (2 matches)"]);
+    assert_eq!(said(&rustgis_analysis::run("spatialJoin", &clean, &p).unwrap()), ["Spatial Join: 4 features joined (2 matches)"]);
 }
 
 /// A number too large for a decimal, written as text ("1e309"), is a number past every range: `mean`,
@@ -286,17 +294,17 @@ fn a_number_too_large_for_a_decimal_is_left_out_and_counted() {
     let layers = Layers::default().with(zones()).with(pts);
     let notice = |n: &str, fields: &str| {
         format!(
-            "{n} in {fields} were left out: a whole-number sum takes whole numbers in the 64-bit range, the other rules numbers a decimal holds"
+            "DroppedValue: {n} in {fields} were left out: a whole-number sum takes whole numbers in the 64-bit range, the other rules numbers a decimal holds"
         )
     };
     let res = join(&layers, json!([{"field": "n", "rule": "mean"}, {"field": "d", "rule": "sum"}]));
     // D's mean of n leaves out "1e309", and its sum of d "-1E400"; C's mean of n is still rounded.
-    assert_eq!(res.messages, [JOINED.to_string(), notice("2 matched numbers", "join_n, join_d"), rounded("1 result", "join_n")]);
+    assert_eq!(said(&res), [JOINED.to_string(), rounded("1 result", "join_n"), notice("2 matched numbers", "join_n, join_d")]);
     let out = layer(res);
     assert_eq!((column(&out, "join_n")[3].clone(), column(&out, "join_d")[3].clone()), (Value::Float(3.0), Value::Float(4.5)));
     for (n_rule, d_rule) in [("max", "min"), ("min", "max")] {
         let res = join(&layers, json!([{"field": "n", "rule": n_rule}, {"field": "d", "rule": d_rule}]));
-        assert_eq!(res.messages, [JOINED.to_string(), notice("2 matched numbers", "join_n, join_d")], "{n_rule}");
+        assert_eq!(said(&res), [JOINED.to_string(), notice("2 matched numbers", "join_n, join_d")], "{n_rule}");
         let out = layer(res);
         assert_eq!((column(&out, "join_n")[3].clone(), column(&out, "join_d")[3].clone()), (Value::Int(3), Value::Float(4.5)));
     }
