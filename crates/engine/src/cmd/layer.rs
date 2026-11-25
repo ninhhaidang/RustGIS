@@ -148,7 +148,7 @@ pub fn commands() -> Vec<C> {
         .when(need_layer),
         C::new("layer.symbology", "Symbology", "Style › Drawing", symbology).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_feature_layer)
-            .params(r#"{"layer"?, "type": "single"|"unique"|"graduated"|"proportional", "field"?, "expression"?: expression|null (unique: class by this expression's values instead of a field; blank or null: by a field; with neither key, Unique Values keep the layer's expression), "classes"?: 1..12, "method"?: "naturalBreaks"|"equalInterval"|"quantile"|"geometricInterval"|"standardDeviation"|"arithmeticProgression"|"headTailBreaks"|"manual", "breaks"?: [numbers] (manual: the classes' upper bounds, closed by the field's largest value; on a layer read in place, the first class takes every value up to its bound and one more class every value past the last), "ramp"?: string}"#),
+            .params(r#"{"layer"?, "type": "single"|"unique"|"graduated"|"proportional", "field"?, "expression"?: expression|null (unique: class by this expression's values instead of a field; blank or null: by a field; with neither key, Unique Values keep the layer's expression), "classes"?: 1..12, "method"?: "naturalBreaks"|"equalInterval"|"quantile"|"geometricInterval"|"standardDeviation"|"arithmeticProgression"|"headTailBreaks"|"manual", "breaks"?: [numbers] (manual: the classes' upper bounds, closed by the field's largest value; on a layer read in place, closed by the whole file's smallest and largest values when it states them (GeoParquet column statistics; a definition query doesn't narrow them), else the first class takes every value up to its bound and one more class every value past the last; other methods and unique values on a layer read in place class the features of the view read so far, and say so), "ramp"?: string}"#),
         C::new("layer.ramp", "Color Scheme", "Style › Drawing", |s, p| {
             let r = s.ramp(s_req(p, "ramp")?)?;
             let mut dropped = None;
@@ -7712,35 +7712,49 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
     };
     // Features past the first values an expression's classes keep.
     let mut rest = rustgis_data::value::PastClasses::default();
+    // On a layer read in place, classes worked out from the features of the view read so far
+    // (#2497), and what becomes of the values elsewhere in the layer.
+    let mut from_view: Option<&str> = None;
+    // The file's largest value, when it closes Manual classes.
+    let mut closed_at = None;
     let mut r = match kind.as_str() {
         "single" | "singlesymbol" => Renderer::Single(base),
-        "unique" | "uniquevalues" => match &expression {
-            Some(e) => {
-                let (mut r, n) = Renderer::unique_by_up_to(&l.dataset, &rows()?, e, ramp.unwrap_or(Ramp::Harbour), base, keep)?;
-                rest = n;
-                // (Clearing the expression goes back to the field it had.)
-                if let (Renderer::Unique { field, .. }, Some(last)) = (&mut r, last_field) {
-                    *field = last.to_string();
+        "unique" | "uniquevalues" => {
+            from_view = Some("values not among them are drawn as <all other values>");
+            match &expression {
+                Some(e) => {
+                    let (mut r, n) = Renderer::unique_by_up_to(&l.dataset, &rows()?, e, ramp.unwrap_or(Ramp::Harbour), base, keep)?;
+                    rest = n;
+                    // (Clearing the expression goes back to the field it had.)
+                    if let (Renderer::Unique { field, .. }, Some(last)) = (&mut r, last_field) {
+                        *field = last.to_string();
+                    }
+                    r
                 }
-                r
+                None => {
+                    let (r, n) = Renderer::unique_counted(&l.dataset, &rows()?, &field(false)?, ramp.unwrap_or(Ramp::Harbour), base)?;
+                    rest = n;
+                    r
+                }
             }
-            None => {
-                let (r, n) = Renderer::unique_counted(&l.dataset, &rows()?, &field(false)?, ramp.unwrap_or(Ramp::Harbour), base)?;
-                rest = n;
-                r
-            }
-        },
+        }
         "graduated" | "graduatedcolors" => {
             let (field, ramp) = (field(true)?, ramp.unwrap_or(Ramp::Ember));
+            // The field's range across the whole layer, when its file states it (GeoParquet
+            // column statistics): it closes manual classes on a layer read in place.
+            // The field as the layer spells it, which a name in another case finds.
+            let range =
+                l.dataset.field_index(&field).and_then(|i| l.dataset.fields.get(i)).and_then(|f| l.source.as_ref()?.field_range(&f.name));
             // Manual with no bounds keeps the layer's current ones on the same field, so switching
             // to it changes nothing.
             let kept = match &l.renderer {
                 Renderer::Graduated { field: f, breaks, .. } if *f == field => {
                     let mut b = breaks.clone();
                     // On a layer read in place, the last bound closed the classes at the largest
-                    // value read: the open class takes its place, so the classes keep their number.
+                    // value read, or at the file's: the open class takes its place, so the classes
+                    // keep their number. A bound past the file's largest value is one of its own.
                     let open = rustgis_map::symbology::OPEN_ABOVE;
-                    if l.is_streamed() && b.last().is_some_and(|v| *v < open) {
+                    if l.is_streamed() && b.last().is_some_and(|v| *v < open && range.is_none_or(|(_, hi)| *v <= hi)) {
                         b.pop();
                         if b.is_empty() {
                             b.push(open);
@@ -7754,11 +7768,17 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
                 // A layer read in place holds only the features of the last view read, so its
                 // range is unknown: the classes take every value up to the first bound and past
                 // the last.
-                (ClassMethod::Manual, Some(b)) if l.is_streamed() => Renderer::graduated_manual_open(&l.dataset, &field, &b, ramp, base)?,
+                (ClassMethod::Manual, Some(b)) if l.is_streamed() => match range {
+                    Some(range) => {
+                        closed_at = Some(range.1);
+                        Renderer::graduated_manual_within(&l.dataset, &field, &b, range, ramp, base)?
+                    }
+                    None => Renderer::graduated_manual_open(&l.dataset, &field, &b, ramp, base)?,
+                },
                 (ClassMethod::Manual, Some(b)) => Renderer::graduated_manual(&l.dataset, &rows()?, &field, &b, ramp, base)?,
                 // Manual with nothing to keep starts from the view's classes, open at both ends.
                 (ClassMethod::Manual, None) if l.is_streamed() => {
-                    let r = Renderer::graduated(&l.dataset, &rows()?, &field, classes, method, ramp, base).map_err(|e| {
+                    let r = Renderer::graduated(&l.dataset, &rows()?, &field, classes, method, ramp.clone(), base).map_err(|e| {
                         // The file has values; the view read so far holds none.
                         if e == format!("'{field}' has no numeric values") {
                             format!("'{field}' has no values in the view read so far: give manual breaks, or read a view where it has some")
@@ -7766,27 +7786,40 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
                             e
                         }
                     })?;
-                    r.opened().unwrap_or(r)
+                    from_view = Some("the first and last classes take every value below and above them");
+                    let r = r.opened().unwrap_or(r);
+                    match (&r, range) {
+                        (Renderer::Graduated { breaks, .. }, Some(range)) => {
+                            from_view = Some("the file's smallest and largest values close the first and last classes");
+                            Renderer::graduated_manual_within(&l.dataset, &field, breaks, range, ramp, base)?
+                        }
+                        _ => r,
+                    }
                 }
-                _ => Renderer::graduated(&l.dataset, &rows()?, &field, classes, method, ramp, base)?,
+                _ => {
+                    from_view = Some("values below or above them are drawn in the first or last class");
+                    Renderer::graduated(&l.dataset, &rows()?, &field, classes, method, ramp, base)?
+                }
             }
         }
         "proportional" | "proportionalsymbols" => {
             if g != GeometryType::Point {
                 return Err("Proportional Symbols needs a point layer".into());
             }
+            from_view = Some("the symbol sizes are scaled to their values");
             Renderer::proportional(&l.dataset, &rows()?, &field(true)?, base)?
         }
         other => return Err(format!("unknown symbology '{other}'")),
     };
     // Applied again on the same field, the classes keep the labels set by hand, and the colours
     // and outlines set by hand too while the colour scheme stays (#314). Closed classes made open
-    // on a layer read in place class every feature as before, so their edits carry over too.
+    // on a layer read in place class every feature as before, so their edits carry over too; so do
+    // those of the view's classes closed at the file's range.
     let opened = match &r {
         Renderer::Graduated { breaks, .. } if l.is_streamed() && breaks.last() == Some(&rustgis_map::symbology::OPEN_ABOVE) => {
             l.renderer.opened()
         }
-        _ => None,
+        _ => closed_at.and_then(|hi| l.renderer.with_ends_of(&r, hi)),
     };
     r.carry_edits_from(opened.as_ref().unwrap_or(&l.renderer), g);
     // The same field and scheme again carry the classes' alpha, which No Fill made 0.
@@ -7803,6 +7836,9 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
         _ => String::new(),
     };
     let order = if rest.by_number { "by number" } else { "in text order" };
+    // A view that holds the whole source says nothing.
+    let part = l.source.as_ref().is_some_and(|src| src.exact_count() != Some(l.dataset.features.len() as u64));
+    let from_view = from_view.filter(|_| part).map(|then| (l.dataset.kept_features(&l.visible_rows()).count(), then));
     let mut dropped = None;
     let out = with(s, p, |l| {
         l.renderer = r;
@@ -7815,6 +7851,15 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
         s.notify(
             format!(
                 "{name}: {rest} features whose value is past the first {keep} values {values} ({order}) are drawn as <all other values>"
+            ),
+            false,
+        );
+    }
+    if let Some((n, then)) = from_view {
+        s.notify(
+            format!(
+                "{name}: its symbology is worked out from the {n} feature{} of the view read so far, not the whole layer read in place; {then}",
+                if n == 1 { "" } else { "s" }
             ),
             false,
         );

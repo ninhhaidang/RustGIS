@@ -1216,6 +1216,18 @@ impl SourceLayer {
         self.handle.as_ref().map_or(rustgis_data::raster::Crs::LonLat, |h| h.coord_crs())
     }
 
+    /// A numeric field's range across the whole source, when it states one ([`FeatureSource::field_range`]);
+    /// `None` while the source isn't open (before a project's reopen finishes, say).
+    pub fn field_range(&self, field: &str) -> Option<(f64, f64)> {
+        self.handle.as_ref()?.field_range(field)
+    }
+
+    /// Its source's number of features, when known exactly: a database's can be an estimate.
+    pub fn exact_count(&self) -> Option<u64> {
+        let database = self.postgis.is_some() || self.mysql.is_some() || self.sqlserver.is_some();
+        self.info().filter(|_| !database)?.count
+    }
+
     /// Whether its source tests its features against a box in its own system
     /// ([`FeatureSource::reads_own_box`]); no until it is open.
     pub fn reads_own_box(&self) -> bool {

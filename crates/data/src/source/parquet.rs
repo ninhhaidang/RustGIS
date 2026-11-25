@@ -489,6 +489,42 @@ impl FeatureSource for ParquetSource {
         &self.info
     }
 
+    /// From every row group's statistics of the field's column, which the footer holds: no byte of
+    /// the data is read. A row group without a statistics object, or whose statistics give no
+    /// bounds while it has values, or bounds that aren't finite and in order, leaves the range
+    /// unknown (`None`); one whose statistics count only nulls adds nothing. The field is named exactly
+    /// as the source lists it.
+    fn field_range(&self, field: &str) -> Option<(f64, f64)> {
+        let i = self.info.fields.iter().position(|f| f.name == field && f.ty.is_numeric())?;
+        let col = *self.field_cols.get(i)?;
+        let md = self.reader.metadata();
+        let desc = md.file_metadata().schema_descr().column(col);
+        // Unsigned integers are ordered as unsigned in the statistics, not as the values are read.
+        if matches!(desc.logical_type_ref(), Some(LogicalType::Integer(t)) if !t.is_signed)
+            || matches!(
+                desc.converted_type(),
+                ConvertedType::UINT_8 | ConvertedType::UINT_16 | ConvertedType::UINT_32 | ConvertedType::UINT_64
+            )
+        {
+            return None;
+        }
+        let scale = decimal_scale(&desc).map_or(1.0, |s| 10f64.powi(-s));
+        let (lo, hi) = (0..md.num_row_groups()).try_fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), g| {
+            let rg = md.row_group(g);
+            let s = rg.columns().get(col)?.statistics()?;
+            match (number_stat(s, false), number_stat(s, true)) {
+                (Some(a), Some(b)) => {
+                    let (a, b) = (a * scale, b * scale);
+                    (a.is_finite() && b.is_finite() && a <= b).then(|| (lo.min(a), hi.max(b)))
+                }
+                // A row group of nulls only has no bounds.
+                _ if s.null_count_opt() == Some(u64::try_from(rg.num_rows()).ok()?) => Some((lo, hi)),
+                _ => None,
+            }
+        })?;
+        (lo.is_finite() && hi.is_finite() && lo <= hi).then_some((lo, hi))
+    }
+
     fn reads_own_box(&self) -> bool {
         true
     }
@@ -1068,6 +1104,23 @@ fn stat(s: Option<&Statistics>, max: bool) -> Option<f64> {
         Statistics::Float(v) => (if max { v.max_opt() } else { v.min_opt() }).map(|x| f64::from(*x)),
         Statistics::Double(v) => (if max { v.max_opt() } else { v.min_opt() }).copied(),
         _ => None,
+    }
+}
+
+/// A numeric column's smallest or largest value in a row group's statistics.
+fn number_stat(s: &Statistics, max: bool) -> Option<f64> {
+    match s {
+        Statistics::Int32(v) => (if max { v.max_opt() } else { v.min_opt() }).map(|x| f64::from(*x)),
+        // Past 2^53, the next double out, so the bound still holds every value.
+        Statistics::Int64(v) => (if max { v.max_opt() } else { v.min_opt() }).map(|&x| {
+            let y = x as f64;
+            match (y as i128).cmp(&i128::from(x)) {
+                std::cmp::Ordering::Less if max => y.next_up(),
+                std::cmp::Ordering::Greater if !max => y.next_down(),
+                _ => y,
+            }
+        }),
+        _ => stat(Some(s), max),
     }
 }
 

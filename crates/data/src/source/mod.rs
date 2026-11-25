@@ -485,6 +485,12 @@ pub trait FeatureSource: Send + Sync {
     fn skipped_at_open(&self) -> usize {
         0
     }
+    /// The smallest and largest value of a numeric field across the whole source, when the source
+    /// states them without being read (GeoParquet column statistics); `None` when any part of it
+    /// doesn't, or the field has no value.
+    fn field_range(&self, _field: &str) -> Option<(f64, f64)> {
+        None
+    }
     /// Whether the source's notes ([`SourceInfo::notes`]) already count the features it keeps
     /// with a place that can't be given in longitude/latitude, so a whole read doesn't count them
     /// again.
@@ -752,6 +758,10 @@ impl FeatureSource for Fetching {
 
     fn skipped_at_open(&self) -> usize {
         self.0.skipped_at_open()
+    }
+
+    fn field_range(&self, field: &str) -> Option<(f64, f64)> {
+        self.0.field_range(field)
     }
 
     fn says_unplaced_at_open(&self) -> bool {

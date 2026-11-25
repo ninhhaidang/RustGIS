@@ -5103,6 +5103,127 @@ fn write_projected_parquet_fixture(ds: &Dataset, path: &Path, rows: usize, dicti
     writer.close().unwrap();
 }
 
+/// A GeoParquet field's range comes from its column statistics; text, missing and all-null
+/// fields have none (#2497).
+#[test]
+fn geoparquet_field_range_comes_from_column_statistics() {
+    let fields = vec![
+        Field::new("height", FieldType::Double),
+        Field::new("floors", FieldType::Integer),
+        Field::new("name", FieldType::Text),
+        Field::new("empty", FieldType::Double),
+    ];
+    let mut ds = Dataset::new("b", crate::GeometryType::Point, fields);
+    for (i, h) in [3.5, -2.0, 41.25].into_iter().enumerate() {
+        let floors = if i == 1 { Value::Null } else { Value::Int(i as i64 * 7 - 3) };
+        ds.push(Some(Geometry::Point(Coord::new(i as f64, 0.0))), vec![Value::Float(h), floors, Value::Text("x".into()), Value::Null]);
+    }
+    let source = parquet::ParquetSource::open_bytes(parquet::write(&ds).unwrap(), "b").unwrap();
+    assert_eq!(source.field_range("height"), Some((-2.0, 41.25)));
+    assert_eq!(source.field_range("floors"), Some((-3.0, 11.0)));
+    for none in ["name", "empty", "nope"] {
+        assert_eq!(source.field_range(none), None, "{none}");
+    }
+    // A wrapper says the same.
+    #[cfg(not(target_arch = "wasm32"))]
+    assert_eq!(Fetching(Arc::new(source)).field_range("height"), Some((-2.0, 41.25)));
+}
+
+/// The column statistics that can't give a field's range, and the ones scaled or rounded to
+/// hold every value: unsigned integers, a column without statistics, decimals, and Int64 past
+/// 2^53 (#2497).
+#[test]
+fn geoparquet_field_range_refuses_unsigned_and_missing_statistics() {
+    use ::parquet::data_type::{ByteArray, ByteArrayType, DoubleType, Int32Type, Int64Type};
+    use ::parquet::file::properties::{EnabledStatistics, WriterProperties};
+    use ::parquet::file::writer::SerializedFileWriter;
+    use ::parquet::schema::types::ColumnPath;
+    let schema = ::parquet::schema::parser::parse_message_type(
+        "message m { REQUIRED BINARY geometry; OPTIONAL INT32 count (UINT_32); OPTIONAL INT64 price (DECIMAL(10,2));          OPTIONAL INT64 big; OPTIONAL DOUBLE bare; }",
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_column_statistics_enabled(ColumnPath::from("bare"), EnabledStatistics::None).build();
+    let mut bytes = Vec::new();
+    let mut w = SerializedFileWriter::new(&mut bytes, Arc::new(schema), Arc::new(props)).unwrap();
+    let mut rg = w.next_row_group().unwrap();
+    let geom = ByteArray::from(wkb::encode(&Geometry::Point(Coord::new(0.0, 0.0))));
+    let mut col = rg.next_column().unwrap().unwrap();
+    col.typed::<ByteArrayType>().write_batch(&[geom.clone(), geom], None, None).unwrap();
+    col.close().unwrap();
+    let mut col = rg.next_column().unwrap().unwrap();
+    col.typed::<Int32Type>().write_batch(&[1, -1], Some(&[1, 1]), None).unwrap();
+    col.close().unwrap();
+    let big = (1i64 << 53) + 1;
+    for values in [[12_345, -50], [-big, big]] {
+        let mut col = rg.next_column().unwrap().unwrap();
+        col.typed::<Int64Type>().write_batch(&values, Some(&[1, 1]), None).unwrap();
+        col.close().unwrap();
+    }
+    let mut col = rg.next_column().unwrap().unwrap();
+    col.typed::<DoubleType>().write_batch(&[1.0, 2.0], Some(&[1, 1]), None).unwrap();
+    col.close().unwrap();
+    rg.close().unwrap();
+    w.close().unwrap();
+    let source = parquet::ParquetSource::open_bytes(bytes, "m").unwrap();
+    let kinds: Vec<_> = source.info().fields.iter().map(|f| (f.name.as_str(), f.ty)).collect();
+    assert!(kinds.contains(&("count", FieldType::Integer)) && kinds.contains(&("bare", FieldType::Double)), "{kinds:?}");
+    assert_eq!(source.field_range("count"), None);
+    assert_eq!(source.field_range("bare"), None);
+    assert_eq!(source.field_range("price"), Some((-50.0 * 10f64.powi(-2), 12_345.0 * 10f64.powi(-2))));
+    let (lo, hi) = source.field_range("big").unwrap();
+    assert!(i128::from(big) <= hi as i128 && lo as i128 <= -i128::from(big), "{lo} {hi}");
+}
+
+/// Row groups whose statistics hold their smallest and largest value in order are joined; one that
+/// gives them reversed leaves the range unknown, whatever the others give.
+#[test]
+fn geoparquet_field_range_checks_each_row_group() {
+    use ::parquet::data_type::{ByteArray, ByteArrayType, DoubleType, Int64Type};
+    use ::parquet::file::statistics::Statistics;
+    use ::parquet::file::writer::SerializedFileWriter;
+    let schema = ::parquet::schema::parser::parse_message_type(
+        "message m { REQUIRED BINARY geometry; REQUIRED INT64 whole; REQUIRED DOUBLE real; }",
+    )
+    .unwrap();
+    let mut bytes = Vec::new();
+    let mut w = SerializedFileWriter::new(&mut bytes, Arc::new(schema), Arc::default()).unwrap();
+    let geom = ByteArray::from(wkb::encode(&Geometry::Point(Coord::new(0.0, 0.0))));
+    for (lo, hi) in [(10, 20), (40, 50)] {
+        let mut rg = w.next_row_group().unwrap();
+        let mut col = rg.next_column().unwrap().unwrap();
+        col.typed::<ByteArrayType>().write_batch(&[geom.clone(), geom.clone()], None, None).unwrap();
+        col.close().unwrap();
+        let mut col = rg.next_column().unwrap().unwrap();
+        col.typed::<Int64Type>().write_batch(&[lo, hi], None, None).unwrap();
+        col.close().unwrap();
+        let mut col = rg.next_column().unwrap().unwrap();
+        col.typed::<DoubleType>().write_batch(&[lo as f64, hi as f64], None, None).unwrap();
+        col.close().unwrap();
+        rg.close().unwrap();
+    }
+    w.close().unwrap();
+    let open = |bytes| parquet::ParquetSource::open_bytes(bytes, "m").unwrap();
+    let source = open(bytes.clone());
+    assert_eq!((source.field_range("whole"), source.field_range("real")), (Some((10.0, 50.0)), Some((10.0, 50.0))));
+    // The second group's bounds, swapped where the footer holds them.
+    let len = u32::from_le_bytes(bytes[bytes.len() - 8..bytes.len() - 4].try_into().unwrap()) as usize;
+    let footer = bytes.len() - 8 - len;
+    for (a, b) in [(40i64.to_le_bytes(), 50i64.to_le_bytes()), (40f64.to_le_bytes(), 50f64.to_le_bytes())] {
+        for at in footer..bytes.len() - 8 {
+            if bytes[at..at + 8] == a {
+                bytes[at..at + 8].copy_from_slice(&b);
+            } else if bytes[at..at + 8] == b {
+                bytes[at..at + 8].copy_from_slice(&a);
+            }
+        }
+    }
+    let md = ::parquet::file::metadata::ParquetMetaDataReader::new().parse_and_finish(&bytes::Bytes::from(bytes.clone())).unwrap();
+    let Some(Statistics::Int64(st)) = md.row_group(1).column(1).statistics() else { panic!() };
+    assert_eq!((st.min_opt(), st.max_opt()), (Some(&50), Some(&40)));
+    let source = open(bytes);
+    assert_eq!((source.field_range("whole"), source.field_range("real")), (None, None));
+}
+
 /// The spatial index, loaded after the rows in Hilbert order, holds one entry with the box of
 /// each feature that has a place (none for one without), and the same layer gives the same index
 /// nodes each time.
