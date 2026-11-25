@@ -41,16 +41,24 @@ impl Clone for Cache {
 }
 
 impl Grid {
-    /// The grid of `rows`' boxes: one walk over every row's vertices, with a box a row (32 bytes)
-    /// kept only while the grid is made. Capped at 256 by 256 cells, so the cells' own lists stay
-    /// small (about 1.5 MB at most) whatever the layer's size; a row's box is listed in at most
-    /// [`MAX_CELLS_PER_ROW`] cells.
+    /// The grid of `rows`' boxes, made in two walks over every row's vertices: one for the box
+    /// they are all in, one to list each row's box, so no box is kept per row (a list of them
+    /// would take 32 bytes a row while the grid is made). Capped at 256 by 256 cells, so the
+    /// cells' headers (24 bytes each) take about 1.5 MB at most; each row is listed at 4 bytes a
+    /// cell it is in, in at most [`MAX_CELLS_PER_ROW`] cells (usually one to four), or once in
+    /// the wide list.
     fn new(rows: &Features) -> Grid {
-        // A box per row, empty for a row without a shape or a place (`Geometry::extent` leaves
-        // out a coordinate that isn't a number, so every other box is finite).
-        let boxes: Vec<Extent> = (0..rows.len()).map(|i| rows.geometry(i).map_or(Extent::EMPTY, |g| g.extent())).collect();
-        let total = boxes.iter().fold(Extent::EMPTY, |t, e| if e.is_empty() { t } else { t.union(e) });
-        let shaped = boxes.iter().filter(|e| !e.is_empty()).count();
+        // A row's box, empty for a row without a shape or a place (`Geometry::extent` leaves out a
+        // coordinate that isn't a number, so every other box is finite).
+        let box_of = |i: usize| rows.geometry(i).map_or(Extent::EMPTY, |g| g.extent());
+        let (mut total, mut shaped) = (Extent::EMPTY, 0usize);
+        for i in 0..rows.len() {
+            let e = box_of(i);
+            if !e.is_empty() {
+                total = total.union(&e);
+                shaped += 1;
+            }
+        }
         // About one row a cell.
         let cols = ((shaped as f64).sqrt().ceil() as usize).clamp(1, 256);
         let mut grid = Grid {
@@ -63,7 +71,8 @@ impl Grid {
             wide: Vec::new(),
             beyond: false,
         };
-        for (i, e) in boxes.iter().enumerate() {
+        for i in 0..rows.len() {
+            let e = &box_of(i);
             let Ok(row) = u32::try_from(i) else {
                 // Past 4 billion rows a row can't be listed: every search looks at them all.
                 grid.beyond = true;
@@ -126,8 +135,8 @@ impl Grid {
 }
 
 impl Cache {
-    /// The rows of `rows` whose shape's box may meet `within` (a superset of those that do; never
-    /// one without a shape), each once, in order. The grid is made again only once the rows
+    /// The rows of `rows` whose shape's box may meet `within` (a superset of those that do; one
+    /// without a shape only past `u32::MAX` rows, when every row is given), each once, in order. The grid is made again only once the rows
     /// change.
     pub(super) fn touching(&self, rows: &Features, within: &Extent) -> Vec<usize> {
         // The grid is disposable; a poisoned lock does not invalidate the features themselves.

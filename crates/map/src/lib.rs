@@ -1695,9 +1695,10 @@ impl Layer {
     }
 
     /// The rows whose shape's box, in the layer's own coordinates ([`Dataset::coord_crs`]), may
-    /// meet `within`: every row whose box does, perhaps some whose box doesn't, never one without
-    /// a shape; each once, in order. Looked up in a grid kept until the rows change (#2032
-    /// C2f-6), so a search near an edit doesn't read every feature.
+    /// meet `within`: every row whose box does, perhaps some whose box doesn't (rows without a
+    /// shape only in a layer of more than 4 billion rows, which gives every row); each once, in
+    /// order. Looked up in a grid kept until the rows change (#2032 C2f-6), so a search near an
+    /// edit doesn't read every feature.
     pub fn rows_touching(&self, within: &Extent) -> Vec<usize> {
         self.row_boxes.touching(&self.dataset.features, within)
     }
