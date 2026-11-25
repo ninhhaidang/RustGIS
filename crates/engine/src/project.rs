@@ -15,7 +15,7 @@ mod capabilities;
 #[path = "project_label_losses.rs"]
 pub(crate) mod label_losses;
 pub use capabilities::layout_file_bytes;
-pub(crate) use capabilities::{layer_file_bytes, map_file_bytes, model_capabilities};
+pub(crate) use capabilities::{layer_file_bytes, map_file_bytes, model_capabilities, task_capabilities};
 
 /// A map export cannot keep runtime-only download reservations, even in a larger project.
 pub(crate) fn ensure_map_imports_complete(map: &Map) -> Result<(), String> {

@@ -134,6 +134,19 @@ impl Project {
     }
 }
 
+/// What a task saved on its own needs: what a project saves for its tasks' steps (a `model.run`
+/// given its graph inline, and a script line, included), in the order its list has them.
+pub(crate) fn task_capabilities(steps: &[super::TaskStep]) -> Vec<&'static str> {
+    let mut required: Vec<&'static str> = COMMAND_CAPABILITIES
+        .iter()
+        .filter_map(|&(name, uses)| steps.iter().any(|s| command_uses(&uses, &s.command, &s.params)).then_some(name))
+        .collect();
+    if steps.iter().any(|s| command_uses_table_export_order(&s.command, &s.params)) {
+        required.push("table-export-order");
+    }
+    required
+}
+
 type CommandCheck = fn(&str, &Value) -> bool;
 const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("slope-percent", command_uses_percent_slope),

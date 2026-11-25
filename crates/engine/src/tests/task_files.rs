@@ -223,3 +223,76 @@ fn a_recorded_task_import_keeps_its_requires_only_when_it_carries_no_credential(
         assert!(import(&mut s, &kept).unwrap_err().contains("future-step-key"));
     }
 }
+
+/// `steps` as a task a project holds, saved with `task.save`: the file's text, and the `requires`
+/// the same task has in a project saved on its own (`None`: no header).
+fn saved_text(steps: Value) -> (String, Option<Value>) {
+    let mut doc = serde_json::to_value(Project::default()).unwrap();
+    doc["tasks"] = json!([{"name": "Lesson", "steps": steps}]);
+    let project = Project::from_json(&doc.to_string()).unwrap();
+    let in_a_project = serde_json::to_value(&project).unwrap().get("requires").cloned();
+    let mut s = Session::new(project);
+    let file =
+        TempFile(std::env::temp_dir().join(format!("task-save-2818-{}-{:?}.rgistask", std::process::id(), std::thread::current().id())));
+    let result = s.run("task.save", &json!({"task": "Lesson", "path": file.0.to_string_lossy()}));
+    let text = std::fs::read_to_string(&file.0);
+    result.unwrap();
+    (text.unwrap(), in_a_project)
+}
+
+fn saved(steps: Value) -> (Value, Option<Value>) {
+    let (text, in_a_project) = saved_text(steps);
+    (serde_json::from_str(&text).unwrap(), in_a_project)
+}
+
+fn step(command: &str, params: Value) -> Value {
+    json!({"title": "Step", "instructions": "", "command": command, "params": params})
+}
+
+#[test]
+fn a_saved_task_that_needs_nothing_is_written_as_before() {
+    let steps = json!([step("map.zoomIn", json!({"scale": 1.5, "label": "Zoom é"}))]);
+    let (text, _) = saved_text(steps.clone());
+    let task = crate::project::Task { name: "Lesson".into(), description: String::new(), steps: serde_json::from_value(steps).unwrap() };
+    assert_eq!(text, serde_json::to_string(&task).unwrap(), "same bytes, keys in the task's own order");
+    assert!(!text.contains("requires"));
+}
+
+#[test]
+fn a_saved_task_with_requires_keeps_its_own_keys_in_order() {
+    let (text, _) = saved_text(json!([step("raster.function", json!({"function": "slope", "units": "percent"}))]));
+    let at = |key: &str| text.find(&format!("\"{key}\":")).unwrap();
+    assert!(at("name") < at("description") && at("description") < at("steps") && at("steps") < at("requires"), "{text}");
+}
+
+#[test]
+fn a_saved_task_lists_what_its_steps_need_once_and_as_a_project_does() {
+    let slope = || step("raster.function", json!({"function": "slope", "units": "percent"}));
+    let sorted = step("share.exportTable", json!({"sort": [{"field": "a"}]}));
+    let script = step("script.run", json!({"script": "# Slope\nraster.function {\"function\": \"slope\", \"units\": \"percent\"}"}));
+    let inline = |tool: &str, params: Value| {
+        step("model.run", json!({"graph": {"nodes": [{"id": "n", "kind": "tool", "tool": tool, "params": params}]}}))
+    };
+    for (why, steps, expected) in [
+        ("a step", json!([slope()]), json!(["slope-percent"])),
+        ("twice", json!([slope(), step("map.zoomIn", json!({})), slope()]), json!(["slope-percent"])),
+        ("a script line", json!([script]), json!(["slope-percent"])),
+        ("a table export order", json!([sorted]), json!(["table-export-order"])),
+        ("a model given inline", json!([inline("tabulateIntersection", json!({"areaUnit": "ac"}))]), json!(["tabulate-intersection-unit"])),
+    ] {
+        let (file, in_a_project) = saved(steps);
+        assert_eq!(file["requires"], expected, "{why}");
+        assert_eq!(in_a_project, Some(expected), "{why}: the project's own walk");
+    }
+}
+
+#[test]
+fn a_saved_task_is_read_back_and_refused_when_its_requires_is_edited() {
+    let (mut file, _) = saved(json!([step("raster.function", json!({"function": "slope", "units": "percent"}))]));
+    let mut s = Session::new(Project::default());
+    import(&mut s, &file.to_string()).unwrap();
+    assert_eq!(s.project.tasks[0].steps[0].command, "raster.function");
+    file["requires"] = json!(["slope-percent", "future-step-key"]);
+    let err = import(&mut s, &file.to_string()).unwrap_err();
+    assert_eq!(err, "this task needs what this RustGIS can't read: future-step-key. Update RustGIS to open it.");
+}

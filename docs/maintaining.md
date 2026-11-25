@@ -76,9 +76,9 @@ same files. New and changed code follows these rules; not every existing reader 
   writes it.
 - A project, map or layer file, a model or a web tool lists in `requires` each capability it needs
   that an older reader would lose or misread: a reader refuses one it doesn't know, naming it.
-  `task.import` reads a task file this way (#2818), though `task.save` doesn't list anything in one
-  yet. Presentation and notebook readers, and models inside a task's steps, don't check
-  `requires` yet. A release reads
+  A task file does too (#2818): `task.save` lists what its steps need, a `model.run` step's inline
+  graph included, and `task.import` refuses one it doesn't know. Presentation and notebook readers
+  don't check `requires` yet. A release reads
   `.rgis` format 2 before any writes it (`READ_FORMAT` and `CAPABILITIES` in
   `crates/engine/src/project.rs`), so what is added to format 2 after that comes with a capability
   name, added to `CAPABILITIES` where it is read.

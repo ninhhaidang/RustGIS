@@ -432,6 +432,22 @@ fn to_json<T: serde::Serialize>(v: &T) -> Result<Vec<u8>, String> {
     serde_json::to_vec(v).map_err(|e| e.to_string())
 }
 
+/// A task's file: the task, with `requires` listing what its steps need when they need anything
+/// (as a model's file does). A RustGIS that checks `requires` (#2867 on) refuses what it would run
+/// without; one that doesn't ignores the key, as it does for any task file today (#2818).
+fn task_json(t: &Task) -> Result<Vec<u8>, String> {
+    // A struct, not a `serde_json::Value`, which would sort the task's keys.
+    #[derive(serde::Serialize)]
+    struct TaskFile<'a> {
+        #[serde(flatten)]
+        task: &'a Task,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        requires: Vec<&'static str>,
+    }
+    let requires = crate::project::task_capabilities(&t.steps);
+    serde_json::to_vec(&TaskFile { task: t, requires }).map_err(|e| e.to_string())
+}
+
 /// Whether command `id` can be added as a task's step (`task.addStep`): a built-in command, and
 /// not a task's own (a step doesn't run a task).
 pub fn can_be_step(s: &Session, id: &str) -> bool {
@@ -1907,7 +1923,7 @@ pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
         "task" => {
             let t = task_mut(s, p)?;
             let name = t.name.clone();
-            let (bytes, report) = crate::durable::output(t, None, to_json)?;
+            let (bytes, report) = crate::durable::output(t, None, task_json)?;
             crate::durable::notify(s, &report);
             (name, bytes)
         }
