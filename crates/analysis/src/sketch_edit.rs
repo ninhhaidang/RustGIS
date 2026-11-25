@@ -1,6 +1,10 @@
 //! Editing a feature with a drawn line: cutting polygons in pieces, reshaping a boundary or a
 //! line, and tracing along a feature's edge. Computed in Web Mercator metres, as the other
-//! editing tools are; vertices an edit doesn't move keep their exact longitude and latitude.
+//! editing tools are; vertices an edit doesn't move keep their exact longitude and latitude. In a
+//! run in a projected system's own plane ([`crate::convert::Plane::Own`], #2032 C2f-7) the
+//! geometry and the line are in that system's coordinates, and the work is in its own plane, in
+//! metres east and north of its grid: a cut or a reshape meets the layer's segments where they
+//! run straight, in the layer's own coordinates.
 
 use std::collections::HashMap;
 
@@ -24,7 +28,36 @@ fn within_work(a: usize, b: usize) -> Result<(), String> {
 /// Why an edit past [`MAX_WORK`] is refused.
 const TOO_MUCH: &str = "the shapes and the line have too many vertices to edit together";
 
-/// A point in Web Mercator metres and the longitude/latitude it came from.
+/// Whether the run is in a projected system's own plane, rather than in longitude/latitude.
+fn own() -> bool {
+    crate::convert::plane() == crate::convert::Plane::Own
+}
+
+/// A place in the plane the work is in, in metres: Web Mercator's for longitude/latitude; east and
+/// north of a projected system's grid, by the order and direction of its axes, in its own plane.
+fn to_m(c: Coord) -> Coord {
+    if !own() {
+        return lonlat_to_merc(c);
+    }
+    let u = crate::convert::run_plane().unit_m;
+    let (e, n) = crate::convert::own_east_north(c.x, c.y);
+    Coord::new(e * u, n * u)
+}
+
+/// [`to_m`] undone.
+fn from_m(m: Coord) -> Coord {
+    if !own() {
+        return merc_to_lonlat(m);
+    }
+    let r = crate::convert::run_plane();
+    let [(xe, xn), (ye, yn)] = r.axes;
+    let (e, n) = (m.x / r.unit_m, m.y / r.unit_m);
+    let det = xe * yn - ye * xn;
+    Coord::new((e * yn - n * ye) / det, (xe * n - xn * e) / det)
+}
+
+/// A point in metres ([`to_m`]) and the coordinates it came from: longitude/latitude, or a
+/// projected system's own in its plane.
 #[derive(Clone, Copy, Debug)]
 struct Pt {
     m: Coord,
@@ -32,13 +65,13 @@ struct Pt {
 }
 
 impl Pt {
-    /// An input vertex: its longitude/latitude kept as given.
+    /// An input vertex: its coordinates kept as given.
     fn of(ll: Coord) -> Pt {
-        Pt { m: lonlat_to_merc(ll), ll }
+        Pt { m: to_m(ll), ll }
     }
     /// A new point worked out in metres.
     fn at(m: Coord) -> Pt {
-        Pt { m, ll: merc_to_lonlat(m) }
+        Pt { m, ll: from_m(m) }
     }
 }
 
@@ -47,12 +80,13 @@ fn dist(a: Coord, b: Coord) -> f64 {
     (a.x - b.x).hypot(a.y - b.y)
 }
 
-/// The input as metres, refusing coordinates that don't project (a pole, NaN).
-/// Longitudes beyond ±360° (as `edit.vertex` takes, for features unwrapped across the
-/// antimeridian) aren't coordinates on the Earth.
+/// The input as metres ([`to_m`]), refusing coordinates that don't project (a pole, NaN). In
+/// longitude/latitude, longitudes beyond ±360° (as `edit.vertex` takes, for features unwrapped
+/// across the antimeridian) aren't coordinates on the Earth; in a projected system's own plane
+/// any finite coordinate is one.
 fn project(path: &[Coord]) -> Result<Vec<Pt>, String> {
     let pts: Vec<Pt> = path.iter().map(|c| Pt::of(*c)).collect();
-    if pts.iter().all(|p| p.m.is_finite() && p.ll.x.abs() <= 360.0 && p.ll.y.abs() <= 90.0) {
+    if pts.iter().all(|p| p.m.is_finite() && (own() || (p.ll.x.abs() <= 360.0 && p.ll.y.abs() <= 90.0))) {
         Ok(pts)
     } else {
         Err("the shape has coordinates that can't be drawn on the map".into())
@@ -76,7 +110,7 @@ fn area2(ring: &[Pt]) -> f64 {
     ring.windows(2).filter_map(|w| Some((w.first()?.m, w.get(1)?.m))).map(|(a, b)| a.x * b.y - b.x * a.y).sum()
 }
 
-/// [`area2`] of a ring in longitude/latitude.
+/// [`area2`] of a ring in its coordinates (longitude/latitude, or a projected system's own).
 fn area2_ll(ring: &[Coord]) -> f64 {
     area2(&ring.iter().map(|c| Pt::of(*c)).collect::<Vec<_>>())
 }
@@ -445,7 +479,7 @@ fn valid(rings: &[Vec<Coord>]) -> bool {
 
 /// A polygon (outer ring, then holes) as a `geo` polygon in metres.
 fn geo_polygon(rings: &[Vec<Coord>]) -> Option<geo::Polygon<f64>> {
-    let ring = |r: &Vec<Coord>| geo::LineString::new(r.iter().map(|c| lonlat_to_merc(*c)).map(|m| geo::coord! {x: m.x, y: m.y}).collect());
+    let ring = |r: &Vec<Coord>| geo::LineString::new(r.iter().map(|c| to_m(*c)).map(|m| geo::coord! {x: m.x, y: m.y}).collect());
     let mut it = rings.iter();
     let outer = it.next()?;
     Some(geo::Polygon::new(ring(outer), it.map(ring).collect()))
@@ -799,7 +833,8 @@ pub struct Reshaped {
 }
 
 /// A path traced along a feature's edge, and how far (Web Mercator metres, which exceed ground
-/// metres by 1/cos(latitude)) its ends were from the points asked for.
+/// metres by 1/cos(latitude); in a projected system's own plane, metres of its grid) its ends were
+/// from the points asked for.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Traced {
     pub path: Vec<Coord>,
@@ -825,7 +860,7 @@ fn nearest(path: &[Pt], c: Coord) -> Option<(f64, f64, Coord)> {
 /// `part`, when given, is the line part or polygon ring to follow (polygons' rings numbered in
 /// order, holes after their outer ring), as already chosen on the map.
 pub fn trace(g: &Geometry, from: Coord, to: Coord, part: Option<usize>) -> Result<Traced, String> {
-    let (f, t) = (lonlat_to_merc(from), lonlat_to_merc(to));
+    let (f, t) = (to_m(from), to_m(to));
     let closed = matches!(g, Geometry::Polygon(_));
     if !matches!(g, Geometry::Line(_) | Geometry::Polygon(_)) {
         return Err("only lines and polygons can be traced".into());

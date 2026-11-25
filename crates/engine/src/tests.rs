@@ -12,6 +12,8 @@ mod graphics_frames;
 mod held_databases;
 #[path = "tests/own_grid_edits.rs"]
 mod own_grid_edits;
+#[path = "tests/own_segments.rs"]
+mod own_segments;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "tests/scene_losses.rs"]
 mod scene_losses;

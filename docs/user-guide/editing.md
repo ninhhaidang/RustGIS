@@ -96,14 +96,14 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
   whose selection spans layers in more than one system (or some in one and some in
   longitude/latitude; graphics don't count) moves them all as below, so places they share stay
   together, and says so. Rotate and Scale turn each feature about its own middle anyway, so
-  they take each layer's own grid even then. The rest of this paragraph, about Web Mercator and the ground, is for
-  the other layers.
+  they take each layer's own grid even then. The rest of this paragraph, about Web Mercator and
+  the ground, is for the other layers.
   A selected feature with a place that can't be given in longitude/latitude (one far past where
-  its layer's own system reaches) is left as it is by Move, Rotate and Scale (except in a layer
-  edited in its own grid, where it changes with the rest), Split and Cut Polygon,
-  and a notice counts them by layer; Flip Line flips it in the layer's own coordinates. An edit
-  of that one feature (a vertex, Reshape, Trace, Merge with it, a shape conversion) is refused,
-  naming the layer and the feature; Set Geometry gives it a new shape, and Delete removes it.
+  its layer's own system reaches) is left as it is by Move, Rotate and Scale, Split and Cut
+  Polygon (in a layer edited in its own grid, each of these changes it with the rest), and a
+  notice counts them by layer; Flip Line flips it in the layer's own coordinates. An edit of that
+  one feature (a vertex, a shape conversion; Reshape, Trace or Merge with it, outside a layer
+  edited in its own grid) is refused, naming the layer and the feature; Set Geometry gives it a new shape, and Delete removes it.
   Beyond 85.05°, where Web Mercator stops, Move, Rotate and Scale work on the ground: a feature
   that reaches beyond it, or that the edit would take beyond it, moves rigidly, together with the
   selected features sharing a vertex with it (their center goes the distance and direction asked,
@@ -135,6 +135,14 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
   ground (once a split has worked out a million distances along segments near the point, a
   segment counts as near as the nearest point found on it so far, its nearer end at first, and the
   split says how many lines it cut that way, or left whole when that point was an end).
+- **On a layer's own segments:** in a layer held in a projected system (as for Move above),
+  Cut Polygon, Reshape, Split, Merge and Trace work on its segments as they run straight in its
+  own coordinates. The line drawn (or the point Split is given) is converted into them, a point
+  snapped to a place of a layer in that system being that place as stored; the points a cut, a
+  reshape or a split makes lie on the layer's segments there, every other place stays as
+  stored, and Merge unions the shapes as stored, converting nothing. Their distances (a
+  centimetre at a line's end, Trace's `fromOffM` and `toOffM`) are metres of its grid. Other
+  layers are edited in Web Mercator, as below.
 - **Cut Polygon** (Edit › Tools, or the Editing pane): select polygons, then click a line across
   them and double-click to finish. Each polygon the line crosses from edge to edge is cut into
   pieces; a zigzag line can make several. The pieces keep the original's attributes. The
@@ -160,7 +168,8 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
   `edit.trace={"from": [lon, lat], "to": [lon, lat]}` returns the path along the nearest edge
   passing within the snapping tolerance of both points (`"layer"` keeps the search to one layer;
   add `"row"` to trace a given feature), and how far each point was from the edge (`fromOffM`, `toOffM`, in Web Mercator metres, which
-  run longer than ground metres away from the equator).
+  run longer than ground metres away from the equator; for a layer held in a projected system,
+  in metres of its grid).
 - **Edit Vertices** (Edit › Features): reshape the selected features on the map. Their vertices
   show as square handles and each edge has a round midpoint handle. Drag a vertex to move it;
   drag a midpoint, or click an edge, to insert a vertex; click a vertex and press ++delete++ to
