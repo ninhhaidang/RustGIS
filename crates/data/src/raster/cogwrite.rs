@@ -1111,18 +1111,38 @@ pub struct TileStream<'a, W: Write + Seek> {
     pos: u64,
     /// The value of a pixel with none, written for pixels past the image's edge too.
     nodata: f32,
+    /// Whole numbers 1 to 255 written as bytes, 0 for no value ([`Samples::Hillshade`]); floats
+    /// otherwise.
+    bytes: bool,
+    /// Classes, whose overviews take a pixel ([`Samples::Classes`]).
+    classes: bool,
     /// The level kept as it is written ([`TileStream::keeping`]), and its rows so far.
     kept: Option<(usize, Vec<f32>)>,
     /// What the kept level is made into: the template's name, place and no-data.
     template: Raster,
 }
 
+/// What a [`TileStream`]'s band holds, which decides how it is stored and how its overviews are
+/// made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Samples {
+    /// Measures, as 32-bit floats; an overview pixel is the mean of the four it covers.
+    Floats,
+    /// Classes (a remap's, a threshold's), as 32-bit floats; an overview pixel takes one of the
+    /// four it covers, never an average no class has, as [`write_to`] makes a classes' overview.
+    Classes,
+    /// A hillshade's whole numbers 1 to 255, as bytes with 0 for no value; averaged, which never
+    /// gives 0 (no value) from pixels that have one.
+    Hillshade,
+}
+
 impl<'a, W: Write + Seek> TileStream<'a, W> {
-    /// A stream of a `width` × `height` raster into `out` (which must be empty: offsets are from
-    /// its start), placed, named and with the no-data value of `template` (its first band's name,
-    /// its transform's corner and pixel size, its system and rights holder; its own pixels and
-    /// size aren't written). A template without a no-data value marks pixels with none NaN.
-    pub fn new(template: &Raster, width: u32, height: u32, out: &'a mut W) -> Result<TileStream<'a, W>> {
+    /// A stream of a `width` × `height` raster of `samples` into `out` (which must be empty:
+    /// offsets are from its start), placed, named and with the no-data value of `template` (its
+    /// first band's name, its transform's corner and pixel size, its system and rights holder;
+    /// its own pixels and size aren't written). A template without a no-data value marks pixels
+    /// with none NaN; a hillshade's no-data is 0.
+    pub fn new(template: &Raster, width: u32, height: u32, samples: Samples, out: &'a mut W) -> Result<TileStream<'a, W>> {
         template.require_coordinates().map_err(err)?;
         let gt = template.transform;
         if gt.pixel_height > 0.0 || gt.pixel_width < 0.0 {
@@ -1131,7 +1151,11 @@ impl<'a, W: Write + Seek> TileStream<'a, W> {
         if width == 0 || height == 0 {
             return Err(err("the raster has no pixels to write"));
         }
-        let plan = stream_plan();
+        let bytes = samples == Samples::Hillshade;
+        if bytes && template.nodata != Some(0.0) {
+            return Err(err("a hillshade's pixels with no value are 0"));
+        }
+        let plan = stream_plan(bytes, template.nodata);
         let geo = geo_keys(template)?;
         let mut levels = vec![Level::new(width, height, 1)];
         while let Some(last) = levels.last().filter(|l| l.w.max(l.h) > TILE) {
@@ -1143,7 +1167,7 @@ impl<'a, W: Write + Seek> TileStream<'a, W> {
         }
         let tiles: usize = levels.iter().map(Level::tiles).sum();
         // The worst a file can come to, as [`write_to`] reckons it.
-        let raw = (tiles as u64).saturating_mul(u64::from(TILE) * u64::from(TILE) * 4);
+        let raw = (tiles as u64).saturating_mul(u64::from(TILE) * u64::from(TILE) * if bytes { 1 } else { 4 });
         let worst = raw.saturating_add(raw / 512).saturating_add(tiles as u64 * 64).saturating_add(1 << 20);
         let big = worst >= u64::from(u32::MAX);
         // A header past what a reader takes at a file's start couldn't be read in place: its
@@ -1191,6 +1215,8 @@ impl<'a, W: Write + Seek> TileStream<'a, W> {
             patches: head.patches,
             big,
             nodata,
+            bytes,
+            classes: samples == Samples::Classes,
             kept: None,
             template: template.clone(),
         })
@@ -1296,26 +1322,31 @@ impl<'a, W: Write + Seek> TileStream<'a, W> {
     fn write_row(&mut self, i: usize, rows: &[f32]) -> Result<()> {
         let Some(lv) = self.levels.get(i) else { return Ok(()) };
         let (w, across) = (lv.w as usize, lv.across as usize);
-        let (t, nodata) = (TILE as usize, self.nodata);
-        let plan = stream_plan();
-        let line = t * 4;
+        let (t, nodata, bytes) = (TILE as usize, self.nodata, self.bytes);
+        let plan = stream_plan(bytes, Some(f64::from(nodata)));
+        let size = if bytes { 1 } else { 4 };
+        let line = t * size;
         let make = |scratch: &mut Vec<u8>, tx: usize| -> Result<Vec<u8>> {
-            let mut raw = Vec::with_capacity(t * t * 4);
+            let mut raw = Vec::with_capacity(t * t * size);
             for y in 0..t {
                 for x in 0..t {
                     let col = tx * t + x;
                     let v = if col < w { rows.get(y * w + col).copied().unwrap_or(nodata) } else { nodata };
                     let v = if v.is_nan() { nodata } else { v };
-                    raw.extend_from_slice(&v.to_le_bytes());
+                    if bytes {
+                        raw.push(v.round().clamp(0.0, 255.0) as u8);
+                    } else {
+                        raw.extend_from_slice(&v.to_le_bytes());
+                    }
                 }
             }
-            predict_rows(&mut raw, line, 1, Sample::Float, predictor(&plan), scratch);
+            predict_rows(&mut raw, line, 1, plan.sample, predictor(&plan), scratch);
             Ok(miniz_oxide::deflate::compress_to_vec_zlib(&raw, DEFLATE_FAST))
         };
         let (big, out, pos, places) = (self.big, &mut *self.out, &mut self.pos, &mut self.places);
         // The run's progress counts the caller's pieces, not these tiles.
         crate::progress::without_counting(|| {
-            in_order(across, t * t * 4, err, Vec::new, make, |_, zipped| {
+            in_order(across, t * t * size, err, Vec::new, make, |_, zipped| {
                 if !big && *pos + zipped.len() as u64 > u64::from(u32::MAX) {
                     return Err(err("the file is too large for classic TIFF"));
                 }
@@ -1330,7 +1361,7 @@ impl<'a, W: Write + Seek> TileStream<'a, W> {
         // The next level's rows: each the average of two of these (the last alone when they are
         // odd), two pixels across at a time.
         if i + 1 < self.levels.len() {
-            let half = average_rows(rows, w, nodata);
+            let half = if self.classes { pick_rows(rows, w, nodata) } else { average_rows(rows, w, nodata) };
             self.put_level(i + 1, &half)?;
         }
         Ok(())
@@ -1363,7 +1394,12 @@ impl<'a, W: Write + Seek> TileStream<'a, W> {
         let (sx, sy) = (f64::from(full.w) / f64::from(lv.w.max(1)), f64::from(full.h) / f64::from(lv.h.max(1)));
         let gt =
             super::GeoTransform { pixel_width: t.transform.pixel_width * sx, pixel_height: t.transform.pixel_height * sy, ..t.transform };
-        let mut r = Raster::new(t.name.clone(), lv.w, lv.h, vec![data], gt, t.crs, t.nodata, ColorHint::Gray, "Float32")?;
+        // As the file holds it: bytes rounded as they were written.
+        let (data, kind) = match self.bytes {
+            true => (data.into_iter().map(|v| if v.is_nan() { self.nodata } else { v.round().clamp(0.0, 255.0) }).collect(), "UInt8"),
+            false => (data, "Float32"),
+        };
+        let mut r = Raster::new(t.name.clone(), lv.w, lv.h, vec![data], gt, t.crs, t.nodata, ColorHint::Gray, kind)?;
         if level > 0 {
             r.overview = Some((full.w, full.h));
         }
@@ -1374,9 +1410,35 @@ impl<'a, W: Write + Seek> TileStream<'a, W> {
     }
 }
 
-/// What a [`TileStream`] writes: one band of 32-bit floats, averaged in its overviews.
-fn stream_plan() -> Plan {
-    Plan { bands: vec![0], sample: Sample::Float, rgb: false, alpha: None, nodata_int: None, palette: None, categorical: false }
+/// What a [`TileStream`] writes: one band of 32-bit floats, or with `bytes` of bytes whose
+/// no-data value is `nodata`, averaged in its overviews.
+fn stream_plan(bytes: bool, nodata: Option<f64>) -> Plan {
+    let (sample, nodata_int) = match bytes {
+        true => (Sample::Byte, nodata.filter(|d| (0.0..=255.0).contains(d)).map(|d| d as u16)),
+        false => (Sample::Float, None),
+    };
+    Plan { bands: vec![0], sample, rgb: false, alpha: None, nodata_int, palette: None, categorical: false }
+}
+
+/// `rows` of `w` pixels made half the size each way, for classes: each pixel the first of the up to
+/// four it covers that has a value (not NaN, nor `nodata`), row by row, else `nodata`: always a
+/// class one of them is, never one between them.
+fn pick_rows(rows: &[f32], w: usize, nodata: f32) -> Vec<f32> {
+    let h = rows.len() / w.max(1);
+    let (hw, hh) = (w.div_ceil(2), h.div_ceil(2));
+    let valid = |v: f32| v.is_finite() && v != nodata;
+    let mut out = Vec::with_capacity(hw * hh);
+    for y in 0..hh {
+        for x in 0..hw {
+            let first = [(0, 0), (0, 1), (1, 0), (1, 1)]
+                .into_iter()
+                .filter(|(dy, dx)| 2 * y + dy < h && 2 * x + dx < w)
+                .filter_map(|(dy, dx)| rows.get((2 * y + dy) * w + 2 * x + dx).copied())
+                .find(|v| valid(*v));
+            out.push(first.unwrap_or(nodata));
+        }
+    }
+    out
 }
 
 /// `rows` of `w` pixels made half the size each way: each pixel the mean of the up to four it
@@ -1435,6 +1497,42 @@ mod tests {
         assert_eq!(average_rows(&[nd, f32::NEG_INFINITY], 2, nd), [nd]);
     }
 
+    /// A classes' overview pixel is a class one of its four pixels is, the first with a value,
+    /// never an average between two.
+    #[test]
+    fn overview_rows_of_classes_take_a_class() {
+        let nd = -9999.0;
+        assert_eq!(pick_rows(&[1.0, 3.0, 3.0, 1.0], 2, nd), [1.0]);
+        assert_eq!(pick_rows(&[nd, f32::NAN, 2.0, 1.0], 2, nd), [2.0]);
+        assert_eq!(pick_rows(&[nd, nd, 4.0, nd, nd, nd], 3, nd), [nd, 4.0]);
+    }
+
+    /// A hillshade's template (bytes, no-data 0) is streamed as bytes: it reads
+    /// back as `UInt8`, whole numbers, its no-data kept, and the overview kept is bytes too.
+    #[test]
+    fn a_stream_of_bytes_is_written_as_bytes() {
+        let (w, h) = (700u32, 600u32);
+        let value = |x: u32, y: u32| if (x + y).is_multiple_of(53) { 0.0 } else { f32::from(((x * 3 + y) % 254 + 1) as u8) };
+        let data: Vec<f32> = (0..h).flat_map(|y| (0..w).map(move |x| value(x, y))).collect();
+        let template = utm(1, 1, vec![vec![0.0]], ColorHint::Gray, "UInt8", Some(0.0));
+        let mut out = Cursor::new(Vec::new());
+        let mut stream = TileStream::new(&template, w, h, Samples::Hillshade, &mut out).unwrap().keeping(1 << 18);
+        stream.put(&data).unwrap();
+        let (info, kept) = stream.finish().unwrap();
+        assert_eq!(info.levels, vec![(700, 600), (350, 300)]);
+        let kept = kept.unwrap();
+        assert_eq!((kept.width, kept.data_type.as_str(), kept.nodata), (350, "UInt8", Some(0.0)));
+        assert!(kept.bands[0].data.iter().all(|v| v.fract() == 0.0 && (0.0..=255.0).contains(v)));
+        let back = geotiff::read(Cursor::new(out.into_inner()), "back").unwrap();
+        assert_eq!((back.width, back.height, back.data_type.as_str(), back.nodata), (w, h, "UInt8", Some(0.0)));
+        for y in 0..h {
+            for x in 0..w {
+                let v = value(x, y);
+                assert_eq!(back.value(0, i64::from(x), i64::from(y)), (v != 0.0).then_some(v), "{x},{y}");
+            }
+        }
+    }
+
     /// A raster streamed in pieces of uneven rows (#2865) reads back pixel for pixel, its no-data
     /// value kept, and each overview the average two by two of the level before; the layout's
     /// reader finds every level.
@@ -1445,7 +1543,7 @@ mod tests {
         let data: Vec<f32> = (0..h).flat_map(|y| (0..w).map(move |x| value(x, y))).collect();
         let template = utm(1, 1, vec![vec![0.0]], ColorHint::Gray, "Float32", Some(-9999.0));
         let mut out = Cursor::new(Vec::new());
-        let mut stream = TileStream::new(&template, w, h, &mut out).unwrap();
+        let mut stream = TileStream::new(&template, w, h, Samples::Floats, &mut out).unwrap();
         let mut at = 0usize;
         for rows in [1usize, 300, 511, 7, 281] {
             let n = rows * w as usize;
@@ -1483,7 +1581,7 @@ mod tests {
         assert_eq!(layout.levels.len(), 3);
         // Rows that aren't whole rows, and an image left short, are errors.
         let mut out = Cursor::new(Vec::new());
-        let mut stream = TileStream::new(&template, w, h, &mut out).unwrap();
+        let mut stream = TileStream::new(&template, w, h, Samples::Floats, &mut out).unwrap();
         assert!(stream.put(&data[..5]).is_err());
         stream.put(&data[..w as usize]).unwrap();
         assert!(stream.finish().is_err());

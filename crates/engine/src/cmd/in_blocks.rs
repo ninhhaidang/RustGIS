@@ -1,6 +1,8 @@
 //! A raster made a block at a time from a large raster file read in place (#2865). A command that
-//! works cell by cell (an index) reads its input a block of tiles at a time, at the file's full
-//! size, where reading it whole would read the finest level of it that fits. A result that fits
+//! works cell by cell, or over a cell's neighbours (an index, a raster function), reads its input
+//! a block of tiles at a time, at the file's full size, where reading it whole would read the
+//! finest level of it that fits; one over its neighbours reads each block with a margin of the
+//! cells around it. A result that fits
 //! is held and saved with the project as any other; one too large to hold is written a row of
 //! tiles at a time to a tiled GeoTIFF in the project's results folder
 //! ([`rustgis_data::raster::cogwrite::TileStream`]), which its layer then reads in place, as a
@@ -25,13 +27,55 @@ use crate::Session;
 /// megabytes for an image of a few bands.
 const BLOCK_COLUMNS: u32 = if cfg!(test) { 384 } else { 4096 };
 
+/// The columns and rows of a block ([`BLOCK_COLUMNS`], and the tiles' rows).
+pub(crate) const BLOCK: (u32, u32) = (BLOCK_COLUMNS, cogwrite::TILE);
+
 /// The most samples, tiles' padding included, of the overview the result's layer holds: what a
 /// layer reading a file in place holds of it (`rustgis_tiles::cog::raster::overview_level`), so
 /// it holds the same overview once the project is opened again.
 const OVERVIEW_SAMPLES: usize = if cfg!(test) { 1 << 16 } else { 2 << 20 };
 
-/// The commands that make their raster a block at a time from a large file read in place.
-const IN_BLOCKS: &[&str] = &["raster.index"];
+/// The cells around a block a raster function reads with it (`function`): none for one that works
+/// cell by cell, one for one over a cell's eight neighbours. `None` for one that doesn't work in
+/// blocks (a resample, onto another grid).
+pub(crate) fn function_halo(function: &str) -> Option<u32> {
+    match function {
+        "ndvi" | "bandMath" | "remap" | "threshold" => Some(0),
+        "slope" | "aspect" | "hillshade" => Some(1),
+        _ => None,
+    }
+}
+
+/// The cells around a block a chain of raster functions (`steps`) reads with it: what each step
+/// reads, added, as each works on the one before. `None` when a step doesn't work in blocks; when
+/// it remaps or thresholds after a step over neighbours, as its ranges would then be tested on
+/// a block's margin too, whose cells are made from fewer neighbours than in the whole raster; or
+/// when a slope in percent, whose cells past Float32's range are counted where they're kept,
+/// isn't its last step.
+pub(crate) fn chain_halo(steps: &[Value]) -> Option<u32> {
+    let function = |st: &Value| st.get("function").and_then(Value::as_str).unwrap_or_default().to_string();
+    let after = steps.iter().skip_while(|st| function_halo(&function(st)) == Some(0));
+    if after.into_iter().any(|st| matches!(function(st).as_str(), "remap" | "threshold")) {
+        return None;
+    }
+    let percent = |st: &Value| function(st) == "slope" && st.get("units").and_then(Value::as_str) == Some("percent");
+    if steps.iter().rev().skip(1).any(percent) {
+        return None;
+    }
+    steps.iter().try_fold(0u32, |h, st| Some(h + function_halo(&function(st))?))
+}
+
+/// Whether command `id` with `params` works in blocks over a large file, and makes one band:
+/// Indices, and Raster Functions and the Function Editor whose functions do ([`function_halo`],
+/// [`chain_halo`]).
+fn in_blocks(id: &str, params: &Value) -> bool {
+    match id {
+        "raster.index" => true,
+        "raster.function" => params.get("function").and_then(Value::as_str).and_then(function_halo).is_some(),
+        "raster.functionChain" => params.get("steps").and_then(Value::as_array).is_some_and(|s| !s.is_empty() && chain_halo(s).is_some()),
+        _ => false,
+    }
+}
 
 /// The plan to make a raster a block at a time ([`plan`]): its input, what the result is called,
 /// and, for a result too large to hold, the folder its file goes in.
@@ -45,6 +89,38 @@ pub(crate) struct Blocks {
     folder: Option<PathBuf>,
     /// The full image's columns and rows.
     full: (u32, u32),
+    /// The cells around each block read with it ([`Blocks::with_halo`]).
+    halo: u32,
+}
+
+/// What a raster made a block at a time is: its band's name (none: the band's number); whether
+/// it is a hillshade's whole numbers 1 to 255, held and written as bytes with 0 for no value
+/// ([`rustgis_analysis::rasterops::derive_hillshade`]), rather than floats; whether it holds
+/// classes (a remap's, a threshold's), whose overviews take a pixel rather than an average; and,
+/// for a function whose values can pass a float's range (a slope in percent), what to say of the
+/// cells that do, an error counting them.
+#[derive(Default)]
+pub(crate) struct Shape {
+    pub(crate) band: Option<String>,
+    pub(crate) bytes: bool,
+    pub(crate) classes: bool,
+    pub(crate) overflow: Option<&'static str>,
+}
+
+impl Shape {
+    /// The value a cell with none takes, and the type its values are held as.
+    fn nodata(&self) -> (f32, &'static str) {
+        if self.bytes { (0.0, "UInt8") } else { (NODATA, "Float32") }
+    }
+
+    /// How its file stores its band.
+    fn samples(&self) -> cogwrite::Samples {
+        match (self.bytes, self.classes) {
+            (true, _) => cogwrite::Samples::Hillshade,
+            (false, true) => cogwrite::Samples::Classes,
+            (false, false) => cogwrite::Samples::Floats,
+        }
+    }
 }
 
 /// The most samples a cell-by-cell command reads whole of a file, and holds of a result:
@@ -77,6 +153,13 @@ fn too_large(input: &Input) -> Option<(u32, u32)> {
     (samples.saturating_mul(8) > (whole_limit() as u64).saturating_mul(4)).then_some(full)
 }
 
+/// Whether a result of `samples` samples is held as any other, rather than written to a file
+/// ([`written`]): one made from blocks of a larger file that only works held (a resample's) is
+/// made so only then.
+pub(crate) fn holds(samples: u64) -> bool {
+    samples <= whole_limit() as u64
+}
+
 /// Whether a result `full` pixels in size, one band, is too large to hold: it is then written to
 /// a file and read in place, as a file that size added from this computer is.
 fn written(full: (u32, u32)) -> bool {
@@ -84,10 +167,10 @@ fn written(full: (u32, u32)) -> bool {
 }
 
 /// Whether command `id` with `params` writes its result to a file in the results folder: a
-/// command that works in blocks ([`IN_BLOCKS`]) over a layer too large to read whole, whose
+/// command that works in blocks ([`in_blocks`]) over a layer too large to read whole, whose
 /// result is too large to hold. The permission check adds that it writes files.
 pub(crate) fn writes_file(context: &impl super::InputSource, id: &str, params: &Value) -> bool {
-    if !IN_BLOCKS.contains(&id) {
+    if !in_blocks(id, params) {
         return false;
     }
     let Some(name) = params.get("layer").and_then(Value::as_str) else { return false };
@@ -111,7 +194,106 @@ pub(crate) fn plan(s: &Session, input: &Input, out: &str) -> Result<Option<Block
         true => Some(folder(s).ok_or("this computer gives RustGIS no folder to write the result to: save the project first")?),
         false => None,
     };
-    Ok(Some(Blocks { input: input.clone(), layer: layer.to_string(), path: path.to_string(), out: out.to_string(), folder, full }))
+    Ok(Some(Blocks { input: input.clone(), layer: layer.to_string(), path: path.to_string(), out: out.to_string(), folder, full, halo: 0 }))
+}
+
+/// The full size of `input`'s file when a command reads it a block at a time ([`plan`]), for one
+/// whose result is held whatever its size (a resample's, smaller than the file): `None` when the
+/// file isn't too large to read whole at its full size. The command that goes on to read it so
+/// asks [`Reading::refused_in_script`] first, as [`plan`] does.
+pub(crate) fn plan_read(input: &Input) -> Option<Reading> {
+    let (full, (layer, path)) = (too_large(input)?, input.file()?);
+    Some(Reading { input: input.clone(), layer: layer.to_string(), path: path.to_string(), full })
+}
+
+/// Whether the work can plan for `need` bytes more: within what a job may take now
+/// ([`rustgis_data::memory::share`], with what RustGIS holds and the computer has free), or, where
+/// that isn't known, within the floor's worth of samples.
+pub(crate) fn affordable(need: u64) -> bool {
+    use rustgis_data::memory;
+    #[cfg(test)]
+    if let Some(max) = AFFORDS.with(std::cell::Cell::get) {
+        return need <= max;
+    }
+    let budget = memory::share(memory::physical(), memory::held(), memory::available());
+    need <= budget.unwrap_or((rustgis_data::raster::SAMPLES_FLOOR as u64).saturating_mul(4))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What [`affordable`] lets a run plan for on this thread, under test: a computer short of
+    /// memory, which no test can make.
+    pub(crate) static AFFORDS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// A large file read in place, read a block at a time by a command that makes its own result
+/// ([`plan_read`]): its layer's input, name and file, and its full size.
+pub(crate) struct Reading {
+    input: Input,
+    layer: String,
+    path: String,
+    full: (u32, u32),
+}
+
+impl Reading {
+    /// An error for a step of a script on the app's window thread, which reading the file a block
+    /// at a time would hold, as [`plan`] refuses one.
+    pub(crate) fn refused_in_script(&self, s: &Session) -> Result<(), String> {
+        if s.steps_running > 0 && s.on_window_thread {
+            return Err(format!(
+                "{}: its full {} × {} pixels are read a block at a time, which a script step can't do without holding the window: run it on its own",
+                self.layer, self.full.0, self.full.1
+            ));
+        }
+        Ok(())
+    }
+
+    /// The file's full columns and rows.
+    pub(crate) fn full(&self) -> (u32, u32) {
+        self.full
+    }
+
+    /// The input layer's name.
+    pub(crate) fn layer(&self) -> &str {
+        &self.layer
+    }
+
+    /// The raster the layer holds: the file's overview, with its bands, extent and system.
+    pub(crate) fn held(&self) -> &Raster {
+        self.input.held()
+    }
+
+    /// Reads the blocks of columns `cols` and rows `rows` (half-open, at the full size), each of
+    /// `size` columns and rows from their start, in turn, and gives each to `each` with its
+    /// columns and rows: at the file's full size, holding all of them, counted as the run's
+    /// progress (its own steps not), Cancel looked at between them. Gives how many values were
+    /// rounded as they were read.
+    pub(crate) fn each_block(
+        &self,
+        cols: (u32, u32),
+        rows: (u32, u32),
+        size: (u32, u32),
+        mut each: impl FnMut((u32, u32), (u32, u32), &rustgis_data::raster::PartRead) -> Result<(), String>,
+    ) -> Result<u64, String> {
+        let source = Source { input: &self.input, layer: &self.layer, path: &self.path, full: self.full, nodata: Default::default() };
+        let (bw, bh) = (size.0.max(1), size.1.max(1));
+        let (across, down) = (cols.1.saturating_sub(cols.0).div_ceil(bw), rows.1.saturating_sub(rows.0).div_ceil(bh));
+        rustgis_data::progress::begin((across as usize).saturating_mul(down as usize));
+        let mut rounded = 0u64;
+        for by in 0..down {
+            let (r0, r1) = (rows.0 + by * bh, (rows.0 + (by + 1) * bh).min(rows.1));
+            for bx in 0..across {
+                let (c0, c1) = (cols.0 + bx * bw, (cols.0 + (bx + 1) * bw).min(cols.1));
+                rustgis_analysis::control::uncounted(|| -> Result<_, String> {
+                    let (read, _count) = source.block((c0, c1), (r0, r1))?;
+                    rounded = rounded.saturating_add(read.raster.rounded.iter().sum::<u64>());
+                    each((c0, c1), (r0, r1), &read)
+                })?;
+                rustgis_data::progress::step(1).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(rounded)
+    }
 }
 
 /// The file name, before its extension, of a result called `name`: its safe form
@@ -151,6 +333,13 @@ fn folder(s: &Session) -> Option<PathBuf> {
 }
 
 impl Blocks {
+    /// The plan reading `halo` cells around each block with it, for work over a cell's
+    /// neighbours: a block's cells are made from the cells around them as from the whole raster's.
+    pub(crate) fn with_halo(mut self, halo: u32) -> Blocks {
+        self.halo = halo;
+        self
+    }
+
     /// Makes the raster: `cells` turns a block of the input (all its bands, at the file's full
     /// size) into the result's values for its cells, row by row, `NODATA` for none. Each block is
     /// read and made in turn, counted as the run's progress, Cancel looked at between them. A
@@ -160,8 +349,30 @@ impl Blocks {
     /// it (not the folders around it, the project's own when it is saved) while
     /// nothing else is in it (one another run wrote into too can stay, empty, once both their
     /// results are gone).
-    pub(crate) fn run(self, cells: impl Fn(&Raster) -> Result<Vec<f32>, String>) -> Result<Made, String> {
-        let Blocks { input, layer, path, out, folder, full } = self;
+    /// It is of `shape`: a hillshade's values below 1 have no value, as a whole hillshade's.
+    pub(crate) fn run(
+        self,
+        cells: impl Fn(&Raster, &rustgis_geom::Extent) -> Result<Vec<f32>, String>,
+        shape: Shape,
+    ) -> Result<Made, String> {
+        let Blocks { input, layer, path, out, folder, full, halo } = self;
+        let (nodata, kind) = shape.nodata();
+        let cells = |r: &Raster, ground: &rustgis_geom::Extent| -> Result<Vec<f32>, String> {
+            let mut v = cells(r, ground)?;
+            if shape.bytes {
+                v.iter_mut().filter(|v| !v.is_finite() || **v < 1.0).for_each(|v| *v = 0.0);
+            }
+            Ok(v)
+        };
+        // A margin read with each block reads its cells twice or more: a count of those rounded
+        // is at most that.
+        let note = |rounded: u64| super::gp::ReadNote::rounded(&layer, rounded).at_most(halo > 0);
+        let named = |mut r: Raster| {
+            if let (Some(b), Some(name)) = (r.bands.first_mut(), &shape.band) {
+                b.name.clone_from(name);
+            }
+            r
+        };
         let (fw, fh) = full;
         let tile = cogwrite::TILE;
         // What a row of blocks holds of the result and of its file's levels as they are written,
@@ -174,28 +385,45 @@ impl Blocks {
             Some(_) => cogwrite::TileStream::<std::io::Cursor<Vec<u8>>>::peak(fw, fh, OVERVIEW_SAMPLES).saturating_add(row_bytes),
             None => u64::from(fw).saturating_mul(u64::from(fh)).saturating_mul(4).saturating_add(row_bytes),
         };
-        let can = (rustgis_data::raster::max_samples() as u64).saturating_mul(8);
-        if need > can {
+        // Within what any run of rasters plans for ([`rustgis_data::raster::max_samples`]),
+        // floor included, as a whole read plans.
+        if need > (rustgis_data::raster::max_samples() as u64).saturating_mul(8) {
             return Err(format!(
                 "{layer}: making it a block at a time at its full {fw} × {fh} needs {} MB at once, more than this computer can give now: clip it to a smaller area first",
                 need >> 20
             ));
         }
         let _held = rustgis_data::memory::Holding::of(need);
-        let blocks = Source { input: &input, layer: &layer, path: &path, full };
+        let blocks = Source { input: &input, layer: &layer, path: &path, full, nodata: Default::default() };
+        // The kept cells whose values pass a float's range (none for most functions): counted in
+        // the rows made, which hold no margin, so a margin's cell, made from too few neighbours,
+        // isn't counted.
+        let over = std::cell::Cell::new(0u64);
+        let count = |rows: &[f32]| {
+            if shape.overflow.is_some() {
+                over.set(over.get() + rows.iter().filter(|v| v.is_infinite()).count() as u64);
+            }
+        };
+        let overflowed = || match shape.overflow {
+            Some(what) if over.get() > 0 => Err(format!("{layer}: {} {what}", over.get())),
+            _ => Ok(()),
+        };
         let Some(folder) = folder else {
             // A result that fits: held whole, made a block at a time.
-            let mut whole = rustgis_analysis::rasterops::new_band(fw as usize, fh as usize, NODATA)?;
-            let (grid, crs, rounded) = blocks.each_row(&cells, |r0, rows, _| {
+            let mut whole = rustgis_analysis::rasterops::new_band(fw as usize, fh as usize, nodata)?;
+            let (grid, crs, rounded) = blocks.each_row(&cells, halo, |r0, rows, _| {
+                count(rows);
                 let at = r0 as usize * fw as usize;
                 if let Some(d) = whole.get_mut(at..at + rows.len()) {
                     d.copy_from_slice(rows);
                 }
                 Ok(())
             })?;
-            let r = Raster::new(out.clone(), fw, fh, vec![whole], grid, crs, Some(f64::from(NODATA)), ColorHint::Gray, "Float32")
+            overflowed()?;
+            let r = Raster::new(out.clone(), fw, fh, vec![whole], grid, crs, Some(f64::from(nodata)), ColorHint::Gray, kind)
                 .map_err(|e| e.to_string())?;
-            let notes = super::gp::tiled_read_notes(&[super::gp::ReadNote::rounded(&layer, rounded)], "its");
+            let r = named(r);
+            let notes = super::gp::tiled_read_notes(&[note(rounded)], "its");
             let then: super::workflows::Then = Box::new(move |s: &mut Session, _: &mut Value| {
                 for note in notes {
                     s.notify(note, false);
@@ -214,23 +442,29 @@ impl Blocks {
             let wrote = rustgis_data::io::stage_streamed_new(&dest, made_folder.then_some(folder.as_path()), |w| {
                 let (mut sink, mut stream) = (Some(w), None);
                 let (_, _, rounded) = blocks
-                    .each_row(&cells, |_, rows, (grid, crs)| {
+                    .each_row(&cells, halo, |_, rows, (grid, crs)| {
+                        count(rows);
                         // Placed on the file's full grid, as a read of all of it places it.
                         if stream.is_none() {
                             let t = Raster::new(
                                 out.clone(),
                                 1,
                                 1,
-                                vec![vec![NODATA]],
+                                vec![vec![nodata]],
                                 grid,
                                 crs,
-                                Some(f64::from(NODATA)),
+                                Some(f64::from(nodata)),
                                 ColorHint::Gray,
-                                "Float32",
+                                kind,
                             )
                             .map_err(|e| e.to_string())?;
+                            let t = named(t);
                             let w = sink.take().ok_or("the result's file was started twice")?;
-                            stream = Some(cogwrite::TileStream::new(&t, fw, fh, w).map_err(|e| e.to_string())?.keeping(OVERVIEW_SAMPLES));
+                            stream = Some(
+                                cogwrite::TileStream::new(&t, fw, fh, shape.samples(), w)
+                                    .map_err(|e| e.to_string())?
+                                    .keeping(OVERVIEW_SAMPLES),
+                            );
                         }
                         stream.as_mut().map_or(Ok(()), |s: &mut cogwrite::TileStream<_>| s.put(rows).map_err(|e| e.to_string()))
                     })
@@ -265,6 +499,8 @@ impl Blocks {
         }
         let (dest, (staged, (info, overview, rounded))) =
             taken.ok_or_else(|| format!("{}: every name for {out} is taken", folder.display()))?;
+        // Refused, its file goes with it.
+        overflowed()?;
         rustgis_data::progress::check().map_err(|e| e.to_string())?;
         // The layer holds an overview of the file, as one added from it would.
         let overview = overview.ok_or("the result's overview wasn't kept")?;
@@ -274,7 +510,7 @@ impl Blocks {
         let mut notes = vec![format!(
             "{out}: made a block at a time from {layer} at its full {w} × {h}, and written to {file}, where the layer reads it from"
         )];
-        notes.extend(super::gp::tiled_read_notes(&[super::gp::ReadNote::rounded(&layer, rounded)], "its"));
+        notes.extend(super::gp::tiled_read_notes(&[note(rounded)], "its"));
         let then: super::workflows::Then = Box::new(move |s: &mut Session, v: &mut Value| {
             for note in notes {
                 s.notify(note, false);
@@ -294,6 +530,8 @@ struct Source<'a> {
     layer: &'a str,
     path: &'a str,
     full: (u32, u32),
+    /// The no-data value its first block was read with, which every other one must have.
+    nodata: std::cell::Cell<Option<Option<u64>>>,
 }
 
 impl Source<'_> {
@@ -309,6 +547,16 @@ impl Source<'_> {
             format!("{}: its file can't be read in blocks: it isn't the file the layer was read from any more (Reload Data)", self.layer)
         })?;
         let r = &read.raster;
+        // One no-data value for every block of a run: a sidecar beside the file changed while it
+        // runs would give later blocks another.
+        let nodata = r.nodata.map(f64::to_bits);
+        match self.nodata.get() {
+            Some(first) if first != nodata => {
+                return Err(format!("{}: its no-data value changed while it was read (Reload Data)", self.layer));
+            }
+            Some(_) => {}
+            None => self.nodata.set(Some(nodata)),
+        }
         let (ax, ay) = read.at;
         if r.overview.is_some() || ax > cols.0 || ay > rows.0 || ax + r.width < cols.1 || ay + r.height < rows.1 {
             return Err(format!("{}: a block of its file couldn't be read at its full size", self.layer));
@@ -316,14 +564,16 @@ impl Source<'_> {
         Ok((read, count))
     }
 
-    /// Makes the result a row of blocks at a time: `cells` makes each block's values, and `row`
+    /// Makes the result a row of blocks at a time: `cells` makes each block's values (read with
+    /// `halo` cells around it, whose values it makes too, and which are left out), and `row`
     /// is given each full row of blocks (its first row, its rows of the full width, and the
     /// file's full grid and system) as it is made. Each block is counted as the run's progress, its own steps not
     /// ([`rustgis_analysis::control::uncounted`]), and Cancel is looked at between them. Gives the
     /// full grid, its system, and how many values were rounded as they were read.
     fn each_row(
         &self,
-        cells: &impl Fn(&Raster) -> Result<Vec<f32>, String>,
+        cells: &impl Fn(&Raster, &rustgis_geom::Extent) -> Result<Vec<f32>, String>,
+        halo: u32,
         mut row: impl FnMut(u32, &[f32], (rustgis_data::raster::GeoTransform, rustgis_data::raster::Crs)) -> Result<(), String>,
     ) -> Result<(rustgis_data::raster::GeoTransform, rustgis_data::raster::Crs, u64), String> {
         let (fw, fh) = self.full;
@@ -339,8 +589,10 @@ impl Source<'_> {
                 // The block's own steps don't count: the run counts blocks.
                 // The block's count in what is held lasts until its values are copied into the row.
                 let ((read, _count), values) = rustgis_analysis::control::uncounted(|| -> Result<_, String> {
-                    let read = self.block((c0, c1), (r0, r1))?;
-                    let values = cells(&read.0.raster)?;
+                    // With the cells around it, within the image.
+                    let around = |(a, b): (u32, u32), n: u32| (a.saturating_sub(halo), b.saturating_add(halo).min(n));
+                    let read = self.block(around((c0, c1), fw), around((r0, r1), fh))?;
+                    let values = cells(&read.0.raster, &read.0.bounds)?;
                     Ok((read, values))
                 })?;
                 let r = &read.raster;
@@ -355,9 +607,10 @@ impl Source<'_> {
                     let src = (y - ay) as usize * pw + (c0 - ax) as usize;
                     let dst = (y - r0) as usize * fw as usize + c0 as usize;
                     let n = (c1 - c0) as usize;
-                    if let (Some(s), Some(d)) = (values.get(src..src + n), rows.get_mut(dst..dst + n)) {
-                        d.copy_from_slice(s);
-                    }
+                    let (Some(s), Some(d)) = (values.get(src..src + n), rows.get_mut(dst..dst + n)) else {
+                        return Err(format!("{}: a block's values don't fit its place in the result", self.layer));
+                    };
+                    d.copy_from_slice(s);
                 }
                 rustgis_data::progress::step(1).map_err(|e| e.to_string())?;
             }

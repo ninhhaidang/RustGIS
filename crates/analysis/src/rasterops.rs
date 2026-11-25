@@ -132,16 +132,21 @@ pub fn per_index<S>(
 /// The cells [`weighted_overlay`] makes at a time: its criteria carry no grid, so no rows.
 const OVERLAY_CHUNK: usize = 1 << 14;
 
-/// Draw the interior from three borrowed rows; edges and no-data keep the scalar path.
-fn terrain(r: &Raster, data: &[f32], zf: f64, f: impl Fn(f64, f64) -> f64 + Sync) -> Result<Vec<f32>, String> {
-    terrain_on(None, r, data, zf, f)
-}
-
-/// [`terrain`] on `threads` threads (none: as many as pay off). Each output row is made from the
+/// Draw the interior from three borrowed rows; edges and no-data keep the scalar path. On
+/// `threads` threads (none: as many as pay off). Each output row is made from the
 /// three input rows around it and written where it lies, so rows go on several threads (#1252).
-fn terrain_on(threads: Option<usize>, r: &Raster, data: &[f32], zf: f64, f: impl Fn(f64, f64) -> f64 + Sync) -> Result<Vec<f32>, String> {
+/// Its cells measured on `ground` when given ([`Raster::cell_size_m_on`]), as the whole raster of
+/// which `r` is a part measures them, else on `r`'s own.
+fn terrain_on(
+    threads: Option<usize>,
+    r: &Raster,
+    data: &[f32],
+    zf: f64,
+    ground: Option<&Extent>,
+    f: impl Fn(f64, f64) -> f64 + Sync,
+) -> Result<Vec<f32>, String> {
     let (w, h) = (r.width as usize, r.height as usize);
-    let cell = r.cell_size_m();
+    let cell = ground.map_or_else(|| r.cell_size_m(), |g| r.cell_size_m_on(g));
     let scalar = |c, row| {
         z(r, data, c, row)?;
         let (x, y) = gradient(r, data, c, row, zf, cell)?;
@@ -199,41 +204,76 @@ fn terrain_on(threads: Option<usize>, r: &Raster, data: &[f32], zf: f64, f: impl
 
 /// Slope in degrees.
 pub fn slope(r: &Raster, b: usize, zf: f64) -> Result<Vec<f32>, String> {
+    slope_on(r, b, zf, None)
+}
+
+/// [`slope`] of `r`, a part of a raster covering `ground`, its cells measured as the whole's are
+/// ([`Raster::cell_size_m_on`]); `None`: `r` is the whole.
+pub fn slope_on(r: &Raster, b: usize, zf: f64, ground: Option<&Extent>) -> Result<Vec<f32>, String> {
     let d = band(r, b)?;
-    terrain(r, d, zf, |gx, gy| gx.hypot(gy).atan().to_degrees())
+    terrain_on(None, r, d, zf, ground, |gx, gy| gx.hypot(gy).atan().to_degrees())
 }
 
 /// Slope as percent rise: 100 times the gradient magnitude, equivalent to 100 × tan(angle in radians).
 /// Uses the same Horn gradient, Z factor and no-data handling as [`slope`], without rounding
 /// through degree output first. Refuses output beyond Float32's range with a cell count.
 pub fn slope_percent(r: &Raster, b: usize, zf: f64) -> Result<Vec<f32>, String> {
+    slope_percent_on(r, b, zf, None)
+}
+
+/// [`slope_percent`], as [`slope_on`].
+pub fn slope_percent_on(r: &Raster, b: usize, zf: f64, ground: Option<&Extent>) -> Result<Vec<f32>, String> {
+    let (pixels, n) = slope_percent_cells_on(r, b, zf, ground)?;
+    if n > 0 { Err(format!("{n} {PERCENT_OVERFLOW}")) } else { Ok(pixels) }
+}
+
+/// What a percent slope says of its cells past Float32's range, after their count.
+pub const PERCENT_OVERFLOW: &str = "percent slope cells exceed the Float32 range";
+
+/// [`slope_percent_on`]'s cells, a cell past Float32's range infinite, and how many are: for a
+/// part of a raster read with a margin, whose cells past the range the caller counts only where
+/// it keeps them.
+pub fn slope_percent_cells_on(r: &Raster, b: usize, zf: f64, ground: Option<&Extent>) -> Result<(Vec<f32>, usize), String> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let d = band(r, b)?;
     let overflow = AtomicUsize::new(0);
-    let pixels = terrain(r, d, zf, |gx, gy| {
+    let pixels = terrain_on(None, r, d, zf, ground, |gx, gy| {
         let value = 100.0 * gx.hypot(gy);
         if !value.is_finite() || value > f64::from(f32::MAX) {
             overflow.fetch_add(1, Ordering::Relaxed);
+            // Finite, so it isn't taken for no value; infinite as a Float32.
+            return f64::MAX;
         }
         value
     })?;
-    let n = overflow.load(Ordering::Relaxed);
-    if n > 0 { Err(format!("{n} percent slope cells exceed the Float32 range")) } else { Ok(pixels) }
+    Ok((pixels, overflow.load(Ordering::Relaxed)))
 }
 
 /// Aspect: the compass direction the slope faces, in degrees (flat cells are -1).
 pub fn aspect(r: &Raster, b: usize) -> Result<Vec<f32>, String> {
+    aspect_on(r, b, None)
+}
+
+/// [`aspect`], as [`slope_on`].
+pub fn aspect_on(r: &Raster, b: usize, ground: Option<&Extent>) -> Result<Vec<f32>, String> {
     let d = band(r, b)?;
-    terrain(r, d, 1.0, |gx, gy| if gx.abs() < 1e-12 && gy.abs() < 1e-12 { -1.0 } else { (-gx).atan2(-gy).to_degrees().rem_euclid(360.0) })
+    terrain_on(None, r, d, 1.0, ground, |gx, gy| {
+        if gx.abs() < 1e-12 && gy.abs() < 1e-12 { -1.0 } else { (-gx).atan2(-gy).to_degrees().rem_euclid(360.0) }
+    })
 }
 
 /// Hillshade (1–255) lit from `azimuth` and `altitude` degrees: a cell in full shadow is 1, so
 /// that 0 is left for the no-data of the bytes [`derive_hillshade`] makes of it.
 pub fn hillshade(r: &Raster, b: usize, azimuth: f64, altitude: f64, zf: f64) -> Result<Vec<f32>, String> {
+    hillshade_on(r, b, azimuth, altitude, zf, None)
+}
+
+/// [`hillshade`], as [`slope_on`].
+pub fn hillshade_on(r: &Raster, b: usize, azimuth: f64, altitude: f64, zf: f64, ground: Option<&Extent>) -> Result<Vec<f32>, String> {
     let d = band(r, b)?;
     let (zen, az) = ((90.0 - altitude).to_radians(), azimuth.to_radians());
     let (cos_zen, sin_zen) = (zen.cos(), zen.sin());
-    terrain(r, d, zf, |gx, gy| {
+    terrain_on(None, r, d, zf, ground, |gx, gy| {
         let slope = gx.hypot(gy).atan();
         let aspect = (-gx).atan2(-gy);
         let v = cos_zen * slope.cos() + sin_zen * slope.sin() * (az - aspect).cos();
@@ -2614,7 +2654,7 @@ mod tests {
                             Some(f(x, y))
                         });
                         assert_eq!(
-                            terrain(&r, data, zf, f),
+                            terrain_on(None, &r, data, zf, None, f),
                             expected,
                             "{w}x{h}, {pixel_width}, {pixel_height}, holes={with_holes}, zf={zf}"
                         );
@@ -2622,7 +2662,7 @@ mod tests {
                         let bits = |v: Result<Vec<f32>, String>| v.map(|v| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>());
                         for threads in [1, 2, 7, 16] {
                             assert_eq!(
-                                bits(terrain_on(Some(threads), &r, data, zf, f)),
+                                bits(terrain_on(Some(threads), &r, data, zf, None, f)),
                                 bits(expected.clone()),
                                 "{w}x{h}, {threads} threads"
                             );

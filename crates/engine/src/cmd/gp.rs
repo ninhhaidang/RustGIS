@@ -1666,25 +1666,34 @@ pub(crate) struct ReadNote {
     rounded: u64,
     overview: Option<((u32, u32), (u32, u32))>,
     part: Option<(u32, u32)>,
+    /// The count of values rounded is at most `rounded`: some were read twice or more.
+    at_most: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ReadNote {
     pub(crate) fn of(name: &str, r: &rustgis_data::raster::Raster) -> ReadNote {
         let overview = r.overview.map(|full| ((r.width, r.height), full));
-        ReadNote { name: name.to_string(), rounded: r.rounded.iter().sum(), overview, part: None }
+        ReadNote { name: name.to_string(), rounded: r.rounded.iter().sum(), overview, part: None, at_most: false }
     }
 
     /// Of a part of a file ([`read_tiled_part`]): read from a level `level` pixels in size of the
     /// file's `full` image.
     pub(crate) fn of_part(name: &str, r: &rustgis_data::raster::Raster, level: (u32, u32), full: (u32, u32)) -> ReadNote {
         let overview = r.overview.map(|_| (level, full));
-        ReadNote { name: name.to_string(), rounded: r.rounded.iter().sum(), overview, part: Some((r.width, r.height)) }
+        ReadNote { name: name.to_string(), rounded: r.rounded.iter().sum(), overview, part: Some((r.width, r.height)), at_most: false }
     }
 
     /// Of a file read at its full size in pieces, `rounded` of its values rounded as they were.
     pub(crate) fn rounded(name: &str, rounded: u64) -> ReadNote {
-        ReadNote { name: name.to_string(), rounded, overview: None, part: None }
+        ReadNote { name: name.to_string(), rounded, overview: None, part: None, at_most: false }
+    }
+
+    /// Its count of values rounded is at most the one said when `at_most`: a block read with a
+    /// margin reads some values twice.
+    pub(crate) fn at_most(mut self, at_most: bool) -> ReadNote {
+        self.at_most = at_most;
+        self
     }
 }
 
@@ -1694,9 +1703,9 @@ impl ReadNote {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn tiled_read_notes(read: &[ReadNote], whose: &str) -> Vec<String> {
     let (mut rounded, mut overviews) = (Vec::new(), Vec::new());
-    for ReadNote { name, rounded: n, overview, part } in read {
+    for ReadNote { name, rounded: n, overview, part, at_most } in read {
         if *n > 0 {
-            rounded.push(format!("{name} {n}"));
+            rounded.push(if *at_most { format!("{name} at most {n}") } else { format!("{name} {n}") });
         }
         if let Some(((w, h), (fw, fh))) = overview {
             let part = part.map_or_else(String::new, |(pw, ph)| format!(", a {pw} × {ph} part of it"));

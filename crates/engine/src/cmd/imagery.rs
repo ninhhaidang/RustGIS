@@ -1611,7 +1611,7 @@ pub(crate) fn index_work(s: &Session, p: &Value) -> Result<super::workflows::Wor
     // A file too large to read whole at its full size: a block at a time (#2865).
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(blocks) = super::in_blocks::plan(s, &r, &out)? {
-        return Ok(Box::new(move || blocks.run(|block| rasterops::band_math(block, &expr))));
+        return Ok(Box::new(move || blocks.run(|block, _| rasterops::band_math(block, &expr), super::in_blocks::Shape::default())));
     }
     Ok(Box::new(move || {
         let r = r.read()?;
@@ -1795,62 +1795,200 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
             r.held().require_coordinates()?;
             let factor = uint(p, "factor").unwrap_or(2).clamp(2, 64) as u32;
             let out = name(p, format!("{}_resampled", r.held().name))?;
-            Ok(Box::new(move || {
-                let r = r.read()?;
-                let k = factor.min(r.width.min(r.height)).max(1);
-                let (w, h) = ((r.width / k).max(1), (r.height / k).max(1));
-                // Each output pixel is the mean of the valid pixels it covers.
-                let bands = r
-                    .bands
-                    .iter()
-                    .map(|b| {
-                        // A cell reads its k × k block; the cells are counted and cancellable.
-                        let cost = (k * k) as usize;
-                        rasterops::per_index(
-                            w as usize * h as usize,
-                            w as usize,
-                            cost,
-                            || (),
-                            |_, i| {
-                                let (row, col) = ((i / w as usize) as u32, (i % w as usize) as u32);
-                                let (mut sum, mut n) = (0.0f64, 0u32);
-                                for dy in 0..k {
-                                    for dx in 0..k {
-                                        let (x, y) = (col * k + dx, row * k + dy);
-                                        if x >= r.width || y >= r.height {
-                                            continue;
-                                        }
-                                        if let Some(v) = b.data.get((y * r.width + x) as usize).copied().filter(|v| r.is_valid(*v)) {
-                                            sum += v as f64;
-                                            n += 1;
-                                        }
-                                    }
-                                }
-                                if n > 0 { (sum / n as f64) as f32 } else { NODATA }
-                            },
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let gt = GeoTransform {
-                    pixel_width: r.transform.pixel_width * k as f64,
-                    pixel_height: r.transform.pixel_height * k as f64,
-                    ..r.transform
-                };
-                let nodata = r.nodata.or(Some(NODATA as f64));
-                let color = if matches!(r.color, ColorHint::Palette(_)) { ColorHint::Gray } else { r.color.clone() };
-                let mut out = Raster::new(out, w, h, bands, gt, r.crs, nodata, color, r.data_type.clone()).map_err(|e| e.to_string())?;
-                // A block's mean is of the same band: its name and wavelength are the input's.
-                out.bands.iter_mut().zip(&r.bands).for_each(|(o, i)| {
-                    o.name = i.name.clone();
-                    o.wavelength = i.wavelength;
-                });
-                // The blocks average values rounded when the file was read, some or all of them.
-                out.keep_rounded_mark(&r);
-                super::workflows::made(out, None)
-            }))
+            // A file too large to read whole at its full size, whose resample can be held and the
+            // memory for it given now: made from the file a block at a time (#2865). Another
+            // reads the finest level of it that fits, as before, and says so.
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(reading) = super::in_blocks::plan_read(&r) {
+                let (fw, fh) = reading.full();
+                let k = factor.min(fw.min(fh)).max(1);
+                let (w, h) = ((fw / k).max(1), (fh / k).max(1));
+                let bands = r.held().band_count();
+                let samples = u64::from(w) * u64::from(h) * bands as u64;
+                // One this computer can't give the memory for now reads the file as before.
+                if super::in_blocks::holds(samples) && super::in_blocks::affordable(resample_need(w, h, bands)) {
+                    reading.refused_in_script(s)?;
+                    return Ok(Box::new(move || match super::in_blocks::affordable(resample_need(w, h, bands)) {
+                        true => resample_in_blocks(&reading, k, out),
+                        // Short of it since then: the file read as before.
+                        false => resample_whole(&r, factor, out),
+                    }));
+                }
+            }
+            Ok(Box::new(move || resample_whole(&r, factor, out)))
         }
         o => Err(format!("unknown operation '{o}'")),
     }
+}
+
+/// What a resample `w` × `h` of `bands` bands made a block at a time holds: its bands and its
+/// file, and for several bands the copy of them interleaved that the file is made from (one band
+/// is written from itself), planned before they are set aside.
+#[cfg(not(target_arch = "wasm32"))]
+fn resample_need(w: u32, h: u32, bands: usize) -> u64 {
+    let copies = if bands > 1 { 3 } else { 2 };
+    u64::from(w).saturating_mul(u64::from(h)).saturating_mul(bands as u64).saturating_mul(4 * copies)
+}
+
+/// A resample by `factor` of `r` read whole (the finest level of a file read in place that
+/// fits), called `out`: each output pixel the mean of the valid pixels of the block it covers.
+fn resample_whole(r: &super::workflows::Input, factor: u32, out: String) -> Result<super::workflows::Made, String> {
+    let r = r.read()?;
+    let k = factor.min(r.width.min(r.height)).max(1);
+    let (w, h) = ((r.width / k).max(1), (r.height / k).max(1));
+    // Each output pixel is the mean of the valid pixels it covers; one covering none
+    // takes the result's no-data value (the raster's, else the one cells with no value
+    // take).
+    let empty = r.nodata.map_or(NODATA, |d| d as f32);
+    let bands = r
+        .bands
+        .iter()
+        .map(|b| {
+            // A cell reads its k × k block; the cells are counted and cancellable.
+            let cost = (k * k) as usize;
+            rasterops::per_index(
+                w as usize * h as usize,
+                w as usize,
+                cost,
+                || (),
+                |_, i| {
+                    let (row, col) = ((i / w as usize) as u32, (i % w as usize) as u32);
+                    let (mut sum, mut n) = (0.0f64, 0u32);
+                    for dy in 0..k {
+                        for dx in 0..k {
+                            let (x, y) = (col * k + dx, row * k + dy);
+                            if x >= r.width || y >= r.height {
+                                continue;
+                            }
+                            if let Some(v) = b.data.get((y * r.width + x) as usize).copied().filter(|v| r.is_valid(*v)) {
+                                sum += v as f64;
+                                n += 1;
+                            }
+                        }
+                    }
+                    if n > 0 { (sum / n as f64) as f32 } else { empty }
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let gt =
+        GeoTransform { pixel_width: r.transform.pixel_width * k as f64, pixel_height: r.transform.pixel_height * k as f64, ..r.transform };
+    let nodata = r.nodata.or(Some(NODATA as f64));
+    let color = if matches!(r.color, ColorHint::Palette(_)) { ColorHint::Gray } else { r.color.clone() };
+    let mut out = Raster::new(out, w, h, bands, gt, r.crs, nodata, color, r.data_type.clone()).map_err(|e| e.to_string())?;
+    // A block's mean is of the same band: its name and wavelength are the input's.
+    out.bands.iter_mut().zip(&r.bands).for_each(|(o, i)| {
+        o.name = i.name.clone();
+        o.wavelength = i.wavelength;
+    });
+    // The blocks average values rounded when the file was read, some or all of them.
+    out.keep_rounded_mark(&r);
+    super::workflows::made(out, None)
+}
+
+/// A resample by `k` of a large file read in place, made a block at a time from the file at its
+/// full size ([`super::in_blocks::Reading::each_block`]): each output pixel the mean of the valid
+/// pixels of the `k` × `k` it covers, as a whole raster's resample makes it, its trailing columns
+/// and rows short of a full block left out. Blocks are whole multiples of `k` each way, so no
+/// output pixel spans two. Its memory ([`resample_need`]) is planned by the caller, which reads
+/// the file as before when the computer can't give it.
+#[cfg(not(target_arch = "wasm32"))]
+fn resample_in_blocks(reading: &super::in_blocks::Reading, k: u32, out: String) -> Result<super::workflows::Made, String> {
+    let (fw, fh) = reading.full();
+    let (w, h) = ((fw / k).max(1), (fh / k).max(1));
+    let (bw, bh) = super::in_blocks::BLOCK;
+    let size = ((bw / k).max(1) * k, (bh / k).max(1) * k);
+    let need = resample_need(w, h, reading.held().band_count());
+    let _held = rustgis_data::memory::Holding::of(need);
+    let mut bands: Vec<Vec<f32>> = Vec::new();
+    let mut first: Option<Raster> = None;
+    let mut marks: Vec<bool> = Vec::new();
+    let rounded = reading.each_block((0, w * k), (0, h * k), size, |cols, rows, read| {
+        let r = &read.raster;
+        let (ax, ay) = read.at;
+        // A pixel with no value takes the result's no-data value, as a whole raster's resample.
+        let empty = r.nodata.map_or(NODATA, |d| d as f32);
+        if bands.is_empty() {
+            bands = (0..r.band_count()).map(|_| rasterops::new_band(w as usize, h as usize, empty)).collect::<Result<_, _>>()?;
+            marks = vec![false; r.band_count()];
+        }
+        marks.iter_mut().enumerate().for_each(|(b, m)| *m |= r.band_rounded(b));
+        // This block's output pixels: columns and rows of the output.
+        let (ox0, ox1, oy0, oy1) = (cols.0 / k, cols.1 / k, rows.0 / k, rows.1 / k);
+        let ow = (ox1 - ox0) as usize;
+        for (band, dst) in r.bands.iter().zip(bands.iter_mut()) {
+            let means = rasterops::per_index(
+                ow * (oy1 - oy0) as usize,
+                ow,
+                (k * k) as usize,
+                || (),
+                |_, i| {
+                    let (ox, oy) = (ox0 + (i % ow.max(1)) as u32, oy0 + (i / ow.max(1)) as u32);
+                    let (mut sum, mut n) = (0.0f64, 0u32);
+                    for dy in 0..k {
+                        for dx in 0..k {
+                            let (x, y) = (ox * k + dx - ax, oy * k + dy - ay);
+                            if let Some(v) = band.data.get((y * r.width + x) as usize).copied().filter(|v| r.is_valid(*v)) {
+                                sum += f64::from(v);
+                                n += 1;
+                            }
+                        }
+                    }
+                    if n > 0 { (sum / f64::from(n)) as f32 } else { empty }
+                },
+            )?;
+            for (row, line) in means.chunks(ow.max(1)).enumerate() {
+                let at = (oy0 as usize + row) * w as usize + ox0 as usize;
+                let d =
+                    dst.get_mut(at..at + line.len()).ok_or_else(|| format!("{}: a block's means don't fit the result", reading.layer()))?;
+                d.copy_from_slice(line);
+            }
+        }
+        if first.is_none() {
+            // Its bands, place and kind, as a whole read gives them.
+            let mut meta = Raster::new(
+                r.name.clone(),
+                1,
+                1,
+                vec![vec![0.0]; r.band_count()],
+                read.grid.0,
+                r.crs,
+                r.nodata,
+                r.color.clone(),
+                r.data_type.clone(),
+            )
+            .map_err(|e| e.to_string())?;
+            meta.bands.iter_mut().zip(&r.bands).for_each(|(o, i)| {
+                o.name.clone_from(&i.name);
+                o.wavelength = i.wavelength;
+            });
+            first = Some(meta);
+        }
+        Ok(())
+    })?;
+    let meta = first.ok_or_else(|| format!("{}: it has no pixels", reading.layer()))?;
+    let gt = GeoTransform {
+        pixel_width: meta.transform.pixel_width * f64::from(k),
+        pixel_height: meta.transform.pixel_height * f64::from(k),
+        ..meta.transform
+    };
+    let nodata = meta.nodata.or(Some(NODATA as f64));
+    let color = if matches!(meta.color, ColorHint::Palette(_)) { ColorHint::Gray } else { meta.color.clone() };
+    let mut res = Raster::new(out, w, h, bands, gt, meta.crs, nodata, color, meta.data_type.clone()).map_err(|e| e.to_string())?;
+    res.bands.iter_mut().zip(&meta.bands).for_each(|(o, i)| {
+        o.name.clone_from(&i.name);
+        o.wavelength = i.wavelength;
+    });
+    // The blocks average values rounded when the file was read, some or all of them.
+    res.rounded = Vec::new();
+    res.rounded_some = if marks.contains(&true) { marks } else { Vec::new() };
+    let notes = super::gp::tiled_read_notes(&[super::gp::ReadNote::rounded(reading.layer(), rounded)], "its");
+    let then: super::workflows::Then = Box::new(move |s: &mut Session, _: &mut Value| {
+        for note in notes {
+            s.notify(note, false);
+        }
+    });
+    super::workflows::made_then(res, None, Some(then))
 }
 
 /// The pixel window of `r` covering extent `e`'s edges (columns, rows); an error when it can't be
