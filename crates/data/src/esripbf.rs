@@ -139,6 +139,11 @@ pub struct Losses {
     pub with_zm: usize,
     /// Places that convert to beyond longitude/latitude (the answer's system may not fit them).
     pub beyond: usize,
+    /// The coordinate system code an answer with features with a geometry names and RustGIS
+    /// can't use, without a WKT (read as longitude/latitude).
+    pub unusable_code: Option<u32>,
+    /// Pages joined after the first that named another code RustGIS can't use.
+    pub other_unusable: usize,
 }
 
 impl Losses {
@@ -152,6 +157,23 @@ impl Losses {
         self.unprojected = self.unprojected.saturating_add(other.unprojected);
         self.with_zm = self.with_zm.saturating_add(other.with_zm);
         self.beyond = self.beyond.saturating_add(other.beyond);
+        match (self.unusable_code, other.unusable_code) {
+            (Some(a), Some(b)) if a != b => self.other_unusable += 1 + other.other_unusable,
+            (None, b) => {
+                self.unusable_code = b;
+                self.other_unusable += other.other_unusable;
+            }
+            _ => self.other_unusable += other.other_unusable,
+        }
+    }
+
+    /// The pages that named another code RustGIS can't use, as the notice for the first adds them.
+    pub fn others_said(&self) -> String {
+        match self.other_unusable {
+            0 => String::new(),
+            1 => " (and another page names a code it can't use either)".to_string(),
+            n => format!(" (and {n} other pages name codes it can't use either)"),
+        }
     }
 
     /// What they say, one message per kind (as [`read`] says them).
@@ -163,17 +185,33 @@ impl Losses {
                 "the answer names no coordinate system; coordinates are read as longitude/latitude",
             ));
         }
+        // Said only when a geometry was read in it: assumed, then.
+        if let Some(code) = self.unusable_code {
+            out.push(crate::loss::Note::loss(
+                crate::loss::LossCode::AssumedCrs,
+                format!("coordinate system {code} can't be used{}; coordinates are read as longitude/latitude", self.others_said()),
+            ));
+        }
         if self.unreadable > 0 {
-            out.push(format!("{} values don't fit their field's type and are left empty", self.unreadable));
+            out.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedValue,
+                format!("{} values don't fit their field's type and are left empty", self.unreadable),
+            ));
         }
         if self.not_utf8 > 0 {
-            out.push(format!(
-                "{} values, field names or aliases aren't valid UTF-8; the bytes that can't be read are replaced with U+FFFD",
-                self.not_utf8
+            out.push(crate::loss::Note::loss(
+                crate::loss::LossCode::ChangedEncoding,
+                format!(
+                    "{} values, field names or aliases aren't valid UTF-8; the bytes that can't be read are replaced with U+FFFD",
+                    self.not_utf8
+                ),
             ));
         }
         if self.flat_rings > 0 {
-            out.push(format!("{} polygon rings have no area and are left out", self.flat_rings));
+            out.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedRing,
+                format!("{} polygon rings have no area and are left out", self.flat_rings),
+            ));
         }
         if self.unprojected > 0 {
             out.push(format!(
@@ -319,10 +357,16 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
         fields.push(Field { name, ty: read_as.field_type(), alias });
     }
     if repeated > 0 {
-        report.messages.push(format!("{repeated} fields repeat an earlier field's name and are left out"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedValue,
+            format!("{repeated} fields repeat an earlier field's name and are left out"),
+        ));
     }
     if not_read > 0 {
-        report.messages.push(format!("{not_read} fields hold geometries, blobs or rasters, which aren't read, and are left out"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedValue,
+            format!("{not_read} fields hold geometries, blobs or rasters, which aren't read, and are left out"),
+        ));
     }
     if unknown > 0 {
         report.messages.push(format!("{unknown} fields have a type RustGIS doesn't know; their values are read as text"));
@@ -335,6 +379,9 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
     // read in its place. If the replaced bytes break the WKT, it can't be told whether the WKT
     // would have won, so that's said too. The WKT is looked at only when it isn't UTF-8, as this
     // runs for every page.
+    // What reading the system says (its WKT's text, and what it assumes) holds only for a
+    // geometry read in it.
+    let said_before = report.messages.len();
     if !wkt_utf8
         && (code.and_then(crs_of_code).is_none()
             || esri_wkt_over_code(code, wkt.as_deref()).is_some()
@@ -345,8 +392,9 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
             "the coordinate system's WKT isn't valid UTF-8; the bytes that can't be read are replaced with U+FFFD",
         ));
     }
-    let said_before = report.messages.len();
     let (crs, to_lonlat) = crate::filegdb::esri_crs(code, wkt.as_deref(), &mut report)?;
+    // What reading the system said, which assumes a system only for a geometry read in it.
+    let crs_said = said_before..report.messages.len();
     // A WKT that couldn't be read (or converted) is read as longitude/latitude, and said so;
     // a geographic one gives no system and says nothing.
     let mut unread_code = crs.is_none()
@@ -354,13 +402,15 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
             .messages
             .get(said_before..)
             .is_some_and(|m| m.iter().any(|m| m.ends_with("; coordinates are read as longitude/latitude")));
+    // Said with the page's losses, once it is known that a geometry was read in it.
+    let mut unusable_code = None;
     if crs.is_none()
         && wkt.is_none()
         && let Some(code) = code
         && crate::filegdb::crs_of_code(code) != Some(crate::raster::Crs::LonLat)
     {
         unread_code = true;
-        report.messages.push(format!("coordinate system {code} can't be used; coordinates are read as longitude/latitude"));
+        unusable_code = Some(code);
     }
 
     let layer_type = match shape_kind {
@@ -398,10 +448,27 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
     if let Some(c) = crs.filter(|_| to_lonlat.is_some()) {
         ds.held_in = c;
     }
+    // An answer without a geometry places nothing in the system it couldn't read: said, not as
+    // assumed.
+    if !any_geometry && !crs_said.is_empty() {
+        let said = std::mem::replace(&mut report.messages, crate::loss::Notes::new());
+        for (i, mut note) in said.into_iter().enumerate() {
+            if crs_said.contains(&i)
+                && matches!(note.loss, Some(crate::loss::LossCode::AssumedCrs | crate::loss::LossCode::ChangedEncoding))
+            {
+                note.loss = None;
+            }
+            report.messages.push(note);
+        }
+    }
     let losses = Losses {
         // Assumed, so said: an answer that names no coordinate system.
         no_crs: any_geometry && code.is_none() && wkt.is_none(),
         unread_code: any_geometry && unread_code,
+        // A page without geometry places nothing in the code it names, so says nothing of it,
+        // unlike a WKT it can't read, which is said (plainly) as what the answer holds.
+        unusable_code: unusable_code.filter(|_| any_geometry),
+        other_unusable: 0,
         unreadable: tally.unreadable,
         not_utf8: tally.not_utf8,
         flat_rings: tally.flat_rings,

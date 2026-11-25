@@ -626,6 +626,16 @@ const UNSUPPORTED_LDIDS: &[(u8, &str)] = &[
     (0x97, "10029, Mac Central European"),
 ];
 
+/// An encoding RustGIS falls back to is said as assumed: a code page it can't use. A `.cpg` it
+/// can't use is assumed only when there is no code page (`ldid` 0) to give the encoding instead.
+fn encoding_assumed(notes: &rustgis_data::loss::Notes, ldid: u8) {
+    for note in notes.iter().filter(|n| n.contains("; using ")) {
+        let assumed = note.contains("unsupported .dbf code page") || ldid == 0;
+        let code = assumed.then_some(rustgis_data::loss::LossCode::AssumedEncoding);
+        assert_eq!(note.loss, code, "{note:?}");
+    }
+}
+
 /// Three records make a limit-one read genuinely sampled; names and values use the same bytes.
 /// `notes` is what a read of the whole file says. A source read in place says those of opening
 /// when it opens, and the count of values (`places: …`) with them once it is read whole.
@@ -644,6 +654,7 @@ fn check_ldid_readers(ldid: u8, text: &[u8], expected: &str, cpg: Option<&[u8]>,
     check(&layers[0].0, 3);
     assert_eq!(layers[0].1.skipped, 0);
     assert_eq!(texts(&layers[0].1.messages), notes, "LDID {ldid:02X} ZIP notes");
+    encoding_assumed(&layers[0].1.messages, ldid);
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rustgis_data::source::{FeatureSource, Request};
@@ -656,10 +667,12 @@ fn check_ldid_readers(ldid: u8, text: &[u8], expected: &str, cpg: Option<&[u8]>,
         check(&ds, 3);
         assert_eq!(report.skipped, 0);
         assert_eq!(texts(&report.messages), notes, "LDID {ldid:02X} loose-file notes");
+        encoding_assumed(&report.messages, ldid);
         let src = open_shp(&path, "places").unwrap();
         assert_eq!(src.info().fields[0].name, expected, "LDID {ldid:02X} streamed field name");
         let opening: Vec<&str> = notes.iter().copied().filter(|n| !n.starts_with("places: ")).collect();
         assert_eq!(texts(&src.info().notes), opening, "LDID {ldid:02X} streamed notes");
+        encoding_assumed(&src.info().notes, ldid);
         let whole: Vec<String> =
             notes.iter().map(|n| if n.starts_with("places: ") { n.to_string() } else { format!("places: {n}") }).collect();
         assert_eq!(texts(&rustgis_data::source::materialize(&src).unwrap().1.messages), whole, "LDID {ldid:02X} whole read in place");

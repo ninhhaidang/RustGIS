@@ -360,9 +360,10 @@ fn read_points<R: Read + Seek + Send + Sync>(mut r: R, name: &str, crs: Option<C
             .find(|v| v.user == "laszip encoded" && v.record == 22204)
             .ok_or_else(|| bad("a LAZ file without its laszip record"))?;
         if total > MAX_DECOMPRESSED {
-            report
-                .messages
-                .push(format!("{name}: only its first {MAX_DECOMPRESSED} of {total} points are read (use a smaller extract for the rest)"));
+            report.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedOverLimit,
+                format!("{name}: only its first {MAX_DECOMPRESSED} of {total} points are read (use a smaller extract for the rest)"),
+            ));
         }
         let read = laz_points(&mut r, &h, &vlr.data, readable, stride, &mut points, &mut brightest)?;
         if read < readable {

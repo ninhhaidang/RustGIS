@@ -1000,7 +1000,10 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
         {
             return Err(std::io::Error::other(format!("native spreadsheet collection notice: {report:?}")));
         }
-        if errors && report.messages != ["1 spreadsheet error cell was read as empty, in 'note'"] {
+        if errors
+            && (report.messages.texts().collect::<Vec<_>>() != ["1 spreadsheet error cell was read as empty, in 'note'"]
+                || report.messages[0].loss != Some(LossCode::DroppedValue))
+        {
             return Err(std::io::Error::other(format!("native spreadsheet error notice: {report:?}")));
         }
         if report.skipped != 0

@@ -176,6 +176,7 @@ An `--allow` that names no kind or code is refused with status 2, as is `--allow
 | `approximated.curve` | Keep the source file where exact curves matter: RustGIS draws curves as straight segments. |
 | `assumed.null-marker` | Write the value another way if the text Null is meant as text, not as an empty value. |
 | `assumed.crs` | Give the coordinate system the coordinates are in ("crs" when adding the data, or Define Projection). |
+| `assumed.encoding` | Give the file's encoding in a form RustGIS reads: a .cpg beside a Shapefile or dBASE file naming UTF-8 or its Windows code page, or a DXF saved as UTF-8. |
 
 Not every loss has a code yet: losses still reported without one don't stop a strict run.
 

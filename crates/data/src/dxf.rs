@@ -91,7 +91,7 @@ fn is_binary(bytes: &[u8]) -> bool {
 /// The text of a drawing and what had to be assumed to read it: UTF-8 (AutoCAD 2007 and later),
 /// else the ANSI code page its header names ([`code_page`], the `$DWGCODEPAGE` of older drawings),
 /// else Latin-1.
-fn decode(bytes: &[u8]) -> (Cow<'_, str>, Option<String>) {
+fn decode(bytes: &[u8]) -> (Cow<'_, str>, Option<crate::loss::Note>) {
     if let Ok(s) = std::str::from_utf8(bytes) {
         return (Cow::Borrowed(s), None);
     }
@@ -103,14 +103,21 @@ fn decode(bytes: &[u8]) -> (Cow<'_, str>, Option<String>) {
             ),
             None => "the drawing's text isn't UTF-8 and it names no code page ($DWGCODEPAGE): it is read as Latin-1, so non-ASCII text (such as layer names) may be wrong".to_string(),
         };
-        return (Cow::Owned(bytes.iter().map(|&b| char::from(b)).collect()), Some(said));
+        // Read in an encoding it doesn't name: assumed.
+        return (
+            Cow::Owned(bytes.iter().map(|&b| char::from(b)).collect()),
+            Some(crate::loss::Note::loss(crate::loss::LossCode::AssumedEncoding, said)),
+        );
     };
     let (text, _) = encoding.decode_without_bom_handling(bytes);
     let lost = text.matches('\u{fffd}').count();
     let said = (lost > 0).then(|| {
-        format!(
-            "{lost} characters of the drawing's text couldn't be read as {} (its code page): they are drawn as a replacement character",
-            encoding.name()
+        crate::loss::Note::loss(
+            crate::loss::LossCode::ChangedEncoding,
+            format!(
+                "{lost} characters of the drawing's text couldn't be read as {} (its code page): they are drawn as a replacement character",
+                encoding.name()
+            ),
         )
     });
     (text, said)
@@ -1154,11 +1161,16 @@ struct Drawing {
     layers: HashMap<String, (String, i64, String)>,
     blocks: HashMap<String, (P3, Vec<Ent>)>,
     entities: Vec<Ent>,
-    /// Entities not drawn, by kind.
-    unread: BTreeMap<String, usize>,
-    /// Entities that couldn't be read.
-    bad: usize,
+    /// The entities that can't be drawn, counted by where they would have been, so they are
+    /// counted only where drawn: the model's and paper space's (`lost`), and each block's,
+    /// once for each placement of it (`block_lost`, by lower-cased name).
+    lost: LostCounts,
+    block_lost: HashMap<String, LostCounts>,
 }
+
+/// Entities that can't be drawn, counted by layer (as written; compared ignoring case), paper
+/// space, and kind: one RustGIS doesn't draw (its name), or one it can't read (`None`).
+type LostCounts = BTreeMap<(String, bool, Option<String>), usize>;
 
 /// The magnitude of an ACI color index (negative means its layer is off). The one signed
 /// integer without a positive counterpart is malformed and must not overflow while reading.
@@ -1170,7 +1182,10 @@ fn color_magnitude(color: i64) -> Result<i64> {
 
 /// Reads the records of each section.
 fn drawing(records: &[Record]) -> Result<Drawing> {
-    let mut d = Drawing { layers: HashMap::new(), blocks: HashMap::new(), entities: Vec::new(), unread: BTreeMap::new(), bad: 0 };
+    let mut d =
+        Drawing { layers: HashMap::new(), blocks: HashMap::new(), entities: Vec::new(), lost: BTreeMap::new(), block_lost: HashMap::new() };
+    // What can't be drawn in the block being read.
+    let mut block_lost = LostCounts::new();
     let mut section = "";
     // The block being read: name, base point, entities.
     let mut block: Option<(String, P3, Vec<Ent>)> = None;
@@ -1203,13 +1218,22 @@ fn drawing(records: &[Record]) -> Result<Drawing> {
                     if r.kind == "BLOCK" {
                         let name = g.s(2).map(str::trim).unwrap_or("").to_string();
                         block = Some((name, g.pt(10).unwrap_or([0.0; 3]), Vec::new()));
+                        block_lost = LostCounts::new();
                         continue;
                     }
                     if r.kind == "ENDBLK" {
                         if let Some((name, base, ents)) = block.take()
                             && !name.is_empty()
                         {
-                            d.blocks.insert(name.to_ascii_lowercase(), (base, ents));
+                            // A block defined again replaces the earlier one, and what it couldn't
+                            // draw with it.
+                            let key = name.to_ascii_lowercase();
+                            if block_lost.is_empty() {
+                                d.block_lost.remove(&key);
+                            } else {
+                                d.block_lost.insert(key.clone(), std::mem::take(&mut block_lost));
+                            }
+                            d.blocks.insert(key, (base, ents));
                         }
                         continue;
                     }
@@ -1231,8 +1255,22 @@ fn drawing(records: &[Record]) -> Result<Drawing> {
                 if matches!(r.kind, "SEQEND" | "VERTEX") || (r.kind == "ATTDEF" && g.i(70).unwrap_or(0) & 2 == 0) {
                     continue;
                 }
+                // What can't be drawn is counted where it would be drawn: in its block, or in the
+                // model or paper space.
+                let mut count_lost = |kind: Option<String>| {
+                    let layer = g.s(8).map(str::trim).unwrap_or("0");
+                    let key = (layer.to_string(), g.i(67) == Some(1), kind);
+                    let counts = match &block {
+                        Some(_) if section == "BLOCKS" => Some(&mut block_lost),
+                        _ if section == "ENTITIES" => Some(&mut d.lost),
+                        _ => None,
+                    };
+                    if let Some(counts) = counts {
+                        *counts.entry(key).or_insert(0) += 1;
+                    }
+                };
                 let Some(kind) = kind_name(r.kind) else {
-                    *d.unread.entry(r.kind.to_string()).or_insert(0) += 1;
+                    count_lost(Some(r.kind.to_string()));
                     continue;
                 };
                 let mut loss = PathLoss::default();
@@ -1240,7 +1278,7 @@ fn drawing(records: &[Record]) -> Result<Drawing> {
                 // Entity builders use Option for malformed data; cancellation must escape as an error.
                 crate::progress::check()?;
                 let Some(shape) = shape else {
-                    d.bad += 1;
+                    count_lost(None);
                     continue;
                 };
                 let text = match kind {
@@ -1314,6 +1352,9 @@ struct Out {
     vertex_capped: bool,
     /// The copies the arrays above make together on the current nesting path.
     copies: usize,
+    /// Entities placed that RustGIS doesn't draw, by kind, and that couldn't be read.
+    unread: BTreeMap<String, usize>,
+    bad: usize,
 }
 
 fn fields() -> Vec<Field> {
@@ -1355,6 +1396,7 @@ fn has_varying_z<'a>(mut points: impl Iterator<Item = &'a P3>, first: Option<P3>
 fn emit(
     d: &Drawing,
     ents: &[Ent],
+    lost: Option<&LostCounts>,
     xf: &Xf,
     from: Inherit,
     depth: usize,
@@ -1362,6 +1404,36 @@ fn emit(
     opts: &Options,
     out: &mut Out,
 ) -> Result<()> {
+    // What can't be drawn here, counted as a drawn entity would be placed: in a block, a step
+    // each; in paper space only when that is drawn; and on the layer asked for (layer 0 in a block
+    // takes the INSERT's).
+    for ((layer, paper, kind), &n) in lost.into_iter().flatten() {
+        crate::progress::check()?;
+        // In a block, each copy walks these again, so each is a step; the model's are counted
+        // once, and cost the drawable entities after them nothing.
+        if depth > 0 {
+            out.steps = out.steps.saturating_add(n);
+            if out.steps > MAX_STEPS {
+                out.overworked = true;
+                return Ok(());
+            }
+        }
+        if depth == 0 && *paper && !opts.paper_space {
+            out.paper += n;
+            continue;
+        }
+        let layer = match from.layer {
+            Some(l) if layer == "0" => l,
+            _ => layer.as_str(),
+        };
+        if opts.layer.is_some_and(|want| !layer.eq_ignore_ascii_case(want)) {
+            continue;
+        }
+        match kind {
+            Some(k) => *out.unread.entry(k.clone()).or_insert(0) += n,
+            None => out.bad += n,
+        }
+    }
     for e in ents {
         crate::progress::check()?;
         if out.vertex_capped {
@@ -1371,8 +1443,9 @@ fn emit(
             out.capped = true;
             return Ok(());
         }
-        // Every placement costs a step, drawn or not: nested arrays of empty or filtered blocks
-        // can't make the walk run on.
+        // Every placement costs a step, drawn, counted or not: nested arrays of empty, filtered or
+        // undrawable blocks can't make the walk run on (an undrawable entity is walked once per
+        // copy).
         out.steps += 1;
         if out.steps > MAX_STEPS {
             out.overworked = true;
@@ -1436,7 +1509,7 @@ fn emit(
                             loss: PathLoss::default(),
                         })
                         .collect();
-                    emit(d, &drawn, xf, from, depth + 1, stack, opts, out)?;
+                    emit(d, &drawn, None, xf, from, depth + 1, stack, opts, out)?;
                     continue;
                 }
                 out.cut += 1;
@@ -1469,7 +1542,8 @@ fn emit(
                         block: Some(ins.block.as_str()),
                         paper: from.paper || e.paper,
                     };
-                    emit(d, inner, &xf.then(&local), inner_from, depth + 1, stack, opts, out)?;
+                    let lost = stack.last().and_then(|k| d.block_lost.get(k));
+                    emit(d, inner, lost, &xf.then(&local), inner_from, depth + 1, stack, opts, out)?;
                     if out.capped || out.overworked || out.vertex_capped {
                         stack.pop();
                         out.copies = outer;
@@ -1624,16 +1698,19 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
         vertices: 0,
         vertex_capped: false,
         copies: 1,
+        unread: BTreeMap::new(),
+        bad: 0,
     };
     let none = Inherit { layer: None, layer_key: None, color: None, linetype: None, block: None, paper: false };
-    emit(&d, &d.entities, &Xf::ID, none, 0, &mut Vec::new(), opts, &mut out)?;
+    emit(&d, &d.entities, Some(&d.lost), &Xf::ID, none, 0, &mut Vec::new(), opts, &mut out)?;
 
     let mut report = ReadReport::default();
     if let Some(why) = encoding_note {
         report.messages.push(why);
     }
+    // The rest of the file, past what isn't a group code, is left out.
     if let Some(why) = cut_short {
-        report.messages.push(why);
+        report.messages.push(crate::loss::Note::loss(crate::loss::LossCode::DroppedFeature, why));
     }
     if opts.crs.is_none() {
         report.messages.push(crate::loss::Note::loss(
@@ -1669,24 +1746,32 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
         ));
     }
     if out.trimmed {
-        report
-            .messages
-            .push(format!("block arrays were cut short: at most {MAX_ARRAY} copies each, {MAX_PATH_COPIES} along a nesting path"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("block arrays were cut short: at most {MAX_ARRAY} copies each, {MAX_PATH_COPIES} along a nesting path"),
+        ));
     }
     if out.overworked {
-        report
-            .messages
-            .push(format!("the drawing's blocks place more than {MAX_STEPS} entities (arrays of nested blocks): the rest are left out"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("the drawing's blocks place more than {MAX_STEPS} entities (arrays of nested blocks): the rest are left out"),
+        ));
     }
-    if !d.unread.is_empty() {
-        let kinds: Vec<String> = d.unread.iter().map(|(k, n)| format!("{n} {k}")).collect();
-        report.messages.push(format!("entities RustGIS doesn't draw were left out: {}", kinds.join(", ")));
+    if !out.unread.is_empty() {
+        let kinds: Vec<String> = out.unread.iter().map(|(k, n)| format!("{n} {k}")).collect();
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedFeature,
+            format!("entities RustGIS doesn't draw were left out: {}", kinds.join(", ")),
+        ));
     }
-    let skipped = d.bad + out.cut;
+    let skipped = out.bad + out.cut;
     report.skipped = skipped;
     if skipped > 0 {
-        report.messages.push(format!(
-            "{skipped} entities couldn't be read or placed (missing blocks, blocks nested too deep or in a cycle) and were left out"
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedFeature,
+            format!(
+                "{skipped} entities couldn't be read or placed (missing blocks, blocks nested too deep or in a cycle) and were left out"
+            ),
         ));
     }
     let transformer = match opts.crs.filter(|c| *c != Crs::LonLat) {
@@ -1741,20 +1826,35 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
         layers.push((ds, rep));
     }
     if let Some((_, report)) = layers.first_mut() {
-        for (count, single, plural, reason) in [
-            (recovered.capped, "polyline path coordinate was", "polyline path coordinates were", "left out at the per-entity vertex limit"),
-            (recovered.missing_y, "vertex without Y was", "vertices without Y were", "left out of spline paths"),
+        // Counted on the features drawn, after the coordinate system's filter: parts of them.
+        use crate::loss::LossCode::{DroppedGeometry, DroppedOverLimit, DroppedRing};
+        for (count, single, plural, reason, code) in [
+            (
+                recovered.capped,
+                "polyline path coordinate was",
+                "polyline path coordinates were",
+                "left out at the per-entity vertex limit",
+                DroppedOverLimit,
+            ),
+            (recovered.missing_y, "vertex without Y was", "vertices without Y were", "left out of spline paths", DroppedGeometry),
             (
                 recovered.invalid_z,
                 "POLYLINE vertex with unreadable supplied Z was",
                 "POLYLINE vertices with unreadable supplied Z were",
                 "left out",
+                DroppedGeometry,
             ),
-            (recovered.short_rings, "short HATCH boundary ring was", "short HATCH boundary rings were", "left out of polygons"),
+            (
+                recovered.short_rings,
+                "short HATCH boundary ring was",
+                "short HATCH boundary rings were",
+                "left out of polygons",
+                DroppedRing,
+            ),
         ] {
             if count > 0 {
                 let subject = if count == 1 { single } else { plural };
-                report.messages.push(format!("{count} {subject} {reason}"));
+                report.messages.push(crate::loss::Note::loss(code, format!("{count} {subject} {reason}")));
             }
         }
     }
@@ -1775,7 +1875,10 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
         } else {
             ("vertices", "were left out of their lines")
         };
-        report.messages.push(format!("{} unreadable POLYLINE {subject} {action}", recovered.unreadable_vertices));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedGeometry,
+            format!("{} unreadable POLYLINE {subject} {action}", recovered.unreadable_vertices),
+        ));
     }
     if layers.is_empty() {
         return Err(DataError::Format(match opts.layer {
@@ -1813,6 +1916,7 @@ pub fn layers(file_name: &str, bytes: &[u8]) -> Result<Vec<String>> {
     for (key, (name, _, _)) in &d.layers {
         add(name, key);
     }
+    // What can't be drawn names no layer to pick.
     for e in &d.entities {
         add(&e.layer, &e.layer_key);
     }
@@ -1828,6 +1932,66 @@ pub fn layers(file_name: &str, bytes: &[u8]) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An entity RustGIS doesn't draw, or can't read, is counted where it would have been drawn:
+    /// not at all in a block the drawing never places, and once for each placement of one it does.
+    #[test]
+    fn lost_entities_are_counted_where_they_would_be_drawn() {
+        let drawing = |inserts: &str| {
+            format!(
+                "0 SECTION 2 BLOCKS 0 BLOCK 2 B 0 IMAGE 0 POINT 10 1 20 1 0 ENDBLK 0 ENDSEC 0 SECTION 2 ENTITIES 0 POINT 10 0 20 0 {inserts} 0 ENDSEC 0 EOF"
+            )
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("\n")
+        };
+        let said = |text: &str| {
+            let layers = read("a.dxf", text.as_bytes(), &Options::default()).unwrap();
+            layers
+                .iter()
+                .flat_map(|(_, r)| r.messages.iter())
+                .filter(|m| m.contains("doesn't draw"))
+                .map(|m| (m.as_str().to_string(), m.loss))
+                .collect::<Vec<_>>()
+        };
+        assert!(said(&drawing("")).is_empty(), "a block never placed loses nothing");
+        // A block defined again without them: the later definition is the one placed.
+        let redefined =
+            drawing("0 INSERT 2 B 10 5 20 5").replacen("ENDSEC", "BLOCK\n2\nB\n0\nPOINT\n10\n2\n20\n2\n0\nENDBLK\n0\nENDSEC", 1);
+        assert!(said(&redefined).is_empty(), "{:?}", said(&redefined));
+        assert_eq!(
+            said(&drawing("0 INSERT 2 B 10 5 20 5 0 INSERT 2 B 10 9 20 9")),
+            [("entities RustGIS doesn't draw were left out: 2 IMAGE".to_string(), Some(crate::loss::LossCode::DroppedFeature))]
+        );
+        // Blocks left out, or a layer not asked for: their contents aren't drawn, so nothing of
+        // them is lost.
+        let placed = drawing("0 INSERT 2 B 8 x 10 5 20 5");
+        for opts in [Options { blocks: false, ..Options::default() }, Options { layer: Some("0"), ..Options::default() }] {
+            let layers = read("a.dxf", placed.as_bytes(), &opts).unwrap();
+            assert!(!layers.iter().flat_map(|(_, r)| r.messages.iter()).any(|m| m.contains("doesn't draw")), "{opts:?}");
+        }
+        // What can't be drawn names no layer of its own to pick.
+        let lone =
+            "0 SECTION 2 ENTITIES 0 POINT 10 0 20 0 0 IMAGE 8 only_images 0 ENDSEC 0 EOF".split_whitespace().collect::<Vec<_>>().join("\n");
+        assert_eq!(layers("a.dxf", lone.as_bytes()).unwrap(), ["0"]);
+    }
+
+    /// What can't be drawn still costs its walk a step on each copy, so an array of a block of
+    /// undrawable entities stops at the step limit, said, rather than running on.
+    #[test]
+    fn undrawable_entities_meet_the_step_limit() {
+        let images = "0 IMAGE ".repeat(100);
+        let text = format!(
+            "0 SECTION 2 BLOCKS 0 BLOCK 2 B {images}0 ENDBLK 0 BLOCK 2 A 0 INSERT 2 B 70 100 71 100 44 1 45 1 0 ENDBLK 0 ENDSEC \
+             0 SECTION 2 ENTITIES 0 POINT 10 0 20 0 0 INSERT 2 A 10 1 20 1 70 10 44 1 0 ENDSEC 0 EOF"
+        )
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("\n");
+        let layers = read("a.dxf", text.as_bytes(), &Options::default()).unwrap();
+        let said = layers[0].1.messages.iter().find(|m| m.contains("place more than")).unwrap();
+        assert_eq!(said.loss, Some(crate::loss::LossCode::DroppedOverLimit));
+    }
 
     /// A DXF from (code, value) pairs.
     fn dxf(pairs: &[(i32, &str)]) -> Vec<u8> {
@@ -1856,7 +2020,7 @@ mod tests {
         assert_eq!(parts[0][0].first(), Some(&Coord::new(0., 0.)));
         assert_eq!(layers[0].1.skipped, 0);
         assert_eq!(
-            layers[0].1.messages,
+            layers[0].1.messages.texts().collect::<Vec<_>>(),
             [format!("{} polyline path coordinates were left out at the per-entity vertex limit", (vertices - kept_segments) * 36,)]
         );
     }
@@ -1882,6 +2046,7 @@ mod tests {
                 let layers = read("a.dxf", &bytes, &Options { crs: Some(Crs::LonLat), ..Options::default() }).unwrap();
                 assert_eq!(layers[0].0.features[0].geometry, Some(Geometry::Line(vec![vec![Coord::new(0., 0.), Coord::new(2., 2.)]])));
                 assert_eq!(layers[0].1.messages.texts().collect::<Vec<_>>(), ["1 vertex without Y was left out of spline paths"]);
+                assert_eq!(layers[0].1.messages[0].loss, Some(crate::loss::LossCode::DroppedGeometry));
                 assert_eq!(layers[0].1.skipped, 0);
             }
         }
@@ -1910,7 +2075,11 @@ mod tests {
             let Some(Geometry::Line(parts)) = &layers[0].0.features[0].geometry else { panic!("line") };
             assert_eq!(parts[0].len(), if lost { 2 } else { 3 });
             assert_eq!(layers[0].0.value(0, 8), &Value::Float(0.));
-            assert_eq!(layers[0].1.messages, if lost { vec!["1 POLYLINE vertex with unreadable supplied Z was left out"] } else { vec![] });
+            assert_eq!(
+                layers[0].1.messages.texts().collect::<Vec<_>>(),
+                if lost { vec!["1 POLYLINE vertex with unreadable supplied Z was left out"] } else { vec![] }
+            );
+            assert!(layers[0].1.messages.iter().all(|m| m.loss == Some(crate::loss::LossCode::DroppedGeometry)));
             assert_eq!(layers[0].1.skipped, 0);
         }
     }
@@ -1942,6 +2111,7 @@ mod tests {
                 layers[0].1.messages.texts().collect::<Vec<_>>(),
                 [format!("{count} short HATCH boundary {subject} left out of polygons")]
             );
+            assert_eq!(layers[0].1.messages[0].loss, Some(crate::loss::LossCode::DroppedRing));
             assert_eq!(layers[0].1.skipped, 0);
         }
     }
@@ -2013,7 +2183,7 @@ mod tests {
                     let held = parts[0].len();
                     let total = MAX_VERTICES + tail.len() + if bulge { 35 } else { 0 };
                     assert_eq!(
-                        layers[0].1.messages,
+                        layers[0].1.messages.texts().collect::<Vec<_>>(),
                         [format!(
                             "{} polyline path {} left out at the per-entity vertex limit",
                             total - held,
@@ -2051,6 +2221,7 @@ mod tests {
                 layers[0].1.messages.texts().collect::<Vec<_>>(),
                 ["1 entities couldn't be read or placed (missing blocks, blocks nested too deep or in a cycle) and were left out"]
             );
+            assert_eq!(layers[0].1.messages[0].loss, Some(crate::loss::LossCode::DroppedFeature));
         }
         // Losses follow the two surviving block copies; the paper-space and filtered copy stay quiet.
         let text = "0 SECTION 2 BLOCKS 0 BLOCK 2 B 0 SPLINE 71 3 11 0 21 0 11 1 11 2 21 2 0 ENDBLK 0 ENDSEC

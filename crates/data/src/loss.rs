@@ -135,6 +135,11 @@ loss_codes! {
         Assumed,
         "Give the coordinate system the coordinates are in (\"crs\" when adding the data, or Define Projection)."
     ),
+    AssumedEncoding => (
+        "assumed.encoding",
+        Assumed,
+        "Give the file's encoding in a form RustGIS reads: a .cpg beside a Shapefile or dBASE file naming UTF-8 or its Windows code page, or a DXF saved as UTF-8."
+    ),
 }
 
 impl LossCode {
