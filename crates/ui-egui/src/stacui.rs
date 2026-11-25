@@ -1459,7 +1459,7 @@ fn area_buttons(ui: &mut egui::Ui, st: &mut State, ask: &mut Option<AreaAsk>) {
     let reading = st.loading.as_ref().map(|(what, _)| what.clone());
     ui.horizontal_wrapped(|ui| {
         for (shape, label) in DRAW {
-            if ui.selectable_label(st.drawing == Some(shape), tl!(label)).clicked() {
+            if ui.add(egui::Button::new(tl!(label)).selected(st.drawing == Some(shape))).clicked() {
                 *ask = Some(AreaAsk::Draw(shape));
             }
         }
