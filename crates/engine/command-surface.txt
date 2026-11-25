@@ -161,7 +161,7 @@ gpkg.addLayer path table? limit? name?
 gpkg.discardEdits layer?
 gpkg.pendingEdits layer?
 gpkg.saveEdits layer?
-graphics.add shape points layer? text? fill? outline? width? size? fontSize? bold? italic? align? letterSpacing? image? path?
+graphics.add shape points layer? text? fill? outline? width? size? fontSize? bold? italic? align? letterSpacing? image? path? frame?
 graphics.edit layer row points? text? fontSize? bold? italic? align? letterSpacing? fill? outline? width? size?
 graphics.keepTool on?
 graphics.newLayer name?

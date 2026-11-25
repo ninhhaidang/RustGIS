@@ -3689,7 +3689,8 @@ pub fn finish_graphic(app: &mut RustGisApp, shape: &str, pts: Vec<Coord>) {
         return;
     }
     let coords: Vec<[f64; 2]> = pts.iter().map(|c| [c.x, c.y]).collect();
-    let ok = app.run("graphics.add", json!({"shape": shape, "points": coords})).is_ok();
+    // Built as the view faces, as the drag previewed it.
+    let ok = app.run("graphics.add", json!({"shape": shape, "points": coords, "frame": "view"})).is_ok();
     app.map.cancel_sketch();
     // A failed graphic (a click without a drag) keeps the tool; the error is in the notices.
     if ok && !app.session.keep_tool {
@@ -3867,31 +3868,40 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
     if !app.map.sketch.is_empty()
         && let Some(shape) = drag_shape(tool).filter(|s| !matches!(*s, "freehand" | "lasso"))
     {
-        // Rectangles, circles and ellipses preview as their outline between the two points.
-        if let (Some(a), Some(b)) = (
+        // Rectangles, circles, ellipses and pictures preview as the outline they are added with
+        // (`"frame": "view"`): on a map in another projection, or turned, that is what was dragged.
+        let green = Color32::from_rgb(0x16, 0x9A, 0x5A);
+        let stroke = Stroke::new(2.0, green);
+        let outline = rustgis_engine::cmd::graphics::dragged_outline(&app.session, shape, &app.map.sketch);
+        let pts: Vec<Pos2> = outline.iter().flatten().filter_map(|c| lonlat_to_screen(app, rect, *c)).collect();
+        // A picture is drawn upright on screen between its box's north-west and south-east
+        // corners (render's picture graphics), so it previews as that, turned map or not.
+        let picture = outline
+            .as_deref()
+            .filter(|_| shape == "picture")
+            .map(|cs| {
+                cs.iter().fold(Extent::EMPTY, |mut e, c| {
+                    e.expand(*c);
+                    e
+                })
+            })
+            .filter(|e| !e.is_empty())
+            .and_then(|e| {
+                Some((
+                    lonlat_to_screen(app, rect, Coord::new(e.min_x, e.max_y))?,
+                    lonlat_to_screen(app, rect, Coord::new(e.max_x, e.min_y))?,
+                ))
+            });
+        if let Some((a, b)) = picture {
+            p.rect_stroke(Rect::from_two_pos(a, b), 0.0, stroke, egui::StrokeKind::Middle);
+        } else if shape != "picture" && pts.len() == outline.as_ref().map_or(0, Vec::len) && pts.len() >= 3 {
+            p.add(egui::Shape::closed_line(pts, stroke));
+        } else if let (Some(a), Some(b)) = (
             app.map.sketch.first().and_then(|c| lonlat_to_screen(app, rect, *c)),
             app.map.sketch.last().and_then(|c| lonlat_to_screen(app, rect, *c)),
         ) {
-            let green = Color32::from_rgb(0x16, 0x9A, 0x5A);
-            let stroke = Stroke::new(2.0, green);
-            match shape {
-                "circle" => {
-                    p.circle_stroke(a, (b - a).length(), stroke);
-                }
-                "ellipse" => {
-                    let r = Rect::from_two_pos(a, b);
-                    let pts: Vec<Pos2> = (0..72)
-                        .map(|i| {
-                            let t = i as f32 / 72.0 * std::f32::consts::TAU;
-                            pos2(r.center().x + r.width() / 2.0 * t.cos(), r.center().y + r.height() / 2.0 * t.sin())
-                        })
-                        .collect();
-                    p.add(egui::Shape::closed_line(pts, stroke));
-                }
-                _ => {
-                    p.rect_stroke(Rect::from_two_pos(a, b), 0.0, stroke, egui::StrokeKind::Middle);
-                }
-            }
+            // Not a shape yet (a click without a drag), or partly off the map: the drag itself.
+            p.rect_stroke(Rect::from_two_pos(a, b), 0.0, stroke, egui::StrokeKind::Middle);
         }
         previewed = true;
     }

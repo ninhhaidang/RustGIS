@@ -946,7 +946,15 @@ compare it with what's beneath), **Masking** and **Rotation**.
 **Edit › Graphics** draws shapes in a graphics layer (**Home › Add › Add Data › Graphics Layer**, or
 one is made with the first graphic). Click once for a Point. Line, Curve and Polygon are clicked
 vertex by vertex (double-click to finish); Freehand, Lasso, Rectangle, Circle and Ellipse are
-dragged. **Edit › Graphics and Text › Text** places a text where you click, as a layout's text
+dragged. A dragged Rectangle, Circle or Ellipse is built in the map's own coordinates as the view
+faces, so the graphic is the outline the drag previews on any map: on a map in UTM or Swiss LV95,
+or turned, a rectangle keeps the view's square corners and a circle is round there; on a map that
+shows a pole, a graphic clicked or dragged past 85° stays there (a Web Mercator map, which can't
+show a pole, keeps it at 85° and says so). A shape reaching past what the map's projection shows is refused,
+not drawn folded. A Curve is smoothed in the
+same plane. A picture's rectangle stays a box of longitudes and latitudes, drawn upright. A
+`graphics.add` command builds them in Web Mercator facing north, as before, unless it gives
+`"frame": "view"`. **Edit › Graphics and Text › Text** places a text where you click, as a layout's text
 is placed: it says "Text", is selected, and opens in the **Format** pane (beside the other
 right-hand panes) with its text selected, so you type over
 it. Shift+Enter starts a new line, and Enter ends the text. Dynamic Text is a menu of values that

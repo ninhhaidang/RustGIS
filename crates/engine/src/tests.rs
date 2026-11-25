@@ -5,6 +5,8 @@ use crate::{Project, Session, sample};
 
 #[path = "tests/formats_out.rs"]
 mod formats_out;
+#[path = "tests/graphics_frames.rs"]
+mod graphics_frames;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "tests/held_databases.rs"]
 mod held_databases;
