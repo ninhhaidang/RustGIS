@@ -497,8 +497,19 @@ fn read_root(root: &Node, code: Option<u32>, text: &str) -> Result<(Crs, Option<
     // transformation of its EPSG code, as in PROJ and GDAL. The code is used only when the two
     // place points alike.
     let files_shift = towgs84(geogcs(root).and_then(|g| g.child("DATUM")));
-    if files_shift.is_none() || places_as(text, by_code) {
-        return Ok((by_code, projection_note(root, by_code).map(str::to_owned)));
+    // Without a shift, a code is read as itself, except Web Mercator: GDAL 1's EPSG:900913 without
+    // its `PROJ4` extension is Mercator on the WGS 84 ellipsoid, as PROJ reads it, not on Web
+    // Mercator's sphere.
+    if (files_shift.is_none() && by_code != Crs::WebMercator) || places_as(text, by_code) {
+        let note = projection_note(root, by_code).map(str::to_owned);
+        // A shift the file gives on a datum whose code has none (WGS 84's) is none for PROJ
+        // either, so the file's is set aside: said, as the file asks for it.
+        let set_aside = files_shift.is_some_and(|s| s.iter().any(|v| *v != 0.0)) && code_with_shift(by_code).is_none();
+        if set_aside {
+            let said = format!("the file's own shift to WGS 84 is set aside, as EPSG:{code} has none, as in PROJ");
+            return Ok((by_code, Some(note.map_or(said.clone(), |n| format!("{n}; {said}")))));
+        }
+        return Ok((by_code, note));
     }
     // A system that can't be read from its parameters is still read by its EPSG code, with the
     // code's shift in place of the file's, which is said.
@@ -4883,17 +4894,19 @@ pub(crate) mod tests {
         let nad27 = r#"GEOGCS["NAD27",DATUM["North_American_Datum_1927",SPHEROID["Clarke 1866",6378206.4,294.978698213898],TOWGS84[0,0,0,0,0,0,0]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4267"]]"#;
         let def = crs_from_wkt(nad27).unwrap().custom_def().unwrap();
         assert!(def.proj4.contains("+towgs84=0,0,0,0,0,0,0"), "{}", def.proj4);
-        // A WGS 84 code needs no shift: it is kept with a shift of zero, not with another.
+        // A WGS 84 code needs no shift: it is kept with a shift of zero, without a word.
         let utm = format!(r#"{},AUTHORITY["EPSG","32631"]]"#, ESRI_32631.strip_suffix(']').unwrap());
         let towgs84 = |t: &str| utm.replace("298.257223563]]", &format!("298.257223563],{t}]"));
-        assert_eq!(crs_from_wkt(&towgs84("TOWGS84[0,0,0]")), Ok(Crs::Epsg(32631)));
+        assert_eq!(read_wkt(&towgs84("TOWGS84[0,0,0]")), Ok((Crs::Epsg(32631), None)));
         // Nor with another: a shift on WGS 84 itself is none. PROJ 9.9.0 reads this text as a
         // bound CRS and transforms it to EPSG:4326 without the shift (conda-forge PROJ 9.9.0 with
         // pyproj 3.8.0 built on it, network off: `Transformer.from_crs(CRS.from_wkt(text),
         // "EPSG:4326", always_xy=True).transform(500000, 5000000)` is 3°E 45.1534772°N), as
         // EPSG:32631 does.
-        let shifted = crs_from_wkt(&towgs84("TOWGS84[1,2,3]"));
-        assert_eq!(shifted, Ok(Crs::Epsg(32631)));
+        // The file's shift is set aside, which is said.
+        let (crs, note) = read_wkt(&towgs84("TOWGS84[1,2,3]")).unwrap();
+        assert_eq!(crs, Crs::Epsg(32631));
+        assert_eq!(note.as_deref(), Some("the file's own shift to WGS 84 is set aside, as EPSG:32631 has none, as in PROJ"));
         let ll = Crs::Epsg(32631).transformer().unwrap().to_lonlat(Coord::new(500_000.0, 5_000_000.0)).unwrap();
         assert!((ll.x - 3.0).abs() < 1e-9 && (ll.y - 45.153_477_2).abs() < 1e-7, "{ll:?}");
     }
@@ -5124,8 +5137,8 @@ pub(crate) mod tests {
             assert!(metres_apart(ll, Coord::new(60.0, 45.0)) < 0.001, "{ll:?}");
         }
         // Another shift: GDAL's `PROJ4` extension (`+nadgrids=@null` on Web Mercator's sphere) is
-        // what PROJ 9.8.1 reads in place of the WKT, so it stays Web Mercator (pyproj 3.8.0 places
-        // it as EPSG:3857); without the extension, the shift is the file's own.
+        // what PROJ 9.9.0 reads in place of the WKT, so it stays Web Mercator (it places it as
+        // EPSG:3857); without the extension, the shift is the file's own.
         let shifted = google.replace("TOWGS84[0,0,0,0,0,0,0]", "TOWGS84[1,2,3,0,0,0,0]");
         assert_eq!(crs_from_wkt(&shifted), Ok(Crs::WebMercator));
         let shifted = without_proj4_extension(&shifted).unwrap();
@@ -5133,9 +5146,12 @@ pub(crate) mod tests {
         // Without the extension it is Mercator on the WGS 84 ellipsoid, as PROJ 9.9.0 reads it
         // (conda-forge PROJ 9.9.0 with pyproj 3.8.0 built on it, network off:
         // `Transformer.from_crs(CRS.from_wkt(text), "EPSG:4326", always_xy=True)` puts
-        // 6 679 169.4476 m E, 5 621 521.4862 m N at 60°E 45.1923152°N, with or without the
-        // shift), not Web Mercator's sphere (45°N).
-        for text in [without_proj4_extension(google).unwrap(), shifted] {
+        // 6 679 169.4476 m E, 5 621 521.4862 m N at 60°E 45.1923152°N, with a shift, a shift of
+        // zero or none), not Web Mercator's sphere (45°N).
+        let unshifted = without_proj4_extension(google).unwrap().replace(",TOWGS84[0,0,0,0,0,0,0]", "");
+        assert!(!unshifted.contains("TOWGS84") && !unshifted.contains("EXTENSION"), "{unshifted}");
+        for text in [without_proj4_extension(google).unwrap(), shifted, unshifted] {
+            assert_ne!(crs_from_wkt(&text), Ok(Crs::WebMercator), "{text}");
             let ll = crs_from_wkt(&text)
                 .unwrap()
                 .transformer()
