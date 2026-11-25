@@ -3460,12 +3460,20 @@ fn a_scripts_error_says_where_it_stopped() {
     assert_eq!(stop(&mut s, "layer.rename {\"name\": \"Bogotá\", }", "line 1: "), Some((1, Some(33))));
     // JSON cut short: its last character, never past the line.
     assert_eq!(stop(&mut s, "layer.rename {\"name\": ", "line 1: "), Some((1, Some(21))));
+    // The file goes when the test ends, whether or not an assert failed first (`stop` asserts too).
+    struct RemoveOnDrop(std::path::PathBuf);
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
     // An edit to a layer read in place.
-    let path = grid_fgb("script-stopped-at", 4);
-    let mut streamed = with_streamed(&path);
+    // `streamed` is declared after `path`, so it drops first and releases the file before it is removed
+    // (a file still open can't be removed on Windows): keep this order.
+    let path = RemoveOnDrop(grid_fgb("script-stopped-at", 4));
+    let mut streamed = with_streamed(&path.0);
     let script = "edit.enable {\"on\": true}\nedit.addFeature {\"layer\": \"Streamed\", \"geometry\": {\"type\": \"Point\", \"coordinates\": [1, 2]}}";
     assert_eq!(stop(&mut streamed, script, "line 2: "), Some((2, None)));
-    let _ = std::fs::remove_file(path);
     // Errors that name no line of the script.
     let long = "map.zoomFull\n".repeat(crate::cmd::workflows::MAX_SCRIPT_LINES + 1);
     let e = s.run("script.run", &json!({"script": long})).unwrap_err();
