@@ -4020,8 +4020,9 @@ pub fn marker_outline(marker: Marker, x: f32, y: f32, r: f32) -> Vec<(f32, f32)>
 }
 
 /// The point markers a tilted `view` of `map` stands upright ([`stands_up`]), bottom layer
-/// first and each layer's far to near, so nearer markers draw over farther ones. Those on the
-/// ground it shows, grown by `margin` of its size on every side (for a view that moves).
+/// first and each layer's far to near, so nearer markers draw over farther ones. Those with
+/// their point on the ground it shows, grown by `margin` of its size on every side (for a view
+/// that moves), or whose reach on the screen ([`marker_reach`]) meets that ground.
 pub fn upright_markers(map: &mut Map, view: &View, margin: f64) -> Vec<UprightMarker> {
     upright_markers_with(map, view, margin, &Env::default())
 }
@@ -4043,6 +4044,8 @@ fn upright_markers_with(map: &mut Map, view: &View, margin: f64, env: &Env) -> V
     let mut order: Vec<usize> = (0..map.layers.len()).rev().collect();
     order.sort_by_key(|i| map.layers.get(*i).map_or(0, |l| l.priority));
     let (cam, h) = (view.camera, view.height);
+    // The pitch's cosine as the camera clamps it: down the view a ground unit is `lean * k * k` px.
+    let lean = cam.pitch.clamp(0.0, rustgis_map::camera::MAX_PITCH).to_radians().cos();
     let ground = terrain::Ground::of(map, &view.camera);
     let mut out = Vec::new();
     for li in order {
@@ -4093,8 +4096,26 @@ fn upright_markers_with(map: &mut Map, view: &View, margin: f64, env: &Env) -> V
             let see = |c: Rgba| c.with_alpha((f32::from(c.a()) * opacity).round().clamp(0.0, 255.0) as u8);
             (symbol.fill, symbol.stroke) = (see(symbol.fill), see(symbol.stroke));
             let selected = layer.selection.contains(&row);
-            for c in pts.iter().filter(|c| c.is_finite() && cull.contains(**c)) {
+            // How far the marker reaches on the screen at its own size, in logical px.
+            let reach = f64::from(symbol.size.max(1.0) * marker_reach(symbol.marker).max(0.6) + symbol.stroke_width.max(0.0));
+            for c in pts.iter().filter(|c| c.is_finite()) {
                 let Some(k) = cam.depth_scale(*c, h) else { continue };
+                // Kept while any of the marker is near the view, not only the point it stands on:
+                // an image is centred on it and a large shape reaches round it. (`markers_tilted`
+                // then tests the screen.) Not past the view's reach, where `place` draws none and
+                // the reach below would cover the whole view.
+                if !cull.contains(*c) {
+                    if k * rustgis_map::camera::FAR < 1.0 {
+                        continue;
+                    }
+                    // Screen px to ground units, for the further way the box reaches: across the view
+                    // a ground unit is `k` px, down it `lean * k * k` (the perspective's slope). The
+                    // square holds both ways.
+                    let r = (reach * k.clamp(UPRIGHT_SCALE.0, UPRIGHT_SCALE.1) + 4.0) * cam.res / k.min(lean * k * k);
+                    if !Extent::new(c.x - r, c.y - r, c.x + r, c.y + r).intersects(&cull) {
+                        continue;
+                    }
+                }
                 // On terrain, standing on the ground (its height in map units there).
                 let height = ground.as_ref().and_then(|g| g.height(*c).map(|m| (m / g.per_unit(*c)).clamp(-1e9, 1e9))).unwrap_or(0.0);
                 here.push((k, UprightMarker { layer: name.clone(), at: *c, height, symbol, opacity, selected }));
@@ -4104,6 +4125,61 @@ fn upright_markers_with(map: &mut Map, view: &View, margin: f64, env: &Env) -> V
         out.extend(here.into_iter().map(|(_, m)| m));
     }
     out
+}
+
+/// The most pixels the canvas of a fogged picture marker's box may have ([`foggy_picture_marker`]):
+/// 512 × 512, a megabyte.
+const FOG_BOX_PIXELS: u64 = 512 * 512;
+
+/// Draws picture marker `p` as [`picture_marker`] does, `size` pixels (across, down) centred at
+/// `at`, its image faded `t` of the way into `fog` (`fog_t`) as a shape's colours are
+/// ([`UprightMarker::look`]): the image on a canvas of its own, over its box, which the fog
+/// tints where the image has pixels, keeping its transparency, then placed. A selection's frame
+/// goes straight on `pm`, not faded (a shape's isn't). False where it can't be drawn.
+#[expect(clippy::too_many_arguments, reason = "what picture_marker takes, and the fog")]
+fn foggy_picture_marker(
+    pm: &mut Canvas,
+    p: rustgis_map::Picture,
+    at: (f32, f32),
+    size: (f32, f32),
+    opacity: f32,
+    halo: Option<Rgba>,
+    fog_t: (Rgba, f32),
+    ppp: f32,
+) -> bool {
+    let ((x, y), (w, h), (fog, t)) = (at, size, fog_t);
+    // A width `picture_marker` refuses is drawn as the circle, with no canvas made for it first.
+    if !(w.is_finite() && h.is_finite() && w > 0.0 && w < 1e5) {
+        return false;
+    }
+    // Its box, a pixel round it, cut to the canvas.
+    let (x0, y0) = ((x - w / 2.0 - 1.0).floor().max(0.0), (y - h / 2.0 - 1.0).floor().max(0.0));
+    let (x1, y1) = ((x + w / 2.0 + 1.0).ceil().min(pm.width() as f32), (y + h / 2.0 + 1.0).ceil().min(pm.height() as f32));
+    let (bw, bh) = ((x1 - x0).max(0.0) as u32, (y1 - y0).max(0.0) as u32);
+    // Not past `FOG_BOX_PIXELS` by its own size (not by what of it is in the frame, or it would
+    // change as the view pans): a larger image far off (a symbol some thousand points wide) is
+    // drawn unfaded, as before, rather than take a canvas that size for every marker of a frame.
+    if (f64::from(w) + 2.0) * (f64::from(h) + 2.0) > FOG_BOX_PIXELS as f64 {
+        return picture_marker(pm, p, w, Transform::from_translate(x, y), opacity, halo, true, ppp);
+    }
+    // The frame is stroked once everything that can fail has not, so a fallback to the circle
+    // doesn't stroke it twice.
+    let frame = |pm: &mut Canvas| halo.is_none() || picture_marker(pm, p, w, Transform::from_translate(x, y), opacity, halo, false, ppp);
+    if bw == 0 || bh == 0 {
+        return frame(pm);
+    }
+    let Some(mut own) = pm.sub(bw, bh) else { return false };
+    if !picture_marker(&mut own, p, w, Transform::from_translate(x - x0, y - y0), opacity, None, true, ppp) || !frame(pm) {
+        return false;
+    }
+    // The fog over what the image drew, not over its box: each colour goes `t` of the way to it.
+    let mut fade = paint(fog.with_alpha(255), t);
+    fade.blend_mode = tiny_skia::BlendMode::SourceAtop;
+    if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, bw as f32, bh as f32) {
+        own.fill_rect(rect, &fade, Transform::identity(), None);
+    }
+    pm.place(own, Transform::from_translate(x0, y0), 1.0, rustgis_map::effects::Blend::Normal, None);
+    true
 }
 
 /// The point markers of a tilted view, stood up over its ground and extrusions.
@@ -4122,11 +4198,21 @@ fn markers_tilted(map: &mut Map, view: &View, pm: &mut Canvas, env: &Env) {
             continue;
         }
         let halo = m.selected.then_some(SELECTION);
-        // An image takes the layer's opacity here; a shape has it in its colours.
-        if let Marker::Picture(p) = s.marker
-            && picture_marker(pm, p, s.size.max(1.0) * ppp, Transform::from_translate(x, y), m.opacity, halo, true, ppp)
-        {
-            continue;
+        // An image takes the layer's opacity here; a shape has it in its colours. In the fog it
+        // fades into it as a shape's colours do.
+        if let Marker::Picture(p) = s.marker {
+            let width = s.size.max(1.0) * ppp;
+            let drawn = match picture::marker_aspect(p) {
+                // (A recording canvas keeps vectors, which this blend doesn't make: it draws unfaded.)
+                // (A fade of less than half a colour level changes no pixel: not worth the canvas.)
+                Some(aspect) if t * 255.0 >= 0.5 && !pm.is_recording() => {
+                    foggy_picture_marker(pm, p, (x, y), (width, width * aspect), m.opacity, halo, (fog, t as f32), ppp)
+                }
+                _ => picture_marker(pm, p, width, Transform::from_translate(x, y), m.opacity, halo, true, ppp),
+            };
+            if drawn {
+                continue;
+            }
         }
         // The list is grouped by layer; one scope per run avoids allocating for every point.
         if active_name.as_deref() != Some(m.layer.as_ref()) {
@@ -11801,6 +11887,159 @@ mod tests {
         }
         assert!(notices.iter().any(|n| n.starts_with("Outer") && n.contains("U+10FFFE")), "{notices:?}");
         assert_eq!(notices.len(), 3);
+    }
+
+    /// The settled tilted view's upright markers on a map of one point layer: the marker drawn by
+    /// `markers_tilted` alone, on transparent pixels. `at` is the point in Web Mercator metres.
+    fn upright_frame(view: &View, at: Coord, marker: Marker, size: f32, transparency: f32, selected: bool) -> (Pixmap, Map) {
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("pts", GeometryType::Point, vec![]);
+        d.push(Some(Geometry::Point(rustgis_geom::merc_to_lonlat(at))), vec![]);
+        let id = m.add_dataset(d);
+        let symbol = Symbol { fill: Rgba::rgb(255, 0, 0), stroke: Rgba::new(0, 0, 0, 0), stroke_width: 0.0, size, marker };
+        m.layer_mut(id).unwrap().renderer = rustgis_map::Renderer::Single(symbol);
+        m.layer_mut(id).unwrap().transparency = transparency;
+        m.layer_mut(id).unwrap().selection = if selected { vec![0] } else { vec![] };
+        let mut image = Pixmap::new(view.width as u32, view.height as u32).unwrap();
+        crate::canvas::with_canvas(&mut image, |canvas| markers_tilted(&mut m, view, canvas, &Env::default()));
+        (image, m)
+    }
+
+    /// A solid image of one colour (RGBA).
+    fn solid_png(w: u32, h: u32, [r, g, b, a]: [u8; 4]) -> rustgis_map::Picture {
+        use base64::Engine;
+        let mut pm = tiny_skia::Pixmap::new(w, h).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(r, g, b, a));
+        rustgis_map::Picture::new(&base64::engine::general_purpose::STANDARD.encode(pm.encode_png().unwrap()))
+    }
+
+    /// A point marker standing up in a tilted view is drawn while any of it is in the view, not
+    /// only while the point it stands on is: a tall image is centred on it and reaches far from
+    /// it, a large shape reaches round it.
+    #[test]
+    fn an_upright_marker_is_drawn_while_any_of_it_is_in_the_tilted_view() {
+        let camera = Camera { center: Coord::new(0.0, 0.0), res: 1000.0, bearing: 0.0, pitch: 60.0 };
+        let view = View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        // `v` px down the view from its centre, at the centre's scale: 175 is 18 px past the 5 %
+        // margin round the ground the view shows, and about 66 px under its bottom edge.
+        let rows = |marker, size, v: f64| {
+            let (image, _) = upright_frame(&view, Coord::new(0.0, -v * 1000.0), marker, size, 0.0, false);
+            let red = |p: tiny_skia::PremultipliedColorU8| p.red() > 200 && p.green() < 60 && p.blue() < 60 && p.alpha() > 200;
+            (0..200).filter(|y| (0..200).any(|x| image.pixel(x, *y).is_some_and(red))).count()
+        };
+        // An image ten times as tall as wide, 10 pt wide: some 190 px tall there, centred on its point.
+        let tall = Marker::Picture(solid_png(4, 40, [255, 0, 0, 255]));
+        assert!(rows(tall, 10.0, 100.0) > 20, "its point in the margin: the image shows");
+        assert!(rows(tall, 10.0, 175.0) > 20, "its point past the margin and its body in the view: it shows");
+        let square = Marker::Picture(solid_png(4, 4, [255, 0, 0, 255]));
+        assert_eq!(rows(square, 10.0, 175.0), 0, "all of it under the edge: nothing");
+        assert!(rows(Marker::Circle, 100.0, 175.0) > 20, "a large shape whose centre is past the margin and whose edge is in the view");
+        assert_eq!(rows(Marker::Circle, 10.0, 175.0), 0, "a small one all under the edge: nothing");
+    }
+
+    /// A marker past the view's reach (the sky band, where `place` draws none) isn't kept for its
+    /// size, however large: the GPU path draws every marker the list holds.
+    #[test]
+    fn an_upright_marker_past_the_views_reach_is_not_kept_for_its_size() {
+        let camera = Camera { center: Coord::new(0.0, 0.0), res: 1000.0, bearing: 0.0, pitch: 82.0 };
+        let view = View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        for marker in [Marker::Picture(solid_png(4, 40, [255, 0, 0, 255])), Marker::Circle] {
+            // 15,000 px up the view from its centre: past its reach, 16 times the camera's distance.
+            let (_, mut m) = upright_frame(&view, Coord::new(0.0, 15_000.0 * 1000.0), marker, 2000.0, 0.0, false);
+            assert!(upright_markers(&mut m, &view, 0.0).is_empty(), "{marker:?}");
+        }
+    }
+
+    /// At 60, 75 and 82 degrees an upright marker is drawn wherever its box meets the view, down
+    /// the whole view (the ground a screen pixel covers grows up the view with the pitch).
+    #[test]
+    fn an_upright_marker_is_kept_wherever_its_box_meets_the_view_at_steep_pitches() {
+        // A tall image (10 pt wide, ten times as tall) and a circle (60 pt across), each with the
+        // half its box reaches from its point, in px at those sizes.
+        let markers = [(Marker::Picture(solid_png(4, 40, [255, 0, 0, 255])), 10.0, 50.0), (Marker::Circle, 60.0, 30.0)];
+        for (marker, size, half) in markers {
+            for pitch in [60.0, 75.0, 82.0] {
+                let camera = Camera { center: Coord::new(0.0, 0.0), res: 1000.0, bearing: 0.0, pitch };
+                let view = View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+                // From far up the view (past the centre, where a ground unit down the view is
+                // `cos(pitch) * k * k` pixels) to near its bottom.
+                let mut v = -2500.0;
+                while v < camera.near_v(0.0, view.height) - 10.0 {
+                    let at = Coord::new(0.0, -v * 1000.0);
+                    v += 20.0;
+                    let Some(k) = camera.depth_scale(at, view.height).filter(|k| k * rustgis_map::camera::FAR >= 1.0) else { continue };
+                    let k = k.clamp(UPRIGHT_SCALE.0, UPRIGHT_SCALE.1);
+                    let (_, y) = camera.project_raised(0.0, v - 20.0, 0.0, view.width, view.height).unwrap();
+                    let meets = y - half * k < view.height - 2.0 && y + half * k > 2.0;
+                    let (image, _) = upright_frame(&view, at, marker, size, 0.0, false);
+                    let drawn = image.pixels().iter().any(|p| p.alpha() > 100);
+                    assert!(!meets || drawn, "pitch {pitch}, {} px down the view, its point at y {y}: its box meets the view", v - 20.0);
+                }
+            }
+        }
+    }
+
+    /// A picture marker far away fades into the fog as a shape of the same colour does, and keeps
+    /// its transparency and its layer's.
+    #[test]
+    fn a_far_upright_picture_fades_into_the_fog_as_a_shape_does() {
+        let camera = Camera { center: Coord::new(0.0, 0.0), res: 1000.0, bearing: 0.0, pitch: 80.0 };
+        let view = View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        let red = Rgba::rgb(255, 0, 0);
+        // 3,350 px up the view from its centre, at the centre's scale: halfway into the fog.
+        let far = |u: f64| Coord::new(u * 1000.0, 3350.0 * 1000.0);
+        let near = Coord::new(0.0, 0.0);
+        // The pixel at the marker's centre, and the marker's place and fog.
+        let centre = |marker, at: Coord, transparency| {
+            let (image, mut m) = upright_frame(&view, at, marker, 40.0, transparency, false);
+            let up = upright_markers(&mut m, &view, 0.0);
+            let (x, y, _, t) = up[0].place(&view.camera, view.width, view.height).unwrap();
+            (image.pixel(x as u32, y as u32).unwrap(), t, tilt_sky(&m).1)
+        };
+        let close = |a: u8, b: u8| a.abs_diff(b) <= 3;
+        for transparency in [0.0, 50.0] {
+            let (shape, t, fog) = centre(Marker::Circle, far(360.0), transparency);
+            assert!((0.3..0.9).contains(&t), "well into the fog: {t}");
+            let (image, _, _) = centre(Marker::Picture(solid_png(20, 20, [255, 0, 0, 255])), far(-360.0), transparency);
+            let faded = red.lerp(fog, t);
+            assert!(
+                close(shape.red(), image.red()) && close(shape.green(), image.green()) && close(shape.blue(), image.blue()),
+                "{shape:?} {image:?} {faded:?}"
+            );
+            assert!(image.alpha().abs_diff(shape.alpha()) <= 2 && image.alpha() > 0, "{shape:?} {image:?}");
+        }
+        // Not in the fog: as it is.
+        let (image, t, _) = centre(Marker::Picture(solid_png(20, 20, [255, 0, 0, 255])), near, 0.0);
+        assert!(t == 0.0 && (image.red(), image.green(), image.blue(), image.alpha()) == (255, 0, 0, 255), "{image:?}");
+        // A transparent half stays so: the fog tints the image, not its box.
+        let half = {
+            let mut pm = tiny_skia::Pixmap::new(20, 20).unwrap();
+            pm.fill_rect(tiny_skia::Rect::from_xywh(10.0, 0.0, 10.0, 20.0).unwrap(), &paint(red, 1.0), Transform::identity(), None);
+            use base64::Engine;
+            rustgis_map::Picture::new(&base64::engine::general_purpose::STANDARD.encode(pm.encode_png().unwrap()))
+        };
+        let (image, mut m) = upright_frame(&view, far(0.0), Marker::Picture(half), 40.0, 0.0, false);
+        let (x, y, ..) = upright_markers(&mut m, &view, 0.0)[0].place(&view.camera, view.width, view.height).unwrap();
+        let (left, right) = (image.pixel(x as u32 - 3, y as u32).unwrap(), image.pixel(x as u32 + 3, y as u32).unwrap());
+        assert_eq!(left.alpha(), 0, "its transparent half: {left:?}");
+        assert!(right.alpha() > 200, "its red half: {right:?}");
+        // A box past `FOG_BOX_PIXELS` is drawn as it is, unfaded, in a frame that large (the
+        // image, 600 px across, takes the whole of it).
+        let wide = View { width: 700.0, height: 700.0, ..view };
+        // (The taller view is farther from its ground: halfway into the fog is 11,700 px up.)
+        let halfway = Coord::new(0.0, 11_700.0 * 1000.0);
+        let (image, mut m) = upright_frame(&wide, halfway, Marker::Picture(solid_png(20, 20, [255, 0, 0, 255])), 2800.0, 0.0, false);
+        let (x, y, _, t) = upright_markers(&mut m, &wide, 0.0)[0].place(&wide.camera, wide.width, wide.height).unwrap();
+        assert!(t > 0.3, "in the fog: {t}");
+        let p = image.pixel(x as u32, y as u32).unwrap();
+        assert_eq!((p.red(), p.green(), p.blue()), (255, 0, 0), "too large to fade: as it is: {p:?}");
+        // Selected, its frame keeps the selection's colour: the fog tints the image alone.
+        let (image, mut m) = upright_frame(&view, far(0.0), Marker::Picture(solid_png(20, 20, [255, 0, 0, 255])), 40.0, 0.0, true);
+        let (x, y, ..) = upright_markers(&mut m, &view, 0.0)[0].place(&view.camera, view.width, view.height).unwrap();
+        let frame =
+            (0..200).filter_map(|px| image.pixel(px, y as u32)).filter(|p| p.blue() > 150 && p.green() > 150 && p.red() < 100).count();
+        assert!(frame >= 1, "the frame beside the image, at {x}: {frame}");
     }
 
     /// Ground-image exports own label omissions and leave the caller's notice state intact.
