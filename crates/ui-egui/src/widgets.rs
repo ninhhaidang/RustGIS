@@ -60,6 +60,66 @@ impl<T: Copy + Default + PartialEq + Send + Sync + 'static> Dragged<T> {
     }
 }
 
+/// What a row that can be dragged to another place (`reorder`) senses (#2958): clicks, and drags
+/// unless a finger is on the screen. While a finger is down the list's drag-to-scroll must win a
+/// swipe, so the row senses clicks only and `reorder_drag` arms its drag by a long press. The
+/// mouse of a touch-screen laptop keeps dragging rows.
+pub(crate) fn reorder_sense(ui: &Ui, reorder: bool) -> Sense {
+    if reorder && !ui.input(|i| i.any_touches()) { Sense::click_and_drag() } else { Sense::click() }
+}
+
+fn touched_row() -> egui::Id {
+    egui::Id::NULL.with("reorder_touched_row")
+}
+
+/// After the scroll area `area` of a list of reorderable rows: gives it the drag of a finger that
+/// came down on one of them, so a swipe scrolls the list (#2958). Every such row must sit inside
+/// a list that calls this, or the next list that does takes its drag.
+pub(crate) fn yield_touch_drag(ctx: &egui::Context, area: egui::Id) {
+    if ctx.data(|d| d.get_temp::<bool>(touched_row())) == Some(true) {
+        ctx.data_mut(|d| d.remove::<bool>(touched_row()));
+        // The id egui 0.37 gives the drag of a scroll area's content (`scroll_area.rs`); the
+        // swipe tests in `panes.rs` fail if it changes.
+        ctx.set_dragged_id(area.with("area"));
+    }
+}
+
+/// Whether the drag of the row `resp` starts this frame (#2958): with the mouse, when it starts a
+/// drag; with a finger, when it moves after a long press (egui reads the long press as a click of
+/// the context menu and lets go of the row's drag, so the long press arms the row for that press
+/// only, and the menu closes as the item is taken). Without `reorder` it never does.
+pub(crate) fn reorder_drag(ui: &Ui, resp: &Response, reorder: bool) -> bool {
+    if !reorder {
+        return false;
+    }
+    if resp.drag_started_by(egui::PointerButton::Primary) {
+        return true;
+    }
+    // A first contact is read with the senses of the frame before, when no finger was down, so
+    // the row owns its drag: noted for the list to take it (`yield_touch_drag`).
+    if resp.is_pointer_button_down_on() && ui.input(|i| i.any_touches() && i.pointer.any_pressed()) {
+        ui.ctx().data_mut(|d| d.insert_temp(touched_row(), true));
+    }
+    let armed = egui::Id::NULL.with("reorder_long_press");
+    let ctx = ui.ctx();
+    // The row and when its press began: a later press never matches, so an arm left behind by a
+    // row that was not drawn when the finger lifted is dead.
+    let press = (resp.id, ui.input(|i| i.pointer.press_start_time()));
+    if resp.long_touched() {
+        ctx.data_mut(|d| d.insert_temp(armed, press));
+        return false;
+    }
+    if ctx.data(|d| d.get_temp::<(egui::Id, Option<f64>)>(armed)) != Some(press) {
+        return false;
+    }
+    let moved = ui.input(|i| i.pointer.press_origin().zip(i.pointer.latest_pos()).is_some_and(|(a, b)| (b - a).length() > 8.0));
+    if moved {
+        ctx.data_mut(|d| d.remove::<(egui::Id, Option<f64>)>(armed));
+        egui::Popup::close_all(ctx);
+    }
+    moved
+}
+
 /// Makes the command the caller runs next, for a change of `r`, part of the undo step of the
 /// pointer press making it: a number dragged, or a colour picked in its picker, is one step to
 /// undo however many changes it makes (#1194). A number typed into `r` is a step of its own, even
@@ -991,6 +1051,50 @@ pub fn picked_colour(hsva: egui::ecolor::Hsva, before: egui::ecolor::Hsva, old: 
 #[cfg(test)]
 mod tests {
     use egui_kittest::kittest::Queryable;
+
+    /// #2958: a long press whose row is gone when the finger lifts arms no later press, even when
+    /// the row comes back under a finger already down.
+    #[test]
+    fn a_long_press_arms_only_its_own_press() {
+        use egui::{Event, Modifiers, PointerButton, TouchDeviceId, TouchId, TouchPhase};
+        // Whether the row is drawn, and how many drags it started.
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(200.0, 200.0)).build_ui_state(
+            |ui, (shown, drags): &mut (bool, usize)| {
+                if *shown {
+                    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 100.0));
+                    let resp = ui.interact(rect, egui::Id::unique("row"), super::reorder_sense(ui, true));
+                    *drags += usize::from(super::reorder_drag(ui, &resp, true));
+                }
+            },
+            (true, 0),
+        );
+        let touch = |phase, pos| Event::Touch { device_id: TouchDeviceId(1), id: TouchId(1), phase, pos, force: None };
+        let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        let at = egui::pos2(50.0, 50.0);
+        let press = |h: &mut egui_kittest::Harness<'_, (bool, usize)>| {
+            h.event(Event::PointerMoved(at));
+            h.event(touch(TouchPhase::Start, at));
+            h.event(button(at, true));
+            h.step();
+        };
+        h.step();
+        press(&mut h);
+        for _ in 0..6 {
+            h.step();
+        }
+        h.state_mut().0 = false;
+        h.event(touch(TouchPhase::End, at));
+        h.event(button(at, false));
+        h.event(Event::PointerGone);
+        h.step();
+        press(&mut h);
+        h.state_mut().0 = true;
+        let moved = at + egui::vec2(0.0, 40.0);
+        h.event(touch(TouchPhase::Move, moved));
+        h.event(Event::PointerMoved(moved));
+        h.step();
+        assert_eq!(h.state().1, 0);
+    }
 
     /// Opens a colour button's picker and says whether it offers additive blending.
     fn offers_additive(button: fn(&mut egui::Ui, &mut egui::Color32)) -> bool {

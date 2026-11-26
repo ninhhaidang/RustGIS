@@ -489,7 +489,9 @@ at least one map. Drag a map or layout tab to another place to change the order 
 the layouts (maps stay before layouts); near the ends of a strip whose tabs don't all fit, the
 tabs scroll. In Browser, drag a map or layout up or down its list the same way; near the
 Browser's top or bottom, the list scrolls, the row you drag is filled, and a line across the list
-shows where it will land. The map or layout in view stays in view, each move is
+shows where it will land. On a touch screen a swipe scrolls the tab strips and the Browser's
+lists; to drag a tab, a row or a layer, hold it until its menu opens, then move your finger (the
+menu closes and the item follows). The map or layout in view stays in view, each move is
 one undo step, and the order is saved with the project. From scripts: `map.move` and
 `layout.move`, with the name and the new place (`"to"`: 0 for the first).
 

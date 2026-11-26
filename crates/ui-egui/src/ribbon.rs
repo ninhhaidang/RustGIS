@@ -229,7 +229,7 @@ pub(crate) fn arrow_scroll_area<R>(
     area: egui::ScrollArea,
     tips: [&str; 2],
     add: impl FnOnce(&mut Ui) -> R,
-) {
+) -> egui::Id {
     // egui sets a scroll area's offset only as it is built, so a click moves it on the next frame.
     // It is asked for once, on a frame egui keeps: a discarded one doesn't move the area, and asking
     // on every frame would pin the area there against the wheel.
@@ -250,6 +250,7 @@ pub(crate) fn arrow_scroll_area<R>(
         ui.data_mut(|d| d.insert_temp(key, x));
         ui.ctx().request_repaint();
     }
+    scroll.id
 }
 
 /// The collapse button at the right of the tab strip.
