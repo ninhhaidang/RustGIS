@@ -100,8 +100,9 @@ The same World Atlas data, styled the same way, in each app.
   Geodatabase reader; compressed tables, raster fields and sparse row layouts need GDAL.
   DWG, JPEG 2000 and NetCDF also need GDAL's programs. QGIS connects to
   PostGIS, SpatiaLite, Oracle and SQL Server and edits in them directly; RustGIS reads
-  PostGIS, MySQL/MariaDB and SQL Server/Azure SQL tables live (read only) and DuckDB databases
-  through DuckDB, on the desktop.
+  PostGIS, MySQL/MariaDB and SQL Server/Azure SQL tables live and DuckDB databases through
+  DuckDB, on the desktop. There it also edits PostGIS tables (see Editing); MySQL/MariaDB
+  and SQL Server/Azure SQL tables are read only.
 - **Coordinate systems.** QGIS uses full PROJ: every CRS, datum transformations and grids, and
   layers kept in their own CRS. RustGIS holds vector coordinates as WGS 84 longitude/latitude
   and reprojects rasters and the map by EPSG code, which covers mapping and most analysis but
@@ -109,8 +110,10 @@ The same World Atlas data, styled the same way, in each app.
 - **Editing.** QGIS has a complete digitizing toolkit: reshape, offset curves,
   advanced digitizing with constraints, topological editing and geometry checkers. RustGIS
   creates, moves, rotates, scales, splits and merges features with snapping and templates,
-  and moves, inserts and deletes vertices. Edits stay in the project until exported;
-  RustGIS does not write them back to live databases.
+  and moves, inserts and deletes vertices. On the desktop, a GeoPackage or PostGIS layer
+  loaded for editing writes its edits back to its source table with Edit › Save to
+  GeoPackage or Save to PostGIS, with row-conflict checks; saving the project doesn't.
+  Edits not yet written back, and edits to any other layer, stay in the project until exported.
 - **Processing.** RustGIS has built-in spatial joins, geodesic buffers, A5 grids, IDW,
   ordinary kriging and shortest paths on line networks, plus the optional
   1,000+ GeoLibre/Whitebox suite. QGIS combines its native algorithms with GDAL, GRASS
@@ -149,7 +152,7 @@ The same World Atlas data, styled the same way, in each app.
 | **Formats** | A focused set read natively; more through GDAL when installed | Whatever its GDAL/OGR build supports (read/write varies by driver) |
 | **Coordinate systems** | Vectors in WGS 84; rasters and the map by EPSG code | Full PROJ |
 | **Geoprocessing** | Built-in tools plus optional 1,000+ GeoLibre/Whitebox suite | 1,000+ (native, GDAL, GRASS, SAGA) |
-| **Editing** | Create, move, rotate, scale, split, merge, vertex move/insert/delete, snapping; export edits | Complete digitizing and topology tools |
+| **Editing** | Create, move, rotate, scale, split, merge, vertex move/insert/delete, snapping; save back to GeoPackage and PostGIS (desktop) or export edits | Complete digitizing and topology tools |
 | **Scripting** | Engine commands: CLI, Python package, notebooks, Script pane, MCP; UI-only commands stay in the app | PyQGIS, `qgis_process`, Python console |
 | **Plugins** | Sandboxed WebAssembly; unsandboxed desktop/CLI process and Python plugins; registry | Python, thousands in the official repository |
 | **AI** | Built-in assistant using engine commands and project undo; MCP server | Through plugins |
