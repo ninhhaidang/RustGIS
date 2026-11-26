@@ -308,9 +308,10 @@ pub struct Layer {
     /// The active Mercator display level; full projection stays lazy for interaction.
     #[serde(skip)]
     display: Option<std::sync::Arc<lod::Display>>,
-    /// Recent unsuccessful display attempts, keyed by their geometry, level and budget inputs.
+    /// Recent unsuccessful display attempts, keyed by their geometry, level and budget inputs,
+    /// with why each made no level.
     #[serde(skip)]
-    display_rejected: Vec<lod::Rejected>,
+    display_rejected: Vec<(lod::Rejected, lod::Refused)>,
     /// Recent display levels, shared by snapshots and bounded together with `thinned`.
     #[serde(skip)]
     display_levels: Vec<std::sync::Arc<lod::Display>>,
@@ -1337,15 +1338,18 @@ impl Layer {
             return true;
         }
         let attempt = lod::Rejected { revision: self.geometry_rev, level, rows: self.dataset.features.len(), budget, whole_layer_eligible };
-        if let Some(i) = self.display_rejected.iter().position(|a| *a == attempt) {
+        if let Some(i) = self.display_rejected.iter().position(|(a, _)| *a == attempt) {
             let hit = self.display_rejected.remove(i);
             self.display_rejected.insert(0, hit);
             return false;
         }
-        let Some(display) = lod::display(&self.dataset.features, rows, self.geometry_rev, level, budget, whole_layer_eligible) else {
-            self.display_rejected.insert(0, attempt);
-            self.display_rejected.truncate(lod::LEVELS_KEPT);
-            return false;
+        let display = match lod::display(&self.dataset.features, rows, self.geometry_rev, level, budget, whole_layer_eligible) {
+            Ok(display) => display,
+            Err(why) => {
+                self.display_rejected.insert(0, (attempt, why));
+                self.display_rejected.truncate(lod::LEVELS_KEPT);
+                return false;
+            }
         };
         let display = std::sync::Arc::new(display);
         self.display_levels.insert(0, display.clone());
@@ -1436,9 +1440,23 @@ impl Layer {
             }
             None => {
                 let t = lod::tolerance(level);
+                let lonlat_rows = matches!(flat, projection::Flat::Mercator) && self.dataset.coord_crs() == Crs::LonLat;
+                // A display attempt that built this level from the same rows found it drops too
+                // few vertices ([`lod::Refused::SavesTooLittle`]): the copy below is built the same
+                // way, its saving counted against the same vertices (Web Mercator moves none), so
+                // it would be dropped too.
+                let saves_too_little = lonlat_rows
+                    && self.display_rejected.iter().any(|(a, why)| {
+                        *why == lod::Refused::SavesTooLittle(lod::Rows::LonLat)
+                            && a.revision == self.geometry_rev
+                            && a.level == level
+                            && a.rows == self.dataset.features.len()
+                    });
                 // Projected and thinned at once from longitude/latitude rows; from any other
                 // system, the projected geometry is thinned.
-                let copy = if matches!(flat, projection::Flat::Mercator) && self.dataset.coord_crs() == Crs::LonLat {
+                let copy = if saves_too_little {
+                    None
+                } else if lonlat_rows {
                     lod::project_budgeted(&self.dataset.features, lod::Rows::LonLat, level, budget)
                 } else {
                     lod::thin_budgeted(&self.projected, t, budget)
@@ -4491,7 +4509,7 @@ mod tests {
         l.clear_cache();
         assert!(l.display_cache().is_none());
         assert_eq!(l.view_cache_bytes(), rustgis_data::source::memory::features_bytes(&original));
-        assert!(lod::display(&original, lod::Rows::LonLat, 0, 12, 1, false).is_none());
+        assert!(lod::display(&original, lod::Rows::LonLat, 0, 12, 1, false).is_err());
         assert!(!long_line(100).prepare_display(&flat, 12_000.0, false));
         assert_eq!(l.dataset.features, original);
     }
@@ -4668,7 +4686,7 @@ mod tests {
         let copy = lod::project_budgeted(&l.dataset.features, lod::Rows::LonLat, 20, usize::MAX).unwrap();
         let budget = lod::cache_bytes(&copy);
         assert_eq!(lod::project_budgeted(&l.dataset.features, lod::Rows::LonLat, 20, budget).unwrap(), copy);
-        assert!(lod::display(&l.dataset.features, lod::Rows::LonLat, 0, 20, budget, true).is_none());
+        assert!(lod::display(&l.dataset.features, lod::Rows::LonLat, 0, 20, budget, true).is_err());
     }
 
     /// Tilted bands and zoom reversals reuse bounded display levels shared by snapshots.
@@ -4928,7 +4946,12 @@ mod tests {
         let mut l = long_line(lod::THIN_ABOVE + 1000);
         assert!(!l.prepare_display(&flat, 0.001, false));
         let built = lod::DISPLAY_BUILDS.get();
-        l.thinned_in(&flat, "mercator", 0.001);
+        let levels = lod::LEVEL_BUILDS.get();
+        let drawn = l.thinned_in(&flat, "mercator", 0.001).to_vec();
+        // The level the display attempt found saves too little isn't built again: the full
+        // projection is drawn, as when it was.
+        assert_eq!(lod::LEVEL_BUILDS.get(), levels, "the refused level is built once");
+        assert_eq!(drawn, l.projected_cache());
         assert!(!l.prepare_display(&flat, 0.001, false));
         assert_eq!(lod::DISPLAY_BUILDS.get(), built, "thinned_in builds geometry only");
         l.thinned_in(&flat, "mercator", 0.001);
@@ -4937,6 +4960,10 @@ mod tests {
         l.touch_geometry();
         assert!(!l.prepare_display(&flat, 0.001, false));
         assert_eq!(lod::DISPLAY_BUILDS.get(), built + 1, "a changed geometry must retry");
+        // A level no display attempt refused is built by thinned_in itself.
+        let levels = lod::LEVEL_BUILDS.get();
+        l.thinned_in(&flat, "mercator", 0.0005);
+        assert_eq!(lod::LEVEL_BUILDS.get(), levels + 1);
     }
 
     #[test]

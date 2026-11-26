@@ -57,10 +57,23 @@ pub(crate) struct Rejected {
     pub whole_layer_eligible: bool,
 }
 
+/// Why [`display`] made no level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Refused {
+    /// Too few vertices to thin, or past the budget.
+    Unfit,
+    /// Built from rows on the map as `Rows` has them, and found to drop fewer than
+    /// [`MIN_SAVING`] of the vertices: a copy built the same way, by [`project_budgeted`], would
+    /// too.
+    SavesTooLittle(Rows),
+}
+
 #[cfg(test)]
 thread_local! {
     /// Counts display construction on this test thread, including candidates later rejected.
     pub(crate) static DISPLAY_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Counts the levels [`project_budgeted`] builds on this test thread, kept or not.
+    pub(crate) static LEVEL_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// One bounded display level, independent of the full geometry used for interaction.
@@ -111,20 +124,20 @@ pub(crate) fn display(
     level: i32,
     budget: usize,
     whole_layer_eligible: bool,
-) -> Option<Display> {
+) -> Result<Display, Refused> {
     #[cfg(test)]
     DISPLAY_BUILDS.set(DISPLAY_BUILDS.get() + 1);
     let eligible: usize = features.iter().filter_map(|f| f.geometry.as_ref()).map(thinnable).sum();
     if !whole_layer_eligible && eligible <= THIN_ABOVE {
-        return None;
+        return Err(Refused::Unfit);
     }
-    let extent_bytes = features.len().checked_mul(std::mem::size_of::<rustgis_geom::Extent>())?;
-    let budget = budget.checked_sub(extent_bytes)?;
-    let geometries = project_budgeted(features, rows, level, budget)?;
+    let extent_bytes = features.len().checked_mul(std::mem::size_of::<rustgis_geom::Extent>()).ok_or(Refused::Unfit)?;
+    let budget = budget.checked_sub(extent_bytes).ok_or(Refused::Unfit)?;
+    let geometries = project_budgeted(features, rows, level, budget).ok_or(Refused::Unfit)?;
     let all: usize = features.iter().filter_map(|f| f.geometry.as_ref()).map(vertices).sum();
     let kept: usize = geometries.iter().flatten().map(vertices).sum();
     if !whole_layer_eligible && kept as f64 > all as f64 * (1.0 - MIN_SAVING) {
-        return None;
+        return Err(Refused::SavesTooLittle(rows));
     }
     // Mercator is monotone in both axes; two opposite corners bound every source vertex. Rows in
     // map coordinates already have their extents there.
@@ -142,8 +155,8 @@ pub(crate) fn display(
             }
         })
         .collect();
-    let bytes = cache_bytes(&geometries).checked_add(extent_bytes)?;
-    Some(Display { revision, level, whole_layer_eligible, geometries, extents, bytes })
+    let bytes = cache_bytes(&geometries).checked_add(extent_bytes).ok_or(Refused::Unfit)?;
+    Ok(Display { revision, level, whole_layer_eligible, geometries, extents, bytes })
 }
 
 /// Builds only display geometry within `budget`: Mercator from rows in longitude/latitude, the
@@ -151,6 +164,8 @@ pub(crate) fn display(
 /// their own eligibility and saving rules; exact consumers already have extents and need no second
 /// extent table.
 pub(crate) fn project_budgeted(features: &[rustgis_data::Feature], rows: Rows, level: i32, budget: usize) -> Option<Vec<Option<Geometry>>> {
+    #[cfg(test)]
+    LEVEL_BUILDS.set(LEVEL_BUILDS.get() + 1);
     let tol = tolerance(level);
     map_budgeted(
         features,
