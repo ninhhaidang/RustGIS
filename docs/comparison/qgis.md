@@ -104,9 +104,12 @@ The same World Atlas data, styled the same way, in each app.
   DuckDB, on the desktop. There it also edits PostGIS tables (see Editing); MySQL/MariaDB
   and SQL Server/Azure SQL tables are read only.
 - **Coordinate systems.** QGIS uses full PROJ: every CRS, datum transformations and grids, and
-  layers kept in their own CRS. RustGIS holds vector coordinates as WGS 84 longitude/latitude
-  and reprojects rasters and the map by EPSG code, which covers mapping and most analysis but
-  not survey-grade work in a local datum.
+  layers kept in their own CRS. RustGIS uses terrio-crs, a pure-Rust port of PROJ with PROJ
+  9.9.0's EPSG catalog, on the desktop and in the browser. Feature layers and rasters stay in
+  their own coordinate system and the map reprojects them as it draws; most tools work in a
+  projected layer's own system. Datum grids are used when present and downloaded on request
+  (Settings › Datum Grids). Heights aren't converted yet: layers have no vertical or compound
+  systems.
 - **Editing.** QGIS has a complete digitizing toolkit: reshape, offset curves,
   advanced digitizing with constraints, topological editing and geometry checkers. RustGIS
   creates, moves, rotates, scales, splits and merges features with snapping and templates,
@@ -150,7 +153,7 @@ The same World Atlas data, styled the same way, in each app.
 | **Platforms** | Windows, macOS, Linux, and the browser (WebAssembly) | Windows, macOS, Linux |
 | **Interface** | Ribbon with Command Search | Toolbars, menus and docked panels |
 | **Formats** | A focused set read natively; more through GDAL when installed | Whatever its GDAL/OGR build supports (read/write varies by driver) |
-| **Coordinate systems** | Vectors in WGS 84; rasters and the map by EPSG code | Full PROJ |
+| **Coordinate systems** | PROJ's EPSG catalog through terrio-crs; layers in their own system; heights not converted | Full PROJ |
 | **Geoprocessing** | Built-in tools plus optional 1,000+ GeoLibre/Whitebox suite | 1,000+ (native, GDAL, GRASS, SAGA) |
 | **Editing** | Create, move, rotate, scale, split, merge, vertex move/insert/delete, snapping; save back to GeoPackage and PostGIS (desktop) or export edits | Complete digitizing and topology tools |
 | **Scripting** | Engine commands: CLI, Python package, notebooks, Script pane, MCP; UI-only commands stay in the app | PyQGIS, `qgis_process`, Python console |
