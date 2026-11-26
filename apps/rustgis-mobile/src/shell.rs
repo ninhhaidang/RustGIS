@@ -3,6 +3,7 @@
 //! stands for the web app. Each system's module makes its [`Phone`] and calls [`run`].
 
 use eframe::egui;
+use rustgis_engine::data::secrets::SecretStore;
 use rustgis_engine::platform::{Event, Platform};
 use rustgis_ui_egui::{FolderStore, Inbox, RustGisApp, i18n, tl};
 use std::cell::RefCell;
@@ -191,6 +192,10 @@ impl<P: Phone> App<P> {
     /// said in the window.
     fn take_phone_events(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         for text in self.refusals.borrow_mut().drain(..) {
+            self.app.session.notify(text, true);
+        }
+        let notices = std::mem::take(&mut *settings_notices());
+        for text in notices {
             self.app.session.notify(text, true);
         }
         let Some(phone) = self.phone.clone() else { return };
@@ -691,6 +696,10 @@ impl<P: Phone> eframe::App for App<P> {
                 phone.takes_back(back);
             }
         }
+        // A settings file that couldn't be read or saved in this frame is said in the next one.
+        if !settings_notices().is_empty() {
+            ctx.request_repaint();
+        }
         // A second picker asked for while one was up was refused: what the front end kept for
         // the first is put back, so its file is read as it was asked for.
         if self.refused_picker.replace(false)
@@ -842,13 +851,13 @@ pub fn pushed(dir: Option<PathBuf>, app: &mut RustGisApp) -> Vec<PathBuf> {
 }
 
 /// Makes the front end with the sample project and recovery in the phone's private storage.
-pub fn front_end(root: Option<&Path>) -> RustGisApp {
+pub fn front_end(root: Option<&Path>, secrets: Option<Arc<dyn SecretStore>>) -> RustGisApp {
     // Datum grids: the app's own folder, where downloaded ones are kept (#2032 A4);
     // a phone has no PROJ install to share.
     if root.is_some() {
         rustgis_engine::data::raster::crs::use_grid_folders();
     }
-    let mut app = RustGisApp::with_sample();
+    let mut app = RustGisApp::with_sample().with_services(services(root.is_some(), secrets));
     if let Some(root) = root {
         match FolderStore::open(&root.join("recovery")) {
             Ok(store) => app = app.with_edit_recovery(Box::new(store)),
@@ -861,11 +870,87 @@ pub fn front_end(root: Option<&Path>) -> RustGisApp {
     app.session.in_place_wait = false;
     app.session.on_window_thread = true;
     app.reads_off_frame = true;
-    if let Err(e) = app.start(&rustgis_ui_egui::Start { blank: Some(false), ..Default::default() }) {
+    // Start With's Blank Map or the sample; a project by its path (Last Project, a file) isn't one
+    // a phone can open at start, so the sample stands in for it.
+    let blank = app.ui.start_with == rustgis_ui_egui::StartWith::Blank;
+    if let Err(e) = app.start(&rustgis_ui_egui::Start { blank: Some(blank), ..Default::default() }) {
         log::warn!("start-up: {e}");
         app.session.notify(e, true);
     }
     app
+}
+
+/// The phone's settings and secrets, for [`RustGisApp::with_services`]: the preferences in
+/// `prefs.json` in the app's settings folder, as on the desktop, where it has a folder of its own
+/// (`settings`), and the system's secret store where it has one (`secrets`). With both, what the
+/// Assistant keeps (its provider, Remember the key, the key) lasts from one start to the next.
+/// Without a store, a key lasts for the session, as on a computer with no keychain.
+fn services(settings: bool, secrets: Option<Arc<dyn SecretStore>>) -> rustgis_ui_egui::Services {
+    // The ChatGPT sign-in's tokens go to the same store, as on the desktop.
+    rustgis_ui_egui::rustgis_assistant::chatgpt::set_secret_store(secrets.clone());
+    let mut services = rustgis_ui_egui::Services { secrets, ..Default::default() };
+    if settings {
+        // Read once and kept, as the desktop keeps its snapshot: the Assistant's settings ask for
+        // one every frame they are up. A save, which may have merged with, set aside or (failing)
+        // still replaced the file, has it read again at the next ask.
+        let kept: Arc<Mutex<Option<serde_json::Map<String, serde_json::Value>>>> = Arc::default();
+        let read = kept.clone();
+        services.load_pref = Some(Box::new(move |key: &str| {
+            let mut kept = read.lock().unwrap_or_else(|e| e.into_inner());
+            kept.get_or_insert_with(read_settings).get(key).and_then(serde_json::Value::as_str).map(str::to_string)
+        }));
+        services.save_pref = Some(Box::new(move |key: &str, value: &str| {
+            let result = rustgis_engine::prefs::write(key, value);
+            *kept.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            settings_saved(result);
+        }));
+    }
+    services
+}
+
+/// What reading or saving the settings came to that the window is still to say (it may not be up
+/// yet when they are first read).
+fn settings_notices() -> std::sync::MutexGuard<'static, Vec<String>> {
+    static NOTICES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    NOTICES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The saved settings, or none when the file can't be read: said once a run.
+fn read_settings() -> serde_json::Map<String, serde_json::Value> {
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    rustgis_engine::prefs::read().unwrap_or_else(|error| {
+        if !SAID.swap(true, Ordering::Relaxed) {
+            log::warn!("{error}");
+            settings_notices()
+                .push(i18n::fmt("Your settings couldn't be read ({error}), so RustGIS is using its defaults.", &[("error", &error)]));
+        }
+        serde_json::Map::new()
+    })
+}
+
+/// Says what a save of the settings came to: an unreadable file set aside, or a failure, said
+/// once until a save works again.
+fn settings_saved(result: Result<Option<PathBuf>, String>) {
+    static LAST_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+    let mut last = LAST_FAILURE.lock().unwrap_or_else(|e| e.into_inner());
+    match result {
+        Ok(set_aside) => {
+            *last = None;
+            if let Some(path) = set_aside {
+                settings_notices().push(i18n::fmt(
+                    "Your settings couldn't be read, so RustGIS started new ones. The old settings file was kept as {path}.",
+                    &[("path", &path.display().to_string())],
+                ));
+            }
+        }
+        Err(error) => {
+            log::warn!("{error}");
+            if last.as_deref() != Some(error.as_str()) {
+                settings_notices().push(i18n::fmt("Settings could not be saved reliably ({error}).", &[("error", &error)]));
+                *last = Some(error);
+            }
+        }
+    }
 }
 
 /// Runs `app` in the phone's window with the touch interface: `phone` (or why it can't be
@@ -949,6 +1034,13 @@ mod tests {
     use serde_json::{Value, json};
     use std::cell::Cell;
 
+    /// Held by a test that queues settings notices and by one that runs the window's events,
+    /// which say and empty them: the tests run in parallel.
+    fn settings_notices_held() -> std::sync::MutexGuard<'static, ()> {
+        static HELD: Mutex<()> = Mutex::new(());
+        HELD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// A phone that is busy once asked for a file, and reports the events put in it.
     #[derive(Default)]
     struct FakePhone(Cell<bool>, RefCell<Vec<Event>>);
@@ -1008,6 +1100,7 @@ mod tests {
         let (clears, mark) = (cache::clears(), app.session.notice_mark());
         let phone = Rc::new(FakePhone::default());
         phone.1.borrow_mut().extend([Event::LowMemory, Event::LowMemory]);
+        let _held = settings_notices_held();
         let mut window = App {
             app,
             pushed: Vec::new(),
@@ -1048,6 +1141,24 @@ mod tests {
         let said = app.session.notices_since(before);
         assert_eq!(said.len(), 1);
         assert!(said[0].text.contains("system's clipboard") && said[0].text.contains("no clipboard"));
+    }
+
+    /// A settings save that fails is said once, not on every later save that fails the same way,
+    /// and again after one works; a file set aside is said where it went.
+    #[test]
+    fn a_failed_settings_save_is_said_once_until_one_works() {
+        let _held = settings_notices_held();
+        settings_notices().clear();
+        settings_saved(Err("no room".into()));
+        settings_saved(Err("no room".into()));
+        assert_eq!(std::mem::take(&mut *settings_notices()), vec!["Settings could not be saved reliably (no room).".to_string()]);
+        settings_saved(Ok(None));
+        assert!(settings_notices().is_empty());
+        settings_saved(Err("no room".into()));
+        settings_saved(Ok(Some(PathBuf::from("/data/settings/prefs.json.bad"))));
+        let said = std::mem::take(&mut *settings_notices());
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said[1].ends_with("kept as /data/settings/prefs.json.bad."), "{said:?}");
     }
 
     #[test]

@@ -1415,7 +1415,8 @@ pub fn main() {
     let made = std::fs::create_dir_all(&folders.support).is_ok() && rustgis_engine::data::dirs::set_root(folders.support.clone());
     // Before anything plans a job.
     let said = plan_memory();
-    let mut app = shell::front_end(made.then_some(folders.support.as_path()));
+    // No secret store yet: the keychain crate's Apple store needs its `protected` feature on iOS.
+    let mut app = shell::front_end(made.then_some(folders.support.as_path()), None);
     if !said {
         shell::say_memory_unsaid(&mut app);
     }

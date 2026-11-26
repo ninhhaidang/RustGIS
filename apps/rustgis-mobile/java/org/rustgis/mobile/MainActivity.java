@@ -708,6 +708,22 @@ public class MainActivity extends NativeActivity {
         });
     }
 
+    /**
+     * The Rust side's secret store (src/secrets.rs), kept by SecretVault: called on any of its
+     * threads, each answering with a line ("ok", "none", "unavailable" or "failed").
+     */
+    public String loadSecret(String account) {
+        return SecretVault.load(this, account);
+    }
+
+    public String saveSecret(String account, String value) {
+        return SecretVault.save(this, account, value);
+    }
+
+    public String deleteSecret(String account) {
+        return SecretVault.delete(this, account);
+    }
+
     /** Asks the user for files with the system's picker; each arrives as a "picked" event. */
     public void pick(final String purpose) {
         runOnUiThread(() -> {

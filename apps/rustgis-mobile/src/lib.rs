@@ -3,10 +3,8 @@
 //! The desktop front end (`rustgis-ui-egui`) with the touch interface, in a `NativeActivity` on
 //! Android and a UIKit window on iOS, with the phone (a `rustgis_engine::platform::Platform`)
 //! standing where the browser stands for the web app: the system's file picker, the device's
-//! position, the camera. `shell` is what both share. See `README.md` for how to build and install
-//! them.
-//!
-//! Not here yet: preferences and the keychain.
+//! position, the camera, and on Android a secret store. `shell` is what both share. See
+//! `README.md` for how to build and install them.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 #[cfg(any(target_os = "android", target_os = "ios", test))]
@@ -17,6 +15,10 @@ mod shell;
 mod android;
 #[cfg(target_os = "android")]
 mod phone;
+#[cfg(target_os = "android")]
+mod secrets;
+#[cfg(any(target_os = "android", test))]
+mod vaultanswer;
 
 #[cfg(target_os = "ios")]
 mod ios;

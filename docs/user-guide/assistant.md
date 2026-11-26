@@ -340,7 +340,8 @@ results such as rows the assistant reads, the pictures you attach to a message, 
 assistant calls `view_map`, a picture of the map, basemap tiles included. Local agents use their own providers and tools,
 with their own data handling. A key typed in the settings is used for the session only unless
 you tick **Remember the key on this computer**. On the desktop, this saves it in the system
-keychain (macOS Keychain, Windows Credential Manager, or the Secret Service on Linux). Clearing
+keychain (macOS Keychain, Windows Credential Manager, or the Secret Service on Linux); on
+Android, it is encrypted with a key the Android Keystore holds. Clearing
 the key or unticking **Remember** deletes the saved key; a failed deletion is shown in settings.
 Keys from the environment are never saved. If the keychain is unavailable, locked, or access
 is refused, a new key stays in memory for this session and the settings explain why it was not
