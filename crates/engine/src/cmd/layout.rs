@@ -443,6 +443,18 @@ pub const PUBLICATION_STYLES: &[(&str, &str)] = &[
     ("poster", "Poster"),
 ];
 
+/// The credit line `layout.publication` writes when `"author"` isn't given (`{date}` is filled
+/// with today's date when the layout is drawn).
+pub const PUBLICATION_DEFAULT_CREDIT: &str = "Made with RustGIS · {date}";
+
+/// The longest text a publication layout takes in one field, in characters.
+pub const MAX_PUBLICATION_TEXT: usize = 2000;
+
+/// The default accent colour of a [`PUBLICATION_STYLES`] style id, or `None` if unknown.
+pub fn publication_style_accent(style: &str) -> Option<Rgba> {
+    Style::parse(style).map(Style::accent)
+}
+
 /// A figure's text size, in points at its printed size: journals ask for 6 to 8.
 const FIGURE_PT: f64 = 7.0;
 
@@ -454,9 +466,6 @@ const GRID_STEPS: &[f64] = &[0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10
 /// sheet scales them with its labels, by its short side (#2581).
 const LABEL_ROOM_SIDE: f64 = 9.0;
 const LABEL_ROOM_END: f64 = 6.0;
-
-/// The longest text a publication layout takes in one field, in characters.
-const MAX_PUBLICATION_TEXT: usize = 2000;
 
 /// A scale denominator rounded up to two significant figures (1:1,234,567 to 1:1,300,000), so the
 /// extent fitted at it still fits.
@@ -658,6 +667,18 @@ enum Style {
 }
 
 impl Style {
+    fn parse(code: &str) -> Option<Self> {
+        match code.trim() {
+            "classic" => Some(Style::Classic),
+            "banner" => Some(Style::Banner),
+            "panel" => Some(Style::Panel),
+            "editorial" => Some(Style::Editorial),
+            "modular" => Some(Style::Modular),
+            "poster" => Some(Style::Poster),
+            _ => None,
+        }
+    }
+
     fn code(self) -> &'static str {
         match self {
             Style::Classic => "classic",
@@ -1319,7 +1340,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
         texts_of(p, "reference")?.unwrap_or_else(|| vec!["Projection: {projection}".into(), "Datum: {datum} · Graticule: {grid}".into()]);
     // An empty author leaves the line out; none given, the default.
     let author = match texts_of(p, "author")? {
-        None => Some("Made with RustGIS · {date}".to_string()),
+        None => Some(PUBLICATION_DEFAULT_CREDIT.to_string()),
         Some(t) => Some(t.join(" ")).filter(|t| !t.trim().is_empty()),
     };
     let headings = texts_of(p, "headings")?.unwrap_or_default();
@@ -1336,16 +1357,12 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
             return Err(format!("{k} is text: {}", if k == "style" { "a style's name, such as \"panel\"" } else { "a colour as #RRGGBB" }));
         }
     }
-    let style = match ps(p, "style").map(str::trim) {
-        None | Some("classic") => Style::Classic,
-        Some("banner") => Style::Banner,
-        Some("panel") => Style::Panel,
-        Some("editorial") => Style::Editorial,
-        Some("modular") => Style::Modular,
-        Some("poster") => Style::Poster,
-        Some(x) => {
-            return Err(format!("style is \"classic\", \"banner\", \"panel\", \"editorial\", \"modular\" or \"poster\", not \"{x}\""));
-        }
+    let style = match ps(p, "style") {
+        None => Style::Classic,
+        Some(raw) => Style::parse(raw).ok_or_else(|| {
+            let x = raw.trim();
+            format!("style is \"classic\", \"banner\", \"panel\", \"editorial\", \"modular\" or \"poster\", not \"{x}\"")
+        })?,
     };
     let accent = color(p, "accent", style.accent())?;
     let tries = arrangements_to_try(s, p.get("arrangement").unwrap_or(&Value::Null))?;
