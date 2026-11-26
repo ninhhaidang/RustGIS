@@ -497,6 +497,204 @@ fn is_left(a: &TextAlign) -> bool {
     *a == TextAlign::Left
 }
 
+/// Where a text element's block of lines sits down its box.
+///
+/// `Invalid` is what a file's unknown name or wrong kind of value is read as; it is never kept:
+/// [`Layout::clamp`] sends it to the default and counts the element, and a save writes the
+/// default's name for it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextVAlign {
+    /// From the top of the box.
+    #[default]
+    Top,
+    /// Centred in the box.
+    Middle,
+    /// Down to the bottom of the box.
+    Bottom,
+    /// A value read from a file that is not a name; repaired to the default on load.
+    #[doc(hidden)]
+    Invalid,
+}
+
+impl TextVAlign {
+    pub const ALL: [TextVAlign; 3] = [TextVAlign::Top, TextVAlign::Middle, TextVAlign::Bottom];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            TextVAlign::Top | TextVAlign::Invalid => "top",
+            TextVAlign::Middle => "middle",
+            TextVAlign::Bottom => "bottom",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TextVAlign::Top | TextVAlign::Invalid => "Top",
+            TextVAlign::Middle => "Middle",
+            TextVAlign::Bottom => "Bottom",
+        }
+    }
+
+    /// `top`, `middle` or `bottom` in any case, trimmed; `center` and `centre` read as middle.
+    pub fn from_name(s: &str) -> Option<TextVAlign> {
+        let s = s.trim();
+        TextVAlign::ALL
+            .into_iter()
+            .find(|v| v.code().eq_ignore_ascii_case(s))
+            .or((s.eq_ignore_ascii_case("centre") || s.eq_ignore_ascii_case("center")).then_some(TextVAlign::Middle))
+    }
+
+    /// This value, or the default where it is [`TextVAlign::Invalid`].
+    pub fn kept(self) -> TextVAlign {
+        if self == TextVAlign::Invalid { TextVAlign::default() } else { self }
+    }
+}
+
+impl Serialize for TextVAlign {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.kept().code())
+    }
+}
+
+impl<'de> Deserialize<'de> for TextVAlign {
+    /// A name as [`TextVAlign::from_name`] reads it; null as the default; anything else (an
+    /// unknown name, a number, a list) as `Invalid`, so the read never fails and `Layout::clamp`
+    /// repairs and counts it.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<TextVAlign, D::Error> {
+        let v: Option<serde_json::Value> = Deserialize::deserialize(d)?;
+        Ok(match v {
+            None | Some(serde_json::Value::Null) => TextVAlign::default(),
+            Some(serde_json::Value::String(s)) => TextVAlign::from_name(&s).unwrap_or(TextVAlign::Invalid),
+            Some(_) => TextVAlign::Invalid,
+        })
+    }
+}
+
+/// Whether a save leaves a text's block alignment out: the top, or a value that is not a name
+/// ([`TextVAlign::kept`]), which reads back as the top.
+fn is_top(v: &TextVAlign) -> bool {
+    v.kept() == TextVAlign::Top
+}
+
+/// The case a text element is drawn in.
+///
+/// `Invalid` is what a file's unknown name or wrong kind of value is read as; it is never kept:
+/// [`Layout::clamp`] sends it to the default and counts the element, and a save writes the
+/// default's name for it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextCase {
+    /// As typed.
+    #[default]
+    None,
+    /// All upper case.
+    Upper,
+    /// All lower case.
+    Lower,
+    /// A value read from a file that is not a name; repaired to the default on load.
+    #[doc(hidden)]
+    Invalid,
+}
+
+impl TextCase {
+    pub const ALL: [TextCase; 3] = [TextCase::None, TextCase::Upper, TextCase::Lower];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            TextCase::None | TextCase::Invalid => "none",
+            TextCase::Upper => "upper",
+            TextCase::Lower => "lower",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TextCase::None | TextCase::Invalid => "As typed",
+            TextCase::Upper => "Upper case",
+            TextCase::Lower => "Lower case",
+        }
+    }
+
+    /// `none`, `upper` or `lower` in any case, trimmed.
+    pub fn from_name(s: &str) -> Option<TextCase> {
+        let s = s.trim();
+        TextCase::ALL.into_iter().find(|v| v.code().eq_ignore_ascii_case(s))
+    }
+
+    /// This value, or the default where it is [`TextCase::Invalid`].
+    pub fn kept(self) -> TextCase {
+        if self == TextCase::Invalid { TextCase::default() } else { self }
+    }
+
+    /// `s` in this case (full Unicode case mapping: `ß` is `SS` in upper case).
+    pub fn apply(self, s: String) -> String {
+        match self.kept() {
+            TextCase::Upper => s.to_uppercase(),
+            TextCase::Lower => s.to_lowercase(),
+            _ => s,
+        }
+    }
+}
+
+impl Serialize for TextCase {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.kept().code())
+    }
+}
+
+impl<'de> Deserialize<'de> for TextCase {
+    /// A name as [`TextCase::from_name`] reads it; null as the default; anything else as
+    /// `Invalid`, so the read never fails and `Layout::clamp` repairs and counts it.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<TextCase, D::Error> {
+        let v: Option<serde_json::Value> = Deserialize::deserialize(d)?;
+        Ok(match v {
+            None | Some(serde_json::Value::Null) => TextCase::default(),
+            Some(serde_json::Value::String(s)) => TextCase::from_name(&s).unwrap_or(TextCase::Invalid),
+            Some(_) => TextCase::Invalid,
+        })
+    }
+}
+
+/// Whether a save leaves a text's case out: as typed, or a value that is not a name
+/// ([`TextCase::kept`]), which reads back as typed.
+fn is_no_case(v: &TextCase) -> bool {
+    v.kept() == TextCase::None
+}
+
+/// The usual spacing between a text's lines, as a multiple of it.
+pub const LINE_SPACING: f64 = 1.0;
+/// The tightest and widest a text's line spacing may be, as multiples of the usual.
+pub const MIN_LINE_SPACING: f64 = 0.5;
+pub const MAX_LINE_SPACING: f64 = 3.0;
+
+fn line_spacing() -> f64 {
+    LINE_SPACING
+}
+
+/// Whether a save leaves a text's line spacing out: the usual, or one not finite, which
+/// [`line_spacing_in_range`] reads as the usual.
+fn is_line_spacing(v: &f64) -> bool {
+    !v.is_finite() || *v == LINE_SPACING
+}
+
+/// A text's line spacing as it is drawn and kept: the usual one ([`LINE_SPACING`]) when it is not
+/// a finite number, else clamped to [`MIN_LINE_SPACING`]..=[`MAX_LINE_SPACING`]. The one reader
+/// for the range, so a layout's repair, its capability check and the page agree.
+pub fn line_spacing_in_range(v: f64) -> f64 {
+    finite_or(v, LINE_SPACING).clamp(MIN_LINE_SPACING, MAX_LINE_SPACING)
+}
+
+/// A text's line spacing as a file holds it: a number as it is (out of range is for
+/// `Layout::clamp`), null as the usual, anything else (a string, a flag, a list, an object) as NaN,
+/// which `Layout::clamp` brings back to the usual and counts.
+fn de_line_spacing<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    let v: Option<serde_json::Value> = Deserialize::deserialize(d)?;
+    Ok(match v {
+        None | Some(serde_json::Value::Null) => LINE_SPACING,
+        Some(serde_json::Value::Number(n)) => n.as_f64().unwrap_or(f64::NAN),
+        Some(_) => f64::NAN,
+    })
+}
+
 /// The most layers a legend leaves out.
 pub const MAX_LEGEND_EXCLUDED: usize = 1000;
 
@@ -1267,6 +1465,18 @@ pub enum ElementKind {
         /// line break. Left out when off, so layouts saved before keep their bytes.
         #[serde(default, skip_serializing_if = "is_false")]
         wrap: bool,
+        /// Where its block of lines sits down the (unturned) box. Left out when top, so layouts
+        /// saved before keep their bytes.
+        #[serde(default, skip_serializing_if = "is_top")]
+        valign: TextVAlign,
+        /// The space between its lines, as a multiple of the usual ([`MIN_LINE_SPACING`] to
+        /// [`MAX_LINE_SPACING`]). Left out when usual, so layouts saved before keep their bytes.
+        #[serde(default = "line_spacing", skip_serializing_if = "is_line_spacing", deserialize_with = "de_line_spacing")]
+        line_spacing: f64,
+        /// Its words in upper or lower case when drawn, after its dynamic text is filled in. Left
+        /// out when as typed, so layouts saved before keep their bytes.
+        #[serde(default, skip_serializing_if = "is_no_case")]
+        case: TextCase,
     },
     Picture {
         /// Base64 PNG or JPEG.
@@ -1658,6 +1868,9 @@ impl ElementKind {
             font_name: None,
             rotation: 0.0,
             wrap: false,
+            valign: TextVAlign::Top,
+            line_spacing: LINE_SPACING,
+            case: TextCase::None,
         }
     }
 
@@ -1684,6 +1897,15 @@ impl ElementKind {
             decimals: None,
             fit: ScaleBarFit::default(),
         }
+    }
+
+    /// Whether this is a text whose block alignment, line spacing or case is not the default, once
+    /// brought into range as [`Layout::clamp`] does: what a layout file needs a newer reader for.
+    pub fn text_uses_block(&self) -> bool {
+        let ElementKind::Text { valign, line_spacing, case, .. } = self else {
+            return false;
+        };
+        valign.kept() != TextVAlign::Top || case.kept() != TextCase::None || line_spacing_in_range(*line_spacing) != LINE_SPACING
     }
 
     /// Whether this is a scale bar with any of the details set: subdivisions, divisions before
@@ -2956,8 +3178,13 @@ impl Layout {
                         label.truncate(end);
                     }
                 }
-                ElementKind::Text { text, size, letter_spacing, rotation: turn, .. } => {
+                ElementKind::Text { text, size, letter_spacing, rotation: turn, valign, line_spacing, case, .. } => {
                     *turn = rotation(*turn);
+                    // A file's unknown name or wrong kind of value is read as a marker: back to the
+                    // default.
+                    *valign = valign.kept();
+                    *case = case.kept();
+                    *line_spacing = line_spacing_in_range(*line_spacing);
                     *size = finite_or(*size, 12.0).clamp(*crate::graphics::FONT_SIZE.start(), *crate::graphics::FONT_SIZE.end());
                     *letter_spacing = finite_or(*letter_spacing, 0.0).clamp(MIN_LETTER_SPACING, MAX_LETTER_SPACING);
                     let end = text.char_indices().nth(5000).map_or(text.len(), |(i, _)| i);
@@ -4731,6 +4958,117 @@ mod tests {
         assert_eq!(back, l);
         let mut text = ElementKind::text("t", 12.0, Rgba::rgb(0, 0, 0), false);
         assert!(!text.takes_ink() && text.ink_mut().is_none(), "a text's colour is its own option");
+    }
+
+    /// A text's block alignment, line spacing and case: left out of the file at their defaults, so a
+    /// text saved before saves byte for byte; written and read back when set; and a hand-edited value
+    /// out of range, of the wrong kind or not a name loads, brought into range and counted.
+    #[test]
+    fn text_block_settings_save_only_when_set_and_load_into_range() {
+        use serde_json::json;
+        for plain in [
+            r#"{"Text":{"text":"a","size":10.0,"color":[0,0,0,255],"bold":false}}"#,
+            r#"{"Text":{"text":"a\nb","size":12.0,"color":[31,41,55,255],"bold":true,"italic":true,"align":"Center","letter_spacing":2.0,"font":"Serif","font_name":"Georgia","rotation":90.0,"wrap":true}}"#,
+        ] {
+            let k: ElementKind = serde_json::from_str(plain).unwrap();
+            assert_eq!(serde_json::to_string(&k).unwrap(), plain);
+            assert!(!k.text_uses_block());
+        }
+        let mut set = ElementKind::text("a", 10.0, Rgba::rgb(0, 0, 0), false);
+        if let ElementKind::Text { valign, line_spacing, case, .. } = &mut set {
+            (*valign, *line_spacing, *case) = (TextVAlign::Bottom, 1.5, TextCase::Upper);
+        }
+        let s = serde_json::to_string(&set).unwrap();
+        assert!(s.ends_with(r#""bold":false,"valign":"bottom","line_spacing":1.5,"case":"upper"}}"#), "{s}");
+        assert_eq!(serde_json::from_str::<ElementKind>(&s).unwrap(), set);
+        assert!(set.text_uses_block());
+        // Unclamped, a value that is not a name or not a finite number saves as the default does:
+        // nothing, never "top" or a null spacing.
+        let plain = ElementKind::text("a", 10.0, Rgba::rgb(0, 0, 0), false);
+        let plain_json = serde_json::to_string(&plain).unwrap();
+        for (v, ls, c) in [
+            (TextVAlign::Invalid, f64::NAN, TextCase::Invalid),
+            (TextVAlign::Invalid, LINE_SPACING, TextCase::None),
+            (TextVAlign::Top, f64::NAN, TextCase::None),
+            (TextVAlign::Top, f64::INFINITY, TextCase::None),
+            (TextVAlign::Top, f64::NEG_INFINITY, TextCase::Invalid),
+        ] {
+            let mut odd = plain.clone();
+            if let ElementKind::Text { valign, line_spacing, case, .. } = &mut odd {
+                (*valign, *line_spacing, *case) = (v, ls, c);
+            }
+            assert_eq!(serde_json::to_string(&odd).unwrap(), plain_json, "{v:?} {ls} {c:?}");
+            assert!(!odd.text_uses_block(), "{v:?} {ls} {c:?}");
+        }
+        // One reader for the range: not finite is the usual spacing, else the nearer limit.
+        for (ls, want) in [(f64::NAN, 1.0), (f64::INFINITY, 1.0), (f64::NEG_INFINITY, 1.0), (9.0, 3.0), (0.1, 0.5), (1.5, 1.5), (3.0, 3.0)]
+        {
+            assert_eq!(line_spacing_in_range(ls), want, "{ls}");
+        }
+        for (name, v) in [
+            (" MIDDLE ", TextVAlign::Middle),
+            ("centre", TextVAlign::Middle),
+            ("Center", TextVAlign::Middle),
+            ("Top", TextVAlign::Top),
+            ("bottom", TextVAlign::Bottom),
+        ] {
+            assert_eq!(TextVAlign::from_name(name), Some(v), "{name}");
+        }
+        assert_eq!((TextVAlign::from_name("baseline"), TextCase::from_name("title")), (None, None));
+        assert_eq!(TextCase::from_name(" Upper "), Some(TextCase::Upper));
+        assert_eq!(TextCase::Upper.apply("Straße {9}".into()), "STRASSE {9}");
+        assert_eq!(TextCase::Lower.apply("ÉTÉ".into()), "été");
+        assert_eq!(TextCase::None.apply("As Typed".into()), "As Typed");
+        // A hand-edited layout.
+        let extras = [
+            json!({"line_spacing": 9}),                                      // 2: to 3, said
+            json!({"line_spacing": 0.1}),                                    // 3: to 0.5, said
+            json!({"line_spacing": "1.5"}),                                  // 4: no number: 1, said
+            json!({"line_spacing": [2]}),                                    // 5: 1, said
+            json!({"valign": "sideways"}),                                   // 6: top, said
+            json!({"valign": 7}),                                            // 7: top, said
+            json!({"case": "title"}),                                        // 8: none, said
+            json!({"case": {"x": 1}}),                                       // 9: none, said
+            json!({"valign": "Middle", "case": "UPPER", "line_spacing": 2}), // 10: kept, not said
+            json!({"valign": null, "case": null, "line_spacing": null}),     // 11: defaults, not said
+            json!({"valign": "centre", "line_spacing": 3.0}),                // 12: kept, not said
+        ];
+        let elements: Vec<_> = extras
+            .iter()
+            .enumerate()
+            .map(|(i, extra)| {
+                let mut t = json!({"text": "a", "size": 10.0, "color": [0, 0, 0, 255], "bold": false});
+                t.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+                json!({"id": i + 2, "name": "t", "x": 0, "y": 0, "w": 10, "h": 10, "kind": {"Text": t}})
+            })
+            .collect();
+        let mut l: Layout = serde_json::from_value(json!({"name": "x", "width": 100, "height": 100, "elements": elements})).unwrap();
+        let repairs = l.clamp();
+        let block = |id| match &l.element(id).unwrap().kind {
+            ElementKind::Text { valign, line_spacing, case, .. } => (*valign, *line_spacing, *case),
+            k => panic!("{k:?}"),
+        };
+        use {TextCase as C, TextVAlign as V};
+        let want = [
+            (2, (V::Top, 3.0, C::None)),
+            (3, (V::Top, 0.5, C::None)),
+            (4, (V::Top, 1.0, C::None)),
+            (5, (V::Top, 1.0, C::None)),
+            (6, (V::Top, 1.0, C::None)),
+            (7, (V::Top, 1.0, C::None)),
+            (8, (V::Top, 1.0, C::None)),
+            (9, (V::Top, 1.0, C::None)),
+            (10, (V::Middle, 2.0, C::Upper)),
+            (11, (V::Top, 1.0, C::None)),
+            (12, (V::Middle, 3.0, C::None)),
+        ];
+        for (id, b) in want {
+            assert_eq!(block(id), b, "{id}");
+        }
+        assert_eq!((repairs.elements_adjusted, repairs.elements_cut), (8, 0));
+        // Repaired to the defaults, they save nothing; no marker is ever written.
+        let saved = serde_json::to_string(&l).unwrap();
+        assert!(!saved.contains("sideways") && !saved.contains("title") && saved.matches("\"valign\"").count() == 2, "{saved}");
     }
 
     #[test]

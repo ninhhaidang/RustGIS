@@ -81,6 +81,13 @@ fn a_layout_file_requiring_scale_bar_details_opens() {
     assert_eq!(s.project.layouts.len(), 2);
 }
 
+#[test]
+fn a_layout_file_requiring_text_block_opens() {
+    let (mut s, bare) = with_layout();
+    s.run("layout.import", &json!({"text": headed(&bare, 2, json!(["layout-text-block"]))})).unwrap();
+    assert_eq!(s.project.layouts.len(), 2);
+}
+
 /// What `layout.save` writes for the layout at `layout`, as text and as a value.
 fn saved_file(s: &mut Session, layout: usize, tag: &str) -> (String, Value) {
     let path = std::env::temp_dir().join(format!("rustgis-layout-save-{}-{tag}.rgislayout", std::process::id()));
@@ -102,6 +109,7 @@ fn a_saved_layout_file_requires_what_its_elements_use_and_reads_back_the_same() 
         ("background", include_str!("../../../../schema/fixtures/layout_element_background.rgis")),
         ("ink", include_str!("../../../../schema/fixtures/layout_element_ink.rgis")),
         ("wrap", include_str!("../../../../schema/fixtures/layout_element_wrap.rgis")),
+        ("text-block", include_str!("../../../../schema/fixtures/layout_text_block.rgis")),
         ("data", include_str!("../../../../schema/fixtures/layout_chart_data.rgis")),
         ("look", include_str!("../../../../schema/fixtures/layout_chart_look.rgis")),
         ("classes", include_str!("../../../../schema/fixtures/layout_chart_classes.rgis")),
@@ -167,4 +175,24 @@ fn a_layout_file_with_scale_bar_details_says_so_in_its_header() {
     // This RustGIS reads it back.
     s.run("layout.import", &json!({"text": text})).unwrap();
     assert!(s.project.layouts[2].elements.iter().any(|e| e.kind.scale_bar_uses_details()));
+}
+
+/// A layout file with a text placed down its box, spaced or cased requires `layout-text-block`, so
+/// an older RustGIS refuses it instead of drawing the text at the top, at the usual spacing and as
+/// typed; a plain text's file requires nothing.
+#[test]
+fn a_layout_file_with_a_text_block_says_so_in_its_header() {
+    let (mut s, _) = with_layout();
+    s.run("layout.addElement", &json!({"kind": "text"})).unwrap();
+    let (_, plain) = saved_file(&mut s, 0, "plain-text");
+    assert_eq!(plain["format"], json!(crate::project::FORMAT));
+    assert!(plain.get("requires").is_none(), "{plain}");
+    s.run("layout.new", &json!({"page": "a4", "template": "map"})).unwrap();
+    s.run("layout.addElement", &json!({"kind": "text", "case": "upper"})).unwrap();
+    assert!(s.project.layouts[1].elements.iter().any(|e| e.kind.text_uses_block()));
+    let (text, cased) = saved_file(&mut s, 1, "cased-text");
+    assert_eq!(cased["requires"], json!(["layout-text-block"]));
+    // This RustGIS reads it back.
+    s.run("layout.import", &json!({"text": text})).unwrap();
+    assert!(s.project.layouts[2].elements.iter().any(|e| e.kind.text_uses_block()));
 }

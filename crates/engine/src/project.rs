@@ -97,6 +97,7 @@ pub const CAPABILITIES: &[&str] = &[
     "graticule-color",
     "layout-element-ink",
     "layout-element-wrap",
+    "layout-text-block",
     "layout-chart-data",
     "layout-chart-look",
     "layout-chart-classes",

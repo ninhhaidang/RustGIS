@@ -24,9 +24,11 @@ description: Make a printable page layout — map frame, title, legend, north ar
    `"subdivisions"` (0–10), `"divisionsBeforeZero"` (0–2), `"labelPosition"` (`"above"`, `"below"`), `"unitLabel"`
    (text; `""` for none), `"unitLabelPosition"` (`"afterLabels"`, `"afterBar"`, `"above"`, `"below"`), `"decimals"`
    (`"auto"`, the default, or 0–3 fixed with the thousands set apart, as a chart's), `"textSize"` (4–100 pt, its
-   labels' size) and `"fit"` (`"adjustDivisionValue"`, `"adjustDivision"`, `"adjustWidth"`). `"grid"` adds a graticule to the frame
+   labels' size) and `"fit"` (`"adjustDivisionValue"`, `"adjustDivision"`, `"adjustWidth"`). A `"text"` or `"dynamicText"` can take
+   `"valign"` (`"top"`, `"middle"`, `"bottom"`), `"lineSpacing"` (0.5–3, default 1) and `"case"`
+   (`"none"`, `"upper"`, `"lower"`; applied when drawn, the text kept as typed). `"grid"` adds a graticule to the frame
    (`"style": "ticks"` for neatline ticks, `"format": "dms"`, `"edges"`).
-5. Adjust with `layout.update` (`{"element": id, "x", "y", "w", "h", "text", "size", "bold"}`). The ids come from the
+5. Adjust with `layout.update` (`{"element": id, "x", "y", "w", "h", "text", "size", "bold", "valign", "lineSpacing", "case"}`). The ids come from the
    results of the earlier calls.
 6. `layout.export` `{"path": "map.pdf"}`, or `.png` with a `dpi` (300 for print). Exporting writes a file, so the
    user is asked first. `layout.close` goes back to the map.

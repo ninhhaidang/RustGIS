@@ -207,6 +207,15 @@ commands with `"wrap": true` require it too, since an older reader warns that it
 and adds the text unwrapped; `"wrap": false` needs nothing. A saved `layout.import` whose `text`
 has a wrapped text requires it as well.
 
+Projects with a layout text placed in the middle or at the bottom of its box, with a line spacing
+other than 1, or drawn in upper or lower case (`valign`, `line_spacing`, `case` on a text element)
+require `layout-text-block`, so an older reader refuses them instead of drawing the text at the
+top, at the usual spacing and as typed, and saving it again without them. Saved
+`layout.addElement` and `layout.update` commands that set one require it too, since an older
+reader ignores the keys; giving the defaults (`"top"`, `1`, `"none"`, as the commands read them:
+`"1"` too) or `null` needs nothing. A saved `layout.import` whose `text` has such a text once read
+into range requires it as well, and a layout file (`.rgislayout`) with one lists it in its header.
+
 Projects with a layout chart grouped by a field, or with a statistic, an order or a number of bars
 other than the defaults, or with an Other bar (`group`, `statistic`, `order`, `bars`, `other` on a
 chart element) require `layout-chart-data`, so an older reader refuses them instead of drawing a

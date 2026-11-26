@@ -472,16 +472,17 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   a legend's title, which has no wrap, is told to add line breaks. Lines left out below a text's
   box are said as soon as they are: `layout.addElement` and `layout.update` warn how many lines
   don't fit when they set a text, its size, font or fallback font, bold, italic, alignment,
-  spacing, wrap or box, or show it, and the Format pane shows the count under **Wrap to the
-  box** (a text wrapped past the 200 lines a text draws counts them as "or more"). A text draws
-  200 lines at most, whatever its box: lines past them are said apart, with the advice to split
-  the text into more than one, since a taller box doesn't draw them. A text whose ink crosses the
-  page's edge is said in a notice of its own when one of these commands puts it there, so a text
-  both cut below its box and past the edge is told each: `layout.addElement` and `layout.update` add a text whose ink
-  crosses it, set what its lines or box are, show it, move it (`x`, `y`) or turn it (`rotation`),
-  and `layout.duplicateElement` copies it past the edge, and each advises moving it inside the
-  page, resizing it or reducing its size. A move, a turn or a copy alone says only that, not the
-  lines again; a text turned within the page, or with no letter or ink to show, says nothing.
+  spacing, line spacing, case, wrap or box, or show it, and the Format pane shows the count under
+  **Wrap to the box** (a text wrapped past the 200 lines a text draws counts them as "or more"). A
+  text draws 200 lines at most, whatever its box: lines past them are said apart, with the advice
+  to split the text into more than one, since a taller box doesn't draw them. A text whose ink
+  crosses the page's edge is said in a notice of its own when one of these commands puts it there,
+  so a text both cut below its box and past the edge is told each: `layout.addElement` and
+  `layout.update` add a text whose ink crosses it, set what its lines or box are, show it, move it
+  (`x`, `y`), turn it (`rotation`) or set its vertical alignment (`valign`), and
+  `layout.duplicateElement` copies it past the edge, and each advises moving it inside the page,
+  resizing it or reducing its size. A move, a turn, an alignment or a copy alone says only that, not
+  the lines again; a text turned within the page, or with no letter or ink to show, says nothing.
   Resizing the page (`layout.page`) measures no text, so a text a smaller page cuts is told only
   by the export and the layout view.
 - **Text** and **Dynamic Text**: `{date}`, `{time}`, `{scale}`, `{map}`, `{crs}`, `{page}`,
@@ -533,8 +534,23 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   Scripts give the family's name: `"font": "Garamond"`, with `"fallback": "serif"` if wanted;
   `labels.fonts` lists the installed families. The project keeps the name, never a file. A PDF
   sets its text in the letters' own outlines, so it shows the family wherever it is opened, and
-  the text can still be searched and copied; no font file goes into it. **Picture** places a PNG
-  or JPEG.
+  the text can still be searched and copied; no font file goes into it.
+  **Vertical alignment** puts a text's block of lines at the **Top** of its box (the default, as
+  texts always were), in its **Middle**, or at its **Bottom**, its last line on the box's lower
+  edge: a caption under a picture, a note at a panel's foot. A block taller than its box is drawn
+  from the top whatever its alignment, so its first lines are kept and the last ones left out, as
+  for a top-aligned text, and said. **Line spacing** sets the distance between lines as a multiple
+  of the usual (0.5 to 3, default 1): tighter for a long address, looser for a title over two
+  lines. **Case** draws a text in **Upper case** or **Lower case** whatever was typed, once its
+  dynamic text is filled in (`{map}` and `{date}` too), before it wraps; the text itself is kept
+  as typed, so it can be set back to **As typed**. The layout view and every export (PNG, PDF,
+  GeoPDF, SVG) draw them alike. Scripts set `"valign": "middle"`, `"lineSpacing": 1.5` and
+  `"case": "upper"` on `layout.addElement` and `layout.update`; a name not listed or a spacing
+  outside 0.5 to 3 is refused, and `null` leaves each as it is. Each change is one undo step, and
+  a setting put back to its default is no longer saved. A project that uses them can't be opened
+  by an older RustGIS, and a layout file (`.rgislayout`) with such a text lists them in its
+  header, so an older RustGIS refuses it as well.
+  **Picture** places a PNG or JPEG.
 - **Map Series**: one page per feature of an index layer; see [Map series](#map-series) for setup,
   page names, scales and a locator.
 - Click an element to select it, drag to move, drag its handles to resize, and edit it in the
