@@ -6,12 +6,14 @@
 //! the desktop interface's View › Touch Interface can bring it back. Dialogs, notices and the
 //! Project page stay the front end's.
 //!
-//! What is here: the map, the bar (Layers, Add Data, Capture, More), the Layers sheet (show,
-//! hide, zoom to, the active layer), the Capture sheet (a point, line or polygon placed by the cross
-//! on the map, with a form for its layer's attributes that follows the layer's data design: value
-//! lists, ranges and feature templates) and the More sheet (full extent, project, undo, the
-//! desktop interface, the device's position). Where a shell reports the device's position
-//! (`RustGisApp::position`), it is drawn on the map and the capture cross can be put on it.
+//! What is here: the map, the bar (Layers, Add Data, Capture, More), the Layers sheet (the
+//! project's maps and layouts; show, hide, zoom to, the active layer), the Capture sheet (a
+//! point, line or polygon placed by the cross on the map, with a form for its layer's attributes
+//! that follows the layer's data design: value lists, ranges and feature templates) and the More
+//! sheet (full extent, undo, the project, the device's position, the desktop interface). A sheet
+//! is lowered by its ×, a swipe down on its heading, a tap on the map above it, or the system's
+//! Back. Where a shell reports the device's position (`RustGisApp::position`), it is drawn on the
+//! map and the capture cross can be put on it.
 //! The form marks the fields the layer's constraint rules require, narrows a field to the values
 //! its contingent value sets leave it, has a calendar for dates, and keeps the field being typed
 //! in above the soft keyboard (see [`form`]).
@@ -19,7 +21,7 @@
 //! deletes it; with Snap on, the cross's place snaps to the map's features (see [`edit`]).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{Align, Color32, CornerRadius, Key, Layout, Modifiers, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use rustgis_ui_egui::rustgis_engine::platform::{TextEntry, TextKind, Typed};
 use rustgis_ui_egui::theme::Tokens;
 use rustgis_ui_egui::{RustGisApp, i18n, icons, tl};
@@ -45,6 +47,10 @@ const TYPING_SHARE: f32 = 0.9;
 const CROWDED_ROWS: f32 = 7.0;
 /// The room above and below a sheet's rows.
 const SHEET_MARGIN: f32 = 4.0;
+/// A heading over a group of the More sheet's rows.
+const GROUP: f32 = 28.0;
+/// The More sheet's groups: Map, Project, Position and Tools.
+const MORE_GROUPS: usize = 4;
 /// The More sheet's rows with the position hidden.
 const MORE_ROWS: usize = 9;
 /// The More sheet's rows shown only with the position on: Go to My Position, and the track.
@@ -79,11 +85,27 @@ pub fn removing_copies(ctx: &egui::Context) -> bool {
     copies::removing(ctx)
 }
 
+/// Whether the system's Back would lower something here: a sheet of the touch interface that is
+/// in view, with no dialog over it. A shell whose system keeps Back unless asked for it (Android
+/// 16 on) asks only then, so the rest of the time Back does what the system does with it.
+pub fn takes_back(app: &RustGisApp, ctx: &egui::Context) -> bool {
+    // A dialog window isn't a modal layer: it is asked for by name.
+    app.chrome.is_some()
+        && !app.ui.backstage
+        && sheet(ctx) != Sheet::None
+        && app.dialogs.open.is_none()
+        && ctx.memory(|m| m.top_modal_layer().is_none())
+}
+
 /// The touch interface (a `rustgis_ui_egui::Chrome`): the bar, the sheet asked for, and the map
 /// in what is left.
 pub fn chrome(app: &mut RustGisApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     let t = Tokens::get(&ctx);
+    // Back (Android's key, which a shell also gives for the system's Back) lowers the sheet.
+    if takes_back(app, &ctx) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::BrowserBack)) {
+        set_sheet(&ctx, Sheet::None);
+    }
     let shown = sheet(&ctx);
     // Each position the shell reported goes to the average and the track being taken; while a
     // track is being recorded, positions keep coming with the app out of sight.
@@ -143,16 +165,18 @@ pub fn chrome(app: &mut RustGisApp, ui: &mut Ui) {
     // Work running off the window's thread (a file being read, an export) shows its progress
     // and Cancel over the bar, where the desktop's status bar would.
     if app.background_busy() {
-        egui::Panel::bottom("touch_busy").exact_size(TARGET).frame(frame.inner_margin(egui::Margin::symmetric(12, 0))).show(ui, |ui| {
-            // Scrolled sideways when it is wider than the phone (a long address): its Cancel is
-            // then reached, not cut off.
+        let margin = egui::Margin::symmetric(12, 0);
+        // A little over a finger tall, so its Cancel stands clear of the strip's edges.
+        egui::Panel::bottom("touch_busy").exact_size(TARGET + 8.0).frame(frame.inner_margin(margin)).show(ui, |ui| {
+            // Scrolled sideways when it is wider than the phone (a long address); each Cancel
+            // comes before its job's words, so the first is in sight without scrolling.
             egui::ScrollArea::horizontal().show(ui, |ui| ui.horizontal_centered(|ui| app.background_status(ui)));
         });
     }
     if shown != Sheet::None {
         // As tall as its rows, up to its share of the window: a longer list scrolls.
         let rows = match shown {
-            Sheet::Layers => (app.session.map().layers.len() + app.session.map().tiles.len()).max(1),
+            Sheet::Layers => (app.session.map().layers.len() + app.session.map().tiles.len()).max(1) + usize::from(has_views(app)),
             // Go to My Position is there only while the position is shown.
             // The position rows while it is shown; the track's row alone while one is recorded
             // with it off.
@@ -172,7 +196,8 @@ pub fn chrome(app: &mut RustGisApp, ui: &mut Ui) {
             Sheet::None => 0,
         };
         let spacing = ui.spacing().item_spacing.y;
-        let wanted = (rows + 1) as f32 * (TARGET + spacing) + 2.0 * SHEET_MARGIN;
+        let groups = if shown == Sheet::More { MORE_GROUPS } else { 0 };
+        let wanted = (rows + 1) as f32 * (TARGET + spacing) + groups as f32 * (GROUP + spacing) + 2.0 * SHEET_MARGIN;
         let share = if ctx.egui_wants_keyboard_input() { TYPING_SHARE } else { SHEET_SHARE };
         let height = wanted.min(ui.available_height() * share);
         let margin = egui::Margin::symmetric(8, SHEET_MARGIN as i8);
@@ -187,7 +212,18 @@ pub fn chrome(app: &mut RustGisApp, ui: &mut Ui) {
         );
     }
     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
+        let above = ui.available_rect_before_wrap();
+        // ModelBuilder, when it is up in the map's place, takes its own taps.
+        let map = !app.mb.shown();
         app.map_view(ui);
+        // With a sheet up, a tap on the map above it lowers the sheet and does nothing to the
+        // map. It senses taps alone, so a drag or a pinch moves the map as ever.
+        if shown != Sheet::None && map {
+            let pinched = pinched(ui);
+            if ui.interact(above, egui::Id::unique("touch_dismiss"), Sense::click()).clicked() && !pinched {
+                set_sheet(ui.ctx(), Sheet::None);
+            }
+        }
         // While capturing, a cross marks the middle of the map: the point goes there, so the
         // map is moved under the cross, which a finger does more exactly than a tap.
         // Where the device is, while its position is shown.
@@ -249,6 +285,27 @@ pub fn chrome(app: &mut RustGisApp, ui: &mut Ui) {
             cross(ui.painter(), map.center(), &t);
         }
     });
+}
+
+/// Whether a second finger has touched since the first one went down. Such a gesture is a
+/// pinch, though egui counts the first finger's lift as a tap when that finger stayed still.
+/// Read from the touches themselves, as a second finger can come and go between two frames.
+/// Looked at every frame it is to be known for.
+fn pinched(ui: &Ui) -> bool {
+    let id = egui::Id::unique("touch_pinched");
+    let began = ui.input(|i| i.pointer.primary_pressed());
+    // The first finger down since the press, and whether another has touched since.
+    let kept = if began { None } else { ui.data(|d| d.get_temp::<(Option<egui::TouchId>, bool)>(id)) };
+    let (mut first, mut pinched) = kept.unwrap_or_default();
+    ui.input(|i| {
+        for event in &i.events {
+            if let egui::Event::Touch { id: finger, .. } = event {
+                pinched |= *first.get_or_insert(*finger) != *finger;
+            }
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(id, (first, pinched)));
+    pinched
 }
 
 /// Starts recording a track, turning the device's position on when it is off.
@@ -369,17 +426,56 @@ fn bar_button(ui: &mut Ui, t: &Tokens, icon: &str, label: &str, on: bool) -> boo
     response.clicked()
 }
 
-/// A sheet's heading, with the button that lowers it.
+/// A sheet's heading, with its drag handle and the button that lowers it. A swipe down on the
+/// heading lowers the sheet too.
 fn heading(ui: &mut Ui, t: &Tokens, title: &str) {
-    ui.horizontal(|ui| {
-        ui.set_min_height(TARGET);
-        ui.label(RichText::new(title).size(17.0).strong().color(t.text));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if icon_button(ui, t, "close", tl!("Close")) {
-                set_sheet(ui.ctx(), Sheet::None);
+    // The drag is sensed under the heading's widgets, so the button still takes its tap.
+    let row = ui
+        .scope_builder(egui::UiBuilder::new().id_salt("touch_heading").sense(Sense::drag()), |ui| {
+            ui.horizontal(|ui| {
+                ui.set_min_height(TARGET);
+                // Not selectable, or a drag starting on the title would select it instead.
+                ui.add(egui::Label::new(RichText::new(title).size(17.0).strong().color(t.text)).selectable(false));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if icon_button(ui, t, "close", tl!("Close")) {
+                        set_sheet(ui.ctx(), Sheet::None);
+                    }
+                });
+            });
+        })
+        .response;
+    let handle = Rect::from_center_size(egui::pos2(row.rect.center().x, row.rect.min.y + 4.0), Vec2::new(36.0, 4.0));
+    ui.painter().rect_filled(handle, CornerRadius::same(2), t.border_strong);
+    if swiped_down(ui, &row) {
+        set_sheet(ui.ctx(), Sheet::None);
+    }
+}
+
+/// Whether a drag on `row` ended this frame a finger's height or more below where it began, and
+/// further down than sideways.
+fn swiped_down(ui: &Ui, row: &egui::Response) -> bool {
+    let id = egui::Id::unique("touch_swipe");
+    // Where the finger went down on the row, kept from the press: egui lets go of it as the
+    // finger lifts. A drag the system takes away (a call, an edge gesture) ends only with the
+    // next finger lifted, so each press starts over.
+    let (pressed, origin) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.press_origin()));
+    if pressed {
+        let from = origin.filter(|at| row.interact_rect.contains(*at));
+        ui.data_mut(|d| {
+            d.remove::<egui::Pos2>(id);
+            if let Some(from) = from {
+                d.insert_temp(id, from);
             }
         });
-    });
+    }
+    if !row.drag_stopped() {
+        return false;
+    }
+    let from = ui.data_mut(|d| d.remove_temp::<egui::Pos2>(id));
+    from.zip(row.interact_pointer_pos()).is_some_and(|(from, to)| {
+        let moved = to - from;
+        moved.y >= TARGET && moved.y > moved.x.abs()
+    })
 }
 
 /// A square button of the smallest size a finger taps, showing an icon. Says whether it was
@@ -401,11 +497,79 @@ enum Row {
     Tile(usize),
 }
 
-/// The Layers sheet: the active map's layers, then its tile layers, each list top first. A row's
-/// eye shows or hides its layer, its name makes it the one acted on, and its last button zooms
-/// to it.
+/// Whether the project has more than one view (maps, layouts and an open ModelBuilder) to switch
+/// between.
+fn has_views(app: &RustGisApp) -> bool {
+    app.session.project.maps.len() + app.session.project.layouts.len() + usize::from(app.mb.open) > 1
+}
+
+/// What a view chip brings into view.
+enum View {
+    Map,
+    Layout,
+    /// ModelBuilder, left open with its model (by Back to the map, say).
+    Model,
+}
+
+/// The project's views, to switch between them where the desktop's tab strip isn't drawn: a chip
+/// for each map, then each layout, then ModelBuilder while it is open, the one in view marked.
+/// Nothing with one map, no layout and no ModelBuilder.
+fn views(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
+    if !has_views(app) {
+        return;
+    }
+    let (project, layout) = (&app.session.project, app.session.active_layout);
+    // ModelBuilder, when it is up, covers every view: none is in view, so any chip leaves it.
+    let covered = app.mb.shown();
+    // Each view's name, what it is, and whether it is in view. Read first: a tap runs a command,
+    // which changes them.
+    let mut views: Vec<(String, View, bool)> = project
+        .maps
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (m.name.clone(), View::Map, !covered && layout.is_none() && i == project.active_map))
+        .collect();
+    views.extend(project.layouts.iter().enumerate().map(|(i, l)| (l.name.clone(), View::Layout, !covered && layout == Some(i))));
+    if app.mb.open {
+        // As the desktop's tab names it.
+        let model = if app.mb.name.trim().is_empty() { tl!("Untitled model").to_string() } else { app.mb.name.trim().to_string() };
+        let name = rustgis_ui_egui::i18n::fmt("ModelBuilder: {name}", &[("name", &model)]);
+        views.push((name, View::Model, covered));
+    }
+    egui::ScrollArea::horizontal().id_salt("touch_views").show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.set_min_height(TARGET);
+            for (name, view, on) in views {
+                let text = RichText::new(&name).size(15.0).color(if on { t.accent_text } else { t.text });
+                let chip = egui::Button::new(text).fill(if on { t.checked } else { t.input }).min_size(Vec2::new(TARGET, TARGET - 8.0));
+                if !ui.add(chip).clicked() || on {
+                    continue;
+                }
+                // As the desktop's tab row does: the view chosen comes out from under ModelBuilder,
+                // and ModelBuilder's chip brings its model back as it was left, over the view now
+                // in sight (`ui.modelBuilder` with no name).
+                app.mb.active = false;
+                match view {
+                    View::Model => run(app, "ui.modelBuilder", Value::Null),
+                    View::Layout => run(app, "layout.activate", json!({"name": name})),
+                    View::Map => {
+                        if app.session.active_layout.is_some() {
+                            run(app, "layout.close", Value::Null);
+                        }
+                        run(app, "map.activate", json!({"name": name}));
+                    }
+                }
+            }
+        });
+    });
+}
+
+/// The Layers sheet: the project's views ([`views`]), then the active map's layers and its tile
+/// layers, each list top first. A row's eye shows or hides its layer, its name makes it the one
+/// acted on, and its last button zooms to it.
 fn layers(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     heading(ui, t, tl!("Layers"));
+    views(app, ui, t);
     // Read first: a row's button runs a command, which changes the lists it is drawn from.
     let map = app.session.map();
     let active = app.session.active_layer;
@@ -1570,34 +1734,31 @@ fn edit_sheet(
     });
 }
 
-/// The More sheet: what is done now and then, each a row as tall as a finger.
+/// The More sheet: what is done now and then, grouped under headings, each a row as tall as a
+/// finger.
 fn more(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     heading(ui, t, tl!("More"));
-    let rows: [(&str, &str, &str); 7] = [
-        ("zoom_full", tl!("Full Extent"), "map.zoomFull"),
-        ("open", tl!("Open Project"), "ui.open"),
-        ("save", tl!("Save Project"), "ui.save"),
-        // Save writes back where the project came from: this asks where.
-        ("save", tl!("Save Project As…"), "ui.saveAs"),
-        ("new", tl!("New Project"), "project.new"),
-        ("undo", tl!("Undo"), "edit.undo"),
-        ("redo", tl!("Redo"), "edit.redo"),
-    ];
     egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
-        for (icon, label, command) in rows {
-            if row(ui, t, icon, label) {
-                // While unused copies are being removed, nothing may bring back or open a layer
-                // reading one: the project was looked at once, as the removal began.
-                if copies::removing(ui.ctx()) && ["edit.undo", "edit.redo", "ui.open", "project.new"].contains(&command) {
-                    app.session.notify(tl!("Wait for the unused copies to be removed."), false);
-                    continue;
-                }
-                // Open and New ask first when the project has unsaved changes: the front end's
-                // own question, as for the ribbon's buttons.
-                set_sheet(ui.ctx(), Sheet::None);
-                run(app, command, Value::Null);
-            }
+        group(ui, t, tl!("Map"));
+        let map =
+            [("zoom_full", tl!("Full Extent"), "map.zoomFull"), ("undo", tl!("Undo"), "edit.undo"), ("redo", tl!("Redo"), "edit.redo")];
+        command_rows(app, ui, t, &map);
+        group(ui, t, tl!("Project"));
+        let project = [
+            ("open", tl!("Open Project"), "ui.open"),
+            ("save", tl!("Save Project"), "ui.save"),
+            // Save writes back where the project came from: this asks where.
+            ("save", tl!("Save Project As…"), "ui.saveAs"),
+            ("new", tl!("New Project"), "project.new"),
+        ];
+        command_rows(app, ui, t, &project);
+        // A map opened from a field package goes back as one: its edits and photos, for Bring Back
+        // on the computer it came from.
+        if can_send_field_package(app) && row(ui, t, "package", tl!("Send Field Package")) {
+            set_sheet(ui.ctx(), Sheet::None);
+            run(app, "ui.saveItem", json!({"kind": "fieldPackage"}));
         }
+        group(ui, t, tl!("Position"));
         // The device's position, where the shell can report one (it asks the user's leave first).
         let ctx = ui.ctx().clone();
         let locate = if app.locate { tl!("Hide My Position") } else { tl!("Show My Position") };
@@ -1626,12 +1787,7 @@ fn more(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 }
             }
         }
-        // A map opened from a field package goes back as one: its edits and photos, for Bring Back
-        // on the computer it came from.
-        if can_send_field_package(app) && row(ui, t, "package", tl!("Send Field Package")) {
-            set_sheet(&ctx, Sheet::None);
-            run(app, "ui.saveItem", json!({"kind": "fieldPackage"}));
-        }
+        group(ui, t, tl!("Tools"));
         // The copies of picked files nothing in the project names, removed once agreed.
         if copies::folder().is_some_and(|f| f.is_dir()) {
             copies_row(app, ui, t, &ctx);
@@ -1651,6 +1807,37 @@ fn more(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             }
         }
     });
+}
+
+/// A heading over a group of a sheet's rows.
+fn group(ui: &mut Ui, t: &Tokens, title: &str) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), GROUP), Sense::hover());
+    ui.painter().text(
+        egui::pos2(rect.min.x + 12.0, rect.max.y - 4.0),
+        egui::Align2::LEFT_BOTTOM,
+        title,
+        egui::FontId::proportional(13.0),
+        t.text_dim,
+    );
+}
+
+/// A row for each of `rows` (icon, label, command): tapped, the sheet is lowered and the command
+/// run.
+fn command_rows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, rows: &[(&str, &str, &str)]) {
+    for &(icon, label, command) in rows {
+        if row(ui, t, icon, label) {
+            // While unused copies are being removed, nothing may bring back or open a layer
+            // reading one: the project was looked at once, as the removal began.
+            if copies::removing(ui.ctx()) && ["edit.undo", "edit.redo", "ui.open", "project.new"].contains(&command) {
+                app.session.notify(tl!("Wait for the unused copies to be removed."), false);
+                continue;
+            }
+            // Open and New ask first when the project has unsaved changes: the front end's own
+            // question, as for the ribbon's buttons.
+            set_sheet(ui.ctx(), Sheet::None);
+            run(app, command, Value::Null);
+        }
+    }
 }
 
 /// How many rows Remove Unused Copies takes in the More sheet: none on a computer, two while it
@@ -1918,6 +2105,370 @@ mod tests {
         app.session.mark_saved();
         run(&mut app, "project.new", Value::Null);
         assert!(app.session.map().layers.is_empty());
+    }
+
+    /// The whole app in the touch interface, in a phone's window, worked by one finger.
+    struct Held {
+        app: RustGisApp,
+        ctx: egui::Context,
+        time: f64,
+    }
+
+    impl Held {
+        fn new() -> Held {
+            let mut held = Held { app: RustGisApp::with_sample(), ctx: egui::Context::default(), time: 0.0 };
+            held.app.chrome = Some(chrome);
+            // The fonts and the panels take a few frames to settle.
+            for _ in 0..5 {
+                held.frame(Vec::new());
+            }
+            held
+        }
+
+        /// Runs a frame with `events`, returning the words painted in sight, each with its place.
+        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<(String, Rect)> {
+            self.time += 0.1;
+            let screen_rect = Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(411.0, 800.0)));
+            let input = egui::RawInput { screen_rect, time: Some(self.time), events, ..Default::default() };
+            let app = &mut self.app;
+            let output = self.ctx.run_ui(input, |ui| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            });
+            let words = output
+                .shapes
+                .iter()
+                .filter_map(|painted| match &painted.shape {
+                    egui::epaint::Shape::Text(text) => {
+                        let at = text.visual_bounding_rect();
+                        painted.clip_rect.intersects(at).then(|| (text.galley.text().to_string(), at))
+                    }
+                    _ => None,
+                })
+                .collect();
+            output.drop_without_applying_deltas();
+            words
+        }
+
+        /// A finger put down at the first of `path`, moved through the rest and lifted, a frame
+        /// for each step.
+        fn touch(&mut self, path: &[egui::Pos2]) {
+            use egui::TouchPhase::{End, Move, Start};
+            let Some((&first, &last)) = path.first().zip(path.last()) else { return };
+            let touch =
+                |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(0), id: egui::TouchId(0), phase, pos, force: None };
+            let button = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![touch(Start, first), egui::Event::PointerMoved(first), button(first, true)]);
+            for &pos in path.iter().skip(1) {
+                self.frame(vec![touch(Move, pos), egui::Event::PointerMoved(pos)]);
+            }
+            self.frame(vec![touch(End, last), button(last, false), egui::Event::PointerGone]);
+            // What the tap did is drawn, and past the time of a double tap.
+            self.time += 1.0;
+            self.frame(Vec::new());
+        }
+
+        /// Two fingers: the first, which egui takes for the pointer, stays at `still` while a
+        /// second moves from `from` to `to`; then both lift, the first one first.
+        fn pinch(&mut self, still: egui::Pos2, from: egui::Pos2, to: egui::Pos2) {
+            use egui::TouchPhase::{End, Move, Start};
+            let touch =
+                |id, phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(0), id: egui::TouchId(id), phase, pos, force: None };
+            let button = |pressed| egui::Event::PointerButton {
+                pos: still,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![touch(0, Start, still), egui::Event::PointerMoved(still), button(true)]);
+            self.frame(vec![touch(1, Start, from)]);
+            self.frame(vec![touch(1, Move, from.lerp(to, 0.5))]);
+            self.frame(vec![touch(1, Move, to)]);
+            self.frame(vec![touch(0, End, still), button(false), egui::Event::PointerGone]);
+            self.frame(vec![touch(1, End, to)]);
+            self.time += 1.0;
+            self.frame(Vec::new());
+        }
+
+        /// A finger moved along `path` and then taken away by the system, not lifted.
+        fn cancelled(&mut self, path: &[egui::Pos2]) {
+            use egui::TouchPhase::{Cancel, Move, Start};
+            let Some((&first, &last)) = path.first().zip(path.last()) else { return };
+            let touch =
+                |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(0), id: egui::TouchId(0), phase, pos, force: None };
+            let press = egui::Event::PointerButton {
+                pos: first,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![touch(Start, first), egui::Event::PointerMoved(first), press]);
+            for &pos in path.iter().skip(1) {
+                self.frame(vec![touch(Move, pos), egui::Event::PointerMoved(pos)]);
+            }
+            // As egui-winit reports it: the touch cancelled and the pointer gone.
+            self.frame(vec![touch(Cancel, last), egui::Event::PointerGone]);
+            self.time += 1.0;
+            self.frame(Vec::new());
+        }
+
+        /// A finger held at `still` and lifted, with `second` arriving in one frame between.
+        fn quick_second_finger(&mut self, still: egui::Pos2, second: Vec<egui::Event>) {
+            use egui::TouchPhase::{End, Start};
+            let touch =
+                |phase| egui::Event::Touch { device_id: egui::TouchDeviceId(0), id: egui::TouchId(0), phase, pos: still, force: None };
+            let button = |pressed| egui::Event::PointerButton {
+                pos: still,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![touch(Start), egui::Event::PointerMoved(still), button(true)]);
+            self.frame(second);
+            self.frame(vec![touch(End), button(false), egui::Event::PointerGone]);
+            self.time += 1.0;
+            self.frame(Vec::new());
+        }
+
+        /// Where `word` is painted.
+        fn find(&mut self, word: &str) -> Option<Rect> {
+            self.frame(Vec::new()).into_iter().find(|(text, _)| text == word).map(|(_, at)| at)
+        }
+
+        /// Raises `to` and returns the middle of its heading's title.
+        fn raise(&mut self, to: Sheet, title: &str) -> egui::Pos2 {
+            set_sheet(&self.ctx, to);
+            // The bar has a button of the same word, below the heading: the heading comes first.
+            self.frame(Vec::new());
+            let words = self.frame(Vec::new());
+            let heading = words.iter().filter(|(text, _)| text == title).map(|(_, at)| at.center());
+            heading.min_by(|a, b| a.y.total_cmp(&b.y)).unwrap()
+        }
+    }
+
+    #[test]
+    fn a_swipe_down_on_a_sheets_heading_lowers_it() {
+        let mut held = Held::new();
+        for (sheet_up, title) in [(Sheet::Layers, "Layers"), (Sheet::Capture, "Capture"), (Sheet::More, "More")] {
+            let title_at = held.raise(sheet_up, title);
+            // The title itself, and the bare heading beside it.
+            for from in [title_at, egui::pos2(205.0, title_at.y)] {
+                held.raise(sheet_up, title);
+                let to = |dx: f32, dy: f32| [from, from + Vec2::new(dx / 2.0, dy / 2.0), from + Vec2::new(dx, dy)];
+                // Short, sideways or upward is no swipe down.
+                for (dx, dy) in [(0.0, 30.0), (150.0, 60.0), (0.0, -120.0)] {
+                    held.touch(&to(dx, dy));
+                    assert_eq!(sheet(&held.ctx), sheet_up, "{title}: {dx}, {dy}");
+                }
+                // Taken away by the system, however far it had gone, it is none either, nor
+                // does it make one of a tap further down afterwards.
+                held.cancelled(&to(0.0, 20.0));
+                // (At the sheet's edge, where no row takes the tap.)
+                held.touch(&[egui::pos2(1.0, from.y + 120.0)]);
+                assert_eq!(sheet(&held.ctx), sheet_up, "{title}: cancelled");
+                held.touch(&to(10.0, 120.0));
+                assert_eq!(sheet(&held.ctx), Sheet::None, "{title}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tap_on_the_map_lowers_the_sheet_and_a_drag_or_a_pinch_moves_the_map() {
+        let mut held = Held::new();
+        run(&mut held.app, "tool.set", json!({"tool": "measure"}));
+        held.raise(Sheet::Layers, "Layers");
+        let at = egui::pos2(200.0, 150.0);
+        let before = held.app.session.map().camera;
+        held.touch(&[at, at + Vec2::new(30.0, 20.0), at + Vec2::new(60.0, 40.0)]);
+        let dragged = held.app.session.map().camera;
+        assert_ne!(dragged.center, before.center, "the drag panned the map");
+        held.pinch(at, at + Vec2::new(40.0, 40.0), at + Vec2::new(120.0, 120.0));
+        assert!(held.app.session.map().camera.res < dragged.res, "the pinch zoomed the map");
+        assert_eq!(sheet(&held.ctx), Sheet::Layers);
+        // Nor is a second finger that comes and goes between two frames a tap.
+        let other = |phase| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: egui::TouchId(1),
+            phase,
+            pos: at + Vec2::new(60.0, 60.0),
+            force: None,
+        };
+        use egui::TouchPhase::{End, Start};
+        held.quick_second_finger(at, vec![other(Start), other(End)]);
+        assert_eq!(sheet(&held.ctx), Sheet::Layers);
+        // The tap only lowers the sheet: no point is measured from it. The next one is.
+        held.touch(&[at]);
+        assert_eq!(sheet(&held.ctx), Sheet::None);
+        assert_eq!(held.app.map.sketch_len(), 0);
+        held.touch(&[at]);
+        assert_eq!(held.app.map.sketch_len(), 1);
+    }
+
+    #[test]
+    fn back_lowers_a_sheet_and_is_not_taken_without_one() {
+        let mut held = Held::new();
+        let back =
+            || egui::Event::Key { key: Key::BrowserBack, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        assert!(!takes_back(&held.app, &held.ctx));
+        held.raise(Sheet::More, "More");
+        assert!(takes_back(&held.app, &held.ctx));
+        held.frame(vec![back()]);
+        assert_eq!(sheet(&held.ctx), Sheet::None);
+        assert!(!takes_back(&held.app, &held.ctx));
+        // Nor with a dialog over the sheet.
+        held.raise(Sheet::More, "More");
+        run(&mut held.app, "ui.dialog", json!({"name": "addService"}));
+        held.frame(Vec::new());
+        assert!(!takes_back(&held.app, &held.ctx));
+        held.frame(vec![back()]);
+        assert_eq!(sheet(&held.ctx), Sheet::More);
+        held.app.dialogs.open = None;
+        held.frame(vec![back()]);
+        assert_eq!(sheet(&held.ctx), Sheet::None);
+        // With a question up, Back is not the sheet's.
+        held.raise(Sheet::More, "More");
+        let first = held.app.session.map().layers.first().map(|l| l.id);
+        run(&mut held.app, "layer.rename", json!({"layer": first, "name": "Renamed"}));
+        run(&mut held.app, "project.new", Value::Null);
+        held.frame(Vec::new());
+        held.frame(Vec::new());
+        assert!(!takes_back(&held.app, &held.ctx));
+        held.frame(vec![back()]);
+        assert_eq!(sheet(&held.ctx), Sheet::More);
+        assert!(held.app.session.dirty(), "the changes are kept");
+    }
+
+    #[test]
+    fn the_touch_map_has_no_tabs_or_zoom_buttons_and_the_layers_sheet_switches_views() {
+        let mut held = Held::new();
+        let first = held.app.session.map().name.clone();
+        assert_eq!(held.find(&first), None, "no view tab");
+        // Where the desktop's Zoom In button is.
+        let res = held.app.session.map().camera.res;
+        held.touch(&[egui::pos2(411.0 - 28.0, 28.0)]);
+        assert_eq!(held.app.session.map().camera.res, res);
+        run(&mut held.app, "map.new", json!({"name": "Second"}));
+        run(&mut held.app, "layout.new", json!({"name": "Sheet A"}));
+        run(&mut held.app, "layout.close", Value::Null);
+        held.raise(Sheet::Layers, "Layers");
+        for (name, map, layout) in [(first.as_str(), 0, None), ("Sheet A", 0, Some(0)), ("Second", 1, None)] {
+            let chip = held.find(name).unwrap().center();
+            held.touch(&[chip]);
+            assert_eq!((held.app.session.project.active_map, held.app.session.active_layout), (map, layout), "{name}");
+            assert_eq!(sheet(&held.ctx), Sheet::Layers);
+        }
+        // Over ModelBuilder, the map in view's own chip brings it back out.
+        run(&mut held.app, "ui.modelBuilder", json!({}));
+        held.raise(Sheet::Layers, "Layers");
+        let chip = held.find("Second").unwrap().center();
+        held.touch(&[chip]);
+        assert!(!held.app.mb.shown(), "the map is in view again");
+        assert_eq!((held.app.session.project.active_map, held.app.session.active_layout), (1, None));
+    }
+
+    /// Toasts stand above the map's foot, as many of them as fit there, never over the sheet.
+    #[test]
+    fn toasts_stand_over_the_map_and_off_the_sheet() {
+        let mut held = Held::new();
+        held.raise(Sheet::Layers, "Layers");
+        for i in 0..3 {
+            // Several lines each: taller than a one-line toast.
+            held.app.session.notify(format!("Toast {i}\nline 2\nline 3\nline 4"), false);
+        }
+        // A toast's first frame measures it, unseen.
+        held.frame(Vec::new());
+        let words = held.frame(Vec::new());
+        let foot = held.app.map.view_rect.unwrap().0.max.y;
+        let toasts: Vec<Rect> = words.iter().filter(|(text, _)| text.starts_with("Toast ")).map(|(_, at)| *at).collect();
+        assert!(toasts.len() > 1, "the map above the sheet has room for more than one: {toasts:?}");
+        for (i, at) in toasts.iter().enumerate() {
+            assert!(at.max.y <= foot, "{at:?} is over the sheet, below {foot}");
+            assert!(toasts[i + 1..].iter().all(|other| !other.intersects(*at)), "{at:?} overlaps another");
+        }
+    }
+
+    /// An older toast too tall for the room left above the newer ones waits, rather than being
+    /// pushed down over them.
+    #[test]
+    fn a_toast_too_tall_for_the_room_left_waits() {
+        let mut held = Held::new();
+        held.raise(Sheet::Layers, "Layers");
+        let tall: Vec<String> = (0..30).map(|i| format!("line {i}")).collect();
+        held.app.session.notify(format!("Toast tall\n{}", tall.join("\n")), false);
+        held.app.session.notify("Toast short 1", false);
+        held.app.session.notify("Toast short 2", false);
+        for _ in 0..3 {
+            held.frame(Vec::new());
+        }
+        let words = held.frame(Vec::new());
+        let toasts: Vec<(String, Rect)> = words.into_iter().filter(|(text, _)| text.starts_with("Toast ")).collect();
+        assert!(toasts.iter().any(|(text, _)| text.starts_with("Toast short 2")), "the newest is shown: {toasts:?}");
+        for (i, (_, at)) in toasts.iter().enumerate() {
+            assert!(at.min.y >= 0.0, "{at:?} runs off the top");
+            assert!(toasts[i + 1..].iter().all(|(_, other)| !other.intersects(*at)), "{at:?} overlaps another");
+        }
+    }
+
+    /// ModelBuilder, left open in the desktop interface, has no tab here: its own button leaves it.
+    #[test]
+    fn model_builder_is_left_for_the_map_by_a_button_in_sight() {
+        let mut held = Held::new();
+        run(&mut held.app, "ui.modelBuilder", json!({}));
+        // A model on the canvas, never saved: every way back keeps it.
+        held.app.mb.graph = serde_json::from_value(json!({"nodes": [{"id": "in", "kind": "input", "layer": "Cities"}]})).unwrap();
+        held.frame(Vec::new());
+        assert_eq!(held.find("France"), None, "the model is in view, not the map");
+        let back = held.find("Back to the map").unwrap();
+        assert!(back.max.x <= 411.0, "{back:?}");
+        held.touch(&[back.center()]);
+        assert!(held.find("France").is_some());
+        // Left open, its model is a view in the Layers sheet, which brings it back as it was.
+        held.raise(Sheet::Layers, "Layers");
+        let chip = held.find("ModelBuilder: Model").unwrap().center();
+        held.touch(&[chip]);
+        assert!(held.app.mb.shown());
+        // With the sheet still up, Back to the map takes the first tap.
+        assert_eq!(sheet(&held.ctx), Sheet::Layers);
+        let back = held.find("Back to the map").unwrap();
+        held.touch(&[back.center()]);
+        assert!(!held.app.mb.shown(), "one tap goes back to the map");
+        // Opened over a layout, it still goes back to the map.
+        run(&mut held.app, "layout.new", json!({"name": "Sheet A"}));
+        run(&mut held.app, "ui.modelBuilder", json!({}));
+        held.frame(Vec::new());
+        let back = held.find("Back to the map").unwrap();
+        held.touch(&[back.center()]);
+        assert_eq!(held.app.session.active_layout, None);
+        assert!(held.find("France").is_some());
+        // The layout it was opened over is gone, and the chip still brings it back to stay.
+        held.raise(Sheet::Layers, "Layers");
+        let chip = held.find("ModelBuilder: Model").unwrap().center();
+        held.touch(&[chip]);
+        held.frame(Vec::new());
+        held.frame(Vec::new());
+        assert!(held.app.mb.shown());
+        assert_eq!(held.find("France"), None, "the model is in view, not the map");
+        let nodes: Vec<_> = held.app.mb.graph.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(nodes, ["in"]);
+    }
+
+    #[test]
+    fn a_finger_above_the_words_of_cancel_stops_a_download() {
+        // Never answered, so the download stays under way until it is cancelled.
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/pin.geojson", server.local_addr().unwrap());
+        let mut held = Held::new();
+        run(&mut held.app, "ui.addUrl", json!({"url": url}));
+        assert!(held.app.background_busy());
+        let words = held.find("Cancel").unwrap();
+        // Well outside a desktop button around the words, inside a finger's.
+        held.touch(&[words.center() - Vec2::new(0.0, 19.0)]);
+        assert!(!held.app.background_busy());
     }
 
     /// The sample's layer of `kind`, made the active one, as the sheet resolves it.

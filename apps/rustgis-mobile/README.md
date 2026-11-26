@@ -95,11 +95,18 @@ Rust calls Java and never the other way: each frame the app collects what happen
 ## The touch interface
 
 A phone starts in the touch interface: the map, a bar of four large buttons under it (Layers, Add
-Data, Capture, More) and sheets that rise over the map. The Layers sheet shows and hides layers,
-zooms to one and makes one the active layer; the More sheet has Full Extent, the project, undo
-and redo, and **Use the Desktop Interface**, which brings back the ribbon and panes; **Touch
+Data, Capture, More) and sheets that rise over the map. The Layers sheet switches between the
+project's maps and layouts when it has more than one, shows and hides layers, zooms to one and
+makes one the active layer; the More sheet has Full Extent, undo and redo, the project, the
+position, and **Use the Desktop Interface**, which brings back the ribbon and panes; **Touch
 Interface**, on the View tab (or Use the Touch Interface in Command Search), returns to the phone's
-interface.
+interface. The map has no zoom buttons or view tabs there: a finger pinches to zoom.
+
+A sheet is lowered by its **×**, a swipe down on its heading, a tap on the map above it, or
+Android's Back. Android 16 on sends an app targeting it no Back key, so the activity's Java half
+registers a callback while a sheet is up (`takesBack`), and asks the window for a frame when Back
+comes; older Androids send the key, which the app reads. With no sheet up, Back does what it did
+before.
 
 **Capture** adds a feature to one of the map's point, line or polygon layers. A cross marks the
 middle of the map: the map is moved under it, and the sheet's fields are filled in (one for each

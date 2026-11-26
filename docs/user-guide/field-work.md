@@ -18,14 +18,15 @@ A phone opens in the touch interface: the map, with a bar of four large buttons 
 
 | Button | What it does |
 | --- | --- |
-| **Layers** | Shows and hides layers, zooms to one, and makes one the active layer |
+| **Layers** | Shows and hides layers, zooms to one, makes one the active layer, and switches between the project's maps and layouts |
 | **Add Data** | Opens files with the system's picker (Android's Files, iOS's document picker) |
 | **Capture** | Adds and edits features at the cross in the middle of the map |
-| **More** | Full Extent, the project, Undo and Redo, the position, tracks and the rest |
+| **More** | Full Extent, Undo and Redo, the project, the position, tracks and the rest |
 
-Each button opens a sheet that rises over the map. **Use the Desktop Interface**, in the More
-sheet, brings back the ribbon and panes; **Touch Interface**, on the View tab (or Use the Touch
-Interface in Command Search), returns to the phone's interface.
+Each button opens a sheet that rises over the map. To close it, tap its **×**, swipe down on its
+heading, tap the map above it, or use Android's Back. Pinch the map to zoom. **Use the Desktop
+Interface**, in the More sheet, brings back the ribbon and panes; **Touch Interface**, on the View
+tab (or Use the Touch Interface in Command Search), returns to the phone's interface.
 
 ## Opening data
 

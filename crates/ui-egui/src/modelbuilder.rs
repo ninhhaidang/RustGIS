@@ -624,7 +624,9 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let full = ui.available_rect_before_wrap();
     ui.painter().rect_filled(full, 0.0, t.pane);
-    let bar = Rect::from_min_size(full.min, vec2(full.width(), 40.0));
+    // A shell with its own interface puts a finger-sized Back to the map in the toolbar.
+    let bar_h = if app.chrome.is_some() { crate::chrome::FINGER + 12.0 } else { 40.0 };
+    let bar = Rect::from_min_size(full.min, vec2(full.width(), bar_h));
     let body = Rect::from_min_max(pos2(full.min.x, bar.max.y), full.max);
     let narrow = body.width() < 760.0;
     let palette_w = if narrow { 0.0 } else { PALETTE_W };
@@ -661,6 +663,17 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
 
 fn toolbar(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, problems: &[model::Problem]) {
     ui.horizontal_centered(|ui| {
+        // A shell with its own interface has no view tabs, and on a phone the buttons at the far
+        // end are past the window's edge: the way back to the map comes first.
+        let back = egui::Button::new(tl!("Back to the map")).min_size(vec2(0.0, crate::chrome::FINGER));
+        if app.chrome.is_some() && ui.add(back).clicked() {
+            app.mb.active = false;
+            // Opened over a layout, the layout would show in its place. A close that fails is
+            // said by `run`, as any command's failure is.
+            if app.session.active_layout.is_some() {
+                let _ = app.run("layout.close", serde_json::Value::Null);
+            }
+        }
         let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
         icons::paint(ui.painter(), r, "modelbuilder", t.icon, t.accent);
         ui.add(egui::TextEdit::singleline(&mut app.mb.name).hint_text(tl!("Untitled model")).desired_width(170.0).font(semibold(13.0)));

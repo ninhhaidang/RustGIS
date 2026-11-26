@@ -101,6 +101,25 @@ impl Phone {
         }
     }
 
+    /// Takes Android's Back from the system (`on`) or gives it up, where the system keeps it from
+    /// an app that doesn't ask (Android 16 on).
+    pub fn takes_back(&self, on: bool) {
+        let asked = self.java(|env, activity| {
+            env.call_method(activity, jni_str!("takesBack"), jni_sig!((on: boolean) -> void), &[JValue::Bool(on)])?.v()
+        });
+        if let Err(e) = asked {
+            log::warn!("{e}");
+        }
+    }
+
+    /// Whether Back, taken from the system, came since this was last asked. A refusal is logged,
+    /// as `takes_back`'s is, and counts as no Back.
+    pub fn take_back(&self) -> bool {
+        self.java(|env, activity| env.call_method(activity, jni_str!("takeBack"), jni_sig!(() -> boolean), &[])?.z())
+            .inspect_err(|e| log::warn!("{e}"))
+            .unwrap_or(false)
+    }
+
     /// Whether a picker for opening is on the screen and hasn't answered.
     pub fn picking(&self) -> bool {
         self.java(|env, activity| env.call_method(activity, jni_str!("picking"), jni_sig!(() -> boolean), &[])?.z()).unwrap_or(false)

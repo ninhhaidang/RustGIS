@@ -35,6 +35,14 @@ impl shell::Phone for Phone {
     fn copy_text(&self, text: &str) -> Result<(), String> {
         Phone::copy_text(self, text)
     }
+
+    fn takes_back(&self, on: bool) {
+        Phone::takes_back(self, on);
+    }
+
+    fn take_back(&self) -> bool {
+        Phone::take_back(self)
+    }
 }
 
 /// Points the app's folders (`rustgis_data::dirs`) at the app's own storage: Android has no

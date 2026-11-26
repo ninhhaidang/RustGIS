@@ -846,7 +846,10 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     app.map.follow_project(app.session.opened);
     let t = Tokens::get(ui.ctx());
     crate::modelbuilder::follow_view(app);
-    view_tabs(app, ui, &t);
+    // A shell with its own interface (the touch interface) switches views itself.
+    if app.chrome.is_none() {
+        view_tabs(app, ui, &t);
+    }
     crate::vertexedit::cancel_stale_drag(app);
     crate::vertexedit::say_unplaced(app);
     if app.mb.shown() {
@@ -4083,7 +4086,15 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
         p.rect_filled(r, CornerRadius::same(3), t.ribbon.gamma_multiply(0.75));
         p.galley(r.min + vec2(5.0, 2.0), g, t.text_dim);
     }
-    // Navigation buttons (zoom in/out/full) in the top-right corner.
+    // Navigation buttons (zoom in/out/full) in the top-right corner. A shell with its own
+    // interface has none: a finger pinches to zoom, and the shell offers Full Extent.
+    if app.chrome.is_none() {
+        navigation(app, ui, p, rect, t);
+    }
+}
+
+/// The map's Zoom In, Zoom Out and Full Extent buttons, in the top-right corner of `rect`.
+fn navigation(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t: &Tokens) {
     let mut y = rect.min.y + 12.0;
     for (icon, id, tip) in
         [("zoom_in", "map.zoomIn", "Zoom in"), ("zoom_out", "map.zoomOut", "Zoom out"), ("zoom_full", "map.zoomFull", "Full extent")]

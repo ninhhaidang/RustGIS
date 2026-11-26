@@ -85,6 +85,12 @@ public class MainActivity extends NativeActivity {
     /** Why TrackService couldn't run, until takeEvents says so. */
     private static final java.util.concurrent.atomic.AtomicReference<String> refusal =
             new java.util.concurrent.atomic.AtomicReference<>();
+    /** The callback Back comes to while the Rust side takes it (the main thread's alone). */
+    private Object backCallback;
+    /** Back came to backCallback and takeBack hasn't said so yet. */
+    private final java.util.concurrent.atomic.AtomicBoolean back = new java.util.concurrent.atomic.AtomicBoolean();
+    /** The window's surface while it has one (the main thread's alone): a frame is asked of it. */
+    private android.view.SurfaceHolder surface;
     /** The activity, while it is created: TrackService's refusal reaches it at once. */
     private static volatile MainActivity current;
     /** The listener positions arrive on, while they are asked for. */
@@ -161,6 +167,54 @@ public class MainActivity extends NativeActivity {
                 view.setSystemUiVisibility(light ? flags | both : flags & ~both);
             }
         });
+    }
+
+    /**
+     * Takes Back from the system while the Rust side has a sheet it lowers (on), or gives it
+     * back, so Back does what the system does with it. Needed from Android 16, which sends an
+     * app targeting it no Back key; older ones send the key, and the Rust side reads that.
+     */
+    public void takesBack(final boolean on) {
+        if (android.os.Build.VERSION.SDK_INT < 36) {
+            return;
+        }
+        runOnUiThread(() -> {
+            if (on && backCallback == null) {
+                android.window.OnBackInvokedCallback callback = () -> {
+                    back.set(true);
+                    // The Rust side draws only when something happens: ask it for a frame.
+                    if (surface != null) {
+                        surfaceRedrawNeeded(surface);
+                    }
+                };
+                getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                        android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback);
+                backCallback = callback;
+            } else if (!on && backCallback != null) {
+                getOnBackInvokedDispatcher()
+                        .unregisterOnBackInvokedCallback((android.window.OnBackInvokedCallback) backCallback);
+                backCallback = null;
+                // One not read yet lowered nothing: it isn't kept for the next sheet.
+                back.set(false);
+            }
+        });
+    }
+
+    /** Whether Back came since this was last asked. */
+    public boolean takeBack() {
+        return back.getAndSet(false);
+    }
+
+    @Override
+    public void surfaceCreated(android.view.SurfaceHolder holder) {
+        super.surfaceCreated(holder);
+        surface = holder;
+    }
+
+    @Override
+    public void surfaceDestroyed(android.view.SurfaceHolder holder) {
+        surface = null;
+        super.surfaceDestroyed(holder);
     }
 
     /**

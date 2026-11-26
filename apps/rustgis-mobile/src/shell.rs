@@ -65,6 +65,17 @@ pub trait Phone: Platform {
         let _ = text;
         Ok(())
     }
+
+    /// Asks the system for its Back (`on`), or leaves it to the system, where it keeps Back from
+    /// an app that doesn't ask (Android 16 on). Where Back comes as a key, or there is none (iOS),
+    /// this does nothing.
+    fn takes_back(&self, _on: bool) {}
+
+    /// Whether the system's Back asked for came since the last frame, where it comes as no key egui
+    /// knows (Android 16 on). The shell gives egui the Back key for it.
+    fn take_back(&self) -> bool {
+        false
+    }
 }
 
 /// What a service couldn't do, kept until the next frame says it in the window (a service has
@@ -122,6 +133,9 @@ struct App<P: Phone> {
     keeping: bool,
     /// Whether the soft keyboard was up, where the phone says.
     keyboard: Option<bool>,
+    /// Whether the interface has something Back lowers (`rustgis_ui_touch::takes_back`), as
+    /// the phone was last told.
+    back: bool,
     /// Until when the window looks again for the soft keyboard's room: a moment after the
     /// last frame a field wanted the keyboard.
     typing: Option<std::time::Instant>,
@@ -670,6 +684,13 @@ impl<P: Phone> eframe::App for App<P> {
             });
             copy_out(&mut self.app, phone.as_ref(), copied);
         }
+        let back = rustgis_ui_touch::takes_back(&self.app, &ctx);
+        if back != self.back {
+            self.back = back;
+            if let Some(phone) = &self.phone {
+                phone.takes_back(back);
+            }
+        }
         // A second picker asked for while one was up was refused: what the front end kept for
         // the first is put back, so its file is read as it was asked for.
         if self.refused_picker.replace(false)
@@ -718,15 +739,11 @@ impl<P: Phone> eframe::App for App<P> {
         // The soft keyboard's Return, as the Enter key egui knows: each field does with it what
         // it does with Enter.
         if self.phone.as_ref().is_some_and(|phone| phone.take_return()) {
-            for pressed in [true, false] {
-                raw_input.events.push(egui::Event::Key {
-                    key: egui::Key::Enter,
-                    physical_key: None,
-                    pressed,
-                    repeat: false,
-                    modifiers: egui::Modifiers::NONE,
-                });
-            }
+            press(raw_input, egui::Key::Enter);
+        }
+        // The system's Back, as the key older Androids send for it.
+        if self.back && self.phone.as_ref().is_some_and(|phone| phone.take_back()) {
+            press(raw_input, egui::Key::BrowserBack);
         }
         if !self.phone.as_ref().is_some_and(|phone| phone.picking()) {
             self.kept.borrow_mut().take();
@@ -740,6 +757,13 @@ impl<P: Phone> eframe::App for App<P> {
             raw_input.dropped_files.push(Arc::new(Pushed(path)));
         }
         self.app.drop_stale_clicks(raw_input);
+    }
+}
+
+/// Gives egui a press and release of `key`.
+fn press(raw_input: &mut egui::RawInput, key: egui::Key) {
+    for pressed in [true, false] {
+        raw_input.events.push(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE });
     }
 }
 
@@ -884,6 +908,7 @@ pub fn run<P: Phone + 'static>(
                 keeping: false,
                 typing: None,
                 keyboard: None,
+                back: false,
                 bars_light: None,
                 pushed,
                 phone,
@@ -991,6 +1016,7 @@ mod tests {
             keeping: false,
             keyboard: None,
             typing: None,
+            back: false,
             bars_light: None,
             phone: Some(phone),
             inbox: Inbox::default(),

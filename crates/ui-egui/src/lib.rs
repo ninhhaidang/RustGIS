@@ -3196,8 +3196,9 @@ impl RustGisApp {
         readjob::stop(self, std::time::Duration::from_secs(5));
     }
 
-    /// Draws the map into `ui`, with its own controls (zoom, compass, scale bar): for a shell
-    /// that lays out its own interface ([`RustGisApp::chrome`]).
+    /// Draws the map into `ui`, with its compass and scale bar: for a shell that lays out its own
+    /// interface ([`RustGisApp::chrome`]). With one in place, the map has no zoom buttons and no
+    /// view tabs: the shell offers what it needs of them.
     pub fn map_view(&mut self, ui: &mut egui::Ui) {
         mapview::show(self, ui);
     }
@@ -3217,7 +3218,8 @@ impl RustGisApp {
         chrome::background_busy(self)
     }
 
-    /// Draws that work's progress and Cancel into `ui`, as the desktop's status bar does.
+    /// Draws that work's progress and Cancel into `ui`, as the desktop's status bar does; with a
+    /// shell's interface in place ([`RustGisApp::chrome`]), at a finger's size.
     pub fn background_status(&mut self, ui: &mut egui::Ui) {
         chrome::background_status(self, ui);
     }

@@ -637,6 +637,47 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
         });
 }
 
+/// How the strip of work running off the frame is drawn: in the desktop's status bar, or at a
+/// finger's size for a shell with its own interface ([`RustGisApp::chrome`]).
+#[derive(Clone, Copy)]
+pub(crate) struct StripSize {
+    /// The size of its words.
+    pub(crate) text: f32,
+    finger: bool,
+}
+
+impl StripSize {
+    pub(crate) fn of(app: &RustGisApp) -> StripSize {
+        let finger = app.chrome.is_some();
+        StripSize { text: if finger { 14.0 } else { 11.5 }, finger }
+    }
+
+    /// A job's progress bar, `fraction` of the way.
+    pub(crate) fn progress(self, ui: &mut Ui, fraction: f32) {
+        let height = if self.finger { 20.0 } else { 12.0 };
+        ui.add(egui::ProgressBar::new(fraction).show_percentage().desired_width(120.0).desired_height(height));
+    }
+
+    /// A job's Cancel where a finger's strip has it, before the job's words, so it is in sight
+    /// however long they are. Says whether it was tapped; nothing in the status bar.
+    pub(crate) fn cancel_first(self, ui: &mut Ui, enabled: bool) -> bool {
+        let size = vec2(FINGER_CANCEL, FINGER);
+        self.finger && ui.add_enabled(enabled, egui::Button::new(egui::RichText::new(tl!("Cancel")).size(16.0)).min_size(size)).clicked()
+    }
+
+    /// A job's Cancel where the status bar has it, after the job's words. Says whether it was
+    /// clicked; nothing in a finger's strip.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn cancel_last(self, ui: &mut Ui, enabled: bool) -> bool {
+        !self.finger && ui.add_enabled(enabled, egui::Button::new(tl!("Cancel")).small()).clicked()
+    }
+}
+
+/// The height of what a finger taps, in points (Android's guidance is 48).
+pub(crate) const FINGER: f32 = 48.0;
+/// The width of a finger's strip's Cancel.
+const FINGER_CANCEL: f32 = 88.0;
+
 /// Restored local FlatGeobuf layers classify dates off the frame, including hidden maps.
 /// This status keeps progress and Cancel available until those scans finish.
 #[cfg(not(target_arch = "wasm32"))]
@@ -653,15 +694,19 @@ fn source_open_status(app: &RustGisApp, ui: &mut Ui, t: &Tokens) {
     if sources.is_empty() {
         return;
     }
+    let size = StripSize::of(app);
+    let cancellable = sources.iter().any(|(_, (_, _, cancelled))| !cancelled);
     sep(ui, t);
     ui.spinner();
-    ui.label(egui::RichText::new(tl!("Reading dates…")).size(11.5).color(t.text_dim));
+    let mut cancel = size.cancel_first(ui, cancellable);
+    ui.label(egui::RichText::new(tl!("Reading dates…")).size(size.text).color(t.text_dim));
     let (done, total) =
         sources.iter().fold((0u64, 0u64), |(done, total), (_, (d, n, _))| (done.saturating_add(*d), total.saturating_add(*n)));
     if total > 0 && sources.iter().all(|(_, (_, n, _))| *n > 0) {
-        ui.add(egui::ProgressBar::new((done as f32 / total as f32).min(1.0)).show_percentage().desired_width(120.0).desired_height(12.0));
+        size.progress(ui, (done as f32 / total as f32).min(1.0));
     }
-    if ui.add_enabled(sources.iter().any(|(_, (_, _, cancelled))| !cancelled), egui::Button::new(tl!("Cancel")).small()).clicked() {
+    cancel |= size.cancel_last(ui, cancellable);
+    if cancel {
         for (source, _) in sources {
             source.cancel_opening();
         }
@@ -718,16 +763,23 @@ fn window_reads_under_way(app: &RustGisApp) -> bool {
 /// (`RustGisApp::cancel_download`): one in the bar itself, several as a menu of them.
 fn downloads_status(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     let under_way = app.downloads_under_way();
+    let size = StripSize::of(app);
     let mut cancel = None;
     ui.spinner();
     match under_way.as_slice() {
         [] => {}
-        [one] => download_row(ui, t, one, &mut cancel),
+        [one] => download_row(ui, t, size, one, &mut cancel),
         many => {
-            ui.menu_button(crate::i18n::fmt("{n} downloads", &[("n", &many.len().to_string())]), |ui| {
-                for d in many {
-                    ui.horizontal(|ui| download_row(ui, t, d, &mut cancel));
+            ui.scope(|ui| {
+                // A finger opens the menu too; what the strip draws after it keeps its own size.
+                if size.finger {
+                    ui.spacing_mut().interact_size.y = FINGER;
                 }
+                ui.menu_button(crate::i18n::fmt("{n} downloads", &[("n", &many.len().to_string())]), |ui| {
+                    for d in many {
+                        ui.horizontal(|ui| download_row(ui, t, size, d, &mut cancel));
+                    }
+                });
             });
         }
     }
@@ -742,7 +794,11 @@ fn downloads_status(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
 /// progress and its Cancel. A file's whole download shows a bar once the server said its size and
 /// the megabytes read before; a window's read ("Reading…", as its start notice says) isn't
 /// counted, nor is a download in the browser.
-fn download_row(ui: &mut Ui, t: &Tokens, d: &crate::UnderWay, cancel: &mut Option<u64>) {
+fn download_row(ui: &mut Ui, t: &Tokens, size: StripSize, d: &crate::UnderWay, cancel: &mut Option<u64>) {
+    let hint = tl!("Stop this download; nothing is added");
+    if size.cancel_first(ui, true) {
+        *cancel = Some(d.id);
+    }
     let received = d.progress.as_ref().map_or(0, |p| p.received());
     let fraction = d.progress.as_ref().and_then(|p| p.fraction());
     let doing = match (&d.progress, fraction) {
@@ -752,14 +808,14 @@ fn download_row(ui: &mut Ui, t: &Tokens, d: &crate::UnderWay, cancel: &mut Optio
         }
         (Some(_), _) => tl!("Downloading…").to_string(),
     };
-    ui.label(egui::RichText::new(doing).size(11.5).color(t.text_dim));
+    ui.label(egui::RichText::new(doing).size(size.text).color(t.text_dim));
     let short: String =
         if d.shown.chars().count() > 48 { format!("{}…", d.shown.chars().take(47).collect::<String>()) } else { d.shown.clone() };
-    ui.label(egui::RichText::new(short).size(11.5)).on_hover_text(&d.shown);
+    ui.label(egui::RichText::new(short).size(size.text)).on_hover_text(&d.shown);
     if let Some(f) = fraction {
-        ui.add(egui::ProgressBar::new(f).show_percentage().desired_width(120.0).desired_height(12.0));
+        size.progress(ui, f);
     }
-    if ui.small_button(tl!("Cancel")).on_hover_text(tl!("Stop this download; nothing is added")).clicked() {
+    if !size.finger && ui.small_button(tl!("Cancel")).on_hover_text(hint).clicked() {
         *cancel = Some(d.id);
     }
 }
@@ -1751,11 +1807,24 @@ pub fn notices(app: &mut RustGisApp, ctx: &egui::Context) {
     }
     ctx.request_repaint_after(std::time::Duration::from_millis(250));
     let screen = ctx.content_rect();
-    let mut y = screen.max.y - 40.0;
-    for toast in app.map.toasts.iter_mut().rev().take(3) {
+    // A shell with its own interface has its bars below the map, the work strip's Cancel among
+    // them: the toasts stand at the map's foot, clear of them, each on the one before by its own
+    // height, as many of the last three as the map above has room for (the newest always, at the
+    // top when a tall sheet leaves the map none).
+    let over_map = app.chrome.and(app.map.view_rect).map(|(map, _)| map.max.y);
+    let mut y = over_map.unwrap_or(screen.max.y).max(screen.min.y + 84.0) - 40.0;
+    for (i, toast) in app.map.toasts.iter_mut().rev().take(3).enumerate() {
         // Keyed by the notice, not the slot, so a selection stays with its text as toasts come and go.
-        let shown = egui::Area::new(egui::Id::unique(("toast", toast.id)))
-            .fixed_pos(pos2(screen.max.x - 380.0, y - 44.0))
+        let id = egui::Id::unique(("toast", toast.id));
+        // Its height when last drawn (a one-line toast's before it is measured): an older one that
+        // wouldn't fit below the top waits for room, as the window would push it down over the rest.
+        let height = egui::AreaState::load(ctx, id).and_then(|a| a.size).map_or(44.0, |s| s.y);
+        if i > 0 && y - height < screen.min.y {
+            break;
+        }
+        let shown = egui::Area::new(id)
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            .fixed_pos(pos2(screen.max.x - 380.0, y))
             .order(egui::Order::Tooltip)
             .show(ctx, |ui| {
                 egui::Frame::NONE
@@ -1776,7 +1845,7 @@ pub fn notices(app: &mut RustGisApp, ctx: &egui::Context) {
         if shown.response.contains_pointer() {
             toast.at = now;
         }
-        y -= 52.0;
+        y = shown.response.rect.min.y - 8.0;
     }
 }
 
