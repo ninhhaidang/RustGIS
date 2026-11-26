@@ -127,6 +127,7 @@ jobs:
           PROPERTY_CASES=200 cargo test --locked -p rustgis-analysis --test parallel_serial
           cargo test --locked -p rustgis-analysis --test overlay_identities
           cargo test --locked -p rustgis-engine --test integration project_save_roundtrip::
+          cargo test --locked -p rustgis-engine --test integration snap_boxes::
           PROPERTY_CASES=200000 cargo test --locked -p rustgis-data --test integration reprojection_round_trip::
           PROPERTY_CASES=100000 cargo test --locked -p rustgis-geom --test geodesic_identities
           cargo test --locked -p rustgis-data --test integration extent_query_properties::

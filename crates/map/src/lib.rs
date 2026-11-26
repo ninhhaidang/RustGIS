@@ -3499,7 +3499,10 @@ impl Map {
 
     /// Every feature under a point in the visible layers `keep` accepts: top layer first and, in
     /// a layer, the one drawn on top first. At most `limit` of them; with `first_layer`, only
-    /// those of the top layer with any.
+    /// those of the top layer with any. A shape whose kept box ([`Layer::projected_extents`]) is
+    /// farther than `tol` (and a rounding margin, see `box_may_hit`) isn't read: so one with a
+    /// place the projection can't show (its ring has a gap, through which its inside would run on
+    /// past it) is hit only in or near its box, as it is drawn.
     pub fn hits_at(
         &mut self,
         p: Coord,
@@ -3526,12 +3529,18 @@ impl Map {
             // Only features drawn: the definition query and the display filters let them through.
             let rows = l.drawn_rows(scale);
             let id = l.id;
-            let proj = l.projected_in(&flat, &key);
-            let hits = proj
+            l.projected_in(&flat, &key);
+            let boxes = l.projected_extents();
+            let hits = l
+                .projected_cache()
                 .iter()
                 .enumerate()
                 .rev()
-                .filter(|(row, g)| rows.get(*row) == Some(&true) && g.as_ref().is_some_and(|g| g.hit(p, tol)))
+                .filter(|(row, g)| {
+                    // A point is measured sooner than its box.
+                    let near = |g: &Geometry| matches!(g, Geometry::Point(_)) || boxes.get(*row).is_none_or(|e| box_may_hit(e, p, tol));
+                    rows.get(*row) == Some(&true) && g.as_ref().is_some_and(|g| near(g) && g.hit(p, tol))
+                })
                 .map(|(row, _)| (id, row));
             out.extend(hits.take(limit - out.len()));
         }
@@ -3544,7 +3553,8 @@ impl Map {
         self.layers.iter_mut().filter(move |l| l.visible && l.selectable && l.in_scale_range(scale) && !held.contains(&l.id))
     }
 
-    /// Rows of each selectable, visible layer inside a rectangle in the camera's coordinates.
+    /// Rows of each selectable, visible layer inside a rectangle in the camera's coordinates. A
+    /// shape whose kept box ([`Layer::projected_extents`]) misses it isn't read.
     pub fn hits_in(&mut self, e: &Extent, scale: f64) -> Vec<(u32, Vec<usize>)> {
         let (flat, key) = (self.flat(), self.projection.code());
         let mut out = Vec::new();
@@ -3552,11 +3562,16 @@ impl Map {
             // Only features drawn: the definition query and the display filters let them through.
             let rows = l.drawn_rows(scale);
             let id = l.id;
+            l.projected_in(&flat, &key);
+            let boxes = l.projected_extents();
             let hits: Vec<usize> = l
-                .projected_in(&flat, &key)
+                .projected_cache()
                 .iter()
                 .enumerate()
-                .filter(|(r, g)| rows.get(*r) == Some(&true) && g.as_ref().is_some_and(|g| g.intersects_extent(e)))
+                .filter(|(r, g)| {
+                    rows.get(*r) == Some(&true)
+                        && g.as_ref().is_some_and(|g| boxes.get(*r).is_none_or(|b| b.intersects(e)) && g.intersects_extent(e))
+                })
                 .map(|(r, _)| r)
                 .collect();
             if !hits.is_empty() {
@@ -3565,6 +3580,17 @@ impl Map {
         }
         out
     }
+}
+
+/// Whether a shape with the box `e` can be within `tol` of `p` ([`Geometry::hit`]): false only
+/// when it can't. The box is widened by a little more than `tol`, as the place of a segment nearest
+/// to `p` is rounded, so `hit` may find one at the very limit a hair outside its own box.
+fn box_may_hit(e: &Extent, p: Coord, tol: f64) -> bool {
+    let tol = tol.abs();
+    // Some thousands of times the rounding of the largest coordinate that goes into a distance:
+    // 0.02 mm on Web Mercator.
+    let size = e.min_x.abs().max(e.max_x.abs()).max(e.min_y.abs()).max(e.max_y.abs()).max(tol);
+    e.padded(0.0, tol + size * 1e-12).contains(p)
 }
 
 /// The reference scales a layer takes (1:N), as [`Layer::reference_scale`].
@@ -5103,6 +5129,160 @@ mod tests {
         // A filter that doesn't apply at this scale hides nothing.
         m.layers[0].display_filters = vec![filter(Some(1e5))];
         assert_eq!(m.hits_at(p, 1000.0, 1e6, |_| true, false, 100), vec![(id, 2), (id, 0)]);
+    }
+
+    /// A repeatable pseudo-random sequence in 0..1.
+    fn sequence(mut seed: u64) -> impl FnMut() -> f64 {
+        move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    /// Features of every kind over a few degrees, some without a shape: polygons with a hole and
+    /// of several parts, lines of several parts, a line of one place and shapes without any.
+    fn shapes_of_every_kind(next: &mut impl FnMut() -> f64, n: usize) -> Dataset {
+        let mut d = Dataset::new("shapes", GeometryType::Polygon, vec![Field::new("n", FieldType::Integer)]);
+        for i in 0..n {
+            let at = Coord::new(next() * 4.0 - 52.0, next() * 4.0 - 22.0);
+            let mut path = |by: f64, n: usize| -> Vec<Coord> {
+                (0..n).map(|_| Coord::new(at.x + (next() - 0.5) * by, at.y + (next() - 0.5) * by)).collect()
+            };
+            let square = |r: f64| -> Vec<Coord> {
+                [(-r, -r), (r, -r), (r, r), (-r, r), (-r, -r)].iter().map(|(x, y)| Coord::new(at.x + x, at.y + y)).collect()
+            };
+            let g = match i % 9 {
+                0 => Some(Geometry::Point(at)),
+                1 => Some(Geometry::MultiPoint(path(0.5, 4))),
+                2 => Some(Geometry::Line(vec![path(0.6, 5), path(0.6, 3)])),
+                3 => Some(Geometry::Line(vec![vec![at]])),
+                4 => Some(Geometry::Polygon(vec![vec![square(0.3), square(0.2)]])),
+                5 => Some(Geometry::Polygon(vec![vec![path(0.4, 6)], vec![path(0.4, 4), path(0.1, 4)]])),
+                6 => Some(Geometry::Polygon(vec![vec![square(0.1)]])),
+                7 => Some(if i % 2 == 0 { Geometry::MultiPoint(vec![]) } else { Geometry::Polygon(vec![vec![vec![]]]) }),
+                _ => None,
+            };
+            d.push(g, vec![Value::Int(i as i64)]);
+        }
+        d
+    }
+
+    /// What a click and a box find is what a search of every drawn shape finds, whatever the
+    /// kind, at the very limit of the tolerance and beside it too.
+    fn assert_finds_what_every_shape_gives(m: &mut Map, next: &mut impl FnMut() -> f64) {
+        let scale = 1e6;
+        let id = m.layers[0].id;
+        let (flat, key) = (m.flat(), m.projection.code());
+        let shapes = m.layers[0].projected_in(&flat, &key).to_vec();
+        let drawn = m.layers[0].drawn_rows(scale);
+        let places: Vec<Coord> = {
+            let mut v = Vec::new();
+            shapes.iter().flatten().for_each(|g| g.for_each_coord(|c| v.push(c)));
+            v
+        };
+        let (mut found, mut boxed) = (0, 0);
+        let mut check = |p: Coord, tol: f64| {
+            let every: Vec<(u32, usize)> = (0..shapes.len())
+                .rev()
+                .filter(|r| drawn[*r] && shapes[*r].as_ref().is_some_and(|g| g.hit(p, tol)))
+                .map(|r| (id, r))
+                .collect();
+            found += every.len();
+            assert_eq!(m.hits_at(p, tol, scale, |_| true, false, usize::MAX), every, "{p:?} within {tol}");
+        };
+        for tol in [0.0, 1e-9, 0.1, 777.7, 20_000.0] {
+            for c in places.iter().copied().filter(|c| c.is_finite()) {
+                check(c, tol);
+                // The limit on each side, and the numbers next to it.
+                for x in [c.x + tol, c.x - tol] {
+                    for x in [x.next_down(), x, x.next_up()] {
+                        check(Coord::new(x, c.y), tol);
+                    }
+                }
+                for y in [c.y + tol, c.y - tol] {
+                    for y in [y.next_down(), y, y.next_up()] {
+                        check(Coord::new(c.x, y), tol);
+                    }
+                }
+            }
+            for _ in 0..200 {
+                check(lonlat_to_merc(Coord::new(next() * 5.0 - 52.5, next() * 5.0 - 22.5)), tol);
+            }
+        }
+        for i in 0..400 {
+            let (a, b) = (places[(next() * places.len() as f64) as usize], places[(next() * places.len() as f64) as usize]);
+            let near = Coord::new(a.x + (next() - 0.5) * 2e4, a.y + (next() - 0.5) * 2e4);
+            // Corners on the shapes' own places (so boxes that only touch), and small boxes beside one.
+            let e = Extent::from_points(a, if i % 2 == 0 { b } else { near });
+            let every: Vec<usize> =
+                (0..shapes.len()).filter(|r| drawn[*r] && shapes[*r].as_ref().is_some_and(|g| g.intersects_extent(&e))).collect();
+            boxed += every.len();
+            let expected = if every.is_empty() { vec![] } else { vec![(id, every)] };
+            assert_eq!(m.hits_in(&e, scale), expected, "{e:?}");
+        }
+        assert!(found > 1000 && boxed > 100, "the fixture hits too little: {found} and {boxed}");
+    }
+
+    #[test]
+    fn clicks_and_boxes_find_what_a_search_of_every_shape_finds() {
+        let mut next = sequence(0x9E37_79B9_7F4A_7C15);
+        for code in ["mercator", "EPSG:31983", "mollweide +lon_0=-90"] {
+            let mut m = Map::new("Map");
+            let id = m.add_dataset(shapes_of_every_kind(&mut next, 54));
+            m.projection = Projection::from_code(code).unwrap();
+            assert_finds_what_every_shape_gives(&mut m, &mut next);
+            // Rows the definition query leaves out.
+            m.layers[0].definition_query = Some("n > 20".into());
+            assert_finds_what_every_shape_gives(&mut m, &mut next);
+            m.layers[0].definition_query = None;
+            // Shapes moved, added and removed: their boxes are those of the new ones.
+            let l = m.layer_mut(id).unwrap();
+            let far = Coord::new(-40.0, -10.0);
+            l.dataset.features.set_geometry(0, Some(Geometry::Point(far)));
+            l.dataset.features.set_geometry(4, None);
+            l.dataset.features.set_geometry(8, Some(Geometry::Line(vec![vec![far, Coord::new(-39.0, -10.0)]])));
+            l.touch_geometry();
+            let at = m.flat().forward(far).unwrap();
+            assert_eq!(m.hits_at(at, 1.0, 1e6, |_| true, false, 10), vec![(id, 8), (id, 0)], "{code}");
+            assert_finds_what_every_shape_gives(&mut m, &mut next);
+        }
+    }
+
+    #[test]
+    fn a_row_without_a_kept_box_is_searched_in_full() {
+        let mut m = Map::new("Map");
+        let mut d = Dataset::new("lines", GeometryType::Polyline, vec![]);
+        let (a, b) = (Coord::new(0.0, 0.0), Coord::new(10.0, 10.0));
+        d.push(Some(Geometry::Line(vec![vec![a, Coord::new(0.0, 10.0)]])), vec![]);
+        d.push(Some(Geometry::Line(vec![vec![b, Coord::new(0.0, 10.0)]])), vec![]);
+        let id = m.add_dataset(d);
+        let (a, b) = (lonlat_to_merc(a), lonlat_to_merc(b));
+        m.layers[0].projected();
+        // Never left like this by drawing or reading; a shape isn't lost to it.
+        m.layers[0].projected_extents = Default::default();
+        assert_eq!(m.hits_at(b, 1.0, 1e6, |_| true, false, 10), vec![(id, 1)]);
+        assert_eq!(m.hits_in(&Extent::from_points(a, b), 1e6), vec![(id, vec![0, 1])]);
+    }
+
+    /// A ring with a place the projection can't show has a gap, through which its inside runs on
+    /// to the left of it ([`Geometry::hit`]): it is hit where its other places are, as drawn.
+    #[test]
+    fn a_shape_with_a_place_not_shown_is_hit_only_by_its_box() {
+        let mut m = Map::new("Map");
+        let mut d = Dataset::new("p", GeometryType::Polygon, vec![]);
+        let ring = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (f64::NAN, f64::NAN), (0.0, 0.0)];
+        d.push(Some(Geometry::Polygon(vec![vec![ring.iter().map(|(x, y)| Coord::new(*x, *y)).collect()]])), vec![]);
+        // And one with no place at all.
+        d.push(Some(Geometry::Point(Coord::new(f64::NAN, 5.0))), vec![]);
+        let id = m.add_dataset(d);
+        let at = |x: f64, y: f64| lonlat_to_merc(Coord::new(x, y));
+        let outside = at(-50.0, 5.0);
+        assert!(m.layers[0].projected()[0].as_ref().unwrap().hit(outside, 1000.0), "the gap lets the inside out");
+        assert_eq!(m.hits_at(outside, 1000.0, 1e6, |_| true, false, 10), vec![]);
+        assert_eq!(m.hits_at(at(5.0, 5.0), 1000.0, 1e6, |_| true, false, 10), vec![(id, 0)]);
+        assert_eq!(m.hits_at(at(10.0, 5.0), 1000.0, 1e6, |_| true, false, 10), vec![(id, 0)]);
     }
 
     #[test]

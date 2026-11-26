@@ -2678,9 +2678,11 @@ fn snap_excluding(
         }
         let id = l.id;
         l.projected_in(&flat, &key);
+        let boxes = l.projected_extents();
         for (row, g) in l.projected_cache().iter().enumerate() {
             let Some(g) = g.as_ref().filter(|_| skip != Some((id, row))) else { continue };
-            if !g.extent().padded(0.0, tol).contains(m) {
+            // Its box as kept with the projected shape: a snap asks on every pointer move.
+            if !boxes.get(row).copied().unwrap_or_else(|| g.extent()).padded(0.0, tol).contains(m) {
                 continue;
             }
             of.set((id, row));
