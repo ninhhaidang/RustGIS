@@ -209,7 +209,10 @@ fn read_limited<R: Read + Seek>(mut source: R, name: &str, sidecar_nodata: Optio
         return Err(bad(if skipped.cut > 0 { "the first message is cut short" } else { "no GRIB message in the file" }));
     }
     if fields.is_empty() {
-        return Err(bad(format!("nothing in it can be read here: {}", skipped.notes(limit).join("; "))));
+        return Err(bad(format!(
+            "nothing in it can be read here: {}",
+            skipped.notes(limit).iter().map(|n| n.as_str()).collect::<Vec<_>>().join("; ")
+        )));
     }
     // Each grid's notices, once: grids at the same places may still say different things (one
     // laid out from BAM's latitudes, one not). Past [`MAX_REASONS`] of them, the fields with more
@@ -505,35 +508,39 @@ impl Skipped {
         tally(&mut self.damage, why);
     }
 
-    fn notes(&self, limit: usize) -> Vec<String> {
-        let mut out: Vec<String> = self.reasons.iter().map(|(r, n)| format!("{} left out: {r}, not read yet", count(*n))).collect();
-        out.extend(self.damage.iter().map(|(r, n)| format!("{} left out: damaged ({r})", count(*n))));
+    /// Fields and messages left out are lost, with their codes (those past a memory limit as
+    /// such); bytes that aren't GRIB are passed over, plain.
+    fn notes(&self, limit: usize) -> Vec<crate::loss::Note> {
+        use crate::loss::{LossCode, Note};
+        let feature = |t: String| Note::loss(LossCode::DroppedFeature, t);
+        let mut out: Vec<Note> = self.reasons.iter().map(|(r, n)| feature(format!("{} left out: {r}, not read yet", count(*n)))).collect();
+        out.extend(self.damage.iter().map(|(r, n)| feature(format!("{} left out: damaged ({r})", count(*n)))));
         out.extend(self.messages.iter().map(|(r, n)| {
             let what = if *n == 1 { "1 message".to_string() } else { format!("{n} messages") };
-            format!("{what} left out: {r}")
+            feature(format!("{what} left out: {r}"))
         }));
         if self.other_grid > 0 {
-            out.push(format!("{} left out: on another grid than the first field's", count(self.other_grid)));
+            out.push(feature(format!("{} left out: on another grid than the first field's", count(self.other_grid))));
         }
         if self.over_limit > 0 {
-            out.push(format!(
+            out.push(Note::loss(LossCode::DroppedOverLimit, format!(
                 "{} left out: the bands read hold the most this computer keeps in memory ({limit} values); split the file with a GRIB tool (wgrib2 or CDO) and add its parts",
                 count(self.over_limit)
-            ));
+            )));
         }
         if self.too_long > 0 {
-            out.push(format!(
+            out.push(Note::loss(LossCode::DroppedOverLimit, format!(
                 "{} left out: their message is larger than the memory left lets be read whole, even where one of its fields would fit; split the file with a GRIB tool (wgrib2 or CDO) and add its parts",
                 count(self.too_long)
-            ));
+            )));
         }
         if self.cut > 0 {
-            out.push("the file ends inside a message, which is left out".to_string());
+            out.push(feature("the file ends inside a message, which is left out".to_string()));
         }
         if self.junk == 1 {
-            out.push("1 byte outside its messages isn't GRIB, and is passed over".to_string());
+            out.push(Note::plain("1 byte outside its messages isn't GRIB, and is passed over"));
         } else if self.junk > 1 {
-            out.push(format!("{} bytes outside its messages aren't GRIB, and are passed over", self.junk));
+            out.push(Note::plain(format!("{} bytes outside its messages aren't GRIB, and are passed over", self.junk)));
         }
         out
     }
@@ -769,7 +776,10 @@ fn to_raster(fields: Vec<Field>, name: &str) -> Result<Raster> {
     }
     if past > 0 {
         let (what, has) = if past == 1 { ("1 value".to_string(), "has") } else { (format!("{past} values"), "have") };
-        r.lost.push(format!("{what} past the range of 32-bit floats (±3.4 × 10^38) {has} no value"));
+        r.lost.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedValue,
+            format!("{what} past the range of 32-bit floats (±3.4 × 10^38) {has} no value"),
+        ));
     }
     Ok(r)
 }

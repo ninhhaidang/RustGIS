@@ -99,7 +99,7 @@ pub trait TimeCube: Send + Sync {
     /// What reading its slices said (a shift a Zarr store's system doesn't apply, …), once each,
     /// asked once every slice is read: the outputs are on their grid, so it is said of them too.
     /// A stack's slices are layers, whose notices were said when they were added.
-    fn lost(&self) -> Vec<String> {
+    fn lost(&self) -> Vec<rustgis_data::loss::Note> {
         Vec::new()
     }
     /// Whether its dates are masked by a quality band (a STAC collection's `"mask"`), so each
@@ -120,7 +120,7 @@ pub trait TimeCube: Send + Sync {
 fn with_lost(outputs: Result<Vec<Raster>, String>, cube: &dyn TimeCube) -> Result<Vec<Raster>, String> {
     let mut outputs = outputs?;
     if let Some(first) = outputs.first_mut() {
-        first.lost = cube.lost();
+        first.lost = cube.lost().into();
     }
     Ok(outputs)
 }
@@ -172,7 +172,7 @@ impl TimeCube for Stack {
 
 /// A Zarr variable along its time dimension, and what reading its slices said, once each.
 #[cfg(not(target_arch = "wasm32"))]
-struct ZarrCube(super::zarr::ZarrCube, std::sync::Mutex<Vec<String>>);
+struct ZarrCube(super::zarr::ZarrCube, std::sync::Mutex<Vec<rustgis_data::loss::Note>>);
 
 #[cfg(not(target_arch = "wasm32"))]
 impl TimeCube for ZarrCube {
@@ -200,7 +200,7 @@ impl TimeCube for ZarrCube {
         }
         Ok(Some((r, 0)))
     }
-    fn lost(&self) -> Vec<String> {
+    fn lost(&self) -> Vec<rustgis_data::loss::Note> {
         self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
     fn label(&self) -> String {

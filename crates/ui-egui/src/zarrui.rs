@@ -174,7 +174,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
                 // What a typed system says, when the slice is in it, as for a folder's slice.
                 let note = (!typed.is_empty()).then(|| zarr::typed_crs_note(store, &sel.variable, &r, &typed)).flatten();
                 if let Some(note) = note
-                    && !r.lost.contains(&note)
+                    && !r.lost.says(&note)
                 {
                     r.lost.push(note);
                 }
@@ -200,7 +200,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
                             let added =
                                 app.session.active_layer.and_then(|id| app.session.map().layer(id)).map_or(name, |l| l.name.clone());
                             for loss in lost {
-                                app.session.notify(i18n::fmt("{layer}: {notice}", &[("layer", &added), ("notice", &loss)]), false);
+                                app.session.say(loss.map_text(|t| i18n::fmt("{layer}: {notice}", &[("layer", &added), ("notice", &t)])));
                             }
                             app.map.invalidate();
                         }

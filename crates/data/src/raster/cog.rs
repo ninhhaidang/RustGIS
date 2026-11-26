@@ -242,7 +242,7 @@ pub struct Layout {
     /// What the header holds but isn't read: a colour table or GDAL metadata that doesn't decode,
     /// a colour table too short for its pixels. One line each, for a window to say (AGENTS.md,
     /// Never silent); drawing in place shows the file grey without them, as before.
-    pub lost: Vec<String>,
+    pub lost: crate::loss::Notes,
     /// Who holds the rights to the picture (its Copyright tag), as [`super::Raster::copyright`].
     pub copyright: Option<String>,
 }
@@ -394,10 +394,10 @@ fn read_layout(r: Sparse) -> Result<Parse> {
         Err(e) => Ok(Err(e.to_string())),
     };
     // Another body's system is said, as when the file is read whole.
-    let mut lost: Vec<String> = super::planetary::note_of(geo.0).into_iter().collect();
+    let mut lost: crate::loss::Notes = super::planetary::note_of(geo.0).into_iter().collect();
     // A datum assumed, and the file's copyright, as when it is read whole.
     if geo.3 {
-        lost.push(super::geotiff::NO_EPSG_GEOGRAPHIC.to_string());
+        lost.push(crate::loss::Note::loss(crate::loss::LossCode::AssumedCrs, super::geotiff::NO_EPSG_GEOGRAPHIC));
     }
     // Its bytes asked for when not read yet, as the other tags' are.
     let copyright = match tag(&mut dec, Tag::Copyright)? {
@@ -1151,7 +1151,10 @@ pub(crate) mod tests {
         let clean = layout_of(example(64, 32));
         assert!(clean.lost.is_empty() && clean.copyright.is_none(), "{:?}", clean.lost);
         let assumed = layout_of(example_with(&Example { size: 64, tile: 32, no_epsg: true, ..Example::default() }));
-        assert_eq!(assumed.lost, vec![super::super::geotiff::NO_EPSG_GEOGRAPHIC.to_string()]);
+        assert_eq!(
+            assumed.lost.iter().map(|n| (n.text.as_str(), n.loss)).collect::<Vec<_>>(),
+            [(super::super::geotiff::NO_EPSG_GEOGRAPHIC, Some(crate::loss::LossCode::AssumedCrs))]
+        );
         let mut r = crate::raster::Raster::new(
             "credited",
             64,
@@ -1376,7 +1379,7 @@ pub(crate) mod tests {
         let entry = (0..n).map(|k| 10 + k * 12).find(|&e| bad[e..e + 2] == [0x80, 0xA4]).unwrap();
         bad[entry + 8..entry + 12].copy_from_slice(&(len + 1000).to_le_bytes());
         let Parse::Done(l) = layout(&Sparse::default().with_len(u64::from(len)).with(0, bad)).unwrap() else { panic!("not read") };
-        let said: Vec<&String> = l.lost.iter().chain(l.described.iter().flat_map(|d| d.lost.iter())).collect();
+        let said: Vec<&str> = l.lost.texts().chain(l.described.iter().flat_map(|d| d.lost.texts())).collect();
         assert!(said.iter().any(|x| x.contains("band and class names and wavelengths are left out")), "{said:?}");
     }
 

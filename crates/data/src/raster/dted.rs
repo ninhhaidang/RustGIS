@@ -258,7 +258,7 @@ fn read_from_limited(file_name: &str, mut source: impl std::io::Read, max: usize
     if east - west > 1.0 + 1e-9 || north - south > 1.0 + 1e-9 || north > 90.0 + 1e-9 || east > 180.0 + 1e-9 {
         return Err(bad("its posts span more than the one-degree cell a DTED file holds"));
     }
-    let mut lost = Vec::new();
+    let mut lost = crate::loss::Notes::new();
     // What the DSI says differently (3.12 d), and what the spec sets for the level (3.9.2).
     let dsi = [
         (digits(bytes, DSI + 273, 4), lat_tenths, "latitude interval"),
@@ -326,10 +326,15 @@ fn read_from_limited(file_name: &str, mut source: impl std::io::Read, max: usize
     }
     match field(bytes, DSI + 144, 5) {
         Some("WGS84") => {}
+        // A datum it names but isn't read: its places are taken on WGS 84, without the shift.
         Some(other) if !other.trim().is_empty() => {
-            lost.push(format!("its horizontal datum is {:?}, not WGS84; it is read as WGS 84", other.trim()));
+            lost.push(crate::loss::Note::loss(
+                crate::loss::LossCode::ApproximatedDatum,
+                format!("its horizontal datum is {:?}, not WGS84; it is read as WGS 84", other.trim()),
+            ));
         }
-        _ => lost.push("it doesn't name its horizontal datum; it is read as WGS 84, as MIL-PRF-89020B sets".into()),
+        // None named: the standard sets WGS 84, so nothing is assumed past it.
+        _ => lost.push("it doesn't name its horizontal datum; it is read as WGS 84, as MIL-PRF-89020B sets"),
     }
     let surface = match field(bytes, DSI + 141, 3) {
         Some("E96") => "the EGM96 geoid (mean sea level)".to_string(),
@@ -451,12 +456,19 @@ fn read_from_limited(file_name: &str, mut source: impl std::io::Read, max: usize
     }
     let count = |n: usize| if n == 1 { format!("1 of its {cols} columns has") } else { format!("{n} of its {cols} columns have") };
     if present < cols {
-        lost.push(format!("the file is cut short: {} no heights, read as no data", count(cols - present)));
+        // Heights the file should hold and doesn't: lost.
+        lost.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedValue,
+            format!("the file is cut short: {} no heights, read as no data", count(cols - present)),
+        ));
     } else if let Some(extra) = body_len.checked_sub((cols * record) as u64).filter(|n| *n > 0) {
         lost.push(format!("{extra} bytes after its last column are ignored"));
     }
     if damaged > 0 {
-        lost.push(format!("{} a damaged record header (not the 0xAA sentinel), read as no data", count(damaged)));
+        lost.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedValue,
+            format!("{} a damaged record header (not the 0xAA sentinel), read as no data", count(damaged)),
+        ));
     }
     match misnumbered {
         0 => {}
@@ -477,8 +489,7 @@ fn read_from_limited(file_name: &str, mut source: impl std::io::Read, max: usize
     match twos {
         0 => {}
         1 => lost.push(
-            "1 of its heights was written in two's complement, not the signed magnitude MIL-PRF-89020B sets; it is read as two's complement"
-                .into(),
+            "1 of its heights was written in two's complement, not the signed magnitude MIL-PRF-89020B sets; it is read as two's complement",
         ),
         n => lost.push(format!(
             "{n} of its heights were written in two's complement, not the signed magnitude MIL-PRF-89020B sets; they are read as two's complement"
@@ -602,6 +613,21 @@ mod tests {
             r.lost
         );
         assert!(!r.lost.iter().any(|l| l.contains("checksum")), "{:?}", r.lost);
+    }
+
+    /// A datum the file names that isn't WGS84 is read as WGS 84, without its shift, and said with
+    /// its code; one the file doesn't name is WGS 84 as the standard sets, said plain.
+    #[test]
+    fn a_datum_named_but_not_read_is_coded() {
+        let b = dted("0000000E", "0000000N", (30, 30), (11, 11), |_, _| Some(1));
+        let datum = |name: &[u8; 5]| {
+            let mut b = b.clone();
+            b[DSI + 144..DSI + 149].copy_from_slice(name);
+            read("x.dt1", &b).unwrap().lost.iter().filter(|l| l.contains("horizontal datum")).map(|l| l.loss).collect::<Vec<_>>()
+        };
+        assert_eq!(datum(b"NAD27"), [Some(crate::loss::LossCode::ApproximatedDatum)]);
+        assert_eq!(datum(b"     "), [None]);
+        assert!(datum(b"WGS84").is_empty());
     }
 
     #[test]
@@ -751,7 +777,12 @@ mod tests {
         let cut = &bytes[..at(8, rows) + 7];
         let r = read("x.dt2", cut).unwrap();
         assert_eq!(r.value(0, 8, 0), None);
-        assert!(r.lost.iter().any(|l| l == "the file is cut short: 3 of its 11 columns have no heights, read as no data"), "{:?}", r.lost);
+        assert!(
+            r.lost.iter().any(|l| l.text == "the file is cut short: 3 of its 11 columns have no heights, read as no data"
+                && l.loss == Some(crate::loss::LossCode::DroppedValue)),
+            "{:?}",
+            r.lost
+        );
         // Bytes past the last column are said.
         let mut longer = dted("0000000E", "0000000N", (3600, 3600), (11, rows), |_, _| Some(1));
         longer.extend([0; 5]);

@@ -4775,14 +4775,14 @@ pub(crate) fn add_layer_text_within(s: &mut Session, text: &str, reach: crate::r
     s.active_layer = Some(id);
     // What reading its raster left out is said, as for a raster added (one still read in the
     // background isn't here yet).
-    let lost: Vec<String> = s
+    let lost: Vec<rustgis_data::loss::Note> = s
         .map()
         .layer(id)
         .and_then(|l| Some((&l.name, l.raster.as_ref()?.data.as_ref()?)))
-        .map(|(name, d)| d.lost.iter().map(|l| format!("{name}: {l}")).collect())
+        .map(|(name, d)| d.lost.iter().map(|l| l.clone().prefixed(name)).collect())
         .unwrap_or_default();
     for l in lost {
-        s.notify(l, false);
+        s.say(l);
     }
     Ok(json!({"layer": id}))
 }
@@ -6052,7 +6052,7 @@ pub(crate) fn add_cog_with(s: &mut Session, p: &Value, url: &str, strict: bool, 
             }
         }
         for line in cog_tile_losses(&info) {
-            s.notify(format!("{shown}: {line}"), false);
+            s.say(line.prefixed(&shown));
         }
     } else if probed || why.is_some() || r.get("dated").is_some() {
         // Added, but its (first date's) file couldn't be read: the view stays where it was.
@@ -6092,16 +6092,18 @@ pub(crate) fn cog_tile_where(t: &rustgis_map::tiles::TileLayer, address: &str) -
 /// drawn in place, its tiles are drawn as values (a palette image's by its colour table), so what
 /// the header holds beside them (band and class names, wavelengths) comes only with a window. Said
 /// as the layer is added, or once its header lands ([`Session::notice_landed_rasters`]).
-pub(crate) fn cog_tile_losses(info: &crate::render::rustgis_tiles::cog::Info) -> Vec<String> {
+pub(crate) fn cog_tile_losses(info: &crate::render::rustgis_tiles::cog::Info) -> Vec<rustgis_data::loss::Note> {
     let l = &info.layout;
     let named = l
         .described
         .as_ref()
         .is_some_and(|d| d.bands.iter().any(|b| b.description.is_some() || !b.categories.is_empty() || b.wavelength.is_some()));
-    let mut said: Vec<String> = l.lost.clone();
-    said.extend(l.described.iter().flat_map(|d| d.lost.iter().map(|x| format!("{}: {x}", rustgis_data::raster::pam::GDAL_METADATA))));
+    let mut said: Vec<rustgis_data::loss::Note> = l.lost.to_vec();
+    said.extend(l.described.iter().flat_map(|d| d.lost.iter().map(|x| x.clone().prefixed(rustgis_data::raster::pam::GDAL_METADATA))));
     if named {
-        said.push("drawn in place without its band names, class names or wavelengths: a window (\"bbox\") reads them".into());
+        said.push(rustgis_data::loss::Note::plain(
+            "drawn in place without its band names, class names or wavelengths: a window (\"bbox\") reads them",
+        ));
     }
     said
 }
@@ -6644,7 +6646,10 @@ pub(crate) fn read_window_raster(asked: &WindowAsked, stop: &std::sync::atomic::
         r.rounded = rounded;
     }
     if overflowed > 0 {
-        r.lost.push(format!("{overflowed} value(s) past the range of 32-bit floats left out: those cells have no value"));
+        r.lost.push(rustgis_data::loss::Note::loss(
+            rustgis_data::loss::LossCode::DroppedValue,
+            format!("{overflowed} value(s) past the range of 32-bit floats left out: those cells have no value"),
+        ));
     }
     // What the header holds but isn't read (a colour table, names): said when the layer is added.
     r.lost.extend(layout.lost.iter().cloned());
@@ -6735,7 +6740,7 @@ impl WindowRaster {
     /// holds but isn't read, values past `f32`'s range), for a caller that makes another raster
     /// from it and so doesn't add this one (whose `lost` the layer would say).
     pub(crate) fn notes(&self) -> Vec<String> {
-        self.read_notes().into_iter().chain(self.raster.lost.iter().cloned()).collect()
+        self.read_notes().into_iter().chain(self.raster.lost.texts().map(String::from)).collect()
     }
 
     /// What to say of the read alone (its size and level, a cell size finer than the file's, the

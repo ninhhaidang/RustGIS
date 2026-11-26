@@ -2070,19 +2070,26 @@ fn read_image(
                 return Err(DataError::Format(e.clone()));
             }
             if let Some(asked) = asked.filter(|_| geo.custom_error.is_none() && !geo.geographic_model && !degrees) {
-                assumed = Some(format!("it doesn't say its coordinate system: read in {}, the system it was asked for in", asked.label()));
+                // Read in the system asked for: nothing assumed past the request.
+                assumed = Some(crate::loss::Note::plain(format!(
+                    "it doesn't say its coordinate system: read in {}, the system it was asked for in",
+                    asked.label()
+                )));
                 asked
             } else if geo.geographic_model || degrees {
-                assumed = Some(match &geo.custom_error {
-                    // The file's own projection couldn't be read, but its coordinates fit in degrees:
-                    // why is said, not dropped.
-                    Some(e) => super::assumed_wgs84_note(&format!(
-                        "its own coordinate system can't be read ({})",
-                        e.strip_prefix("GeoTIFF: ").unwrap_or(e)
-                    )),
-                    None if geo.geographic_model => NO_EPSG_GEOGRAPHIC.to_string(),
-                    None => super::assumed_wgs84_note("it doesn't say its coordinate system"),
-                });
+                assumed = Some(crate::loss::Note::loss(
+                    crate::loss::LossCode::AssumedCrs,
+                    match &geo.custom_error {
+                        // The file's own projection couldn't be read, but its coordinates fit in degrees:
+                        // why is said, not dropped.
+                        Some(e) => super::assumed_wgs84_note(&format!(
+                            "its own coordinate system can't be read ({})",
+                            e.strip_prefix("GeoTIFF: ").unwrap_or(e)
+                        )),
+                        None if geo.geographic_model => NO_EPSG_GEOGRAPHIC.to_string(),
+                        None => super::assumed_wgs84_note("it doesn't say its coordinate system"),
+                    },
+                ));
                 Crs::LonLat
             } else {
                 return Err(err("the file's coordinate system isn't recognised"));
@@ -3060,7 +3067,7 @@ mod tests {
         let rotated = [30.0, 5.0, 0.0, 400_000.0, 3.0, -30.0, 0.0, 5_000_000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
         let r = read(std::io::Cursor::new(tests_support::matrix_tiff(rotated, false)), "rot").unwrap();
         assert_eq!(r.lost.len(), 1, "{:?}", r.lost);
-        let said = &r.lost[0];
+        let said = &r.lost[0].text;
         assert!(said.starts_with("it is rotated or skewed, so it is resampled (nearest pixel) onto a north-up grid of "), "{said}");
         assert!(said.contains(&format!("{} × {} pixels of 30.25 each", r.width, r.height)), "{said}");
         assert!(!said.contains("coarser"), "{said}");

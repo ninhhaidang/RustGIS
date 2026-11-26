@@ -348,7 +348,7 @@ fn bam_latitudes_against_the_scanning_mode() {
     let t = r.transform;
     assert_eq!((t.origin_x, t.origin_y), (-210.0, 60.0));
     assert!(
-        r.lost.contains(&"the grid gives its first row at -30° and its last at 30° but scans north to south: its 2 rows of 60° are laid out as the scanning mode says, centred between the two, from 30° to -30°".to_string()),
+        r.lost.says("the grid gives its first row at -30° and its last at 30° but scans north to south: its 2 rows of 60° are laid out as the scanning mode says, centred between the two, from 30° to -30°"),
         "{:?}",
         r.lost
     );
@@ -398,7 +398,7 @@ fn grib2_other_packings_are_left_out_and_said() {
     b.template5 = 42;
     let r = read_bytes(&grib2_message(&[a, b]), "t").unwrap();
     assert_eq!(r.bands.len(), 1);
-    assert!(r.lost.contains(&"1 field left out: GRIB2 CCSDS (template 5.42), not read yet".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 field left out: GRIB2 CCSDS (template 5.42), not read yet"), "{:?}", r.lost);
     // A file with nothing readable is an error naming why.
     let mut c = F2::new(2, 1, vec![1, 2]);
     c.template5 = 40;
@@ -421,7 +421,7 @@ fn fields_on_another_grid_are_left_out_and_said() {
     let r = read_bytes(&file, "t").unwrap();
     assert_eq!(r.bands.len(), 2);
     assert_eq!(r.bands[1].data, vec![5.0, 6.0, 7.0, 8.0]);
-    assert!(r.lost.contains(&"1 field left out: on another grid than the first field's".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 field left out: on another grid than the first field's"), "{:?}", r.lost);
 }
 
 #[test]
@@ -431,7 +431,7 @@ fn a_cut_message_is_said_or_refused() {
     file.extend(&one[..one.len() - 5]);
     let r = read_bytes(&file, "t").unwrap();
     assert_eq!(r.bands.len(), 1);
-    assert!(r.lost.contains(&"the file ends inside a message, which is left out".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("the file ends inside a message, which is left out"), "{:?}", r.lost);
     let e = read_bytes(&one[..one.len() - 1], "t").unwrap_err().to_string();
     assert!(e.contains("cut short"), "{e}");
     let e = read_bytes(b"not a grib file at all", "t").unwrap_err().to_string();
@@ -476,8 +476,8 @@ fn another_edition_is_said_and_the_next_message_read() {
     assert_eq!(r.bands[0].data, vec![3.0, 4.0]);
     // Its body isn't said to be bytes outside the messages.
     assert_eq!(
-        r.lost.iter().filter(|l| !l.starts_with("its earth")).collect::<Vec<_>>(),
-        vec!["1 message left out: not GRIB 1 or 2 (edition 3)"]
+        r.lost.iter().filter(|l| !l.starts_with("its earth")).map(|l| (l.text.as_str(), l.loss)).collect::<Vec<_>>(),
+        [("1 message left out: not GRIB 1 or 2 (edition 3)", Some(crate::loss::LossCode::DroppedFeature))]
     );
     // Nothing readable: the error names why.
     let mut only = G1::new(2, 1, vec![1, 2]).bytes();
@@ -496,7 +496,7 @@ fn a_long_gap_between_messages_is_passed_and_said() {
     let r = read_bytes(&file, "t").unwrap();
     assert_eq!(r.bands.len(), 2);
     assert_eq!(r.bands[1].data, vec![3.0, 4.0]);
-    assert!(r.lost.contains(&format!("{} bytes outside its messages aren't GRIB, and are passed over", 70 * 1024 + 3)), "{:?}", r.lost);
+    assert!(r.lost.says(&format!("{} bytes outside its messages aren't GRIB, and are passed over", 70 * 1024 + 3)), "{:?}", r.lost);
     // A "GRIB" split over two chunks is found.
     for pad in 4090..4100 {
         let mut file = vec![0u8; pad];
@@ -541,7 +541,7 @@ fn a_damaged_field_is_said_as_damaged() {
     msg[s5 + 5..s5 + 9].copy_from_slice(&u(2000, 4));
     let r = read_bytes(&msg, "t").unwrap();
     assert_eq!(r.bands.len(), 1);
-    assert!(r.lost.contains(&"1 field left out: damaged (a field whose values don't fill its grid)".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 field left out: damaged (a field whose values don't fill its grid)"), "{:?}", r.lost);
     assert!(!r.lost.iter().any(|l| l.contains("not read yet")), "{:?}", r.lost);
 }
 
@@ -567,7 +567,7 @@ fn a_length_past_its_message_hides_nothing() {
     let r = read_bytes(&file, "t").unwrap();
     assert_eq!(r.bands.len(), 1);
     assert_eq!(r.bands[0].data, vec![3.0, 4.0]);
-    assert!(r.lost.contains(&"1 message left out: damaged".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 message left out: damaged"), "{:?}", r.lost);
 }
 
 #[test]
@@ -583,7 +583,7 @@ fn scale_factors_past_f64_give_the_values_they_make() {
     (g.d, g.bits) = (-400, 16);
     let r = read_bytes(&g.bytes(), "t").unwrap();
     assert!(r.bands[0].data.iter().all(|v| v.is_nan()));
-    assert!(r.lost.contains(&"2 values past the range of 32-bit floats (±3.4 × 10^38) have no value".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("2 values past the range of 32-bit floats (±3.4 × 10^38) have no value"), "{:?}", r.lost);
     // A constant field of 0 with D = 400: exactly 0, nothing said.
     let mut g = G1::new(2, 1, vec![]);
     (g.d, g.bits) = (400, 0);
@@ -605,7 +605,7 @@ fn scale_factors_past_f64_give_the_values_they_make() {
     g.x = vec![u32::MAX, 1];
     let r = read_bytes(&g.bytes(), "t").unwrap();
     assert!(r.bands[0].data.iter().all(|v| v.is_nan()));
-    assert!(r.lost.contains(&"2 values past the range of 32-bit floats (±3.4 × 10^38) have no value".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("2 values past the range of 32-bit floats (±3.4 × 10^38) have no value"), "{:?}", r.lost);
 }
 
 #[test]
@@ -661,7 +661,7 @@ fn a_length_past_the_file_hides_nothing() {
     let r = read_bytes(&file, "t").unwrap();
     assert_eq!(r.bands.len(), 1);
     assert_eq!(r.bands[0].data, vec![3.0, 4.0]);
-    assert!(r.lost.contains(&"1 message left out: damaged".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 message left out: damaged"), "{:?}", r.lost);
     assert!(!r.lost.iter().any(|l| l.contains("ends inside")), "{:?}", r.lost);
 }
 
@@ -676,11 +676,7 @@ fn a_repeated_first_column_is_left_out_and_the_globe_laid_out_from_180() {
     // From −180°: the 180° column first.
     assert_eq!(r.bands[0].data, vec![4.0, 5.0, 6.0, 1.0, 2.0, 3.0]);
     assert_eq!(r.transform.origin_x, -210.0);
-    assert!(
-        r.lost.contains(&"its last column repeats the first, 360° on, and is left out: 6 columns are read".to_string()),
-        "{:?}",
-        r.lost
-    );
+    assert!(r.lost.says("its last column repeats the first, 360° on, and is left out: 6 columns are read"), "{:?}", r.lost);
 }
 
 #[test]
@@ -694,7 +690,7 @@ fn a_repeated_first_column_is_not_counted_as_rounded_or_past_the_range() {
     let mut g = G1::new(7, 1, vec![1, 2, 3, 4, 5, 6, 1]);
     (g.lat1, g.lat2, g.lon1, g.lon2, g.di, g.dj, g.d) = (0, 0, 0, 0, 60_000, 60_000, -400);
     let r = read_bytes(&g.bytes(), "t").unwrap();
-    assert!(r.lost.contains(&"6 values past the range of 32-bit floats (±3.4 × 10^38) have no value".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("6 values past the range of 32-bit floats (±3.4 × 10^38) have no value"), "{:?}", r.lost);
 }
 
 #[test]
@@ -726,7 +722,7 @@ fn a_sum_of_0_past_f64s_decimal_scale_is_0() {
     let r = read_bytes(&g.bytes(), "t").unwrap();
     assert_eq!(r.bands[0].data[0], 0.0);
     assert!(r.bands[0].data[1].is_nan());
-    assert!(r.lost.contains(&"1 value past the range of 32-bit floats (±3.4 × 10^38) has no value".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 value past the range of 32-bit floats (±3.4 × 10^38) has no value"), "{:?}", r.lost);
 }
 
 #[test]
@@ -737,7 +733,7 @@ fn a_packed_0_past_f64s_binary_scale_is_the_reference_value() {
     let r = read_bytes(&g.bytes(), "t").unwrap();
     assert_eq!(r.bands[0].data[0], 1.0);
     assert!(r.bands[0].data[1].is_nan());
-    assert!(r.lost.contains(&"1 value past the range of 32-bit floats (±3.4 × 10^38) has no value".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 value past the range of 32-bit floats (±3.4 × 10^38) has no value"), "{:?}", r.lost);
 }
 
 #[test]
@@ -811,7 +807,7 @@ fn a_message_of_too_many_sections_is_left_out() {
     file.extend(grib2_message(&[F2::new(2, 1, vec![3, 4])]));
     let r = read_bytes(&file, "t").unwrap();
     assert_eq!(r.bands.len(), 1);
-    assert!(r.lost.contains(&"1 message left out: damaged (more than 1024 sections)".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 message left out: damaged (more than 1024 sections)"), "{:?}", r.lost);
     // The decoder refuses one too, should it get one.
     let first = grib2(&file, usize::MAX, None, Uncounted::default());
     assert!(matches!(first.first(), Some(Err(Skip::Damaged(m))) if m.contains("more than 1024 sections")));
@@ -827,13 +823,13 @@ fn values_past_f32_are_said_not_rounded() {
     assert_eq!(v[0], 0.0);
     assert!(v[1].is_nan(), "{v:?}");
     assert!(r.rounded.is_empty(), "{:?}", r.rounded);
-    assert!(r.lost.contains(&"1 value past the range of 32-bit floats (±3.4 × 10^38) has no value".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 value past the range of 32-bit floats (±3.4 × 10^38) has no value"), "{:?}", r.lost);
     // A constant field whose reference value is past it (IBM 16^60).
     let mut c = G1::new(2, 1, vec![]);
     (c.bits, c.r) = (0, 0x7c10_0000);
     let r = read_bytes(&c.bytes(), "t").unwrap();
     assert!(r.bands[0].data.iter().all(|v| v.is_nan()));
-    assert!(r.lost.contains(&"2 values past the range of 32-bit floats (±3.4 × 10^38) have no value".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("2 values past the range of 32-bit floats (±3.4 × 10^38) have no value"), "{:?}", r.lost);
 }
 
 #[test]
@@ -843,7 +839,7 @@ fn a_constant_past_f64_is_said_and_a_reference_that_isnt_a_number_is_damage() {
     (c.bits, c.r, c.d) = (0, 0x4925_40be, -300);
     let r = read_bytes(&c.bytes(), "t").unwrap();
     assert!(r.bands[0].data.iter().all(|v| v.is_nan()), "{:?}", r.bands[0].data);
-    assert!(r.lost.contains(&"2 values past the range of 32-bit floats (±3.4 × 10^38) have no value".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("2 values past the range of 32-bit floats (±3.4 × 10^38) have no value"), "{:?}", r.lost);
     assert!(r.rounded.is_empty());
     // A GRIB2 constant field whose IEEE reference value is NaN.
     let mut f = F2::new(2, 1, vec![]);
@@ -893,7 +889,7 @@ fn a_grib2_field_without_its_own_sections_is_damaged() {
         let r = read_bytes(&msg, "t").unwrap();
         assert_eq!(r.bands.len(), 1, "{number}");
         assert_eq!(r.bands[0].data, vec![1.0, 2.0]);
-        assert!(r.lost.contains(&format!("1 field left out: damaged (a field without {why})")), "{number}: {:?}", r.lost);
+        assert!(r.lost.says(&format!("1 field left out: damaged (a field without {why})")), "{number}: {:?}", r.lost);
     }
 }
 
@@ -910,7 +906,7 @@ fn a_length_that_hides_the_next_message_is_damage() {
     let r = read_bytes(&file, "t").unwrap();
     assert_eq!(r.bands.len(), 1);
     assert_eq!(r.bands[0].data, vec![3.0, 4.0]);
-    assert!(r.lost.contains(&"1 message left out: damaged".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 message left out: damaged"), "{:?}", r.lost);
     // GRIB2 alike.
     let mut first = grib2_message(&[F2::new(2, 1, vec![1, 2])]);
     let second = grib2_message(&[F2::new(2, 1, vec![3, 4])]);
@@ -921,7 +917,7 @@ fn a_length_that_hides_the_next_message_is_damage() {
     let r = read_bytes(&file, "t").unwrap();
     assert_eq!(r.bands.len(), 1);
     assert_eq!(r.bands[0].data, vec![3.0, 4.0]);
-    assert!(r.lost.contains(&"1 message left out: damaged".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 message left out: damaged"), "{:?}", r.lost);
 }
 
 #[test]
@@ -937,7 +933,7 @@ fn grids_are_compared_where_their_points_are() {
     file.extend(grid(50_000).bytes());
     let r = read_bytes(&file, "t").unwrap();
     assert_eq!(r.bands.len(), 1);
-    assert!(r.lost.contains(&"1 field left out: on another grid than the first field's".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 field left out: on another grid than the first field's"), "{:?}", r.lost);
     // The same points scanned from the other end (south to north) are the same grid: a second
     // band, placed by its own scanning mode.
     let mut south_up = G1::new(2, 2, vec![3, 4, 1, 2]);
@@ -1058,7 +1054,7 @@ fn a_field_the_message_ends_without_its_data_is_damaged() {
     let r = read_bytes(&message_of(&body), "t").unwrap();
     assert_eq!(r.bands.len(), 1);
     assert_eq!(r.bands[0].data, vec![1.0, 2.0]);
-    assert!(r.lost.contains(&"1 field left out: damaged (a field without its data section)".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 field left out: damaged (a field without its data section)"), "{:?}", r.lost);
 }
 
 #[test]
@@ -1067,7 +1063,7 @@ fn one_byte_outside_the_messages_is_said_as_one() {
     file.push(9);
     file.extend(G1::new(2, 1, vec![3, 4]).bytes());
     let r = read_bytes(&file, "t").unwrap();
-    assert!(r.lost.contains(&"1 byte outside its messages isn't GRIB, and is passed over".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 byte outside its messages isn't GRIB, and is passed over"), "{:?}", r.lost);
 }
 
 #[test]
@@ -1088,7 +1084,7 @@ fn grid_notices_past_the_most_said_are_counted() {
     // GRIB1's earth is said once too: 15 of the latitudes' notices, then the 6 fields with more.
     assert!(r.lost.iter().any(|l| l.starts_with("its earth is")), "{:?}", r.lost);
     assert_eq!(r.lost.iter().filter(|l| l.contains("gives its first row")).count(), MAX_REASONS - 1);
-    assert!(r.lost.contains(&"more notices about the grids of 6 fields aren't listed".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("more notices about the grids of 6 fields aren't listed"), "{:?}", r.lost);
 }
 
 #[test]
@@ -1201,7 +1197,7 @@ fn a_field_whose_sections_come_again_before_its_data_is_damaged() {
     let r = read_bytes(&message_of(&body), "t").unwrap();
     assert_eq!(r.bands.len(), 1);
     assert_eq!(r.bands[0].data, vec![3.0, 4.0]);
-    assert!(r.lost.contains(&"1 field left out: damaged (a field without its data section)".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 field left out: damaged (a field without its data section)"), "{:?}", r.lost);
     // Then field B without its bitmap section: never read with A's bitmap.
     let mut body = without_section(&a(), 7);
     body.extend(without_section(&b, 6));
@@ -1240,7 +1236,7 @@ fn sections_that_break_before_a_length_that_hides_the_next_message_are_damage() 
     let r = read_bytes(&file, "t").unwrap();
     assert_eq!(r.bands.len(), 1);
     assert_eq!(r.bands[0].data, vec![3.0, 4.0]);
-    assert!(r.lost.contains(&"1 message left out: damaged".to_string()), "{:?}", r.lost);
+    assert!(r.lost.says("1 message left out: damaged"), "{:?}", r.lost);
     // GRIB2: a data section shorter than its header, then one running past the first message's
     // "7777" into the second.
     for grow in [None, Some(2)] {
@@ -1257,7 +1253,7 @@ fn sections_that_break_before_a_length_that_hides_the_next_message_are_damage() 
         let r = read_bytes(&file, "t").unwrap();
         assert_eq!(r.bands.len(), 1);
         assert_eq!(r.bands[0].data, vec![3.0, 4.0]);
-        assert!(r.lost.contains(&"1 message left out: damaged".to_string()), "{:?}", r.lost);
+        assert!(r.lost.says("1 message left out: damaged"), "{:?}", r.lost);
     }
 }
 
@@ -1275,7 +1271,7 @@ fn fields_of_a_message_too_large_to_read_whole_are_said_so() {
     assert_eq!(r.bands.len(), 1);
     assert_eq!(r.bands[0].data, vec![3.0, 4.0]);
     let said = "1 field left out: their message is larger than the memory left lets be read whole, even where one of its fields would fit; split the file with a GRIB tool (wgrib2 or CDO) and add its parts";
-    assert!(r.lost.contains(&said.to_string()), "{:?}", r.lost);
+    assert!(r.lost.says(said), "{:?}", r.lost);
     assert!(!r.lost.iter().any(|l| l.contains("the bands read hold the most")), "{:?}", r.lost);
 }
 

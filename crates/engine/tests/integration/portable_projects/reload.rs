@@ -493,7 +493,7 @@ fn raster_reload_and_repair_disclose_fresh_losses_once_without_repeating_them_on
         s.notice_landed_rasters();
         s.notice_landed_rasters();
         for loss in losses {
-            assert_eq!(s.notices_since(mark).iter().filter(|n| n.text.ends_with(&loss)).count(), 1, "{command}: {loss}");
+            assert_eq!(s.notices_since(mark).iter().filter(|n| n.text.ends_with(loss.as_str())).count(), 1, "{command}: {}", loss.text);
         }
     }
     raster_file(&moved, 1);

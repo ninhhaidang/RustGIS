@@ -70,7 +70,7 @@ pub struct Pam {
     pub bands: Vec<PamBand>,
     /// What [`parse`] or [`parse_gdal_metadata`] left out or cut, one line a kind with a count,
     /// for the caller to say (AGENTS.md, Never silent). Empty when the document is read whole.
-    pub lost: Vec<String>,
+    pub lost: crate::loss::Notes,
 }
 
 /// Where [`Raster::apply_pam`](super::Raster::apply_pam) says a document's losses came from: a
@@ -82,7 +82,7 @@ pub const SIDECAR: &str = "its .aux.xml sidecar";
 impl Pam {
     /// A document that names nothing, with the reason it was left out.
     pub fn losing(why: String) -> Pam {
-        Pam { bands: Vec::new(), lost: vec![why] }
+        Pam { bands: Vec::new(), lost: vec![why].into() }
     }
 
     /// The band numbered `band` (from 1).
@@ -423,7 +423,10 @@ fn parse_sidecar(text: &str) -> Result<Pam, String> {
         pam.lost.push(format!("{units_again} other wavelength unit(s) for a band or the dataset left out (the first is kept)"));
     }
     if beyond > 0 {
-        pam.lost.push(format!("{beyond} class name(s) past the first {MAX_CATEGORIES} of a band left out"));
+        pam.lost.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("{beyond} class name(s) past the first {MAX_CATEGORIES} of a band left out"),
+        ));
     }
     if rat.ranges > 0 {
         pam.lost.push(format!("{} attribute table(s) of value ranges not read as class names", rat.ranges));
@@ -448,19 +451,25 @@ fn parse_sidecar(text: &str) -> Result<Pam, String> {
         pam.lost.push(format!("{} class name(s) of an attribute table given again for a value left out (the first is kept)", rat.again));
     }
     if rat.rows > 0 {
-        pam.lost.push(format!("{} attribute table row(s) past the first {MAX_RAT_ROWS} left out", rat.rows));
+        pam.lost.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("{} attribute table row(s) past the first {MAX_RAT_ROWS} left out", rat.rows),
+        ));
     }
     if rat.over > 0 {
-        pam.lost.push(format!(
-            "{} class name(s) of an attribute table past the sidecar's first {MAX_RAT_SLOTS} class values left out",
-            rat.over
+        pam.lost.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedOverLimit,
+            format!("{} class name(s) of an attribute table past the sidecar's first {MAX_RAT_SLOTS} class values left out", rat.over),
         ));
     }
     if rat.named > 0 {
         pam.lost.push(format!("{} attribute table(s) of class names not read: the band's category names are used", rat.named));
     }
     if cut > 0 {
-        pam.lost.push(format!("{cut} band or class name(s) cut to {MAX_NAME} characters"));
+        pam.lost.push(crate::loss::Note::loss(
+            crate::loss::LossCode::ChangedCut,
+            format!("{cut} band or class name(s) cut to {MAX_NAME} characters"),
+        ));
     }
     Ok(pam)
 }
@@ -734,7 +743,10 @@ pub fn parse_gdal_metadata(text: &str) -> Option<Pam> {
         pam.lost.push(format!("{twice} band or class name(s) given again left out (the first is kept)"));
     }
     if cut > 0 {
-        pam.lost.push(format!("{cut} band or class name(s) cut to {MAX_NAME} characters"));
+        pam.lost.push(crate::loss::Note::loss(
+            crate::loss::LossCode::ChangedCut,
+            format!("{cut} band or class name(s) cut to {MAX_NAME} characters"),
+        ));
     }
     if !classes.is_empty() {
         match pam.bands.iter_mut().find(|b| b.band == 1) {
@@ -890,7 +902,7 @@ mod tests {
         let pam = parse_gdal_metadata(&xml).unwrap();
         assert_eq!(pam.band(1).unwrap().categories[1], "Forest");
         assert_eq!(pam.band(1).unwrap().categories[2].chars().count(), 256);
-        let said = pam.lost.join("; ");
+        let said = pam.lost.texts().collect::<Vec<_>>().join("; ");
         for want in
             ["1 band description(s) for no band", "2 CLASS_ item(s)", "1 band or class name(s) given again", "1 band or class name(s) cut"]
         {
@@ -986,7 +998,10 @@ mod tests {
         );
         assert_eq!(parse(&long).unwrap().band(1).unwrap().categories[0].len(), 256);
         // What is cut or left out is said; a sidecar read whole says nothing.
-        assert_eq!(parse(&long).unwrap().lost, ["1 band or class name(s) cut to 256 characters"]);
+        assert_eq!(
+            parse(&long).unwrap().lost.iter().map(|n| (n.text.as_str(), n.loss)).collect::<Vec<_>>(),
+            [("1 band or class name(s) cut to 256 characters", Some(crate::loss::LossCode::ChangedCut))]
+        );
         assert!(pam.lost.is_empty(), "{:?}", pam.lost);
         let many = format!(
             r#"<PAMDataset><PAMRasterBand band="1"><CategoryNames>{}</CategoryNames></PAMRasterBand></PAMDataset>"#,
@@ -996,7 +1011,13 @@ mod tests {
         let kept = &many.band(1).unwrap().categories;
         assert_eq!((kept.len(), kept[0].as_str()), (MAX_CATEGORIES, "c0"));
         assert_eq!(kept[MAX_CATEGORIES - 1], format!("c{}", MAX_CATEGORIES - 1));
-        assert_eq!(many.lost, [format!("2 class name(s) past the first {MAX_CATEGORIES} of a band left out")]);
+        assert_eq!(
+            many.lost.iter().map(|n| (n.text.clone(), n.loss)).collect::<Vec<_>>(),
+            [(
+                format!("2 class name(s) past the first {MAX_CATEGORIES} of a band left out"),
+                Some(crate::loss::LossCode::DroppedOverLimit)
+            )]
+        );
         // A record for no band, a scale, an offset and a unit are said; a scale of 1 and an offset
         // of 0 aren't.
         let odd = parse(
@@ -1155,8 +1176,11 @@ mod tests {
         let held: usize = pam.bands.iter().map(|b| b.categories.len()).sum();
         assert!(held <= MAX_RAT_SLOTS, "{held}");
         assert_eq!(
-            pam.lost,
-            [format!("3 class name(s) of an attribute table past the sidecar's first {MAX_RAT_SLOTS} class values left out")]
+            pam.lost.iter().map(|n| (n.text.clone(), n.loss)).collect::<Vec<_>>(),
+            [(
+                format!("3 class name(s) of an attribute table past the sidecar's first {MAX_RAT_SLOTS} class values left out"),
+                Some(crate::loss::LossCode::DroppedOverLimit)
+            )]
         );
     }
 
@@ -1205,7 +1229,8 @@ mod tests {
         let many = vec![&["n"][..]; MAX_RAT_ROWS + 3];
         let many = parse(&table("", &[("Name", 2, 2)], &many)).unwrap();
         assert!(
-            many.lost.iter().any(|l| l == &format!("3 attribute table row(s) past the first {MAX_RAT_ROWS} left out")),
+            many.lost.iter().any(|l| l.text == format!("3 attribute table row(s) past the first {MAX_RAT_ROWS} left out")
+                && l.loss == Some(crate::loss::LossCode::DroppedOverLimit)),
             "{:?}",
             many.lost
         );

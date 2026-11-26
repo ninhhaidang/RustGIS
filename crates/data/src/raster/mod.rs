@@ -792,7 +792,7 @@ pub struct Raster {
     /// What reading it left out or cut (a colour table, names), one line a kind with a count,
     /// for whoever adds it to the map to say (AGENTS.md, Never silent). Empty when nothing was
     /// left out.
-    pub lost: Vec<String>,
+    pub lost: crate::loss::Notes,
     /// How many values of each band changed when read as `f32` (Int32 IDs past 16,777,216, Float64
     /// values with more digits than `f32` holds), by band; empty when none did. NaN values and
     /// samples that are the no-data value aren't counted (one that rounds onto it is). The two are
@@ -986,7 +986,7 @@ impl Raster {
             posts: false,
             georeferenced: true,
             crs_assumed: false,
-            lost: Vec::new(),
+            lost: Default::default(),
             rounded: Vec::new(),
             rounded_some: Vec::new(),
             copyright: None,
@@ -1006,7 +1006,8 @@ impl Raster {
     /// overview's only approximate them). What it left out is said as `from`'s ("its GDAL
     /// metadata", "its .aux.xml sidecar").
     pub fn apply_pam(&mut self, pam: &pam::Pam, from: &str) {
-        self.lost.extend(pam.lost.iter().map(|l| format!("{from}: {l}")));
+        // Each with its code, named by where it came from.
+        self.lost.extend(pam.lost.iter().map(|l| l.clone().prefixed(from)));
         // Names and wavelengths for bands the raster doesn't have have nowhere to go.
         let beyond = pam
             .bands
@@ -1753,7 +1754,10 @@ pub fn read_converted(path: &Path, c: &gdal::Converted) -> Result<Raster> {
     // it is read, as a reload says them again.
     if c.assumed_lonlat {
         r.crs_assumed = true;
-        r.lost.push(format!("{} (give \"crs\" if not)", assumed_wgs84_note("it doesn't say its coordinate system")));
+        r.lost.push(crate::loss::Note::loss(
+            crate::loss::LossCode::AssumedCrs,
+            format!("{} (give \"crs\" if not)", assumed_wgs84_note("it doesn't say its coordinate system")),
+        ));
     }
     if !c.others.is_empty() {
         let shown: Vec<&str> = c.others.iter().take(20).map(String::as_str).collect();
@@ -2631,7 +2635,7 @@ pub(crate) mod tests {
         one.apply_pam(
             &pam::Pam {
                 bands: vec![pam::PamBand { band: 2, description: Some("NIR".into()), ..Default::default() }],
-                lost: vec!["1 band record(s) for no band from 1 to 65536 left out".into()],
+                lost: vec!["1 band record(s) for no band from 1 to 65536 left out"].into(),
             },
             pam::SIDECAR,
         );
@@ -2644,7 +2648,7 @@ pub(crate) mod tests {
         let mut zero = small();
         zero.nodata = None;
         zero.apply_pam(
-            &pam::Pam { bands: vec![pam::PamBand { band: 2, nodata: Some(0.0), ..Default::default() }], lost: Vec::new() },
+            &pam::Pam { bands: vec![pam::PamBand { band: 2, nodata: Some(0.0), ..Default::default() }], lost: Default::default() },
             pam::SIDECAR,
         );
         assert_eq!(zero.nodata, None);
@@ -2656,7 +2660,7 @@ pub(crate) mod tests {
                 pam::PamBand { band: 1, nodata: Some(a), ..Default::default() },
                 pam::PamBand { band: 1, nodata: Some(b), ..Default::default() },
             ],
-            lost: Vec::new(),
+            lost: Default::default(),
         };
         two.apply_pam(&both(0.0, 255.0), pam::SIDECAR);
         assert_eq!(two.nodata, None);
@@ -2896,7 +2900,7 @@ pub(crate) mod tests {
         std::fs::write(dir.join("g.prj"), "not a coordinate system").unwrap();
         let r = read_path(&asc).unwrap();
         assert_eq!(r.lost.len(), 1, "{:?}", r.lost);
-        let note = &r.lost[0];
+        let note = &r.lost[0].text;
         assert!(note.starts_with("the .prj file: ") && note.contains("so it's read as WGS 84"), "{note}");
         assert!(!note.contains("it doesn't say its coordinate system"), "{note}");
         std::fs::write(&asc, "ncols 2\nnrows 1\nxllcorner 1000\nyllcorner 4000\ncellsize 1\n1 2\n").unwrap();

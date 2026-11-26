@@ -491,7 +491,7 @@ pub struct Reducing {
     pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub done: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// The summary as a GeoTIFF, and what reading its slices said, which the GeoTIFF doesn't carry.
-    pub result: std::sync::Arc<std::sync::Mutex<Option<Result<(Vec<u8>, Vec<String>), String>>>>,
+    pub result: std::sync::Arc<std::sync::Mutex<Option<Result<(Vec<u8>, rustgis_engine::data::loss::Notes), String>>>>,
 }
 
 /// A point's series read on a thread of its own (opengeos/RustGIS#2282): the steps read and
@@ -646,8 +646,9 @@ pub fn land_summary(app: &mut RustGisApp) -> bool {
                 // layer's read notices are said: its GeoTIFF doesn't carry it.
                 if added.is_some() {
                     let layer = app.session.active_layer.and_then(|id| app.session.map().layer(id)).map_or(name, |l| l.name.clone());
+                    // Each with its code, as a layer's read notices are said.
                     for loss in lost {
-                        app.session.notify(crate::i18n::fmt("{layer}: {notice}", &[("layer", &layer), ("notice", &loss)]), false);
+                        app.session.say(loss.map_text(|t| crate::i18n::fmt("{layer}: {notice}", &[("layer", &layer), ("notice", &t)])));
                     }
                 }
             } else {

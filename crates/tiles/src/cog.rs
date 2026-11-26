@@ -2222,7 +2222,7 @@ mod tests {
         let entry = (0..n).map(|k| 10 + k * 12).find(|&e| bad[e..e + 2] == [0x80, 0xA4]).unwrap();
         bad[entry + 8..entry + 12].copy_from_slice(&(len + 1000).to_le_bytes());
         let (l, ..) = layout_by_ranges(&bad).expect("read");
-        let said: Vec<&String> = l.lost.iter().chain(l.described.iter().flat_map(|d| d.lost.iter())).collect();
+        let said: Vec<&str> = l.lost.texts().chain(l.described.iter().flat_map(|d| d.lost.texts())).collect();
         assert!(said.iter().any(|x| x.contains("band and class names and wavelengths are left out")), "{said:?}");
     }
 

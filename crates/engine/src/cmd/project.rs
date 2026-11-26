@@ -344,7 +344,7 @@ fn reset(s: &mut Session, p: Project) {
     s.wait_in_place_reads();
     // What reading a raster left out (a colour table, names, a sidecar's scale) is said again as
     // the project opens, as when it was added. One still read in the background isn't here yet.
-    let mut lost: Vec<(String, String)> = Vec::new();
+    let mut lost: Vec<(String, rustgis_data::loss::Note)> = Vec::new();
     for l in s.project.maps.iter_mut().flat_map(|m| &mut m.layers) {
         if let Some(rl) = &mut l.raster {
             lost.extend(rl.lost_unsaid().into_iter().map(|what| (l.name.clone(), what)));

@@ -1136,7 +1136,7 @@ fn colours_split(grey: &rustgis_data::raster::Raster, bytes: &[u8], layer_name: 
                 "{layer_name}: its one band of packed colours (alpha, blue, green and red bytes) was split into red, green and blue bands, see-through where alpha is 0 or the pixel is no-data"
             ));
             // What reading the tool's file left out, which the rewritten file no longer shows.
-            messages.extend(grey.lost.iter().map(|l| format!("{layer_name}: {l}")));
+            messages.extend(grey.lost.texts().map(|l| format!("{layer_name}: {l}")));
             rgba
         }
         Ok(None) => bytes.to_vec(),

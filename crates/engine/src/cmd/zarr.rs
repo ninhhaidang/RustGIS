@@ -415,7 +415,7 @@ pub fn pick_variable(store: &zarr::Store, sel: &mut zarr::Selection) -> Result<(
 #[cfg(not(target_arch = "wasm32"))]
 fn crs_lost(r: &mut raster::Raster, text: Option<&str>, store: &zarr::Store, variable: &str) {
     if let Some(note) = text.and_then(|t| zarr::typed_crs_note(store, variable, r, t))
-        && !r.lost.contains(&note)
+        && !r.lost.says(&note)
     {
         r.lost.push(note);
     }
@@ -1835,7 +1835,7 @@ impl ReduceRun {
         let mut unwritten = 0usize;
         // What reading the slices said (a shift the store's system doesn't apply, …), once each:
         // the summary is in their grid, so it is said of it too.
-        let mut lost: Vec<String> = Vec::new();
+        let mut lost: Vec<rustgis_data::loss::Note> = Vec::new();
         for &i in &self.steps {
             if cancel.load(Ordering::Relaxed) {
                 return Err("cancelled".into());
@@ -1904,7 +1904,7 @@ impl ReduceRun {
             raster::Raster::new(&self.name, first.0, first.1, vec![out], first.2, first.3, None, raster::ColorHint::Gray, "Float32")
                 .map_err(|e| e.to_string())?;
         r.source = Some(self.root.clone());
-        r.lost = lost;
+        r.lost = lost.into();
         Ok(r)
     }
 }

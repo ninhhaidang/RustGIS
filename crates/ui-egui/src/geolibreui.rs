@@ -53,7 +53,7 @@ pub fn start(app: &mut RustGisApp, p: &Value, claim: Option<u64>) -> Result<(), 
 impl Read {
     /// Polls one batch. Missing chunks retain the format's fill values; other errors stop it. A
     /// finished slice comes with what reading it said (its coordinate system, what it dropped).
-    fn poll(&mut self) -> Option<Result<(Vec<u8>, Vec<String>), String>> {
+    fn poll(&mut self) -> Option<Result<(Vec<u8>, rustgis_engine::data::loss::Notes), String>> {
         let mut error = self.error.take();
         self.waiting.retain(|(key, slot)| match slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
             Some(Ok(bytes)) => {
@@ -168,8 +168,9 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
                 // An old project's completion must not announce losses in the current project.
                 if app.session.download_continues(id).is_ok() {
                     let layer = params.get("name").and_then(Value::as_str).unwrap_or("Zarr");
+                    // Each with its code, as a layer's read notices are said.
                     for loss in lost {
-                        app.session.notify(crate::i18n::fmt("{layer}: {notice}", &[("layer", layer), ("notice", &loss)]), false);
+                        app.session.say(loss.map_text(|t| crate::i18n::fmt("{layer}: {notice}", &[("layer", layer), ("notice", &t)])));
                     }
                 }
                 app.add_landed(crate::serviceui::Landed { id, url, params, origin: None }, bytes);

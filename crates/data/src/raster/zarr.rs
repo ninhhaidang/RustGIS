@@ -2071,15 +2071,20 @@ pub fn assemble(store: &Store, plan: &Plan, chunks: &HashMap<String, Vec<u8>>, n
     let found = crs_of(store, a);
     let unread = if found.is_none() { unread_proj(a) } else { None };
     let mut crs_assumed = false;
-    let (crs, crs_notes): (Option<Crs>, Vec<String>) = if lonlat {
+    // Read as WGS 84 against what the store says (or doesn't): an assumption, with its code.
+    let (crs, crs_notes): (Option<Crs>, Vec<crate::loss::Note>) = if lonlat {
         let assumed = lonlat_assumption(found.as_ref().map(|(c, _)| *c), crs);
         crs_assumed = assumed.is_some();
         let (actual, note) = found.unwrap_or((Crs::LonLat, None));
-        (Some(if actual.is_geographic() { actual } else { Crs::LonLat }), note.into_iter().chain(assumed).collect())
+        let assumed = assumed.map(|a| crate::loss::Note::loss(crate::loss::LossCode::AssumedCrs, a));
+        (
+            Some(if actual.is_geographic() { actual } else { Crs::LonLat }),
+            note.into_iter().map(crate::loss::Note::plain).chain(assumed).collect(),
+        )
     } else {
         match found {
-            Some((crs, note)) => (Some(crs), note.into_iter().collect()),
-            None => (crs, crs.and_then(super::planetary::note_of).into_iter().collect()),
+            Some((crs, note)) => (Some(crs), note.into_iter().map(crate::loss::Note::plain).collect()),
+            None => (crs, crs.and_then(super::planetary::note_of).into_iter().map(crate::loss::Note::plain).collect()),
         }
     };
     let Some(crs) = crs else {
@@ -2121,7 +2126,8 @@ pub fn assemble(store: &Store, plan: &Plan, chunks: &HashMap<String, Vec<u8>>, n
     }
     r.crs_assumed = crs_assumed;
     r.lost.extend(crs_notes);
-    r.lost.extend(unread);
+    // The store's `proj:` keys that name no system read: its system's name isn't kept.
+    r.lost.extend(unread.map(|u| crate::loss::Note::loss(crate::loss::LossCode::DroppedCrsName, u)));
     // A transform the coordinates stood in for is said, not dropped without a word.
     if has_transform(a) && spatial_grid(a).is_none() {
         r.lost.push(format!("{}: {TRANSFORM_UNREAD}: its coordinates place it", a.path));
@@ -3560,29 +3566,37 @@ mod tests {
         let (want, note) = wkt::read_wkt(ed50).unwrap();
         let r = read(serde_json::json!({"crs_wkt": ed50}), &lons);
         assert!(want != Crs::LonLat && want.is_geographic());
-        assert_eq!((r.crs, r.lost.clone()), (want, note.into_iter().collect::<Vec<_>>()), "{:?}", r.lost);
+        assert_eq!(
+            (r.crs, r.lost.texts().map(String::from).collect::<Vec<_>>()),
+            (want, note.into_iter().collect::<Vec<_>>()),
+            "{:?}",
+            r.lost
+        );
         let moved = r.crs.transformer().unwrap().to_lonlat(rustgis_geom::Coord::new(10.0, 50.0)).unwrap();
         assert!((moved.x - 10.0).abs() > 1e-4 || (moved.y - 50.0).abs() > 1e-4, "{moved:?}");
         let osgb36 = wkt::to_wkt(Crs::Epsg(4277)).unwrap();
         let (want, note) = wkt::read_wkt(&osgb36).unwrap();
         let r = read(serde_json::json!({"crs_wkt": osgb36}), &lons);
         assert!(want != Crs::LonLat && want.is_geographic());
-        assert_eq!((r.crs, r.lost), (want, note.into_iter().collect::<Vec<_>>()));
+        assert_eq!((r.crs, r.lost.texts().map(String::from).collect::<Vec<_>>()), (want, note.into_iter().collect::<Vec<_>>()));
         let (want, note) = wkt::read_wkt(local).unwrap();
         let r = read(serde_json::json!({"crs_wkt": local}), &lons);
         assert!(want != Crs::LonLat && want.is_geographic());
         assert!(note.as_deref().is_some_and(|n| n.contains("has no conversion to WGS 84")), "{note:?}");
-        assert_eq!((r.crs, r.lost), (want, note.into_iter().collect::<Vec<_>>()));
+        assert_eq!((r.crs, r.lost.texts().map(String::from).collect::<Vec<_>>()), (want, note.into_iter().collect::<Vec<_>>()));
         // Another body's: kept, and said once, by its body.
         let (want, note) = wkt::read_wkt(mars).unwrap();
         assert!(want.is_planetary());
         let r = read(serde_json::json!({"crs_wkt": mars}), &lons);
-        assert_eq!((r.crs, r.lost), (want, note.into_iter().collect::<Vec<_>>()));
+        assert_eq!((r.crs, r.lost.texts().map(String::from).collect::<Vec<_>>()), (want, note.into_iter().collect::<Vec<_>>()));
         let proj = "+proj=longlat +a=3396190 +b=3396190 +no_defs";
         let want = Crs::parse(proj).unwrap();
         assert!(want.is_planetary());
         let r = read(serde_json::json!({"proj4": proj}), &lons);
-        assert_eq!((r.crs, r.lost), (want, planetary::note_of(want).into_iter().collect::<Vec<_>>()));
+        assert_eq!(
+            (r.crs, r.lost.texts().map(String::from).collect::<Vec<_>>()),
+            (want, planetary::note_of(want).into_iter().collect::<Vec<_>>())
+        );
         // A PROJ definition says what its WKT would: no datum shift is said once, a shift or a datum isn't.
         for (def, said) in [
             ("+proj=longlat +ellps=intl +no_defs", true),
@@ -3599,20 +3613,27 @@ mod tests {
         for code in [4326u32, 4230] {
             let want = Crs::from_epsg(code).unwrap();
             let r = read(serde_json::json!({"epsg_code": code}), &lons);
-            assert_eq!((r.crs, r.lost), (want, Vec::new()), "EPSG:{code}");
+            assert_eq!((r.crs, r.lost.texts().map(String::from).collect::<Vec<_>>()), (want, Vec::<String>::new()), "EPSG:{code}");
         }
         let wgs84 = wkt::to_wkt(Crs::LonLat).unwrap();
         for attrs in [serde_json::json!({"crs_wkt": wgs84}), serde_json::json!({"crs_wkt": "EPSG:4326"})] {
             let r = read(attrs.clone(), &lons);
-            assert_eq!((r.crs, r.lost), (Crs::LonLat, Vec::new()), "{attrs}");
+            assert_eq!((r.crs, r.lost.texts().map(String::from).collect::<Vec<_>>()), (Crs::LonLat, Vec::new()), "{attrs}");
         }
         // No system at all, or a projected one on degree axes: the axes win, and the WGS 84 reading is said.
         let said = |why: &str| vec![crate::raster::assumed_wgs84_note(why)];
         let r = read(serde_json::json!({}), &lons);
-        assert_eq!((r.crs, r.lost), (Crs::LonLat, said("the store doesn't say its coordinate system")), "no system");
+        assert_eq!(
+            (r.crs, r.lost.texts().map(String::from).collect::<Vec<_>>()),
+            (Crs::LonLat, said("the store doesn't say its coordinate system")),
+            "no system"
+        );
         let utm17 = wkt::to_wkt(Crs::Epsg(32617)).unwrap();
         let r = read(serde_json::json!({"crs_wkt": utm17}), &lons);
-        assert_eq!((r.crs, r.lost), (Crs::LonLat, said("its coordinate system isn't geographic")));
+        assert_eq!(
+            (r.crs, r.lost.texts().map(String::from).collect::<Vec<_>>()),
+            (Crs::LonLat, said("its coordinate system isn't geographic"))
+        );
         // A geographic system's longitudes of 0–360 are turned to start at -180, as WGS 84's are.
         let r = read(serde_json::json!({"crs_wkt": ed50}), &[190.5, 191.5]);
         assert!(r.crs != Crs::LonLat);
@@ -4243,7 +4264,7 @@ mod tests {
         let mut long = odd.clone();
         long["consolidated_metadata"]["metadata"]["v"]["attributes"]["proj:code"] = format!("X{}", "y".repeat(10_000)).into();
         let r = assemble(&read(&long), &p, &read_plan(&files, &p), "v", None).unwrap();
-        let note = r.lost.iter().find(|l| l.contains("proj:code")).unwrap();
+        let note = &r.lost.iter().find(|l| l.contains("proj:code")).unwrap().text;
         assert!(note.len() < 300 && note.contains("(10003 characters)"), "{note}");
         // A proj: value that is read says nothing.
         let clean = read(&root);

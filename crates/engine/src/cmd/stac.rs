@@ -1128,12 +1128,16 @@ impl super::cube::TimeCube for StacCube {
     }
     /// Band pixels their item's mask file doesn't cover: left out as not clear, and said with
     /// their count and the first such mask.
-    fn lost(&self) -> Vec<String> {
+    fn lost(&self) -> Vec<rustgis_data::loss::Note> {
+        // Pixels with a value left out as not clear: a value lost.
         match self.uncovered.lock().map(|u| u.clone()) {
-            Ok((n, Some(href))) if n > 0 => vec![crate::sources::message_with_address(
-                &href,
-                &format!(
-                    "{n} band pixel(s) with a value lie outside their item's mask file (this one the first), so they were left out as not clear"
+            Ok((n, Some(href))) if n > 0 => vec![rustgis_data::loss::Note::loss(
+                rustgis_data::loss::LossCode::DroppedValue,
+                crate::sources::message_with_address(
+                    &href,
+                    &format!(
+                        "{n} band pixel(s) with a value lie outside their item's mask file (this one the first), so they were left out as not clear"
+                    ),
                 ),
             )],
             _ => Vec::new(),

@@ -961,11 +961,11 @@ pub(crate) fn two_years_notes(a: &super::layer::WindowRaster, b: &super::layer::
             notes.push(format!("the {to} file: {n}"));
         }
     }
-    for l in &a.raster.lost {
-        let both = b.raster.lost.contains(l);
+    for l in a.raster.lost.texts() {
+        let both = b.raster.lost.says(l);
         notes.push(if both { format!("the {from} and {to} files: {l}") } else { format!("the {from} file: {l}") });
     }
-    notes.extend(b.raster.lost.iter().filter(|l| !a.raster.lost.contains(l)).map(|l| format!("the {to} file: {l}")));
+    notes.extend(b.raster.lost.texts().filter(|l| !a.raster.lost.says(l)).map(|l| format!("the {to} file: {l}")));
     notes
 }
 

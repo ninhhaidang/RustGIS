@@ -765,7 +765,7 @@ impl RasterLayer {
     /// What reading its pixels left out (`Raster::lost`), the first time it is asked for after
     /// they landed, so it is said once: as the layer is added, as its project opens, or when they
     /// land later (the browser).
-    pub fn lost_unsaid(&mut self) -> Vec<String> {
+    pub fn lost_unsaid(&mut self) -> rustgis_data::loss::Notes {
         if self.lost_said {
             // A look applied after the pixels' losses were said: what it asked for that the file
             // hasn't, on its own, not the pixels' losses again.
@@ -1298,7 +1298,7 @@ impl RasterLayer {
         }
         let mut r = read_path_with(p, subdataset, crs)?;
         if reopening && !r.georeferenced {
-            r.lost.push("it has no coordinates now, though it had them when added: it is drawn at a stand-in place".into());
+            r.lost.push("it has no coordinates now, though it had them when added: it is drawn at a stand-in place");
         }
         Ok(r)
     }
@@ -2977,7 +2977,7 @@ mod tests {
     #[test]
     fn a_look_applied_after_the_losses_were_said_says_its_own_alone() {
         let mut r = dem();
-        r.lost.push("its colour table is left out".into());
+        r.lost.push("its colour table is left out");
         let mut rl = RasterLayer::in_place(r, "test://look-later.tif");
         assert_eq!(rl.lost_unsaid(), vec!["its colour table is left out".to_string()]);
         assert!(rl.lost_unsaid().is_empty());
@@ -2988,7 +2988,7 @@ mod tests {
         assert!(rl.lost_unsaid().is_empty());
         // A look applied before they are said is said with them, once.
         let mut r = dem();
-        r.lost.push("its colour table is left out".into());
+        r.lost.push("its colour table is left out");
         let mut rl = RasterLayer::in_place(r, "test://look-first.tif").with_look(AddressLook { bands: vec![9], range: None });
         assert_eq!(rl.lost_unsaid().len(), 2);
         assert!(rl.lost_unsaid().is_empty());

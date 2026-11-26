@@ -407,7 +407,7 @@ pub(super) fn read_notices(s: &mut Session, name: &str, layer: &mut RasterLayer)
         s.notify(format!("{name}: showing a {} × {} overview of the {fw} × {fh} raster", r.width, r.height), false);
     }
     for loss in lost {
-        s.notify(format!("{name}: {loss}"), false);
+        s.say(loss.prefixed(name));
     }
     if let Some(r) = pixels.as_deref() {
         if let Some(held) = layer.reads_in_place().then(|| crate::in_place_overview(r, layer.tiled)).flatten() {
@@ -494,9 +494,9 @@ pub(crate) fn as_scan(p: &Value) -> Result<bool, String> {
 }
 
 /// Says what reading several rasters left out ([`loss_lines`]), a notice a line.
-pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, String)>) {
+pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, rustgis_data::loss::Note)>) {
     for line in loss_lines(losses) {
-        s.notify(line, false);
+        s.say(line);
     }
 }
 
@@ -508,7 +508,7 @@ pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, String)>) {
 /// numbers are the same for every raster the kind is said once; when they differ, each raster's
 /// own line is said (three rasters or fewer), or the range they give, for each of them ("4
 /// rasters (a, b, c, …), each: 1–2 scale…"): never summed, since a size limit isn't a count.
-pub(crate) fn loss_lines(losses: Vec<(String, String)>) -> Vec<String> {
+pub(crate) fn loss_lines(losses: Vec<(String, rustgis_data::loss::Note)>) -> Vec<rustgis_data::loss::Note> {
     // A line's kind: its text with each number taken out, and those numbers. A number is a run of
     // digits standing as a word of its own: one inside a name (`scene2024.tif`) stays text.
     fn kind_of(line: &str) -> (Vec<&str>, Vec<u64>) {
@@ -542,29 +542,31 @@ pub(crate) fn loss_lines(losses: Vec<(String, String)>) -> Vec<String> {
         parts.push(&line[from..]);
         (parts, numbers)
     }
-    // Each kind: its text parts, each number's lowest and highest, and the rasters with their
-    // own lines.
-    type Kind = (Vec<String>, Vec<(u64, u64)>, Vec<(String, String)>);
+    // Each kind: its loss code, its text parts, each number's lowest and highest, and the
+    // rasters with their own lines. Lines of different codes are different kinds.
+    type Kind = (Option<rustgis_data::loss::LossCode>, Vec<String>, Vec<(u64, u64)>, Vec<(String, String)>);
     let mut kinds: Vec<Kind> = Vec::new();
-    for (name, line) in losses {
+    for (name, note) in losses {
+        let (code, line) = (note.loss, note.text);
         let (parts, numbers) = kind_of(&line);
         let parts_owned: Vec<String> = parts.iter().map(|p| p.to_string()).collect();
-        match kinds.iter_mut().find(|(p, n, _)| *p == parts_owned && n.len() == numbers.len()) {
-            Some((_, ranges, named)) => {
+        match kinds.iter_mut().find(|(c, p, n, _)| *c == code && *p == parts_owned && n.len() == numbers.len()) {
+            Some((_, _, ranges, named)) => {
                 for (r, n) in ranges.iter_mut().zip(&numbers) {
                     *r = (r.0.min(*n), r.1.max(*n));
                 }
                 named.push((name, line));
             }
-            None => kinds.push((parts_owned, numbers.iter().map(|n| (*n, *n)).collect(), vec![(name, line)])),
+            None => kinds.push((code, parts_owned, numbers.iter().map(|n| (*n, *n)).collect(), vec![(name, line)])),
         }
     }
     let mut lines = Vec::new();
-    for (parts, ranges, named) in kinds {
+    for (code, parts, ranges, named) in kinds {
+        let line = |text: String| rustgis_data::loss::Note { loss: code, text };
         let differ = ranges.iter().any(|(lo, hi)| lo != hi);
         // A few rasters whose numbers differ: each its own, so none is lost in a range.
         if differ && named.len() <= 3 {
-            lines.extend(named.into_iter().map(|(name, line)| format!("{name}: {line}")));
+            lines.extend(named.into_iter().map(|(name, l)| line(format!("{name}: {l}"))));
             continue;
         }
         let names: Vec<String> = named.into_iter().map(|(name, _)| name).collect();
@@ -583,7 +585,7 @@ pub(crate) fn loss_lines(losses: Vec<(String, String)>) -> Vec<String> {
             }
         };
         let each = if differ { ", each" } else { "" };
-        lines.push(format!("{who}{each}: {line}"));
+        lines.push(rustgis_data::loss::Note { loss: code, text: format!("{who}{each}: {line}") });
     }
     lines
 }
@@ -804,7 +806,11 @@ fn add_jpeg2000_bytes(s: &mut Session, p: &Value, name: &str, bytes: Vec<u8>, zo
     // The GeoTIFF GDAL made names the WGS 84 it assumed, as if the file had.
     r.crs_assumed |= c.assumed_lonlat;
     if c.assumed_lonlat {
-        s.notify(format!("{name} doesn't say its coordinate system; its coordinates look like longitude/latitude, so it's read as WGS 84 (give \"crs\" if not)"), false);
+        // As reading the converted file by path says it: an assumption, with its code.
+        s.say(rustgis_data::loss::Note::loss(
+            rustgis_data::loss::LossCode::AssumedCrs,
+            format!("{name} doesn't say its coordinate system; its coordinates look like longitude/latitude, so it's read as WGS 84 (give \"crs\" if not)"),
+        ));
     }
     let title = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| r.name.clone());
     add_raster_after(s, &title, RasterLayer::from_bytes(r, file_name, c.tif), zoom)
@@ -1538,7 +1544,7 @@ mod tests {
         let said = |losses: &[(&str, &str)]| {
             let mut s = Session::new(crate::Project::default());
             let mark = s.notice_mark();
-            say_losses(&mut s, losses.iter().map(|(n, l)| (n.to_string(), l.to_string())).collect());
+            say_losses(&mut s, losses.iter().map(|(n, l)| (n.to_string(), rustgis_data::loss::Note::plain(*l))).collect());
             s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>()
         };
         let cut = |n: u32| format!("{n} band or class name(s) cut to 256 characters");
@@ -1548,6 +1554,19 @@ mod tests {
         assert_eq!(
             said(&[("a", &one), ("b", &three), ("c", &two), ("d", &one)]),
             ["4 rasters (a, b, c, …), each: 1–3 band or class name(s) cut to 256 characters"]
+        );
+        // The same words with a code and without are two kinds, each said with its own.
+        let mut s = Session::new(crate::Project::default());
+        let mark = s.notice_mark();
+        let coded = rustgis_data::loss::Note::loss(rustgis_data::loss::LossCode::ChangedCut, two.clone());
+        say_losses(
+            &mut s,
+            vec![("a".into(), coded.clone()), ("b".into(), coded), ("c".into(), rustgis_data::loss::Note::plain(two.clone()))],
+        );
+        let got: Vec<_> = s.notices_since(mark).iter().map(|n| (n.text.clone(), n.loss())).collect();
+        assert_eq!(
+            got,
+            [(format!("2 rasters (a, b): {two}"), Some(rustgis_data::loss::LossCode::ChangedCut)), (format!("c: {two}"), None)]
         );
     }
 }
