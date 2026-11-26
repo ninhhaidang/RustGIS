@@ -23602,6 +23602,42 @@ fn gdal_formats_open_when_gdal_is_installed() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Adding a file through GDAL says the Z or M values its conversion drops, counting only the
+/// features that had them; a file without any says nothing (#2671). Skipped without GDAL.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn gdal_import_says_the_z_and_m_values_it_drops() {
+    if !rustgis_data::source::gdal::test_runs().unwrap() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("rustgis-engine-gdal-zm-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, second, lossy) in [("survey", "[7.1,45.1,250]", true), ("flat", "[7.1,45.1]", false)] {
+        let path = dir.join(format!("{name}.geojsonl"));
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"Feature\",\"properties\":{{}},\"geometry\":{{\"type\":\"Point\",\"coordinates\":[7,45]}}}}\n\
+                 {{\"type\":\"Feature\",\"properties\":{{}},\"geometry\":{{\"type\":\"Point\",\"coordinates\":{second}}}}}\n"
+            ),
+        )
+        .unwrap();
+        let mut s = Session::new(Project::default());
+        let mark = s.notice_mark();
+        s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+        let notices = s.notices_since(mark);
+        let zm: Vec<_> = notices.iter().filter(|n| n.text.contains("Z or M")).collect();
+        if lossy {
+            assert_eq!(zm.len(), 1, "{notices:?}");
+            assert!(zm[0].text.contains("Z or M coordinates on 1 source feature(s)"), "{}", zm[0].text);
+            assert_eq!(zm[0].loss(), Some(rustgis_data::loss::LossCode::DroppedZm));
+        } else {
+            assert!(zm.is_empty(), "{notices:?}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// KML (with its styles), KMZ and GPX through the built-in readers: files on disk and uploads.
 #[test]
 fn kml_and_gpx_add_as_layers() {
