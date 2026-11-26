@@ -2,7 +2,9 @@
 //! then made at once, as the New Layout › Publication Layout menu makes it (#2850).
 use crate::{RustGisApp, i18n, theme::Tokens};
 use rustgis_engine::Session;
-use rustgis_engine::cmd::layout::{PUBLICATION_PROFILES, PUBLICATION_STYLES};
+use rustgis_engine::cmd::layout::{
+    MAX_PUBLICATION_TEXT, PUBLICATION_DEFAULT_CREDIT, PUBLICATION_PROFILES, PUBLICATION_STYLES, publication_style_accent,
+};
 use rustgis_engine::map::layout::PAGES;
 use serde_json::{Value, json};
 
@@ -194,28 +196,56 @@ fn texts_step(ui: &mut egui::Ui, d: &mut Draft) {
     egui::Grid::new("publication_wizard_texts").num_columns(2).spacing(egui::vec2(8.0, 8.0)).show(ui, |ui| {
         let line = |ui: &mut egui::Ui, label: &str, text: &mut String| {
             let caption = ui.label(label);
-            ui.add(egui::TextEdit::singleline(text).desired_width(field_width(ui))).labelled_by(caption.id);
+            ui.add(egui::TextEdit::singleline(text).char_limit(MAX_PUBLICATION_TEXT).desired_width(field_width(ui)))
+                .labelled_by(caption.id);
             ui.end_row();
         };
         let label = ui.label(tl!("Title"));
         let title = ui
-            .add(egui::TextEdit::singleline(&mut d.title).hint_text(tl!("No title")).desired_width(field_width(ui)))
+            .add(
+                egui::TextEdit::singleline(&mut d.title)
+                    .hint_text(tl!("No title"))
+                    .char_limit(MAX_PUBLICATION_TEXT)
+                    .desired_width(field_width(ui)),
+            )
             .labelled_by(label.id);
         d.title_typed |= title.changed();
         ui.end_row();
         line(ui, tl!("Subtitle"), &mut d.subtitle);
         let label = ui.label(tl!("Note"));
-        ui.add(egui::TextEdit::multiline(&mut d.note).desired_rows(3).desired_width(field_width(ui))).labelled_by(label.id);
+        ui.add(egui::TextEdit::multiline(&mut d.note).desired_rows(3).char_limit(MAX_PUBLICATION_TEXT).desired_width(field_width(ui)))
+            .labelled_by(label.id);
         ui.end_row();
         line(ui, tl!("Sources"), &mut d.sources);
         let label = ui.label(tl!("Credit line"));
-        ui.add_enabled(!d.no_author, egui::TextEdit::singleline(&mut d.author).hint_text(default_credit()).desired_width(field_width(ui)))
-            .labelled_by(label.id);
+        ui.add_enabled(
+            !d.no_author,
+            egui::TextEdit::singleline(&mut d.author)
+                .hint_text(default_credit())
+                .char_limit(MAX_PUBLICATION_TEXT)
+                .desired_width(field_width(ui)),
+        )
+        .labelled_by(label.id);
         ui.end_row();
         ui.label("");
         ui.checkbox(&mut d.no_author, tl!("No credit line"));
         ui.end_row();
     });
+    // The boxes take no more, and cut a longer paste to fit: said, not done unseen.
+    let at_limit = [&d.title, &d.subtitle, &d.note, &d.sources].iter().any(|t| t.chars().count() >= MAX_PUBLICATION_TEXT)
+        || (!d.no_author && d.author.chars().count() >= MAX_PUBLICATION_TEXT);
+    if at_limit {
+        ui.label(
+            egui::RichText::new(i18n::fmt("Each field takes at most {limit} characters.", &[("limit", &MAX_PUBLICATION_TEXT.to_string())]))
+                .small()
+                .weak(),
+        );
+    }
+}
+
+/// A style's default accent as an egui colour, falling back to `fallback` if the style is unknown.
+fn style_accent(style: &str, fallback: egui::Color32) -> egui::Color32 {
+    publication_style_accent(style).map_or(fallback, |c| egui::Color32::from_rgb(c.r(), c.g(), c.b()))
 }
 
 /// The accent step: the style's own colour, or one picked.
@@ -223,14 +253,18 @@ fn accent_step(ui: &mut egui::Ui, d: &mut Draft, app_accent: egui::Color32) {
     let mut ticked = d.accent.is_some();
     if ui
         .checkbox(&mut ticked, tl!("Pick a colour of your own"))
-        .on_hover_text(tl!("Starts from the colour picked last, or the app's accent colour; the swatch shows the colour the layout takes."))
+        .on_hover_text(tl!(
+            "Starts from the colour picked last, or the style's own accent colour; the swatch shows the colour the layout takes."
+        ))
         .changed()
     {
-        // Unticked, the colour picked is kept for the next tick.
+        // Unticked, keep a custom colour for the next tick; leave the style's own unremembered so
+        // switching styles starts from the new style's accent.
+        let default = style_accent(&d.style, app_accent);
         if !ticked {
-            d.picked = d.accent;
+            d.picked = d.accent.filter(|&c| c != default);
         }
-        d.accent = ticked.then(|| d.picked.unwrap_or(app_accent));
+        d.accent = ticked.then(|| d.picked.unwrap_or(default));
     }
     if let Some(c) = &mut d.accent {
         egui::color_picker::color_edit_button_srgba(ui, c, egui::color_picker::Alpha::Opaque);
@@ -268,7 +302,7 @@ fn review_step(ui: &mut egui::Ui, d: &Draft) {
         let credit = if d.no_author {
             none.to_string()
         } else if d.author.trim().is_empty() {
-            default_credit().to_string()
+            default_credit()
         } else {
             d.author.trim().to_string()
         };
@@ -281,10 +315,10 @@ fn review_step(ui: &mut egui::Ui, d: &Draft) {
     }
 }
 
-/// How the wizard names the credit line `layout.publication` writes when none is given
-/// ("Made with RustGIS · {date}", dated when the layout is made).
-fn default_credit() -> &'static str {
-    tl!("Made with RustGIS · today's date")
+/// How the wizard names the credit line `layout.publication` writes when none is given,
+/// built from the engine's [`PUBLICATION_DEFAULT_CREDIT`] with `{date}` named for display.
+fn default_credit() -> String {
+    i18n::fmt(PUBLICATION_DEFAULT_CREDIT, &[("date", tl_raw!("today's date"))])
 }
 
 /// A field's width beside its label: 260 points, or what the row leaves once a longer label
@@ -695,6 +729,68 @@ mod tests {
         h.get_by_label("Pick a colour of your own").click();
         h.run_steps(2);
         assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(red), "the colour picked before");
+    }
+
+    /// Ticking "Pick a colour of your own" starts from the chosen style's own accent from the
+    /// engine, not the app's accent; unticking without picking a custom colour lets a newly
+    /// chosen style start from its own accent too.
+    #[test]
+    fn accent_starts_from_the_chosen_styles_own_colour() {
+        let mut app = app();
+        open(&mut app);
+        let banner = publication_style_accent("banner").unwrap();
+        let banner = egui::Color32::from_rgb(banner.r(), banner.g(), banner.b());
+        let poster = publication_style_accent("poster").unwrap();
+        let poster = egui::Color32::from_rgb(poster.r(), poster.g(), poster.b());
+        assert_ne!(banner, poster);
+        {
+            let d = app.dialogs.publication.as_mut().unwrap();
+            d.style = "banner".into();
+            d.step = Step::Accent;
+        }
+        let mut h = harness(app);
+        h.get_by_label("Pick a colour of your own").click();
+        h.run_steps(2);
+        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(banner), "starts from Banner's accent");
+        // Unticking without editing leaves no custom colour remembered, so switching to Poster
+        // starts from Poster's own accent.
+        h.get_by_label("Pick a colour of your own").click();
+        h.run_steps(2);
+        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, None);
+        h.state_mut().dialogs.publication.as_mut().unwrap().style = "poster".into();
+        h.run_steps(2);
+        h.get_by_label("Pick a colour of your own").click();
+        h.run_steps(2);
+        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(poster), "starts from Poster's accent");
+    }
+
+    /// The text fields enforce the engine's character limit (`MAX_PUBLICATION_TEXT`) and say so
+    /// when a field reaches it, saying nothing on shorter text.
+    #[test]
+    fn texts_enforce_the_engines_character_limit_and_say_so() {
+        let mut app = app();
+        open(&mut app);
+        app.dialogs.publication.as_mut().unwrap().step = Step::Texts;
+        let mut h = harness(app);
+        let limit_text = format!("Each field takes at most {MAX_PUBLICATION_TEXT} characters.");
+        assert!(h.query_by_label(&limit_text).is_none(), "clean text shows no limit notice");
+        // Fill Subtitle to two characters below the limit, then type five more: stopped at the limit.
+        h.state_mut().dialogs.publication.as_mut().unwrap().subtitle = "x".repeat(MAX_PUBLICATION_TEXT - 2);
+        h.run_steps(2);
+        h.get_by_label("Subtitle").focus();
+        h.run_steps(1);
+        h.get_by_label("Subtitle").type_text("abcde");
+        h.run_steps(2);
+        let sub = &h.state().dialogs.publication.as_ref().unwrap().subtitle;
+        assert_eq!(sub.chars().count(), MAX_PUBLICATION_TEXT, "capped at MAX_PUBLICATION_TEXT");
+        assert!(sub.ends_with("xxab"), "kept up to the limit");
+        assert!(h.query_by_label(&limit_text).is_some(), "limit notice shown at the cap");
+    }
+
+    /// The review's default credit line comes from the engine's `PUBLICATION_DEFAULT_CREDIT`.
+    #[test]
+    fn default_credit_matches_the_engines_constant() {
+        assert_eq!(default_credit(), PUBLICATION_DEFAULT_CREDIT.replace("{date}", "today's date"));
     }
 
     /// In English the style step fits its box: the wheel over it scrolls nothing, so the last

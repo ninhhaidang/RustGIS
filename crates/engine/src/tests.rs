@@ -13600,6 +13600,42 @@ fn every_publication_style_in_the_menu_is_taken() {
     }
 }
 
+/// The defaults `layout.publication` exposes for the UI match what the command uses: every style
+/// in `PUBLICATION_STYLES` has an opaque accent (unknown styles give `None`), omitted `author`
+/// writes `PUBLICATION_DEFAULT_CREDIT`, and `MAX_PUBLICATION_TEXT` is the exact character limit.
+#[test]
+fn publication_defaults_match_the_command() {
+    use crate::cmd::layout::{MAX_PUBLICATION_TEXT, PUBLICATION_DEFAULT_CREDIT, PUBLICATION_STYLES, publication_style_accent};
+    use rustgis_map::layout::ElementKind;
+
+    for (style, _) in PUBLICATION_STYLES {
+        let accent = publication_style_accent(style).unwrap_or_else(|| panic!("accent for {style}"));
+        assert_eq!(accent.a(), 255, "{style} accent is opaque");
+    }
+    assert!(publication_style_accent("unknown").is_none());
+
+    let mut s = world();
+    let extent = json!([-46.8, -11.6, -38.5, -2.2]);
+    // Banner paints its top band in the style's own accent when no accent is given.
+    let banner_accent = publication_style_accent("banner").unwrap();
+    s.run("layout.publication", &json!({"extent": extent, "profile": "a4-portrait", "style": "banner", "title": "Check"})).unwrap();
+    let l = s.project.layouts.last().unwrap();
+    assert!(
+        l.elements.iter().any(|e| matches!(e.kind, ElementKind::Rectangle { fill, .. } if fill == banner_accent)),
+        "banner band uses publication_style_accent(\"banner\")"
+    );
+    assert!(
+        l.elements.iter().any(|e| matches!(&e.kind, ElementKind::Text { text, .. } if text == PUBLICATION_DEFAULT_CREDIT)),
+        "omitted author uses PUBLICATION_DEFAULT_CREDIT"
+    );
+
+    let at_limit = "a".repeat(MAX_PUBLICATION_TEXT);
+    assert!(s.run("layout.publication", &json!({"extent": extent, "profile": "a4-portrait", "note": at_limit})).is_ok());
+    let over_limit = "a".repeat(MAX_PUBLICATION_TEXT + 1);
+    let err = s.run("layout.publication", &json!({"extent": extent, "profile": "a4-portrait", "note": over_limit})).unwrap_err();
+    assert!(err.contains(&MAX_PUBLICATION_TEXT.to_string()), "{err}");
+}
+
 /// A publication sheet's style (#682): `classic` (the default) as before; `banner` the title and
 /// subtitle in a band of the accent colour across the top; `panel` the map at the left and a panel
 /// at the right holding the title, the locator, the legend, the sources and the reference;
