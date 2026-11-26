@@ -8,7 +8,9 @@
 </figure>
 
 Home › New Layout adds a page layout (Letter, Legal, Tabloid or A5 to A0, landscape or portrait)
-with a map frame, title, legend, north arrow, scale bar and a dynamic credits line. The command
+with a map frame, title, legend, north arrow, scale bar and a dynamic credits line. The title is
+the dynamic text `{map}`, so it follows a rename of the map in the first map frame; replace it
+with your own text for a title that stays. The command
 `layout.new` also accepts custom `width` and `height` in millimetres and `"template": "blank"`.
 Both `layout.new` and each layout in `info` include an `elements` array with each element's
 `element` ID, `name` and `kind`, ready to use in `layout.update` or `layout.removeElement`.

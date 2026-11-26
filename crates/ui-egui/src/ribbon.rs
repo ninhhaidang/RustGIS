@@ -1220,11 +1220,12 @@ fn map_labeling_group(app: &mut RustGisApp, ui: &mut Ui) {
 }
 
 /// Runs `layout.publication` for `profile` from the New Layout menu, in `style` on a sheet: a sheet
-/// is titled with the map's name, a figure's title being its caption's.
+/// is titled with the map's name as `{map}`, so the title follows a rename of the map, a figure's
+/// title being its caption's.
 fn publication_layout(app: &mut RustGisApp, profile: &rustgis_engine::cmd::layout::PublicationProfile, style: Option<&str>) {
     let mut p = json!({"profile": profile.id});
     if profile.sheet {
-        p["title"] = json!(app.session.map().name.clone());
+        p["title"] = json!("{map}");
     }
     if let Some(style) = style {
         p["style"] = json!(style);
@@ -6921,10 +6922,9 @@ mod tests {
         let l = app.session.project.layouts.last().unwrap();
         assert!(l.elements.iter().any(|e| e.name == "Panel Box"), "the panel style");
         assert!((l.width, l.height) == (210.0, 297.0), "an A4 portrait sheet: {} × {}", l.width, l.height);
-        let title = app.session.map().name.clone();
         assert!(
-            l.elements.iter().any(|e| matches!(&e.kind, rustgis_engine::map::layout::ElementKind::Text { text, .. } if *text == title)),
-            "titled with the map's name"
+            l.elements.iter().any(|e| matches!(&e.kind, rustgis_engine::map::layout::ElementKind::Text { text, .. } if text == "{map}")),
+            "titled with the map's name as {{map}}, so a rename of the map changes it"
         );
         assert_eq!(app.ui.tab, "Publish");
         assert!(h.query_by_label("Banner").is_none(), "the menu closed");
