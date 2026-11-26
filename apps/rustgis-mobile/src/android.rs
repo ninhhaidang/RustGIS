@@ -1,5 +1,5 @@
-//! The Android app: a `NativeActivity` whose Java half ([`Phone`]) shows the system's pickers,
-//! finds the device's position and asks the camera.
+//! The Android app: a `NativeActivity` whose Java half ([`Phone`]) shows the system's pickers
+//! and text fields, finds the device's position and asks the camera.
 
 use crate::phone::Phone;
 use crate::shell;
@@ -30,6 +30,10 @@ impl shell::Phone for Phone {
     /// The activity looks at Android's memory when asked what happened, so an idle window asks.
     fn idle_look(&self) -> Option<u64> {
         Some(5000)
+    }
+
+    fn copy_text(&self, text: &str) -> Result<(), String> {
+        Phone::copy_text(self, text)
     }
 }
 

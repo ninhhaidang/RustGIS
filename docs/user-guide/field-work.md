@@ -102,7 +102,11 @@ The form has a field for each of the layer's attributes, and follows the layer's
 - A date field has a calendar button, with **Today** and, for a date and time, **Now**. Both are
   in UTC.
 
-While you type in a field, the sheet stays above the soft keyboard.
+While you type in a field, the sheet stays above the soft keyboard. On Android, tapping a text or
+number field opens Android's own text box above the keyboard, so paste, suggestions, glide typing
+and dictation work there. The form shows the value as you type. **Done**, the keyboard's Done key,
+Back or a tap outside the box closes it. Text copied in RustGIS goes on Android's clipboard too,
+where other apps can paste it.
 
 ### Photos
 

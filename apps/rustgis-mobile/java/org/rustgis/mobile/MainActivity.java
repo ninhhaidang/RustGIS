@@ -37,6 +37,10 @@ import java.util.ArrayList;
  *   stopped                          positioning ended without being asked to
  *   low-memory                       Android is short of memory
  *   photo     name  path             a photo the camera took, in the app's photos folder
+ *   text      id  text               what a text field (enterText) holds now, its backslashes,
+ *                                    tabs and line breaks written \\, \t, \n and \r
+ *   text-closed  id  [reason]        a text field closed, or (with reason) couldn't be opened
+ *   copy-failed  reason              copied text that couldn't be put on Android's clipboard
  *   failed    text                   what went wrong, to show the user
  */
 public class MainActivity extends NativeActivity {
@@ -103,6 +107,16 @@ public class MainActivity extends NativeActivity {
     /** When takeEvents last asked whether Android is low on memory, and its answer (its thread's alone). */
     private long memoryLooked;
     private boolean memoryLow;
+    /** Whether the Rust side draws on a light ground (barsLight): the text field's colours follow it. */
+    private volatile boolean light = true;
+    /** The text field open over the app (enterText), while it is (the main thread's alone). */
+    private android.app.Dialog entry;
+    /**
+     * The latest "text" event of a text field and that field's id, until takeEvents or the field's
+     * closing hands it over (guarded by events): only the latest is kept, as each has all its text.
+     */
+    private String typedId;
+    private String typed;
 
     @Override
     protected void onCreate(android.os.Bundle saved) {
@@ -131,6 +145,7 @@ public class MainActivity extends NativeActivity {
      * the Rust side says which whenever its theme changes.
      */
     public void barsLight(final boolean light) {
+        this.light = light;
         runOnUiThread(() -> {
             if (android.os.Build.VERSION.SDK_INT >= 30) {
                 android.view.WindowInsetsController bars = getWindow().getInsetsController();
@@ -395,6 +410,9 @@ public class MainActivity extends NativeActivity {
         if (current == this) {
             current = null;
         }
+        if (entry != null) {
+            entry.dismiss();
+        }
         stopLocating();
         stopService(new Intent(this, TrackService.class));
         super.onDestroy();
@@ -440,6 +458,198 @@ public class MainActivity extends NativeActivity {
             } catch (RuntimeException e) {
                 photo = null;
                 add("failed\tThis device has no camera app: " + e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * Opens a text field of Android's for a field the Rust side draws, docked above the soft
+     * keyboard, in a window of its own: NativeActivity hands its window's touches and keys to the
+     * Rust side, so a field there would get none. It gives Android's typing: paste, suggestions,
+     * glide typing, dictation, and a password manager for a "secret". What it holds is sent as a
+     * "text" event each time it changes, and "text-closed" when it closes (Done, Back, or a tap
+     * beside it, which goes no further). One opened while another is open replaces it. The kind
+     * is "plain", "lines", "secret" or "number"; done is the label of its button.
+     */
+    public void enterText(final String id, final String value, final String label, final String kind, final String done) {
+        // Counted until it closes: the Rust side keeps looking for what is typed meanwhile.
+        synchronized (events) {
+            asked++;
+        }
+        runOnUiThread(() -> {
+            // Its own close is said by its listener.
+            if (entry != null) {
+                entry.dismiss();
+            }
+            try {
+                entry = textEntry(id, value, label, kind, done);
+                entry.show();
+            } catch (RuntimeException e) {
+                entry = null;
+                String why = e.getMessage();
+                add("text-closed\t" + id + "\t" + oneField(why == null || why.isEmpty() ? e.getClass().getSimpleName() : why));
+                answered();
+            }
+        });
+    }
+
+    /** The window of a text field (enterText), not yet shown. */
+    private android.app.Dialog textEntry(final String id, String value, String label, String kind, String done) {
+        final android.app.Dialog dialog = new android.app.Dialog(this, light
+                ? android.R.style.Theme_DeviceDefault_Light_Dialog_NoActionBar
+                : android.R.style.Theme_DeviceDefault_Dialog_NoActionBar);
+        android.content.Context themed = dialog.getContext();
+        final int pad = Math.round(12 * getResources().getDisplayMetrics().density);
+        android.widget.LinearLayout panel = new android.widget.LinearLayout(themed);
+        panel.setOrientation(android.widget.LinearLayout.VERTICAL);
+        panel.setPadding(pad, pad, pad, pad);
+        android.widget.TextView title = new android.widget.TextView(themed);
+        title.setText(label);
+        panel.addView(title);
+        android.widget.LinearLayout row = new android.widget.LinearLayout(themed);
+        row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        android.widget.EditText field = new android.widget.EditText(themed);
+        int text = android.text.InputType.TYPE_CLASS_TEXT;
+        switch (kind) {
+            case "secret":
+                field.setInputType(text | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+                field.setAutofillHints(android.view.View.AUTOFILL_HINT_PASSWORD);
+                field.setImportantForAutofill(android.view.View.IMPORTANT_FOR_AUTOFILL_YES);
+                break;
+            case "number":
+                // The keyboard for numbers, without the filter that would come with it: it drops
+                // what isn't a digit, sign or point (the "e" of a pasted 1e3 would leave 13). The
+                // Rust side reads the number and refuses one it can't.
+                field.setInputType(text);
+                field.setRawInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                        | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL | android.text.InputType.TYPE_NUMBER_FLAG_SIGNED);
+                break;
+            case "lines":
+                field.setInputType(text | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                        | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+                field.setMaxLines(6);
+                break;
+            default:
+                field.setInputType(text | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        }
+        // A form's field isn't a sign-in: the password manager is offered for a secret alone.
+        if (!kind.equals("secret")) {
+            field.setImportantForAutofill(android.view.View.IMPORTANT_FOR_AUTOFILL_NO);
+        }
+        field.setText(value);
+        field.setSelection(field.length());
+        // The keyboard keeps to its own strip in landscape too, with the form in sight above it.
+        field.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+                | android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN);
+        field.setOnEditorActionListener((view, action, key) -> {
+            if (action == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
+                dialog.dismiss();
+                return true;
+            }
+            return false;
+        });
+        field.addTextChangedListener(new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence was, int start, int count, int after) {}
+
+            @Override
+            public void onTextChanged(CharSequence now, int start, int before, int count) {}
+
+            @Override
+            public void afterTextChanged(android.text.Editable now) {
+                typed(id, now.toString());
+            }
+        });
+        row.addView(field, new android.widget.LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        android.widget.Button finish = new android.widget.Button(themed);
+        finish.setText(done);
+        finish.setOnClickListener(view -> dialog.dismiss());
+        row.addView(finish);
+        panel.addView(row);
+        dialog.setContentView(panel);
+        dialog.setCanceledOnTouchOutside(true);
+        dialog.setOnDismissListener(closed -> {
+            if (entry == dialog) {
+                entry = null;
+            }
+            synchronized (events) {
+                if (typed != null && id.equals(typedId)) {
+                    events.add(typed);
+                    typed = null;
+                }
+                events.add("text-closed\t" + id);
+                asked--;
+            }
+        });
+        android.view.Window window = dialog.getWindow();
+        if (window != null) {
+            window.setGravity(android.view.Gravity.BOTTOM);
+            window.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+            // The form stays in sight behind it, the value it shows changing as it is typed.
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+                    | android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            android.content.res.TypedArray colours = themed.obtainStyledAttributes(new int[] {android.R.attr.colorBackground});
+            window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(
+                    colours.getColor(0, light ? android.graphics.Color.WHITE : android.graphics.Color.BLACK)));
+            colours.recycle();
+        }
+        // Drawn edge to edge (Android 15 and later), it keeps above the keyboard and the
+        // navigation bar itself.
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            panel.setOnApplyWindowInsetsListener((view, insets) -> {
+                android.graphics.Insets room = insets.getInsets(android.view.WindowInsets.Type.navigationBars()
+                        | android.view.WindowInsets.Type.displayCutout() | android.view.WindowInsets.Type.ime());
+                view.setPadding(pad + room.left, pad, pad + room.right, pad + room.bottom);
+                return insets;
+            });
+        }
+        field.requestFocus();
+        return dialog;
+    }
+
+    /** Keeps what the text field {@code id} holds now as its "text" event, the one before it of another field handed over first. */
+    private void typed(String id, String text) {
+        StringBuilder line = new StringBuilder("text\t").append(id).append('\t');
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            switch (c) {
+                case '\\': line.append("\\\\"); break;
+                case '\t': line.append("\\t"); break;
+                case '\n': line.append("\\n"); break;
+                case '\r': line.append("\\r"); break;
+                default: line.append(c);
+            }
+        }
+        synchronized (events) {
+            if (typed != null && !id.equals(typedId)) {
+                events.add(typed);
+            }
+            typedId = id;
+            typed = line.toString();
+        }
+    }
+
+    /** Puts text copied in the Rust side's window on Android's clipboard, for other apps. */
+    public void copyText(final String text) {
+        // Counted until it is done: the Rust side keeps looking until a failure has reached it.
+        synchronized (events) {
+            asked++;
+        }
+        runOnUiThread(() -> {
+            try {
+                android.content.ClipboardManager clipboard = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                if (clipboard == null) {
+                    add("copy-failed\tthis device has no clipboard service");
+                } else {
+                    clipboard.setPrimaryClip(ClipData.newPlainText("RustGIS", text));
+                }
+            } catch (RuntimeException e) {
+                // Too large for Android to pass on, say: the Rust side's own clipboard still has it.
+                add("copy-failed\t" + oneField(e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+            } finally {
+                answered();
             }
         });
     }
@@ -790,6 +1000,10 @@ public class MainActivity extends NativeActivity {
             add("failed\t" + why);
         }
         synchronized (events) {
+            if (typed != null) {
+                events.add(typed);
+                typed = null;
+            }
             String taken = events.take();
             // Every notice waiting has been handed over: the copies they name are said.
             if (events.isEmpty()) {

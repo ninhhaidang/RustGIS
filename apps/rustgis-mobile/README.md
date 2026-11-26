@@ -84,6 +84,12 @@ Rust calls Java and never the other way: each frame the app collects what happen
   the More sheet, removes the picks the project in the window names no file of, once the user has
   seen how many and how large and agreed; a pick goes whole, so a Shapefile's `.dbf` goes only
   with its `.shp`. It runs off the window's thread, with Cancel.
+- **Typing.** `NativeActivity` hands its window's touches and keys to Rust, so a text field in
+  that window gets none of Android's typing (paste, suggestions, dictation). A Capture field is
+  drawn as a box instead, and tapping it opens an `EditText` in a window of its own, docked above
+  the keyboard (`enterText`): its text comes back as a `text` event on each change, the form
+  showing it as it is typed, and `text-closed` when it closes. Text copied in RustGIS goes on
+  Android's clipboard too (`copyText`). Fields the desktop interface draws still use egui's own.
 - **Not yet.** Choosing a folder (Add Folder, a Zarr store) says it isn't available.
 
 ## The touch interface
@@ -237,7 +243,7 @@ own was used outside the area) is said, as a later package from the same phone r
 | Memory limits | The app tells the engine what Android allows (`rustgis_data::memory::set_phone`): `ActivityManager.MemoryInfo`'s `totalMem` in place of the computer's memory, and `availMem` less `threshold` as what is free, asked again for each job. (`getMemoryClass` bounds only the Java heap; the engine's memory is native.) Where the browser's floor is lower than the desktop's, the phone takes it; the Undo budget is planned from what is free at start, and the threads' scratch memory is the browser's. On a low-memory warning the app drops the tile and drawing caches: `onTrimMemory` and `onLowMemory` through Android 13, and, as Android 14 and later send an app in use neither, `MemoryInfo.lowMemory`, asked every five seconds while the app is in sight (an idle window wakes that often to ask) |
 | Recovery copies | The first foreground edit submits a recovery copy in app-private storage immediately. Edits within two seconds of a submission are grouped into a copy due at the end of that interval. When the exit hook runs, it submits the latest edit immediately and gives the writer up to two seconds to finish. Suspending or destroying the Android activity can skip this hook, so edits still waiting to be submitted can be lost. The next launch offers the last complete copy, if one exists. |
 | Preferences, the keychain | Not wired up yet |
-| Soft keyboard | It opens for a text field, and the touch interface keeps the field above it. `NativeActivity`'s text input is still poor (no suggestions, no composing): a real app moves to `GameActivity` |
+| Soft keyboard | It opens for a text field, and the touch interface keeps the field above it. The Capture form's fields are typed into Android's own text box (see Typing above), with suggestions, composing, paste and dictation. Fields the desktop interface draws still get `NativeActivity`'s poor text input (no suggestions, no composing) |
 
 ## What phase 0 found
 

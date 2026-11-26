@@ -527,6 +527,10 @@ pub struct Services {
     /// which may ask the user first), for a text field's Paste; `None` where the window sends
     /// it (the desktop) or the browser can't read it (a page not served over HTTPS).
     pub read_clipboard: Option<Box<dyn Fn(Slot<Result<String, String>>)>>,
+    /// Opens a text field of the system's for a field an interface draws as a box showing its
+    /// value (a phone's, `rustgis_engine::platform::Platform::enter_text`): what is typed arrives
+    /// in [`RustGisApp::typed`]. `None` where the interface's own fields take the system's typing.
+    pub enter_text: Option<Box<dyn Fn(&rustgis_engine::platform::TextEntry) -> Result<(), String>>>,
     /// Signs in to an ArcGIS portal (its address and an OAuth client id, either blank for ArcGIS
     /// Online and RustGIS's own app) in a pop-up window, putting who signed in, or why not, in the
     /// slot (the browser; the desktop runs `arcgis.signIn`).
@@ -1489,6 +1493,9 @@ pub struct RustGisApp {
     /// Photos the camera took ([`Services::take_photo`]), by where they were written, until an
     /// interface takes them.
     pub photos: Vec<std::path::PathBuf>,
+    /// What the system's text fields sent back ([`Services::enter_text`]), oldest first, until
+    /// an interface takes it.
+    pub typed: Vec<rustgis_engine::platform::Typed>,
     /// How many positions were dropped from [`RustGisApp::fixes`] past [`FIXES_KEPT`] since an
     /// interface last took them: the interface says so when a track or an average missed them.
     pub fixes_dropped: usize,
@@ -1799,6 +1806,7 @@ impl RustGisApp {
             fixes: std::collections::VecDeque::new(),
             keep_locating: false,
             photos: Vec::new(),
+            typed: Vec::new(),
             fixes_dropped: 0,
             said_low_memory: false,
             #[cfg(not(target_arch = "wasm32"))]

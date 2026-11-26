@@ -20,6 +20,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Sense, Stroke, Ui, Vec2};
+use rustgis_ui_egui::rustgis_engine::platform::{TextEntry, TextKind, Typed};
 use rustgis_ui_egui::theme::Tokens;
 use rustgis_ui_egui::{RustGisApp, i18n, icons, tl};
 use serde_json::{Value, json};
@@ -89,6 +90,13 @@ pub fn chrome(app: &mut RustGisApp, ui: &mut Ui) {
     track::take(app, &ctx);
     // What Remove Unused Copies found or removed, off the window's thread.
     copies::poll(app, &ctx);
+    // What the system's text field sent back goes in the Capture form's field it was opened for.
+    if !app.typed.is_empty() {
+        let mut state = form(&ctx);
+        let typed = std::mem::take(&mut app.typed);
+        state.take_typed(app, typed);
+        set_form(&ctx, state);
+    }
     // With positioning off (Hide My Position, or Android ending it), an average being taken
     // stops: the sheet no longer shows it, and positions from before would mix into the next.
     if !app.locate {
@@ -502,6 +510,24 @@ struct Form {
     /// The height of the window the sheet was last drawn in: when it changes (the soft keyboard
     /// came or went), the field being typed in is scrolled back into view.
     window: f32,
+    /// The system's text field open for one of the fields ([`Services::enter_text`]), until it
+    /// closes.
+    ///
+    /// [`Services::enter_text`]: rustgis_ui_egui::Services::enter_text
+    entering: Option<Entering>,
+    /// How many times the system's text field was opened: each opening's id is its own.
+    entries: u64,
+}
+
+/// The system's text field open for a field of the Capture form.
+#[derive(Clone, Debug, PartialEq)]
+struct Entering {
+    /// The id it was opened with ([`entry_id`]).
+    id: String,
+    /// The layer whose field it is, by `Layer::instance_id`.
+    instance: u64,
+    /// The field's name.
+    field: String,
 }
 
 impl Form {
@@ -521,6 +547,46 @@ impl Form {
         }
         self
     }
+
+    /// Takes what the system's text field sent back: the text of the one this form opened goes
+    /// in its field as it changes, until it closes, while Capture still adds to that field's layer
+    /// and the layer still has the field. Text that no longer has its field is said, once, and
+    /// what follows it let go. What an earlier opening sends (its close, arriving after the field
+    /// was opened again) belongs to no field here.
+    fn take_typed(&mut self, app: &mut RustGisApp, typed: Vec<Typed>) {
+        for typed in typed {
+            let Some(open) = self.entering.clone() else { continue };
+            match typed {
+                Typed::Text { id, text } if id == open.id => {
+                    let here = capture_layer(app, self).filter(|t| t.instance == open.instance && self.shown == Some(t.instance));
+                    let has_field =
+                        here.and_then(|t| app.session.map().layer(t.id)).is_some_and(|l| l.dataset.field_index(&open.field).is_some());
+                    if has_field {
+                        self.values.insert(open.field, text);
+                    } else {
+                        self.entering = None;
+                        app.session.notify(
+                            i18n::fmt(
+                                "What was typed for {field} wasn't kept: Capture no longer adds to its layer, or the layer no longer has the field.",
+                                &[("field", &open.field)],
+                            ),
+                            true,
+                        );
+                    }
+                }
+                Typed::Closed { id, .. } if id == open.id => self.entering = None,
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The id the system's text field is opened with for the form's field `index` of the layer
+/// `instance` (`Layer::instance_id`), the `n`th time it was opened: an answer for one layer's
+/// field never fills another's, nor an earlier opening's close ends a later one. No name of the
+/// user's goes in it, so it never holds a tab, which would end it on the event's line.
+fn entry_id(instance: u64, index: usize, n: u64) -> String {
+    format!("capture:{instance}:{index}:{n}")
 }
 
 impl Form {
@@ -1232,15 +1298,41 @@ fn capture_fields(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, target: &Target
                         (FieldType::DateTime, None) => tl!("a date and time").to_string(),
                         _ => String::new(),
                     };
-                    let edit = egui::TextEdit::singleline(value)
-                        .hint_text(hint)
-                        .font(egui::FontId::proportional(15.0))
-                        .margin(egui::Margin::symmetric(8, 10));
                     // A date field keeps room for the button that opens its calendar.
                     let room = if dated { ui.available_width() - TARGET - ui.spacing().item_spacing.x } else { ui.available_width() };
-                    let typed = ui.add_sized([room.max(TARGET), TARGET - 6.0], edit);
-                    if typed.gained_focus() || (typed.has_focus() && resized) {
-                        typed.scroll_to_me(Some(Align::Center));
+                    let size = Vec2::new(room.max(TARGET), TARGET - 6.0);
+                    if let Some(enter) = &app.services.enter_text {
+                        // Typed into the system's own field (a phone's, docked above its keyboard),
+                        // which gives its paste, suggestions and dictation: this one shows the value.
+                        let open = state.entering.as_ref().is_some_and(|e| e.instance == target.instance && e.field == field.name);
+                        if entry_box(ui, t, size, value, &hint, open).clicked() {
+                            let id = entry_id(target.instance, i, state.entries);
+                            let kind = match field.ty {
+                                FieldType::Integer | FieldType::Double => TextKind::Number,
+                                _ => TextKind::Plain,
+                            };
+                            let entry = TextEntry {
+                                id: id.clone(),
+                                value: value.clone(),
+                                label: label.clone(),
+                                kind,
+                                done: tl!("Done").to_string(),
+                            };
+                            state.entries += 1;
+                            match enter(&entry) {
+                                Ok(()) => state.entering = Some(Entering { id, instance: target.instance, field: field.name.clone() }),
+                                Err(e) => app.session.notify(e, true),
+                            }
+                        }
+                    } else {
+                        let edit = egui::TextEdit::singleline(value)
+                            .hint_text(hint)
+                            .font(egui::FontId::proportional(15.0))
+                            .margin(egui::Margin::symmetric(8, 10));
+                        let typed = ui.add_sized(size, edit);
+                        if typed.gained_focus() || (typed.has_focus() && resized) {
+                            typed.scroll_to_me(Some(Align::Center));
+                        }
                     }
                     if dated {
                         let open = state.calendar.as_ref().is_some_and(|(name, _)| name == &field.name);
@@ -1281,6 +1373,25 @@ fn capture_fields(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, target: &Target
             }
         }
     }
+}
+
+/// A field drawn as a box showing its `value` (or `hint` while it is empty) that is typed into
+/// with the system's text field, opened when it is tapped: outlined in the accent colour while
+/// that field is `open` for it.
+fn entry_box(ui: &mut Ui, t: &Tokens, size: Vec2, value: &str, hint: &str, open: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    response.widget_info(|| egui::WidgetInfo::text_edit(ui.is_enabled(), value, value, hint));
+    if ui.is_rect_visible(rect) {
+        let stroke = if open { Stroke::new(2.0, t.accent) } else { Stroke::new(1.0, t.input_border) };
+        ui.painter().rect(rect, CornerRadius::same(4), t.input, stroke, egui::StrokeKind::Inside);
+        let (text, color) = if value.is_empty() { (hint, t.text_dim) } else { (value, t.text) };
+        let mut layout = egui::text::LayoutJob::simple_singleline(text.to_owned(), egui::FontId::proportional(15.0), color);
+        layout.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 16.0).max(0.0));
+        let galley = ui.painter().layout_job(layout);
+        let at = egui::pos2(rect.left() + 8.0, rect.center().y - galley.size().y / 2.0);
+        ui.painter().galley(at, galley, color);
+    }
+    response
 }
 
 /// The Capture sheet's buttons for the device's position: Go to My Position and Average, or,
@@ -2321,6 +2432,103 @@ mod tests {
         stop_track(&mut app, &ctx);
         frame(&mut app, &ctx, Sheet::None);
         assert!(!app.keep_locating);
+    }
+
+    /// On a phone with text fields of its own, a Capture field is a box that opens one when
+    /// tapped, with the field's value, label and kind; what is typed there fills the field as it
+    /// changes, and goes with the feature added. An answer for another field, or an earlier
+    /// opening's close arriving after the field was opened again, fills or ends nothing; text for
+    /// a field whose layer Capture no longer adds to is said, not kept.
+    #[test]
+    fn a_field_typed_into_with_the_systems_text_field_fills_the_feature() {
+        let ctx = egui::Context::default();
+        let mut app = RustGisApp::with_sample();
+        let cities = target(&mut app, GeometryType::Point);
+        run(&mut app, "edit.addField", json!({"layer": cities.id, "name": "note", "type": "text"}));
+        let index = app.session.map().layer(cities.id).unwrap().dataset.field_index("note").unwrap();
+        let asked: std::rc::Rc<std::cell::RefCell<Vec<TextEntry>>> = Default::default();
+        let asking = asked.clone();
+        app.services.enter_text = Some(Box::new(move |entry| {
+            asking.borrow_mut().push(entry.clone());
+            Ok(())
+        }));
+        set_form(&ctx, Form { shown: Some(cities.instance), values: [("note".to_string(), "Old".to_string())].into(), ..Form::default() });
+        // The field's box is beside its label, which says where it is: on a tall window, as the
+        // field added comes after the layer's own.
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(411.0, 2400.0));
+        set_sheet(&ctx, Sheet::Capture);
+        let mut label = None;
+        for _ in 0..3 {
+            let output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| chrome(&mut app, ui));
+            label = label.or_else(|| {
+                output.shapes.iter().find_map(|painted| match &painted.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == "note" => Some(text.visual_bounding_rect()),
+                    _ => None,
+                })
+            });
+            output.drop_without_applying_deltas();
+        }
+        let label = label.expect("the field's label is drawn");
+        // Every frame on the same window: egui finds what a press is on by the frame before it.
+        let draw = |app: &mut RustGisApp| {
+            ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| chrome(app, ui))
+                .drop_without_applying_deltas();
+        };
+        let tap = |app: &mut RustGisApp| {
+            draw(app);
+            let at = egui::pos2(label.left() + 160.0, label.center().y);
+            for pressed in [true, false] {
+                let events = vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ];
+                let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+                ctx.run_ui(input, |ui| chrome(app, ui)).drop_without_applying_deltas();
+            }
+        };
+        tap(&mut app);
+        let first = entry_id(cities.instance, index, 0);
+        assert_eq!(
+            *asked.borrow(),
+            vec![TextEntry { id: first.clone(), value: "Old".into(), label: "note".into(), kind: TextKind::Plain, done: "Done".into() }]
+        );
+        assert_eq!(form(&ctx).entering.map(|e| e.id), Some(first.clone()));
+        // Typed: each change fills the field; another field's answer fills nothing.
+        app.typed.push(Typed::Text { id: first.clone(), text: "Lan".into() });
+        app.typed.push(Typed::Text { id: entry_id(cities.instance + 1, index, 0), text: "Elsewhere".into() });
+        draw(&mut app);
+        assert_eq!(form(&ctx).values.get("note").map(String::as_str), Some("Lan"));
+        // Opened again before the first one's close arrived: that close ends nothing, and the
+        // second one's text still fills the field.
+        tap(&mut app);
+        let second = entry_id(cities.instance, index, 1);
+        assert_eq!(asked.borrow().last().map(|e| (e.id.clone(), e.value.clone())), Some((second.clone(), "Lan".into())));
+        app.typed.push(Typed::Closed { id: first, failed: None });
+        app.typed.push(Typed::Text { id: second.clone(), text: "Lantern\tpost".into() });
+        app.typed.push(Typed::Closed { id: second.clone(), failed: None });
+        app.typed.push(Typed::Text { id: second, text: "After it closed".into() });
+        draw(&mut app);
+        let state = form(&ctx);
+        assert!(app.typed.is_empty());
+        assert_eq!(state.entering, None);
+        assert_eq!(state.values.get("note").map(String::as_str), Some("Lantern\tpost"));
+        assert!(add_point(&mut app, cities.id, &state));
+        let layer = app.session.map().layer(cities.id).unwrap();
+        assert_eq!(layer.dataset.value(layer.dataset.features.len() - 1, index).to_string(), "Lantern\tpost");
+        // Capture adds to another layer while the box is open: what is typed is said, not kept.
+        tap(&mut app);
+        let third = asked.borrow().last().unwrap().id.clone();
+        let polygons = target(&mut app, GeometryType::Polygon);
+        let mark = app.session.notice_mark();
+        app.typed.push(Typed::Text { id: third, text: "Lost".into() });
+        draw(&mut app);
+        let state = form(&ctx);
+        assert_eq!(state.shown, Some(polygons.instance));
+        assert!(!state.values.values().any(|v| v == "Lost"));
+        assert_eq!(state.entering, None);
+        let said: Vec<String> = app.session.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].starts_with("What was typed for note wasn't kept: Capture no longer adds to its layer"), "{said:?}");
     }
 
     #[test]

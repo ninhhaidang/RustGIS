@@ -57,6 +57,14 @@ pub trait Phone: Platform {
     fn take_return(&self) -> bool {
         false
     }
+
+    /// Puts `text`, copied in the window, on the system's clipboard too, where other apps can
+    /// paste it; an error says why it couldn't be asked. The default does nothing: the window's
+    /// own clipboard keeps it (iOS).
+    fn copy_text(&self, text: &str) -> Result<(), String> {
+        let _ = text;
+        Ok(())
+    }
 }
 
 /// What a service couldn't do, kept until the next frame says it in the window (a service has
@@ -253,6 +261,14 @@ impl<P: Phone> App<P> {
                     self.app.position = None;
                 }
                 Event::LowMemory => self.app.release_memory(),
+                // The Capture form takes it (`rustgis_ui_touch`).
+                Event::Typed(typed) => {
+                    if let rustgis_engine::platform::Typed::Closed { failed: Some(error), .. } = &typed {
+                        self.app.session.notify(i18n::fmt("The text box couldn't be opened: {error}", &[("error", error)]), true);
+                    }
+                    self.app.typed.push(typed);
+                }
+                Event::CopyFailed(error) => copy_failed(&mut self.app, &error),
                 Event::Failed(text) => self.app.session.notify(text, true),
             }
         }
@@ -607,6 +623,11 @@ fn use_picker<P: Phone + 'static>(
         photographing.borrow_mut().photo_asked();
         Ok(())
     }));
+    // Where the phone has text fields of its own, the touch interface's fields open one.
+    if phone.enters_text() {
+        let typist = phone.clone();
+        app.services.enter_text = Some(Box::new(move |entry| typist.enter_text(entry)));
+    }
 }
 
 impl<P: Phone> eframe::App for App<P> {
@@ -636,6 +657,19 @@ impl<P: Phone> eframe::App for App<P> {
         }
         ui.painter().rect_filled(ctx.viewport_rect(), 0.0, tokens.pane);
         ui.scope_builder(egui::UiBuilder::new().max_rect(ctx.content_rect()), |ui| self.app.ui(ui));
+        // Text copied in the window goes on the system's clipboard as well, for other apps.
+        if let Some(phone) = &self.phone {
+            let copied: Vec<String> = ctx.output(|o| {
+                o.commands
+                    .iter()
+                    .filter_map(|c| match c {
+                        egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            copy_out(&mut self.app, phone.as_ref(), copied);
+        }
         // A second picker asked for while one was up was refused: what the front end kept for
         // the first is put back, so its file is read as it was asked for.
         if self.refused_picker.replace(false)
@@ -866,6 +900,24 @@ pub fn run<P: Phone + 'static>(
     )
 }
 
+/// Puts the text copied in the window on the system's clipboard; a copy the phone couldn't be
+/// asked to take is said, as one it refused is ([`Event::CopyFailed`]).
+fn copy_out(app: &mut RustGisApp, phone: &impl Phone, copied: Vec<String>) {
+    for text in copied {
+        if let Err(error) = phone.copy_text(&text) {
+            copy_failed(app, &error);
+        }
+    }
+}
+
+/// Says that text copied in the window didn't reach the system's clipboard.
+fn copy_failed(app: &mut RustGisApp, error: &str) {
+    app.session.notify(
+        i18n::fmt("The text copied wasn't put on the system's clipboard, so other apps can't paste it: {error}", &[("error", error)]),
+        true,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -906,6 +958,9 @@ mod tests {
         }
         fn idle_look(&self) -> Option<u64> {
             Some(5000)
+        }
+        fn copy_text(&self, text: &str) -> Result<(), String> {
+            if text == "refused" { Err("no clipboard".into()) } else { Ok(()) }
         }
     }
 
@@ -954,6 +1009,19 @@ mod tests {
         let said = window.app.session.notices_since(mark).iter().filter(|n| n.text.contains("low on memory")).count();
         assert_eq!(said, 1);
         assert_eq!(window.poll, Some(5000));
+    }
+
+    /// A copy the phone couldn't be asked to take is said once; one it took says nothing.
+    #[test]
+    fn a_copy_that_cannot_reach_the_clipboard_is_said() {
+        let mut app = RustGisApp::with_sample();
+        let before = app.session.notice_mark();
+        copy_out(&mut app, &FakePhone::default(), vec!["taken".into()]);
+        assert!(app.session.notices_since(before).is_empty());
+        copy_out(&mut app, &FakePhone::default(), vec!["refused".into(), "taken".into()]);
+        let said = app.session.notices_since(before);
+        assert_eq!(said.len(), 1);
+        assert!(said[0].text.contains("system's clipboard") && said[0].text.contains("no clipboard"));
     }
 
     #[test]

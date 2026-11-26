@@ -1,5 +1,6 @@
-//! Android as a [`Platform`]: the system's file picker (the Storage Access Framework), asked for
-//! through the activity's Java half (`java/org/rustgis/mobile/MainActivity.java`).
+//! Android as a [`Platform`]: the system's file picker (the Storage Access Framework), its
+//! position, camera and text fields, asked for through the activity's Java half
+//! (`java/org/rustgis/mobile/MainActivity.java`).
 //!
 //! Rust calls Java and never the other way: what happened is collected with `takeEvents`, so the
 //! library exports nothing but `android_main`.
@@ -8,7 +9,7 @@ use crate::shell;
 use jni::objects::{JObject, JString};
 use jni::refs::Global;
 use jni::{JValue, JavaVM, jni_sig, jni_str};
-use rustgis_engine::platform::{Event, Platform};
+use rustgis_engine::platform::{Event, Platform, TextEntry};
 use rustgis_ui_egui::i18n;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -105,6 +106,16 @@ impl Phone {
         self.java(|env, activity| env.call_method(activity, jni_str!("picking"), jni_sig!(() -> boolean), &[])?.z()).unwrap_or(false)
     }
 
+    /// Puts `text` on the system's clipboard. An error says why Android couldn't be asked (the
+    /// window's own clipboard still has the text); a refusal of Android's is reported later, as
+    /// `copy-failed`.
+    pub fn copy_text(&self, text: &str) -> Result<(), String> {
+        self.java(|env, activity| {
+            let text = env.new_string(text)?;
+            env.call_method(activity, jni_str!("copyText"), jni_sig!((text: JString) -> void), &[JValue::Object(&text)])?.v()
+        })
+    }
+
     /// Whether something asked for is still to be reported: the window keeps asking while it is.
     pub fn busy(&self) -> bool {
         self.java(|env, activity| env.call_method(activity, jni_str!("busy"), jni_sig!(() -> boolean), &[])?.z()).unwrap_or(false)
@@ -175,6 +186,27 @@ impl Platform for Phone {
 
     fn take_photo(&self) -> Result<(), String> {
         self.java(|env, activity| env.call_method(activity, jni_str!("takePhoto"), jni_sig!(() -> void), &[])?.v())
+    }
+
+    fn enters_text(&self) -> bool {
+        true
+    }
+
+    fn enter_text(&self, entry: &TextEntry) -> Result<(), String> {
+        self.java(|env, activity| {
+            let id = env.new_string(&entry.id)?;
+            let value = env.new_string(&entry.value)?;
+            let label = env.new_string(&entry.label)?;
+            let kind = env.new_string(entry.kind.word())?;
+            let done = env.new_string(&entry.done)?;
+            env.call_method(
+                activity,
+                jni_str!("enterText"),
+                jni_sig!((id: JString, value: JString, label: JString, kind: JString, done: JString) -> void),
+                &[JValue::Object(&id), JValue::Object(&value), JValue::Object(&label), JValue::Object(&kind), JValue::Object(&done)],
+            )?
+            .v()
+        })
     }
 
     fn take_events(&self) -> Vec<Event> {
