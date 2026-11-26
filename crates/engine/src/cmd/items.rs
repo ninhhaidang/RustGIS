@@ -1230,7 +1230,7 @@ fn export_3d(s: &mut Session, p: &Value) -> CmdResult {
         let (bytes, report, construction_notes) = stl_bytes(s, p)?;
         rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
         for note in construction_notes {
-            s.notify(note, false);
+            s.say(note);
         }
         s.retain_written_notices(written);
         s.notify_written(format!("Exported {path}"));
@@ -1242,7 +1242,7 @@ fn export_3d(s: &mut Session, p: &Value) -> CmdResult {
     let (obj, construction_notes) = obj_text(s, p)?;
     rustgis_data::io::write_atomic(Path::new(&path), obj.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
     for note in construction_notes {
-        s.notify(note, false);
+        s.say(note);
     }
     s.retain_written_notices(written);
     s.notify_written(format!("Exported {path}"));
@@ -1616,7 +1616,7 @@ fn ring_area(r: &[(f64, f64)]) -> f64 {
 }
 
 /// A feature layer as Wavefront OBJ text.
-fn obj_text(s: &mut Session, p: &Value) -> Result<(String, Vec<String>), String> {
+fn obj_text(s: &mut Session, p: &Value) -> Result<(String, Vec<rustgis_data::loss::Note>), String> {
     let mesh = layer_mesh(s, p, true)?;
     mesh_notices(s, &mesh);
     let mut obj = String::new();
@@ -1709,7 +1709,7 @@ pub(crate) fn fanned_caps_note(n: usize) -> String {
 }
 
 /// A feature layer as binary STL, noting what it leaves out.
-fn stl_bytes(s: &mut Session, p: &Value) -> Result<(Vec<u8>, StlReport, Vec<String>), String> {
+fn stl_bytes(s: &mut Session, p: &Value) -> Result<(Vec<u8>, StlReport, Vec<rustgis_data::loss::Note>), String> {
     let mesh = layer_mesh(s, p, false)?;
     let (bytes, report) = mesh_stl(&mesh, MAX_STL_TRIANGLES)?;
     mesh_notices(s, &mesh);

@@ -1231,11 +1231,15 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
         a.min_scale = min_scale;
         a.max_scale = max_scale;
     }
+    // Text cut, and labels of features it can't place, are lost from the annotation.
     if let Some(note) = cut_note {
-        s.notify(note, false);
+        s.say(rustgis_data::loss::Note::loss(rustgis_data::loss::LossCode::ChangedCut, note));
     }
-    for note in [flattened_note, repeated_note, astray_note, unplaced_note, unplaced_features_note].into_iter().flatten() {
+    for note in [flattened_note, repeated_note, astray_note, unplaced_note].into_iter().flatten() {
         s.notify_text(note, false);
+    }
+    if let Some(note) = unplaced_features_note {
+        s.notify_loss(rustgis_data::loss::LossCode::DroppedFeature, note);
     }
     if let Some((_, unread)) = &whole {
         unread.say(s);

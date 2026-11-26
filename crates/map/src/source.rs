@@ -1117,7 +1117,11 @@ impl SourceLayer {
                     .map_err(|e| format!("{path}: {e}"))?;
                 let out = fresh.output;
                 if out.skipped > 0 {
-                    conversion_notes.push(format!("DuckDB: {} rows without a geometry were left out", out.skipped));
+                    // A row is a feature: one without geometry isn't added, and its values go with it.
+                    conversion_notes.push(rustgis_data::loss::Note::loss(
+                        rustgis_data::loss::LossCode::DroppedFeature,
+                        format!("DuckDB: {} rows without a geometry were left out", out.skipped),
+                    ));
                 }
                 if out.other_family > 0 {
                     conversion_notes.push(format!("DuckDB: {} rows of another geometry type were left out", out.other_family));
@@ -1184,6 +1188,7 @@ impl SourceLayer {
             )));
         }
         if probe.skipped > 0 {
+            // A probe of one feature: the reads that follow count these rows as they say them.
             conversion_notes.push(format!("{} rows could not be read while checking the replacement", probe.skipped));
         }
         if let Some(info) = new.info() {

@@ -807,7 +807,7 @@ fn write(s: &mut Session, path: PathBuf) -> CmdResult {
     s.notify_written(format!("Saved {}", path.display()));
     crate::durable::notify(s, &report);
     for note in construction_notes {
-        s.notify(note, false);
+        s.say(note);
     }
     s.retain_written_notices(written);
     s.path = Some(destination);

@@ -184,8 +184,9 @@ pub fn run(s: &mut Session, p: &Json) -> CmdResult {
     crate::cmd::design::apply(s, id, changes)?;
     if unplaced > 0 {
         let name = s.map().layer(id).map(|l| l.name.clone()).unwrap_or_default();
-        s.warn(format!(
-            "{name}: {unplaced} feature(s) have a place that can't be given in longitude/latitude, so their {property} is left empty in {field}"
+        s.say(rustgis_data::loss::Note::loss(
+            rustgis_data::loss::LossCode::DroppedCalculationResult,
+            format!("{name}: {unplaced} feature(s) have a place that can't be given in longitude/latitude, so their {property} is left empty in {field}"),
         ));
     }
     Ok(json!({"rows": rows.len(), "nulls": nulls, "unplaced": unplaced, "field": field}))

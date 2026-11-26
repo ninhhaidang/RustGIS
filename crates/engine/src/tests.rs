@@ -5408,7 +5408,11 @@ fn label_expressions_say_what_they_lose() {
     s.run("labels.by", &json!({"layer": "Cities", "text": long})).unwrap();
     let n = s.run("labels.convert", &json!({"layer": "Cities"})).unwrap()["annotations"].as_u64().unwrap();
     let said = format!("Cities Annotation: {n} label texts cut to {} characters", rustgis_map::label_by::MAX_LABEL_TEXT);
-    assert!(s.notices.iter().any(|x| x.text == said), "{:?}", s.notices.last());
+    assert!(
+        s.notices.iter().any(|x| x.text == said && x.loss() == Some(rustgis_data::loss::LossCode::ChangedCut)),
+        "{:?}",
+        s.notices.last()
+    );
     s.undo();
     // Project Info names the text expression the labels draw by, and the field once it doesn't read.
     s.map_mut().layer_mut(cities).unwrap().labels.default.field = "name".into();
@@ -31464,8 +31468,15 @@ fn geocoding_with_the_locatieserver() {
         (path("Kapot", 5), br#"{"response":{"docs":[{"weergavenaam":"x","centroide_ll":"POINT(x y)"}]}}"#.to_vec()),
     ]);
     let url = format!("{base}/free");
-    let left_out =
-        |s: &Session| s.notices.iter().filter(|n| n.text.contains("no usable position")).map(|n| n.text.clone()).collect::<Vec<_>>();
+    // Each with its code: the places are left out of what the geocoder found.
+    let left_out = |s: &Session| {
+        s.notices
+            .iter()
+            .filter(|n| n.text.contains("no usable position"))
+            .inspect(|n| assert_eq!(n.loss(), Some(rustgis_data::loss::LossCode::DroppedFeature), "{}", n.text))
+            .map(|n| n.text.clone())
+            .collect::<Vec<_>>()
+    };
     let mut s = Session::new(Project::default());
     let r = s.run("map.findPlace", &json!({"query": "Damrak 1, Amsterdam", "provider": "locatieserver", "url": url})).unwrap();
     assert_eq!(r["count"], 2, "{r}");
@@ -51243,6 +51254,12 @@ fn a_cog_window_comes_in_as_a_raster() {
     s.run("layer.addUrl", &json!({"url": format!("{wide}/ids.tif"), "bbox": [10.0, 45.0, 10.5, 45.5], "name": "Ids"})).unwrap();
     let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
     assert!(said.iter().any(|n| n.starts_with("Ids: 32768 values were rounded as the file was read")), "{said:?}");
+    assert!(
+        s.notices_since(mark)
+            .iter()
+            .any(|n| n.text.starts_with("Ids: 32768 values were rounded") && n.loss() == Some(rustgis_data::loss::LossCode::ChangedRounded)),
+        "{said:?}"
+    );
     // Across tiles, only the window's own cells are counted (the four tiles hold 131,072 odd
     // values; the 256 × 256 window, half of its own).
     let mark = s.notice_mark();

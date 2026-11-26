@@ -58,6 +58,8 @@ fn a_wfs_type_is_asked_for_in_its_own_system() {
         said.len() == 1 && said[0].starts_with("1 service answer(s) named no coordinate system, and their positions are in degrees"),
         "{said:?}"
     );
+    // Read in a system other than the one asked for: an assumption, coded.
+    assert_eq!(s.notices.iter().map(|n| n.loss()).collect::<Vec<_>>(), [Some(rustgis_data::loss::LossCode::AssumedCrs)]);
     // A system RustGIS doesn't read: in CRS84, as before.
     let text = caps("/lonlat", "urn:ogc:def:crs:EPSG::999999");
     s.run("service.add", &json!({"url": format!("{}/lonlat", server.base), "layer": "towns", "text": text, "name": "Unread"})).unwrap();
@@ -161,6 +163,8 @@ fn an_arcgis_layer_is_asked_for_in_its_services_system() {
     assert_eq!(first_point(&s, "Unbounded"), (Crs::from_epsg(2056).unwrap(), 2_600_000.0, 1_200_000.0));
     let said = notices(&s);
     assert!(said.len() == 1 && said[0].contains("1 service answer(s) named no coordinate system"), "{said:?}");
+    // Read in the system asked for: nothing assumed past the request.
+    assert_eq!(s.notices.iter().map(|n| n.loss()).collect::<Vec<_>>(), [None]);
 }
 
 /// A WCS coverage in LV95 is asked for in it, with no conversion by the server, and comes in as a

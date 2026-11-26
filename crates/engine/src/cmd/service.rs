@@ -535,7 +535,7 @@ pub fn features_answer(s: &mut Session, name: &str, url: &str, bytes: Vec<u8>, b
     let (bytes, assumed) = rustgis_data::ogc::place_answer(bytes, url, bounds);
     // Once per kind with a count over the command (a service group reads many answers).
     if let Some(assumed) = assumed {
-        s.notify_counted(None, assumed.template(), 1);
+        s.notify_counted(assumed.loss(), assumed.template(), 1);
     }
     bytes
 }

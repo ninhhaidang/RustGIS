@@ -4504,7 +4504,11 @@ pub(crate) fn duckdb_parts(
     origin: impl Fn(rustgis_data::source::Family) -> rustgis_map::source::DuckdbOrigin,
 ) -> Vec<Converted> {
     if out.skipped > 0 {
-        s.notify(format!("{name}: {} rows without a geometry were left out", out.skipped), false);
+        // A row is a layer's feature: one without geometry isn't added, and its values go with it.
+        s.say(rustgis_data::loss::Note::loss(
+            rustgis_data::loss::LossCode::DroppedFeature,
+            format!("{name}: {} rows without a geometry were left out", out.skipped),
+        ));
     }
     // Z and M values are dropped as DuckDB writes the result: one notice for all its parts.
     let zm = out.parts.iter().fold(0u64, |n, p| n.saturating_add(p.zm_dropped));

@@ -52,7 +52,7 @@ fn find_place(s: &mut Session, p: &Value) -> CmdResult {
     {
         let found = crate::render::rustgis_tiles::geocode::search_blocking(&g, query, limit)?;
         if found.skipped > 0 {
-            s.warn(skipped_notice(found.skipped));
+            s.say(skipped_notice(found.skipped));
         }
         if found.limited > 0 {
             s.notify(format!("Search candidates not shown: {} (limit {limit}).", found.limited), false);
@@ -137,8 +137,11 @@ pub fn addresses(s: &Session, p: &Value) -> Result<(Vec<String>, Vec<String>), S
 
 /// What a run says of the places the geocoder answered with but gave no usable position for
 /// (they are left out, so an address may be "not found" because of them).
-pub fn skipped_notice(n: usize) -> String {
-    format!("{n} of the geocoder's places had no usable position (no coordinate, or an unreadable one) and were left out")
+pub fn skipped_notice(n: usize) -> rustgis_data::loss::Note {
+    rustgis_data::loss::Note::loss(
+        rustgis_data::loss::LossCode::DroppedFeature,
+        format!("{n} of the geocoder's places had no usable position (no coordinate, or an unreadable one) and were left out"),
+    )
 }
 
 /// The addresses past what a run may send.
@@ -200,7 +203,7 @@ fn geocode(s: &mut Session, p: &Value) -> CmdResult {
             check_batch(&g, distinct.len())?;
             let l = lookup(&g, &distinct)?;
             if l.skipped > 0 {
-                s.warn(skipped_notice(l.skipped));
+                s.say(skipped_notice(l.skipped));
             }
             if l.limited > 0 {
                 s.notify(

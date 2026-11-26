@@ -21,6 +21,8 @@ struct Network<'a> {
     unit_m: f64,
     snap_m: f64,
     notes: Vec<String>,
+    /// What building it lost, with codes: segments it couldn't read.
+    losses: Vec<rustgis_data::loss::LossMessage>,
 }
 
 /// Reads the `network`, `costField`, `units` and `snapDistance` parameters and builds (or reuses)
@@ -88,19 +90,25 @@ fn network<'a>(inp: &'a dyn Inputs, p: &Json, tool: &str) -> Result<Network<'a>,
             ds.name
         ));
     }
+    // Left out of the network, as the route command leaves them out of its own.
+    let mut losses = Vec::new();
     if graph.skipped_segments() > 0 {
-        notes.push(format!(
-            "{tool}: {} segment(s) of '{}' with invalid coordinates were left out of the network",
-            graph.skipped_segments(),
-            ds.name
-        ));
+        losses.push(rustgis_data::loss::LossMessage {
+            code: rustgis_data::loss::LossCode::DroppedGeometry,
+            text: format!(
+                "{tool}: {} segment(s) of '{}' with invalid coordinates were left out of the network",
+                graph.skipped_segments(),
+                ds.name
+            ),
+        });
     }
     if graph.segments() == 0 {
         // What left no lines is said with it: the notes would be lost with the run.
-        let why = if notes.is_empty() { String::new() } else { format!(" ({})", notes.join("; ")) };
+        let said: Vec<&str> = notes.iter().map(String::as_str).chain(losses.iter().map(|l| l.text.as_str())).collect();
+        let why = if said.is_empty() { String::new() } else { format!(" ({})", said.join("; ")) };
         return Err(format!("'{}' has no lines to search{why}", ds.name));
     }
-    Ok(Network { ds, graph, unit_m, snap_m, notes })
+    Ok(Network { ds, graph, unit_m, snap_m, notes, losses })
 }
 
 /// The features of a point layer moved onto the network, in layer order, as (feature id, place),
@@ -350,7 +358,7 @@ pub(super) fn service_area(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Str
         facilities.len()
     )];
     messages.append(&mut net.notes);
-    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
+    Ok(ToolResult { losses: std::mem::take(&mut net.losses), output: Output::Layer(out), messages })
 }
 
 /// OD Cost Matrix: the cost and length of the cheapest way from each origin to each destination,
@@ -494,7 +502,7 @@ pub(super) fn od_cost_matrix_on(inp: &dyn Inputs, p: &Json, threads: Option<usiz
         });
     }
     messages.append(&mut net.notes);
-    Ok(ToolResult { losses: Vec::new(), output: Output::Table(out), messages })
+    Ok(ToolResult { losses: std::mem::take(&mut net.losses), output: Output::Table(out), messages })
 }
 
 #[cfg(test)]

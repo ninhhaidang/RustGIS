@@ -2763,7 +2763,7 @@ impl RustGisApp {
         self.session.notify(offered, false);
         report.notify(&mut self.session);
         for note in construction_notes {
-            self.session.notify(note, false);
+            self.session.say(note);
         }
         self.ui.web_file = Some(file);
         Ok(())
@@ -5662,11 +5662,7 @@ impl RustGisApp {
                 if self.download(&name, bytes) {
                     rustgis_engine::cmd::share::notify_export_query(&mut self.session, &name, &layer_name, &query_report);
                     rustgis_engine::cmd::share::notify_null_numbers(&mut self.session, &name, null_numbers);
-                    for note in notes
-                        .into_iter()
-                        .chain(dbf_notes)
-                        .chain(construction_notes.into_iter().map(rustgis_engine::data::loss::Note::plain))
-                    {
+                    for note in notes.into_iter().chain(dbf_notes).chain(construction_notes) {
                         self.session.say(note);
                     }
                 }

@@ -533,7 +533,13 @@ mod tests {
             s.notices.clear();
             s.run("share.exportLayer", &json!({"layer":id,"path":path})).unwrap();
             assert_eq!(s.notices.iter().filter(|n| n.text.starts_with("2 circle")).count(), 1);
-            assert_eq!(s.notices.iter().filter(|n| n.text.starts_with("1 rotated box")).count(), 1);
+            assert_eq!(
+                s.notices
+                    .iter()
+                    .filter(|n| n.text.starts_with("1 rotated box") && n.loss() == Some(rustgis_data::loss::LossCode::ApproximatedCurve))
+                    .count(),
+                1
+            );
             if ext == "geojson" {
                 let text = std::fs::read_to_string(&path).unwrap();
                 let j: Value = serde_json::from_str(&text).unwrap();

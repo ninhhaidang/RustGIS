@@ -1508,7 +1508,7 @@ fn inputs_of<'a>(
         }
     }
     let mut left_out_whole = std::collections::HashSet::new();
-    let work = work_inputs(&snap.map, &snap.tables, spec, params, &mut full, &mut messages, &mut left_out_whole)?;
+    let work = work_inputs(&snap.map, &snap.tables, spec, params, &mut full, &mut messages, &mut losses, &mut left_out_whole)?;
     let mut rows = env_inputs(&snap.map, &full, &snap.env, params)?;
     narrow_to_queries(&snap.map, spec, params, &full, &mut rows, &mut messages)?;
     let unread = if work == Crs::LonLat { std::collections::HashSet::new() } else { attributes_only(spec, params) };
@@ -2056,27 +2056,37 @@ fn work_inputs(
     params: &Value,
     full: &mut std::collections::HashMap<String, Dataset>,
     messages: &mut Vec<String>,
+    losses: &mut Vec<LossMessage>,
     left_out_whole: &mut std::collections::HashSet<String>,
 ) -> Result<Crs, String> {
+    // A loss with its code; the rest as messages.
+    let mut say = |said: Vec<rustgis_data::loss::Note>| {
+        for note in said {
+            match note.loss {
+                Some(code) => losses.push(LossMessage { code, text: note.text }),
+                None => messages.push(note.text),
+            }
+        }
+    };
     let work = work_system(map, spec, params, full);
     if work != Crs::LonLat {
         match inputs_in(map, tables, spec, params, full, work, left_out_whole) {
             Ok((converted, said)) => {
                 full.extend(converted);
-                messages.extend(said);
+                say(said);
                 return Ok(work);
             }
             Err(e) => {
                 // A Cancel isn't a place that can't be held.
                 rustgis_data::progress::check().map_err(|e| e.to_string())?;
                 let name = spec.map_or("The tool", |t| t.name);
-                messages.push(format!("{name} worked in longitude/latitude, not {}: {e}", work.label()));
+                say(vec![rustgis_data::loss::Note::plain(format!("{name} worked in longitude/latitude, not {}: {e}", work.label()))]);
             }
         }
     }
     let (converted, said) = inputs_in(map, tables, spec, params, full, Crs::LonLat, left_out_whole)?;
     full.extend(converted);
-    messages.extend(said);
+    say(said);
     Ok(Crs::LonLat)
 }
 
@@ -2093,7 +2103,7 @@ fn inputs_in(
     full: &std::collections::HashMap<String, Dataset>,
     work: Crs,
     left_out_whole: &mut std::collections::HashSet<String>,
-) -> Result<(std::collections::HashMap<String, Dataset>, Vec<String>), String> {
+) -> Result<(std::collections::HashMap<String, Dataset>, Vec<rustgis_data::loss::Note>), String> {
     let mut converted = std::collections::HashMap::new();
     // The converted inputs with edges that bend ([`bent_edges`]): name, how many, how far.
     let mut bent: Vec<(String, usize, f64)> = Vec::new();
@@ -2212,19 +2222,21 @@ fn inputs_in(
         let name = spec.map_or("The tool", |t| t.name);
         let n: usize = unplaced.iter().map(|(_, n)| n).sum();
         let layers = unplaced.iter().map(|(layer, n)| format!("'{layer}' ({n})")).collect::<Vec<_>>().join(", ");
-        said.push(format!(
+        // Counted over each whole layer, before the run's rows are narrowed to a selection: some may
+        // be rows the tool doesn't read, so it isn't a coded loss.
+        said.push(rustgis_data::loss::Note::plain(format!(
             "{name}: {n} feature(s) of {layers} have a place that can't be given in longitude/latitude, so the tool reads them without their geometry"
-        ));
+        )));
     }
     if !bent.is_empty() {
         let name = spec.map_or("The tool", |t| t.name);
         let n: usize = bent.iter().map(|(_, n, _)| n).sum();
         let far = bent.iter().map(|(.., far)| *far).fold(0.0, f64::max);
         let layers = bent.iter().map(|(layer, n, _)| format!("'{layer}' ({n})")).collect::<Vec<_>>().join(", ");
-        said.push(format!(
+        said.push(rustgis_data::loss::Note::plain(format!(
             "{name}: {n} edge(s) of {layers}, converted into {}, are taken straight there, up to {far:.0} m from where a run in longitude/latitude takes them (straight on a Web Mercator map); their vertices are where they were",
             work.label()
-        ));
+        )));
     }
     Ok((converted, said))
 }

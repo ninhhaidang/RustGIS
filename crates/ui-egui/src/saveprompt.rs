@@ -61,6 +61,8 @@ struct PendingSave {
     document: Option<String>,
     /// Whether that document is the one the project was opened from.
     opened_from: bool,
+    /// What the save loses of the project's constructions, said once it is written.
+    notes: Vec<rustgis_engine::data::loss::Note>,
 }
 
 /// The document the open project is written back to on Save, and whether it is the one the project
@@ -119,11 +121,9 @@ pub(crate) fn start_project_save(app: &mut RustGisApp, in_place: bool) -> Result
         project: app.session.file_identity(),
         document: target,
         opened_from,
+        notes,
     });
     report.notify(&mut app.session);
-    for note in notes {
-        app.session.notify(note, false);
-    }
     Ok(())
 }
 
@@ -149,6 +149,14 @@ impl RustGisApp {
             Ok(name) => self.session.notify(crate::i18n::fmt("Saved {name}.", &[("name", &name)]), false),
             Err(error) => {
                 self.session.notify(error, true);
+                // A failed save that may have written its file (a write-back that reached its
+                // document, or a picker that reported where it wrote): what that loses of the
+                // constructions is said too, as the file may hold it. A cancelled picker wrote nothing.
+                if let Some(p) = pending.as_ref().filter(|p| (p.document.is_some() && reached) || reported.is_some()) {
+                    for note in p.notes.clone() {
+                        self.session.say(note);
+                    }
+                }
                 // A document that couldn't be written back is asked for again: the next Save
                 // shows the picker. A picker closed with no choice changes nothing.
                 if let Some(failed) = pending.filter(|p| p.document.is_some() && reached) {
@@ -158,6 +166,10 @@ impl RustGisApp {
             }
         }
         let Some(saved) = pending else { return };
+        // Written: what it lost of the constructions is said now, and only now.
+        for note in saved.notes {
+            self.session.say(note);
+        }
         // Saved through the picker: Save writes back to the document it wrote from now on, or
         // asks again where the phone can't write it back; never to the one before.
         // A write-back that reports its document again (iOS made its bookmark again, the file having
@@ -419,6 +431,50 @@ mod tests {
     /// Whether the last frame held back the window's close (`CancelClose`).
     fn close_cancelled(h: &Harness) -> bool {
         h.output().viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.commands.contains(&egui::ViewportCommand::CancelClose))
+    }
+
+    /// A picker save of a project holding a circle says what the save loses of it (drawn as straight
+    /// edges, with the code) once the save completes, or when it failed after the picker wrote; a
+    /// cancelled or refused picker says nothing of it.
+    #[test]
+    fn a_picker_save_says_its_construction_losses_only_once_written() {
+        use rustgis_engine::data::{Dataset, Field, FieldType, GeometryType, loss::LossCode};
+        let said = |h: &Harness, mark: u64| {
+            h.state()
+                .session
+                .notices_since(mark)
+                .iter()
+                .filter(|n| n.text.contains("circle(s)") && n.loss() == Some(LossCode::ApproximatedCurve))
+                .count()
+        };
+        for (finish, expected) in [("ok", 1), ("cancelled", 0), ("wrote, then failed", 1), ("refused", 0)] {
+            let mut h = launch();
+            h.state_mut().services.save_project = Some(Box::new(|_, _, _| Ok(())));
+            let id = h.state_mut().session.map_mut().add_dataset(Dataset::new(
+                "Rings",
+                GeometryType::Polygon,
+                vec![Field::new("n", FieldType::Text)],
+            ));
+            h.state_mut().session.active_layer = Some(id);
+            h.state_mut().run("edit.enable", json!({"on": true})).unwrap();
+            h.state_mut().run("edit.addCircle", json!({"circle": {"center": [1000.0, 1000.0], "radius": 100.0}})).unwrap();
+            let mark = h.state().session.notice_mark();
+            // New Project asks about the unsaved circle; its Save opens the picker.
+            h.state_mut().run_by_user("project.new", Value::Null).unwrap();
+            frames(&mut h, 2);
+            click(&mut h, "Save");
+            assert_eq!(said(&h, mark), 0, "{finish}: nothing said before the save completes");
+            match finish {
+                "ok" => h.state_mut().complete_project_save(Ok("World Atlas.rgis".into())),
+                "cancelled" => h.state_mut().complete_project_save(Err("Picker cancelled".into())),
+                "wrote, then failed" => {
+                    h.state_mut().project_document("content://saved/World Atlas.rgis".into());
+                    h.state_mut().complete_project_save(Err("couldn't confirm the save".into()));
+                }
+                _ => h.state_mut().project_save_refused("busy".into()),
+            }
+            assert_eq!(said(&h, mark), expected, "{finish}: {:?}", h.state().session.notices_since(mark));
+        }
     }
 
     #[test]

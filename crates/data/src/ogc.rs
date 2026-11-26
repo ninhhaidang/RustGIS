@@ -5210,6 +5210,16 @@ pub enum Assumed {
 }
 
 impl Assumed {
+    /// Its loss code: `assumed.crs` when the answer is read in a system it didn't name or named
+    /// otherwise. An answer that named none, read in the one asked for, and one read as it named,
+    /// assume nothing past the request.
+    pub fn loss(self) -> Option<crate::loss::LossCode> {
+        match self {
+            Assumed::Unnamed | Assumed::NotDegrees => None,
+            Assumed::Unread | Assumed::InDegrees | Assumed::InAsked | Assumed::DegreesUnnamed => Some(crate::loss::LossCode::AssumedCrs),
+        }
+    }
+
     /// Its notice, `{n}` the number of answers.
     pub fn template(self) -> &'static str {
         match self {

@@ -208,13 +208,17 @@ pub fn commands() -> Vec<C> {
 pub fn share_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec<u8>, String), String> {
     let (name, bytes, source, notes) = share_output(s, kind, p)?;
     for note in notes {
-        s.notify(note, false);
+        s.say(note);
     }
     Ok((name, bytes, source))
 }
 
 /// Shared-item construction notes are deferred when a front end still needs to deliver bytes.
-pub(crate) fn share_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec<u8>, String, Vec<String>), String> {
+pub(crate) fn share_output(
+    s: &mut Session,
+    kind: &str,
+    p: &Value,
+) -> Result<(String, Vec<u8>, String, Vec<rustgis_data::loss::Note>), String> {
     let what = match kind {
         "webMap" => "The web map",
         "webLayer" => "The web layer",

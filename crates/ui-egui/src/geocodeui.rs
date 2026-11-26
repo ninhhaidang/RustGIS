@@ -74,7 +74,10 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
                 if let Ok(found) = &r
                     && found.skipped > 0
                 {
-                    app.session.warn(skipped(found.skipped));
+                    app.session.say(rustgis_engine::data::loss::Note::loss(
+                        rustgis_engine::data::loss::LossCode::DroppedFeature,
+                        skipped(found.skipped),
+                    ));
                 }
                 match r {
                     Ok(f) if f.places.is_empty() => app.dialogs.error = Some(tl!("No place found").to_string()),
@@ -156,7 +159,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     // Every answer is in: the layer.
     let Some(job) = st.job.take() else { return };
     if job.skipped > 0 {
-        app.session.warn(skipped(job.skipped));
+        app.session.say(rustgis_engine::data::loss::Note::loss(rustgis_engine::data::loss::LossCode::DroppedFeature, skipped(job.skipped)));
     }
     if job.limited > 0 {
         app.session.notify(

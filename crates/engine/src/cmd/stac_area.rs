@@ -58,8 +58,11 @@ fn read_geometries(path: &str) -> Result<(Vec<Geometry>, rustgis_data::loss::Not
         messages.push(format!("{path}: {} feature(s) have no geometry and are left out of the search area", ds.features.len() - had));
     }
     if unplaced > 0 {
-        messages.push(format!(
-            "{path}: {unplaced} feature(s) have a place that can't be given in longitude/latitude and are left out of the search area"
+        messages.push(rustgis_data::loss::Note::loss(
+            rustgis_data::loss::LossCode::DroppedFeature,
+            format!(
+                "{path}: {unplaced} feature(s) have a place that can't be given in longitude/latitude and are left out of the search area"
+            ),
         ));
     }
     Ok((geometries, messages))
@@ -96,7 +99,7 @@ pub fn merge_loaded(geometries: &[Geometry], mut notices: rustgis_data::loss::No
 
 /// The geometries of the selected features of the layer `p` names (`layer`, default the active
 /// layer): a copy, so the merge can run off the session's thread, with what was left out of it.
-pub fn selected_geometries(s: &Session, p: &Value) -> Result<(Vec<Geometry>, Vec<String>), String> {
+pub fn selected_geometries(s: &Session, p: &Value) -> Result<(Vec<Geometry>, Vec<rustgis_data::loss::Note>), String> {
     selected(s, p)
 }
 
@@ -150,14 +153,18 @@ fn notes(area: &Area) -> Vec<String> {
 fn selected_noted(s: &mut Session, p: &Value) -> Result<Vec<Geometry>, String> {
     let (geometries, notes) = selected(s, p)?;
     for n in notes {
-        s.warn(n);
+        if n.loss.is_some() {
+            s.say(n);
+        } else {
+            s.warn(n.text);
+        }
     }
     Ok(geometries)
 }
 
 /// The selected features' geometries of the layer `p` names, and a notice for the selected rows
 /// that have none (a feature without geometry, or a row the layer no longer has).
-fn selected(s: &Session, p: &Value) -> Result<(Vec<Geometry>, Vec<String>), String> {
+fn selected(s: &Session, p: &Value) -> Result<(Vec<Geometry>, Vec<rustgis_data::loss::Note>), String> {
     let id = s.layer_id(p)?;
     let layer = s.map().layer(id).ok_or("no such layer")?;
     if layer.selection.is_empty() {
@@ -179,18 +186,24 @@ fn selected(s: &Session, p: &Value) -> Result<(Vec<Geometry>, Vec<String>), Stri
             }
         }
     }
+    use rustgis_data::loss::{LossCode, Note};
     let mut notes = Vec::new();
+    // A feature without geometry had no area to give the search; one with a place it can't give
+    // has lost it.
     if geometries.len() + unplaced < layer.selection.len() {
-        notes.push(format!(
+        notes.push(Note::plain(format!(
             "{}: {} selected feature(s) have no geometry and are left out of the search area",
             layer.name,
             layer.selection.len() - geometries.len() - unplaced
-        ));
+        )));
     }
     if unplaced > 0 {
-        notes.push(format!(
-            "{}: {unplaced} selected feature(s) have a place that can't be given in longitude/latitude and are left out of the search area",
-            layer.name
+        notes.push(Note::loss(
+            LossCode::DroppedFeature,
+            format!(
+                "{}: {unplaced} selected feature(s) have a place that can't be given in longitude/latitude and are left out of the search area",
+                layer.name
+            ),
         ));
     }
     Ok((geometries, notes))

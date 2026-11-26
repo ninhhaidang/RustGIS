@@ -426,7 +426,11 @@ pub(super) fn read_notices(s: &mut Session, name: &str, layer: &mut RasterLayer)
                     false,
                 );
             } else {
-                s.notify(format!("{name}: {count} rounded as the file was read: {held}, so an export writes the rounded values"), false);
+                // Read whole, the count is of every value rounded.
+                s.say(rustgis_data::loss::Note::loss(
+                    rustgis_data::loss::LossCode::ChangedRounded,
+                    format!("{name}: {count} rounded as the file was read: {held}, so an export writes the rounded values"),
+                ));
             }
         }
     }

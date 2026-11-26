@@ -2322,10 +2322,10 @@ fn route(s: &mut Session, p: &Value) -> CmdResult {
         s.notify_text(notice, false);
     }
     if r.skipped_segments > 0 {
-        s.notify(
+        s.say(rustgis_data::loss::Note::loss(
+            rustgis_data::loss::LossCode::DroppedGeometry,
             format!("{source_name}: {} segments with invalid coordinates were omitted from the route network", r.skipped_segments),
-            false,
-        );
+        ));
     }
     if r.overflowing > 0 {
         s.notify(
@@ -2497,9 +2497,12 @@ fn simulate(s: &mut Session, p: &Value) -> CmdResult {
         s.notify_text(notice, false);
     }
     if unplaced > 0 {
-        s.warn(format!(
-            "{}: {unplaced} polygon(s) of {source} have a place that can't be given in longitude/latitude, so no points are simulated in them",
-            ds.name
+        s.say(rustgis_data::loss::Note::loss(
+            rustgis_data::loss::LossCode::DroppedFeature,
+            format!(
+                "{}: {unplaced} polygon(s) of {source} have a place that can't be given in longitude/latitude, so no points are simulated in them",
+                ds.name
+            ),
         ));
     }
     let nid = super::layer::add_dataset(s, ds);
@@ -2626,7 +2629,7 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
     let target = ds.name.clone();
     let query_note = super::share::query_export_note(&target, &layer.name, &report);
     drop(ds);
-    for note in notes.into_iter().chain(construction_notes.into_iter().map(rustgis_data::loss::Note::plain)) {
+    for note in notes.into_iter().chain(construction_notes) {
         s.say(note);
     }
     super::share::notify_null_numbers(s, &target, null_numbers);

@@ -656,7 +656,7 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
                 s,
                 other.into_iter().map(|n| (n.severity, rustgis_data::loss::Note { loss: n.loss(), text: n.text })).collect(),
             );
-            for note in notes.into_iter().chain(construction_notes.into_iter().map(rustgis_data::loss::Note::plain)) {
+            for note in notes.into_iter().chain(construction_notes) {
                 s.say(note);
             }
             spend(s, spent);

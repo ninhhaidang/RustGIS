@@ -94,10 +94,13 @@ pub(crate) struct Counts {
     circles: usize,
 }
 impl Counts {
-    pub(crate) fn notes(self) -> Vec<String> {
+    /// What an output loses of the constructions it writes: their curved edges are straight in
+    /// the polygons written, which keep no construction to draw them again.
+    pub(crate) fn notes(self) -> Vec<rustgis_data::loss::Note> {
+        use rustgis_data::loss::{LossCode, Note};
         let boxes = (self.boxes > 0).then(|| format!("{} rotated box(es): session-only construction is not included in this output and will not survive reimport; the source polygons use four transformed corners, with curved grid edges approximated by straight edges", self.boxes));
         let circles = (self.circles > 0).then(|| format!("{} circle(s): session-only centre/radius construction is not included in this output and will not survive reimport; source polygons approximate circles with straight edges (tolerance in each construction grid, before projection)", self.circles));
-        boxes.into_iter().chain(circles).collect()
+        boxes.into_iter().chain(circles).map(|text| Note::loss(LossCode::ApproximatedCurve, text)).collect()
     }
 }
 
@@ -174,13 +177,16 @@ impl Cache {
             }
         }
     }
-    pub(crate) fn export_notes(&self, map: u64, layer: &rustgis_map::Layer) -> Result<Vec<String>, String> {
+    pub(crate) fn export_notes(&self, map: u64, layer: &rustgis_map::Layer) -> Result<Vec<rustgis_data::loss::Note>, String> {
         self.output_notes(std::iter::once((map, layer)))
     }
     /// Count only unchanged, live constructions from the output's source layers. Exports call
     /// this on their worker. Document writers call it in their existing synchronous durable
     /// transaction, before output, with the same cancellation context as serialization.
-    pub(crate) fn output_notes<'a>(&self, layers: impl IntoIterator<Item = (u64, &'a rustgis_map::Layer)>) -> Result<Vec<String>, String> {
+    pub(crate) fn output_notes<'a>(
+        &self,
+        layers: impl IntoIterator<Item = (u64, &'a rustgis_map::Layer)>,
+    ) -> Result<Vec<rustgis_data::loss::Note>, String> {
         if self.len == 0 {
             return Ok(Vec::new());
         }
@@ -210,7 +216,7 @@ pub(crate) fn forget_feature(s: &mut Session, layer: u32, feature: u64) {
 impl Session {
     /// Counted losses for a layer output, including browser downloads. Call before encoding
     /// and present the notes only after the output has been accepted or written.
-    pub fn layer_construction_output_notes(&self, layer: u32) -> Result<Vec<String>, String> {
+    pub fn layer_construction_output_notes(&self, layer: u32) -> Result<Vec<rustgis_data::loss::Note>, String> {
         let l = self.map().layer(layer).ok_or("no such layer")?;
         self.constructions.export_notes(self.map().instance_id(), l)
     }
@@ -218,7 +224,7 @@ impl Session {
     /// public `Project` directly should present these notes too: `Project` owns no session cache.
     /// Explicit save/download paths call this inside their existing durable output transaction;
     /// unlike the live session, the serialized document contains only polygon geometry.
-    pub fn construction_output_notes(&self) -> Result<Vec<String>, String> {
+    pub fn construction_output_notes(&self) -> Result<Vec<rustgis_data::loss::Note>, String> {
         self.constructions.output_notes(self.project.maps.iter().flat_map(|m| m.layers.iter().map(move |l| (m.instance_id(), l))))
     }
 }

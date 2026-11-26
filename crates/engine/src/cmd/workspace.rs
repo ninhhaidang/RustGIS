@@ -233,8 +233,11 @@ pub fn commands() -> Vec<C> {
             }
             let out: Vec<Value> = lines.iter().take(MAX_PROFILED_LINES).map(|l| profile(s, p, l)).collect::<Result<_, _>>()?;
             if unplaced > 0 {
-                s.warn(format!(
-                    "Profile Along Selected Lines: {unplaced} line(s) have a place that can't be given in longitude/latitude, so they get no profile"
+                s.say(rustgis_data::loss::Note::loss(
+                    rustgis_data::loss::LossCode::DroppedCalculationResult,
+                    format!(
+                        "Profile Along Selected Lines: {unplaced} line(s) have a place that can't be given in longitude/latitude, so they get no profile"
+                    ),
                 ));
             }
             Ok(Value::Array(out))

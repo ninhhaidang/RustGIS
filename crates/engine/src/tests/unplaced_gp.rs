@@ -67,7 +67,16 @@ fn session(far: bool) -> Session {
 fn run(s: &mut Session, cmd: &str, p: serde_json::Value) -> (serde_json::Value, Vec<String>) {
     let mark = s.notice_mark();
     let out = s.run(cmd, &p).unwrap_or_else(|e| panic!("{cmd}: {e}"));
-    let said = s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains("can't be given in")).collect();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains("can't be given in")).collect();
+    // Each such notice says a loss, with its code; a tool's, counted over its whole inputs before
+    // they are narrowed to its rows, is plain.
+    assert!(
+        s.notices_since(mark)
+            .iter()
+            .filter(|n| n.text.contains("can't be given in") && !n.text.contains("so the tool reads them"))
+            .all(|n| n.loss().is_some()),
+        "{cmd}: {said:?}"
+    );
     (out, said)
 }
 
@@ -184,8 +193,13 @@ fn a_route_and_a_simulation_leave_out_what_they_cant_place() {
         let mark = s.notice_mark();
         let r = s.run("analysis.route", &json!({"layer": "lines", "from": [10.002, 45.002], "to": [10.038, 45.038]})).unwrap();
         assert!(r["lengthKm"].as_f64().unwrap() > 4.0, "{r}");
-        let omitted: Vec<_> =
-            s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains("segments with invalid coordinates")).collect();
+        let omitted: Vec<_> = s
+            .notices_since(mark)
+            .iter()
+            .filter(|n| {
+                n.text.contains("segments with invalid coordinates") && n.loss() == Some(rustgis_data::loss::LossCode::DroppedGeometry)
+            })
+            .collect();
         assert_eq!(omitted.len(), usize::from(far), "{omitted:?}");
         // Points in the square only.
         let (out, said) = run(&mut s, "analysis.simulate", json!({"layer": "areas", "count": 5}));
@@ -208,7 +222,10 @@ fn profiles_and_a_search_area_leave_out_what_they_cant_place() {
         assert_eq!(said.len(), usize::from(far), "{said:?}");
         let (geometries, notes) = crate::cmd::stac_area::selected_geometries(&s, &json!({"layer": "lines"})).unwrap();
         assert_eq!(geometries.len(), 1);
-        let unplaced: Vec<_> = notes.iter().filter(|n| n.contains("can't be given in")).collect();
+        let unplaced: Vec<_> = notes
+            .iter()
+            .filter(|n| n.contains("can't be given in") && n.loss == Some(rustgis_data::loss::LossCode::DroppedFeature))
+            .collect();
         assert_eq!(unplaced.len(), usize::from(far), "{notes:?}");
         assert!(notes.iter().all(|n| !n.contains("have no geometry")), "{notes:?}");
         if far {
