@@ -3651,6 +3651,8 @@ fn layout_groups(app: &mut RustGisApp, ui: &mut Ui) {
                     ui.close();
                 }
             }
+            let layers = crate::textform::StatLayer::of(&layout, &app.session.project.maps);
+            crate::textform::stat_menu(ui, &layers, |token| add(app, json!({"kind": "dynamicText", "text": token})));
         });
         if big(ui, app, "picture", "Picture", "Add a PNG or JPEG picture to the page.", "ui.layoutPicture", Value::Null, false, false)
             .clicked()
@@ -6882,6 +6884,35 @@ mod tests {
             assert_eq!(label, *name, "{id}");
             assert!(!about.is_empty(), "{id}");
         }
+    }
+
+    /// Publish › Text › Dynamic Text › Layer statistic adds a text holding the token picked, from
+    /// the layers of the first frame's map (#3036); a layout with no frame has no such section.
+    #[test]
+    fn publish_dynamic_text_adds_a_layer_statistic() {
+        use rustgis_engine::map::layout::ElementKind;
+        let mut app = RustGisApp::with_sample();
+        app.run("layout.new", json!({"name": "Figures"})).unwrap();
+        let li = app.session.active_layout.unwrap();
+        let before = app.session.project.layouts[li].elements.len();
+        let mut h = tab_harness(app, layout_groups);
+        for step in ["Dynamic Text", "Layer statistic", "Cities", "Count  {count:Cities}"] {
+            h.get_by_label(step).click();
+            h.run();
+        }
+        let elements = &h.state().session.project.layouts[li].elements;
+        assert_eq!(elements.len(), before + 1);
+        assert!(matches!(&elements.last().unwrap().kind, ElementKind::Text { text, .. } if text == "{count:Cities}"));
+        assert_eq!(h.state().layout.selected, Some(elements.last().unwrap().id));
+        assert!(h.query_by_label("Layer statistic").is_none(), "the menu closes");
+
+        let frame = h.state().session.project.layouts[li].first_frame().unwrap();
+        h.state_mut().run("layout.removeElement", json!({"layout": li, "element": frame})).unwrap();
+        h.run();
+        h.get_by_label("Dynamic Text").click();
+        h.run();
+        assert!(h.query_by_label_contains("Map scale").is_some(), "the menu is open");
+        assert!(h.query_by_label("Layer statistic").is_none(), "no frame, no layers");
     }
 
     /// New Layout › Publication Layout › a sheet › a style makes that sheet in that style, titled

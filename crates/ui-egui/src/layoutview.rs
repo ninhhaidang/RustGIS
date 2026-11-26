@@ -2717,6 +2717,7 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
         let (mut it, mut al, mut ls, mut fam, mut named) = (*italic, *align, *letter_spacing, *font, font_name.clone());
         let (mut wr, mut va, mut line_sp, mut cs) = (*wrap, valign.kept(), *line_spacing, case.kept());
         let tokens = [rustgis_engine::map::graphics::TOKENS, rustgis_engine::map::layout::PAGE_TOKENS];
+        let layers = || crate::textform::StatLayer::of(layout, &app.session.project.maps);
         let warning = app
             .layout
             .text_losses
@@ -2742,8 +2743,9 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
             named_fonts: true,
             select: false,
         };
-        let settled = crate::textform::section(ui, "Text", |ui| crate::textform::show(ui, ("layout_text", li, id), &tokens, fields))
-            .unwrap_or_default();
+        let settled =
+            crate::textform::section(ui, "Text", |ui| crate::textform::show(ui, ("layout_text", li, id), &tokens, layers, fields))
+                .unwrap_or_default();
         if settled.typing {
             app.layout.typing.insert(key, buf);
         } else if settled.text && buf != *text {

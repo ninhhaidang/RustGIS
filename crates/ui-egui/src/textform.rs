@@ -17,6 +17,76 @@ use crate::widgets::Dragged;
 /// found by typing part of a name.
 const MAX_FONTS_SHOWN: usize = 200;
 
+/// A layer a layout text can show a figure of (#3036): its name and its numeric fields, which the
+/// Dynamic Text menu offers as tokens (`{count:Name}`, `{sum:Name:field}`…).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatLayer {
+    pub name: String,
+    pub fields: Vec<String>,
+}
+
+impl StatLayer {
+    /// The layers a text of `layout` can show figures of: those of the map its first frame shows
+    /// (as the page reads them), without a raster's or a graphics layer's, each with its numeric
+    /// fields. A name a token can't hold (`{`, `}`, or a field's `:`) is left out, and so is a layer
+    /// under another of its name, and a field after another of its name (case aside), which no token
+    /// reads.
+    pub fn of(layout: &rustgis_engine::map::layout::Layout, maps: &[rustgis_engine::map::Map]) -> Vec<StatLayer> {
+        use rustgis_engine::map::layout::ElementKind;
+        let Some(ElementKind::MapFrame { map, .. }) = layout.first_frame().and_then(|f| layout.element(f)).map(|e| &e.kind) else {
+            return Vec::new();
+        };
+        let Some(map) = maps.iter().find(|m| m.name.eq_ignore_ascii_case(map)) else { return Vec::new() };
+        let holds = |name: &str, colon: bool| !name.is_empty() && !name.contains(['{', '}']) && !(colon && name.contains(':'));
+        map.layers
+            .iter()
+            .filter(|l| !l.graphics && l.raster.is_none() && holds(&l.name, false))
+            .filter(|l| map.layer_by_name(&l.name).is_some_and(|first| first.id == l.id))
+            .map(|l| StatLayer {
+                name: l.name.clone(),
+                fields: l
+                    .dataset
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, f)| f.ty.is_numeric() && holds(&f.name, true) && l.dataset.field_index(&f.name) == Some(*i))
+                    .map(|(_, f)| f.name.clone())
+                    .collect(),
+            })
+            .collect()
+    }
+}
+
+/// The "Layer statistic" section of a Dynamic Text menu (#3036), the Format pane's and the
+/// ribbon's: a submenu per layer, a count and, for each numeric field, its sum, mean, least and
+/// greatest. `pick` takes the token chosen; with no layers there is no section.
+pub fn stat_menu(ui: &mut Ui, layers: &[StatLayer], mut pick: impl FnMut(String)) {
+    if layers.is_empty() {
+        return;
+    }
+    ui.separator();
+    crate::widgets::submenu(ui, tl!("Layer statistic"), |ui| {
+        for layer in layers {
+            crate::widgets::submenu(ui, &layer.name, |ui| {
+                let mut add = |ui: &mut Ui, what: &str, token: String| {
+                    if ui.button(format!("{what}  {token}")).clicked() {
+                        pick(token);
+                        ui.close();
+                    }
+                };
+                add(ui, tl!("Count"), format!("{{count:{}}}", layer.name));
+                for field in &layer.fields {
+                    crate::widgets::submenu(ui, field, |ui| {
+                        for (code, what) in [("sum", tl!("Sum")), ("mean", tl!("Mean")), ("min", tl!("Least")), ("max", tl!("Greatest"))] {
+                            add(ui, what, format!("{{{code}:{}:{field}}}", layer.name));
+                        }
+                    });
+                }
+            });
+        }
+    });
+}
+
 /// What the form edits. A style is left out where the text doesn't have it.
 pub struct Fields<'a> {
     pub text: &'a mut String,
@@ -90,8 +160,16 @@ pub fn section<R>(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui) -> R) -> O
 pub const LABEL_W: f32 = 96.0;
 
 /// The form, its fields told apart by `id` (an element, a dialog). `tokens` are the dynamic text
-/// lists the text expands where it is shown, each a section of the Dynamic Text menu.
-pub fn show(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, tokens: &[&[(&str, &str)]], f: Fields<'_>) -> Settled {
+/// lists the text expands where it is shown, each a section of the Dynamic Text menu; `layers`
+/// gives the layers whose figures it can show, a section of their own (none for a text graphic),
+/// and is asked only while the menu is open.
+pub fn show(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    tokens: &[&[(&str, &str)]],
+    layers: impl FnOnce() -> Vec<StatLayer>,
+    f: Fields<'_>,
+) -> Settled {
     let id = egui::Id::unique(id);
     let mut out = Settled::default();
     let hint = tl!("Shift+Enter starts a new line.");
@@ -125,6 +203,10 @@ pub fn show(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, tokens: &[&
                 }
             }
         }
+        stat_menu(ui, &layers(), |token| {
+            f.text.push_str(&token);
+            out.text = true;
+        });
     });
     out.typing = r.has_focus() && !out.text;
     egui::Grid::new(id.with("style")).num_columns(2).min_col_width(LABEL_W).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
@@ -411,6 +493,8 @@ mod tests {
         /// Whether the vertical alignment, line spacing and case are offered, as a layout text's
         /// form offers them.
         blocks: bool,
+        /// The layers whose figures the text can show.
+        layers: Vec<StatLayer>,
         settled: Vec<&'static str>,
     }
 
@@ -423,6 +507,7 @@ mod tests {
                     ui,
                     "form",
                     &[rustgis_engine::map::graphics::TOKENS, rustgis_engine::map::layout::PAGE_TOKENS],
+                    || f.layers.clone(),
                     Fields {
                         text: &mut f.text,
                         size: &mut size,
@@ -488,6 +573,84 @@ mod tests {
         }
         assert_eq!(h.state().settled, ["text", "text"]);
         assert!(h.query_by_label("Page number  {page}").is_none(), "the menu closes");
+    }
+
+    /// The layers offered are those of the first frame's map, with their numeric fields; a raster
+    /// layer, a graphics layer and a name a token can't hold are left out (#3036).
+    #[test]
+    fn the_layers_offered_are_the_first_frames_with_their_numeric_fields() {
+        use rustgis_engine::data::{Dataset, Field, FieldType, GeometryType};
+        use rustgis_engine::map::{
+            Map,
+            layout::{ElementKind, Layout},
+        };
+        let layer = |name: &str, fields: Vec<(&str, FieldType)>| {
+            Dataset::new(name, GeometryType::None, fields.into_iter().map(|(n, t)| Field::new(n, t)).collect())
+        };
+        let mut map = Map::new("Main");
+        // A token reads the first layer of a name, case aside, so one under it is not offered
+        // (a layer is added above the others).
+        map.add_dataset(layer("Under", vec![("other", FieldType::Double)]));
+        map.add_dataset(layer(
+            "Cities",
+            vec![
+                ("pop", FieldType::Double),
+                ("name", FieldType::Text),
+                ("a:b", FieldType::Double),
+                // A token reads the first field of a name, case aside: neither of these is offered.
+                ("Pop", FieldType::Double),
+                ("Name", FieldType::Double),
+            ],
+        ));
+        map.add_dataset(layer("Bad {name}", vec![("x", FieldType::Double)]));
+        map.layers.iter_mut().find(|l| l.name == "Under").unwrap_or_else(|| panic!("a layer")).name = "cities".into();
+        let mut other = Map::new("Other");
+        other.add_dataset(layer("Rivers", vec![("km", FieldType::Double)]));
+        let mut layout = Layout::new("L", 100.0, 100.0);
+        assert_eq!(StatLayer::of(&layout, &[map.clone(), other.clone()]), Vec::new(), "no frame, no layers");
+        let frame = |m: &str| -> ElementKind {
+            serde_json::from_value(serde_json::json!({"MapFrame": {"map": m, "center": {"x": 0, "y": 0}, "scale": 1000000}}))
+                .unwrap_or_else(|e| panic!("{e}"))
+        };
+        layout.add("Frame", (0.0, 0.0, 50.0, 50.0), frame("main"));
+        assert_eq!(
+            StatLayer::of(&layout, &[map.clone(), other.clone()]),
+            [StatLayer { name: "Cities".into(), fields: vec!["pop".into()] }]
+        );
+        let mut second = Layout::new("L2", 100.0, 100.0);
+        second.add("Frame", (0.0, 0.0, 50.0, 50.0), frame("Other"));
+        assert_eq!(StatLayer::of(&second, &[map, other]), [StatLayer { name: "Rivers".into(), fields: vec!["km".into()] }]);
+    }
+
+    /// A layer statistic is added from a submenu per layer, a count and the four figures of each
+    /// numeric field (#3036); a text with no layers to read has no such section.
+    #[test]
+    fn a_layer_statistic_is_added_from_its_layers_submenu() {
+        let cities = StatLayer { name: "Cities".into(), fields: vec!["pop".into(), "area".into()] };
+        let mut h = harness(Form { text: "".into(), size: 12.0, layers: vec![cities], ..Form::default() });
+        h.run();
+        for (path, text) in [
+            (&["Cities", "Count  {count:Cities}"][..], "{count:Cities}"),
+            (&["Cities", "pop", "Sum  {sum:Cities:pop}"][..], "{count:Cities}{sum:Cities:pop}"),
+            (&["Cities", "area", "Greatest  {max:Cities:area}"][..], "{count:Cities}{sum:Cities:pop}{max:Cities:area}"),
+        ] {
+            h.get_by_label("Insert Dynamic Text").click();
+            h.run();
+            h.get_by_label("Layer statistic").click();
+            h.run();
+            for step in path {
+                h.get_by_label(step).click();
+                h.run();
+            }
+            assert_eq!(h.state().text, text);
+        }
+        assert_eq!(h.state().settled, ["text", "text", "text"]);
+        assert!(h.query_by_label("Layer statistic").is_none(), "the menu closes");
+        let mut none = harness(Form { text: "T".into(), size: 12.0, ..Form::default() });
+        none.run();
+        none.get_by_label("Insert Dynamic Text").click();
+        none.run();
+        assert!(none.query_by_label("Layer statistic").is_none(), "no layers, no section");
     }
 
     /// Colour and boldness show only where the text has them; the size stays in the one range
