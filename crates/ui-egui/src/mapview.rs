@@ -4996,6 +4996,25 @@ pub(crate) fn drag_tab(ui: &Ui, resp: &egui::Response, layout: bool, name: &str)
     egui::DragAndDrop::payload::<DraggedTab>(ui.ctx()).is_some_and(|d| d.layout == layout && d.name == name)
 }
 
+/// While an item is dragged over a list that scrolls (the view tabs, the Browser or the Layers
+/// pane), scrolls the list `ui` is in when the `pointer` is near its edge along the axis
+/// (`vertical`, else horizontal), faster the closer it is, and asks for a frame to go on (#2957).
+/// `view` is the list's visible rectangle: a `pointer` outside it scrolls nothing.
+pub(crate) fn edge_scroll(ui: &Ui, view: Rect, pointer: egui::Pos2, vertical: bool) {
+    if !view.contains(pointer) {
+        return;
+    }
+    let a = usize::from(vertical);
+    let edge = 28.0;
+    let push = ((view.min[a] + edge - pointer[a]).max(0.0) - (pointer[a] - (view.max[a] - edge)).max(0.0)) / edge;
+    if push != 0.0 {
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        let step = push * 600.0 * dt;
+        ui.scroll_with_delta_animation(if vertical { vec2(0.0, step) } else { vec2(step, 0.0) }, egui::style::ScrollAnimation::none());
+        ui.ctx().request_repaint();
+    }
+}
+
 /// While a map or layout tab is dragged over the strip, or its row over the Browser's list
 /// (`vertical`): a mark where it would land among the others of its kind (`tabs`, named `names`;
 /// layouts with `layout`, else maps), which `map.move` or `layout.move` takes it to when let go;
@@ -5009,14 +5028,7 @@ pub(crate) fn tab_drop(app: &mut RustGisApp, ui: &Ui, t: &Tokens, tabs: &[Rect],
     let Some(pointer) = ui.ctx().pointer_interact_pos().filter(|p| view.contains(*p)) else { return };
     // Along the row (x) or the list (y).
     let a = usize::from(vertical);
-    let edge = 28.0;
-    let push = ((view.min[a] + edge - pointer[a]).max(0.0) - (pointer[a] - (view.max[a] - edge)).max(0.0)) / edge;
-    if push != 0.0 {
-        let dt = ui.input(|i| i.stable_dt).min(0.1);
-        let step = push * 600.0 * dt;
-        ui.scroll_with_delta_animation(if vertical { vec2(0.0, step) } else { vec2(step, 0.0) }, egui::style::ScrollAnimation::none());
-        ui.ctx().request_repaint();
-    }
+    edge_scroll(ui, view, pointer, vertical);
     let (Some(from), Some(first), Some(last)) = (names.iter().position(|n| *n == dragged.name), tabs.first(), tabs.last()) else {
         return;
     };

@@ -1496,13 +1496,7 @@ fn layer_drop(app: &mut RustGisApp, ui: &Ui, rows: &[DropRow], t: &Tokens) {
     let view = ui.clip_rect();
     let Some(pointer) = ui.ctx().pointer_interact_pos().filter(|p| view.contains(*p)) else { return };
     // Near the top or bottom edge the list scrolls, faster the closer the pointer is.
-    let edge = 28.0;
-    let push = ((view.min.y + edge - pointer.y).max(0.0) - (pointer.y - (view.max.y - edge)).max(0.0)) / edge;
-    if push != 0.0 {
-        let dt = ui.input(|i| i.stable_dt).min(0.1);
-        ui.scroll_with_delta_animation(vec2(0.0, push * 600.0 * dt), egui::style::ScrollAnimation::none());
-        ui.ctx().request_repaint();
-    }
+    crate::mapview::edge_scroll(ui, view, pointer, true);
     // Only the layer rows take a drop: not the map's name above them, the basemap or a table below.
     let (Some(first), Some(last)) = (rows.first(), rows.last()) else { return };
     if pointer.y < first.rect.min.y || pointer.y > last.rect.max.y {

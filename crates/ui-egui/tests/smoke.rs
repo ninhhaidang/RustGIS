@@ -1632,6 +1632,17 @@ fn a_browser_row_being_dragged_is_filled_and_its_drop_line_spans_the_list() {
     assert_eq!(layout_names(&h), ["L2", "L1"]);
 }
 
+/// The bottom edge of the side pane's list around `from`, where its scroll bar ends (the map is
+/// right of the pane, past 250 points).
+fn list_bottom(h: &egui_kittest::Harness<'_, RustGisApp>, from: egui::Pos2) -> f32 {
+    h.query_all_by_role(egui::accesskit::Role::ScrollBar)
+        .map(|n| n.rect())
+        .find(|r| r.max.x < from.x + 250.0)
+        .expect("the pane's scroll bar")
+        .max
+        .y
+}
+
 /// Held near the Browser's bottom edge, a dragged map row scrolls the list down past the rows in
 /// view, and lands there when let go (#2829).
 #[test]
@@ -1644,20 +1655,35 @@ fn a_row_dragged_to_the_edge_of_a_long_browser_scrolls_it() {
     h.state_mut().run("ui.pane.catalog", json!(null)).unwrap();
     activate_world(&mut h);
     let from = browser_row(&h, "World").center();
-    // The list's bottom edge, where its scroll bar ends (the map is right of the Browser).
-    let bottom = h
-        .query_all_by_role(egui::accesskit::Role::ScrollBar)
-        .map(|n| n.rect())
-        .find(|r| r.max.x < from.x + 250.0)
-        .expect("the Browser's scroll bar")
-        .max
-        .y;
+    let bottom = list_bottom(&h, from);
     let in_view = map_names(&h).iter().position(|n| browser_row(&h, n).max.y > bottom).expect("more maps than fit");
     // A few frames: each scrolls up to 60 points here (the harness steps a quarter second), and
     // held longer the list reaches its end and the pointer is past the maps, over Toolboxes.
     drag(&mut h, from, egui::pos2(from.x, bottom - 6.0), 5);
     let landed = map_names(&h).iter().position(|n| n == "World").unwrap();
     assert!(landed > in_view, "World landed at {landed}, past the {in_view} rows first in view");
+}
+
+/// Held near the Layers pane's bottom edge, a dragged layer scrolls the list down: the rows move
+/// up (#2957).
+#[test]
+fn a_layer_dragged_to_the_edge_of_a_long_layers_pane_scrolls_it() {
+    use rustgis_ui_egui::rustgis_engine::data::{Dataset, GeometryType};
+    let mut h = harness();
+    h.set_size(egui::vec2(900.0, 600.0));
+    for i in 1..=40 {
+        h.state_mut().session.map_mut().add_dataset(Dataset::new(format!("Row Layer {i}"), GeometryType::Point, vec![]));
+    }
+    settle(&mut h);
+    let row = |h: &egui_kittest::Harness<'_, RustGisApp>, name: &str| h.get_by_label(name).rect();
+    let from = row(&h, "Row Layer 40").center();
+    let bottom = list_bottom(&h, from);
+    let before = row(&h, "Row Layer 30").min.y;
+    // A few frames, held near the bottom: each scrolls up to 60 points here (the harness steps a
+    // quarter second).
+    drag(&mut h, from, egui::pos2(from.x, bottom - 6.0), 5);
+    let after = row(&h, "Row Layer 30").min.y;
+    assert!(after < before - 20.0, "the rows moved up from {before} to {after}");
 }
 
 #[test]
