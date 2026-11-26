@@ -1827,6 +1827,9 @@ fn plugins_can_have_a_tab_of_their_own() {
 
 #[test]
 fn plugin_small_ribbon_columns_and_nested_menus_preserve_actions() {
+    if in_own_process("plugin_small_ribbon_columns_and_nested_menus_preserve_actions") {
+        return;
+    }
     let _turn = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());
     use rustgis_ui_egui::rustgis_engine::plugins as rp;
     let mut m: serde_json::Value = serde_json::from_str(&rp::testing::manifest("ui-small", &[])).unwrap();
@@ -1863,6 +1866,7 @@ fn plugin_small_ribbon_columns_and_nested_menus_preserve_actions() {
     ]});
     let pkg = rp::testing::zip_of(&[("plugin.json", m.to_string().as_bytes()), ("plugin.wasm", &rp::testing::wasm())]);
     rp::load(rp::Package::from_zip(&pkg).unwrap(), "test").unwrap();
+    let _unload = Unload("ui-small");
     let mut h = harness();
     h.set_size(egui::vec2(2400.0, 860.0));
     h.state_mut().run("ui.language", json!({"code": "en"})).unwrap();
@@ -1941,7 +1945,6 @@ fn plugin_small_ribbon_columns_and_nested_menus_preserve_actions() {
     h.run_steps(3);
     assert_ne!(h.state().ui.right, Some(rustgis_ui_egui::RightPane::Plugin));
     assert!(h.query_by_label("Panel is open").is_none(), "the compact panel button still toggles its pane");
-    rp::unload("ui-small");
 }
 
 /// A second click begun while the first waits to start: the command waits for its release, and
