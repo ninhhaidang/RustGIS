@@ -58,7 +58,7 @@ fn an_export_writes_a_feature_it_cant_place_without_its_geometry_and_says_so() {
     let path = d.join("lines.geojson");
     let (left_out, _, notes) = crate::io::write_path_to(&lines(true), &path, Crs::LonLat, &Default::default()).unwrap();
     assert_eq!(left_out, 0);
-    assert_eq!(notes, [format!("{}: {lonlat_note}", path.display())]);
+    assert_eq!(notes.iter().map(crate::loss::Note::as_str).collect::<Vec<_>>(), [format!("{}: {lonlat_note}", path.display())]);
     let (back, _) = crate::io::read_path(&path).unwrap();
     assert_eq!(back.features.len(), 2);
     assert!(back.features[1].geometry.is_none());
@@ -69,7 +69,7 @@ fn an_export_writes_a_feature_it_cant_place_without_its_geometry_and_says_so() {
     // In its own system nothing is converted: the feature is written whole, and nothing said.
     let path = d.join("lines-utm.fgb");
     let (left_out, _, notes) = crate::io::write_path_to(&lines(true), &path, utm31(), &Default::default()).unwrap();
-    assert_eq!((left_out, notes), (0, Vec::<String>::new()));
+    assert_eq!((left_out, notes.len()), (0, 0), "{notes:?}");
     // A layer whose places all convert says nothing.
     let (_, _, notes) = crate::io::write_path_to(&lines(false), &d.join("clean.geojson"), Crs::LonLat, &Default::default()).unwrap();
     assert!(notes.is_empty(), "{notes:?}");
@@ -87,7 +87,8 @@ fn a_download_writes_a_feature_it_cant_place_without_its_geometry_and_says_so() 
     let (bytes, left_out, notes, _) = crate::io::write_bytes_noted(&lines(true), "geojson", Crs::LonLat, "lines.geojson").unwrap();
     assert_eq!(left_out, 0);
     assert_eq!(notes.len(), 1, "{notes:?}");
-    assert!(notes[0].starts_with("lines.geojson: 1 feature(s) of lines have a place"), "{}", notes[0]);
+    assert!(notes[0].as_str().starts_with("lines.geojson: 1 feature(s) of lines have a place"), "{:?}", notes[0]);
+    assert_eq!(notes[0].loss, Some(crate::loss::LossCode::DroppedGeometry));
     let (back, _) = crate::io::read_geojson(std::str::from_utf8(&bytes).unwrap(), "lines").unwrap();
     assert_eq!(back.features.len(), 2);
     assert!(back.features[1].geometry.is_none());

@@ -5626,17 +5626,19 @@ impl RustGisApp {
                 dbf_notes.extend(io::dates_as_text_note(&ds.fields, &name));
                 dbf_notes.extend(rustgis_engine::cmd::share::gpkg_dates_note(&ds, &ext, &name));
                 if lost.rows > 0 {
-                    dbf_notes.push(rustgis_engine::cmd::whole::unread_notice(&name, lost.rows));
+                    dbf_notes.push(rustgis_engine::cmd::whole::unread_note(&name, lost.rows));
                 }
                 dbf_notes.extend(rustgis_engine::cmd::share::read_notes(&name, &l.name, &lost));
                 // CSV holds a point a row, GPX a name for each feature and no areas; reading text back, CSV reads blanks as null and KML and GPX trim it.
                 dbf_notes.extend(io::export_losses_notes(&ds, &ext, io::name_field(&ds), &name).map_err(|e| e.to_string())?);
                 drop(ds);
-                if let Some(note) = io::left_out_note(&name, &ext, left_out) {
-                    self.session.notify(note, false);
-                }
+                // Said only once the download is taken, as the other notes are.
+                dbf_notes.extend(io::left_out_note(&name, &ext, left_out));
                 if ext == "zip" && rustgis_engine::data::raster::wkt::to_wkt(crs).is_none() {
-                    self.session.notify(format!("{name}: no .prj written, as {} has no WKT form", crs.label()), false);
+                    dbf_notes.push(rustgis_engine::data::loss::Note::loss(
+                        rustgis_engine::data::loss::LossCode::DroppedCrsName,
+                        format!("{name}: no .prj written, as {} has no WKT form", crs.label()),
+                    ));
                 }
                 if self.download(&name, bytes) {
                     rustgis_engine::cmd::share::notify_export_query(&mut self.session, &name, &layer_name, &query_report);

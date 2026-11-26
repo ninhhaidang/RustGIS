@@ -256,7 +256,7 @@ impl Unplaced {
 
     fn say(self, s: &mut Session, what: &str) {
         if let Some(note) = rustgis_data::unplaced_note(what, &self.layers.join(", "), self.n) {
-            s.notify(note, false);
+            s.say(note);
         }
     }
 }

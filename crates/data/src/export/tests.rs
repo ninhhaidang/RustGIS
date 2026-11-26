@@ -524,10 +524,11 @@ fn geoparquet_counts_values_written_as_null() {
     assert_eq!(streamed.unfit, vec![0, 2, 1, 1]);
     let note = crate::source::parquet::unfit_note(&layer.fields, &streamed.unfit, "lossy.parquet").unwrap();
     assert_eq!(
-        note,
+        note.as_str(),
         "lossy.parquet: 4 values couldn't be written as their columns' types and were written as null, in 'count', 'share', 'open'"
     );
-    assert_eq!(crate::source::parquet::values_note(&ds, "lossy.parquet").as_deref(), Some(note.as_str()));
+    assert_eq!(note.loss, Some(crate::loss::LossCode::DroppedValue));
+    assert_eq!(crate::source::parquet::values_note(&ds, "lossy.parquet").as_ref().map(crate::loss::Note::as_str), Some(note.as_str()));
     let back = read_back(&d.join("lossy.parquet"));
     assert_eq!((&back.features[1].attrs[1], &back.features[3].attrs[3]), (&Value::Null, &Value::Null));
 
@@ -543,7 +544,7 @@ fn geoparquet_counts_values_written_as_null() {
     let fields = vec![Field::new("a\u{202E}b\nc", FieldType::Integer), Field::new("x".repeat(60), FieldType::Integer)];
     let note = crate::source::parquet::unfit_note(&fields, &[1, 1], "out\u{2028}.parquet").unwrap();
     let want = "out .parquet: 2 values couldn't be written as their columns' types and were written as null, in 'a b c'";
-    assert_eq!(note, format!("{want}, '{}…'", "x".repeat(40)));
+    assert_eq!(note.as_str(), format!("{want}, '{}…'", "x".repeat(40)));
     let _ = std::fs::remove_dir_all(d);
 }
 

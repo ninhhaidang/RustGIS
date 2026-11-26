@@ -84,7 +84,7 @@ fn copy(s: &mut Session) -> CmdResult {
     s.clipboard = Some(Clipboard { data });
     s.notify(format!("Copied {n} features from {layer}"), false);
     if let Some(note) = rustgis_data::unplaced_note("Copied text", &layer, unplaced) {
-        s.notify(note, false);
+        s.say(note);
     }
     Ok(json!({"copied": n, "layer": layer, "text": text}))
 }

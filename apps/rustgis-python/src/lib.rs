@@ -221,10 +221,8 @@ impl Engine {
                     .unwrap_or_default();
                 let (ds, report) = found.load_all_reported().map_err(|e| format!("{}: {e}", found.name))?;
                 let name = found.name.clone();
-                match report.skipped {
-                    0 => {}
-                    1 => session.warn(format!("{name}: 1 row couldn't be read and was left out")),
-                    n => session.warn(format!("{name}: {n} rows couldn't be read and were left out")),
+                if report.skipped > 0 {
+                    session.say(rustgis_engine::cmd::whole::unread_note(&name, report.skipped));
                 }
                 // A Z/M loss this export says from its read; one said only when the layer opened
                 // isn't said here again, so the export's own note says it.
@@ -249,7 +247,7 @@ impl Engine {
                 // a feature with a place that can't be given there is in it without its geometry.
                 let (lonlat, unplaced) = ds.in_lonlat_leaving_out()?;
                 if let Some(note) = rustgis_engine::data::unplaced_note(&format!("{name} as GeoJSON"), &ds.name, unplaced) {
-                    session.notify(note, false);
+                    session.say(note);
                 }
                 return Ok(rustgis_engine::data::io::to_geojson(&lonlat).to_string());
             }
@@ -267,7 +265,7 @@ impl Engine {
                     session.say(note);
                 }
                 if let Some(note) = unplaced {
-                    session.notify(note, false);
+                    session.say(note);
                 }
                 return Ok(text);
             }
@@ -302,7 +300,7 @@ impl Engine {
                 session.say(note);
             }
             if let Some(note) = rustgis_engine::data::unplaced_note(&format!("{} as GeoJSON", ds.name), &ds.name, unplaced) {
-                session.notify(note, false);
+                session.say(note);
             }
             Ok::<String, String>(text)
         });

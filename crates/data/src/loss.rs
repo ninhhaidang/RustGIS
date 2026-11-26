@@ -60,7 +60,7 @@ macro_rules! loss_codes {
 
 loss_codes! {
     DroppedLegend => ("dropped.legend", Dropped, "Use a service with short HTTP or HTTPS addresses for its legend pictures."),
-    DroppedRing => ("dropped.ring", Dropped, "Correct the unreadable polygon ring in the source."),
+    DroppedRing => ("dropped.ring", Dropped, "Correct the unreadable polygon ring in the source, or write to a format that holds holes, such as GeoPackage."),
     DroppedExtraAttributes => (
         "dropped.extra-attributes",
         Dropped,
@@ -81,7 +81,7 @@ loss_codes! {
     DroppedCrsName => (
         "dropped.crs-name",
         Dropped,
-        "Keep the source file's coordinate system definition with the export."
+        "Keep the source file's coordinate system definition with the export, or export in WGS 84, which every format can name."
     ),
     DroppedFeature => (
         "dropped.feature",
@@ -99,6 +99,16 @@ loss_codes! {
         "Read less at once, such as by filtering or clipping the source first."
     ),
     ChangedTruncated => ("changed.truncated", Changed, "Use a decimal field to keep the fractional part."),
+    ChangedFieldName => (
+        "changed.field-name",
+        Changed,
+        "Use field names the format holds: at most 10 bytes and unique ignoring case for a Shapefile, unique ignoring case for a GeoPackage."
+    ),
+    ChangedCut => (
+        "changed.cut",
+        Changed,
+        "Shorten the text to what the format holds (254 bytes for a Shapefile; nothing past a NUL character), or write to a format without the limit, such as GeoPackage."
+    ),
     ChangedBody => ("changed.body", Changed, "Export in the layer's own coordinate system, which keeps its body."),
     ChangedEncoding => (
         "changed.encoding",
@@ -108,7 +118,7 @@ loss_codes! {
     ChangedRounded => (
         "changed.rounded",
         Changed,
-        "Keep the source file where times finer than a microsecond matter."
+        "Keep the source file where finer values matter, or write to a format that holds them (times finer than the format keeps, or numbers past a dBase field's precision)."
     ),
     ChangedPosition => (
         "changed.position",

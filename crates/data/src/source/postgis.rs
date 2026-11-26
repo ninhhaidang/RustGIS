@@ -1354,26 +1354,31 @@ fn count_offset(saved: &mut Saved, field: usize, column: &str, v: &Value) {
 /// What saving to `table` says of the date-times its columns didn't keep as they were
 /// ([`Saved::utc_dates`], [`Saved::zoneless_dates`], [`Saved::assumed_utc`]), naming the fields
 /// of `fields` they were in.
-pub fn saved_dates_notes(fields: &[Field], saved: &Saved, table: &str) -> Vec<String> {
+pub fn saved_dates_notes(fields: &[Field], saved: &Saved, table: &str) -> Vec<crate::loss::Note> {
     let table: String = table.chars().map(crate::io::dbf_notice_char).collect();
-    let kinds: [(&[usize], &str, &str); 3] = [
-        (&saved.utc_dates, "1 date-time was saved in UTC, without its offset", "date-times were saved in UTC, without their offsets"),
+    // An offset left out is a value lost; a date-time without one saved as UTC keeps its clock time.
+    let kinds: [(&[usize], &str, &str, bool); 3] = [
+        (&saved.utc_dates, "1 date-time was saved in UTC, without its offset", "date-times were saved in UTC, without their offsets", true),
         (
             &saved.zoneless_dates,
             "1 date-time was saved at the clock time shown, without its offset",
             "date-times were saved at the clock time shown, without their offsets",
+            true,
         ),
-        (&saved.assumed_utc, "1 date-time without a time zone was saved as UTC", "date-times without a time zone were saved as UTC"),
+        (&saved.assumed_utc, "1 date-time without a time zone was saved as UTC", "date-times without a time zone were saved as UTC", false),
     ];
     let why =
         ["(a timestamptz column holds only the moment)", "(a timestamp column has no time zone)", "(a timestamptz column holds a moment)"];
     kinds
         .iter()
         .zip(why)
-        .filter_map(|((counts, one, many), why)| {
+        .filter_map(|((counts, one, many, lost), why)| {
             let total: usize = counts.iter().sum();
             let what = if total == 1 { (*one).to_string() } else { format!("{total} {many}") };
-            (total > 0).then(|| format!("{table}: {what} {why}, in {}", crate::io::named_fields(fields, counts)))
+            (total > 0).then(|| {
+                let text = format!("{table}: {what} {why}, in {}", crate::io::named_fields(fields, counts));
+                if *lost { crate::loss::Note::loss(crate::loss::LossCode::DroppedValue, text) } else { crate::loss::Note::plain(text) }
+            })
         })
         .collect()
 }
@@ -2185,12 +2190,21 @@ mod tests {
             (&[0, 1][..], &[0, 2][..], &[0, 2][..])
         );
         let fields = [Field::new("id", FieldType::Integer), Field::new("seen", FieldType::DateTime)];
+        use crate::loss::LossCode::DroppedValue;
+        let notes = saved_dates_notes(&fields, &saved, "wells");
         assert_eq!(
-            saved_dates_notes(&fields, &saved, "wells"),
+            notes.iter().map(|n| (n.text.as_str(), n.loss)).collect::<Vec<_>>(),
             [
-                "wells: 1 date-time was saved in UTC, without its offset (a timestamptz column holds only the moment), in 'seen'",
-                "wells: 2 date-times were saved at the clock time shown, without their offsets (a timestamp column has no time zone), in 'seen'",
-                "wells: 2 date-times without a time zone were saved as UTC (a timestamptz column holds a moment), in 'seen'"
+                (
+                    "wells: 1 date-time was saved in UTC, without its offset (a timestamptz column holds only the moment), in 'seen'",
+                    Some(DroppedValue)
+                ),
+                (
+                    "wells: 2 date-times were saved at the clock time shown, without their offsets (a timestamp column has no time zone), in 'seen'",
+                    Some(DroppedValue)
+                ),
+                // Its clock time is kept, read as UTC.
+                ("wells: 2 date-times without a time zone were saved as UTC (a timestamptz column holds a moment), in 'seen'", None)
             ]
         );
         assert!(saved_dates_notes(&fields, &Saved::default(), "wells").is_empty());

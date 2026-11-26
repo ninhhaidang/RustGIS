@@ -966,7 +966,7 @@ fn package_map(s: &mut Session, mobile: bool, tol: f64, linked: &mut rustgis_dat
         s.notify(said, false);
     }
     if let Some(said) = rustgis_data::unplaced_note("Mobile map package", &unplaced.1.join(", "), unplaced.0) {
-        s.notify(said, false);
+        s.say(said);
     }
     Ok(archive)
 }
@@ -1002,7 +1002,7 @@ fn package_gp(s: &mut Session) -> Result<Vec<u8>, String> {
     }
     let archive = rustgis_data::zip::write(&entries)?;
     if let Some(said) = rustgis_data::unplaced_note("Geoprocessing package", &unplaced.1.join(", "), unplaced.0) {
-        s.notify(said, false);
+        s.say(said);
     }
     Ok(archive)
 }
@@ -1652,7 +1652,7 @@ fn mesh_notices(s: &mut Session, mesh: &Mesh) {
         s.notify(format!("Skipped {} line part(s) with a single vertex", mesh.short_lines), false);
     }
     if let Some(note) = rustgis_data::unplaced_note("The 3D model", &mesh.layer, mesh.unplaced) {
-        s.notify(note, false);
+        s.say(note);
     }
     if mesh.default_heights > 0 {
         s.notify(format!("{} feature(s) without a numeric height used the default height instead", mesh.default_heights), false);

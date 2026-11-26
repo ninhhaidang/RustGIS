@@ -288,7 +288,7 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
 
     // 3. The layer, written, reads back as the layer.
     if let Some(note) = crate::io::shapefile_names_note(&ds.fields, &name) {
-        return Err(refused(path, note));
+        return Err(refused(path, note.text));
     }
     crate::progress::begin(ds.features.len());
     let (mut parts, left_out, widened) = crate::io::shapefile_parts_styled(&*in_file(ds, crs, as_held)?, written_crs, Some(&style))?;

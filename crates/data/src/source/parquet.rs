@@ -1733,19 +1733,25 @@ impl DateLayout {
     }
     /// Counts each representation change and names its fields for the user-facing export notice,
     /// each after `target: ` (nothing before it when `target` is empty: the caller adds the path).
-    fn notes(&self, fields: &[Field], target: &str) -> Vec<String> {
+    /// An offset left out is a value lost; ISO text keeps the value.
+    fn notes(&self, fields: &[Field], target: &str) -> Vec<crate::loss::Note> {
         let target: String = target.chars().map(crate::io::dbf_notice_char).collect();
         let target = if target.is_empty() { String::new() } else { format!("{target}: ") };
         let mut notes = Vec::new();
         let utc: Vec<usize> = self.offsets.iter().enumerate().map(|(k, &n)| if self.modes.get(k) == Some(&2) { n } else { 0 }).collect();
         let text: Vec<usize> = self.counts.iter().enumerate().map(|(k, &n)| if self.modes.get(k) == Some(&3) { n } else { 0 }).collect();
-        for (counts, what) in [
-            (&utc, "date-times were written in UTC without their original offsets"),
-            (&text, "date-times were written as ISO text because their column mixes zoned and unzoned values"),
+        for (counts, what, lost) in [
+            (&utc, "date-times were written in UTC without their original offsets", true),
+            (&text, "date-times were written as ISO text because their column mixes zoned and unzoned values", false),
         ] {
             let n: usize = counts.iter().sum();
             if n > 0 {
-                notes.push(format!("{target}{n} {what}, in {}", crate::io::named_fields(fields, counts)));
+                let text = format!("{target}{n} {what}, in {}", crate::io::named_fields(fields, counts));
+                notes.push(if lost {
+                    crate::loss::Note::loss(crate::loss::LossCode::DroppedValue, text)
+                } else {
+                    crate::loss::Note::plain(text)
+                });
             }
         }
         notes
@@ -1789,7 +1795,7 @@ fn unfit(ty: FieldType, value: &Value) -> bool {
 /// The notice for values a GeoParquet export wrote as null because their column's type couldn't
 /// hold them, given the count per field (as `write_features` returns); `None` when there are
 /// none. Names the first five fields.
-pub fn unfit_note(fields: &[Field], counts: &[usize], target: &str) -> Option<String> {
+pub fn unfit_note(fields: &[Field], counts: &[usize], target: &str) -> Option<crate::loss::Note> {
     let total = counts.iter().fold(0usize, |a, n| a.saturating_add(*n));
     if total == 0 {
         return None;
@@ -1804,12 +1810,15 @@ pub fn unfit_note(fields: &[Field], counts: &[usize], target: &str) -> Option<St
         format!("{total} values couldn't be written as their columns' types and were")
     };
     let target: String = target.chars().map(crate::io::dbf_notice_char).collect();
-    Some(format!("{target}: {what} written as null, in {}{more}", list.join(", ")))
+    Some(crate::loss::Note::loss(
+        crate::loss::LossCode::DroppedValue,
+        format!("{target}: {what} written as null, in {}{more}", list.join(", ")),
+    ))
 }
 
 /// Export notices for the whole of `ds`: unfit values and timestamp representation changes.
 /// Cancellation omits notices; the following writer's check returns the cancellation error.
-pub fn values_note(ds: &crate::Dataset, target: &str) -> Option<String> {
+pub fn values_note(ds: &crate::Dataset, target: &str) -> Option<crate::loss::Note> {
     let mut counts = vec![0usize; ds.fields.len()];
     let mut layout = DateLayout::default();
     for chunk in ds.features.chunks(BATCH) {
@@ -1824,9 +1833,18 @@ pub fn values_note(ds: &crate::Dataset, target: &str) -> Option<String> {
             }
         }
     }
-    let mut notes: Vec<String> = unfit_note(&ds.fields, &counts, target).into_iter().collect();
-    notes.extend(layout.notes(&ds.fields, target));
-    if notes.is_empty() { None } else { Some(notes.join("; ")) }
+    // One notice: the values written as null, then how date-times are written; coded when either
+    // loses a value.
+    let said: Vec<crate::loss::Note> =
+        unfit_note(&ds.fields, &counts, target).into_iter().chain(layout.notes(&ds.fields, target)).collect();
+    let loss = said.iter().find_map(|n| n.loss);
+    (!said.is_empty()).then(|| {
+        let text = said.iter().map(|n| n.text.as_str()).collect::<Vec<_>>().join("; ");
+        match loss {
+            Some(code) => crate::loss::Note::loss(code, text),
+            None => crate::loss::Note::plain(text),
+        }
+    })
 }
 
 /// Writes GeoParquet to `out`: the features `feed` hands to the function it is given, a run at
@@ -1844,7 +1862,7 @@ pub(crate) fn write_features<W: std::io::Write + Send>(
     crs: Crs,
     out: W,
     feed: &mut dyn FnMut(&mut dyn FnMut(&[Feature]) -> Result<()>) -> Result<()>,
-) -> Result<(W, Vec<usize>, Vec<String>)> {
+) -> Result<(W, Vec<usize>, Vec<crate::loss::Note>)> {
     use parquet::basic::{Compression, Encoding, Repetition, ZstdLevel};
     use parquet::data_type::{BoolType, ByteArray, ByteArrayType, DoubleType, Int32Type, Int64Type};
     use parquet::file::metadata::KeyValue;

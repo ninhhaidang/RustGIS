@@ -81,7 +81,7 @@ impl Unread {
     /// date-times rounded to the microsecond (nothing when there were none).
     pub(crate) fn say(&self, s: &mut Session) {
         if self.rows > 0 {
-            s.warn(unread_notice(&self.layer, self.rows));
+            s.say(unread_note(&self.layer, self.rows));
         }
         for note in [&self.dates, &self.rounded].into_iter().flatten() {
             s.say(note.clone().prefixed(&self.layer));
@@ -93,7 +93,7 @@ impl Unread {
 
     /// What [`Unread::say`] says, as lines: for a tool's messages.
     pub(crate) fn lines(&self) -> rustgis_data::loss::Notes {
-        let rows = (self.rows > 0).then(|| rustgis_data::loss::Note::plain(unread_notice(&self.layer, self.rows)));
+        let rows = (self.rows > 0).then(|| unread_note(&self.layer, self.rows));
         let dates = [&self.dates, &self.rounded].into_iter().flatten().map(|n| n.clone().prefixed(&self.layer));
         let mut lines: rustgis_data::loss::Notes = rows.into_iter().chain(dates).collect();
         lines.extend(self.messages.iter().cloned());
@@ -163,7 +163,13 @@ pub(crate) fn load_into(l: &mut Layer) -> Result<Unread, String> {
     Ok(Unread::of(name, unread))
 }
 
-/// The notice for `unread` rows of `layer`'s source that couldn't be read.
+/// The notice, with its code, that `unread` rows of `layer`'s source couldn't be read and are left
+/// out. [`unread_notice`] gives the same text for an error that names it.
+pub fn unread_note(layer: &str, unread: usize) -> rustgis_data::loss::Note {
+    rustgis_data::loss::Note::loss(rustgis_data::loss::LossCode::DroppedFeature, unread_notice(layer, unread))
+}
+
+/// The text of [`unread_note`].
 pub fn unread_notice(layer: &str, unread: usize) -> String {
     match unread {
         1 => format!("{layer}: 1 row couldn't be read and was left out"),

@@ -169,10 +169,14 @@ fn save_edits(s: &mut Session, p: &Value) -> CmdResult {
             false,
         );
         if !saved.skipped_fields.is_empty() {
-            s.notify(format!("{name}: {table} has no column for {}, so it wasn't saved", saved.skipped_fields.join(", ")), false);
+            // Their values aren't in the table: lost from the save, as a GeoPackage save says.
+            s.say(rustgis_data::loss::Note::loss(
+                rustgis_data::loss::LossCode::DroppedValue,
+                format!("{name}: {table} has no column for {}, so it wasn't saved", saved.skipped_fields.join(", ")),
+            ));
         }
         for note in postgis::saved_dates_notes(&fields, &saved, &super::saved_target(&name, &table)) {
-            s.notify(note, false);
+            s.say(note);
         }
         s.retain_written_notices(written);
         Ok(json!({

@@ -157,20 +157,22 @@ An `--allow` that names no kind or code is refused with status 2, as is `--allow
 | Code | What to do |
 |---|---|
 | `dropped.legend` | Use a service with short HTTP or HTTPS addresses for its legend pictures. |
-| `dropped.ring` | Correct the unreadable polygon ring in the source. |
+| `dropped.ring` | Correct the unreadable polygon ring in the source, or write to a format that holds holes, such as GeoPackage. |
 | `dropped.extra-attributes` | Add fields for the extra attribute values or remove those values from the input. |
 | `dropped.time` | Write to a date-time field to keep the time of day. |
 | `dropped.value` | Correct the value or use a destination field that can hold it. |
 | `dropped.calculation-result` | Correct the expression or check the input rows named in the notice. |
 | `dropped.zm` | Keep the source file where heights or measures matter: RustGIS keeps x and y only. |
-| `dropped.crs-name` | Keep the source file's coordinate system definition with the export. |
+| `dropped.crs-name` | Keep the source file's coordinate system definition with the export, or export in WGS 84, which every format can name. |
 | `dropped.feature` | Correct those features in the source, or read the source in the way the notice suggests. |
 | `dropped.geometry` | Correct the geometry in the source, or give the coordinate system its coordinates are in. |
 | `dropped.over-limit` | Read less at once, such as by filtering or clipping the source first. |
 | `changed.truncated` | Use a decimal field to keep the fractional part. |
+| `changed.field-name` | Use field names the format holds: at most 10 bytes and unique ignoring case for a Shapefile, unique ignoring case for a GeoPackage. |
+| `changed.cut` | Shorten the text to what the format holds (254 bytes for a Shapefile; nothing past a NUL character), or write to a format without the limit, such as GeoPackage. |
 | `changed.body` | Export in the layer's own coordinate system, which keeps its body. |
 | `changed.encoding` | Put a .cpg file naming the file's own encoding beside it. |
-| `changed.rounded` | Keep the source file where times finer than a microsecond matter. |
+| `changed.rounded` | Keep the source file where finer values matter, or write to a format that holds them (times finer than the format keeps, or numbers past a dBase field's precision). |
 | `changed.position` | Export in a coordinate system that holds the positions, such as WGS 84. |
 | `approximated.datum` | Export in the layer's own coordinate system, or give that system with a known transformation to WGS 84. |
 | `approximated.curve` | Keep the source file where exact curves matter: RustGIS draws curves as straight segments. |

@@ -2672,7 +2672,7 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
                 notes.extend(result.text.notes(&ds.fields, &path));
             }
             if result.skipped > 0 {
-                notes.push(format!("{path}: {} rows couldn't be read and were left out", result.skipped));
+                notes.push(super::whole::unread_note(&path, result.skipped));
             }
             notes.extend(rustgis_data::io::unplaced_export_note(&path, &ds.name, result.unplaced, rustgis_data::raster::Crs::LonLat));
             notes.extend(
@@ -2709,7 +2709,7 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
             super::share::coalesce_read_zm(&mut notes, &path, &ds, &unreadable);
             rustgis_data::io::write_atomic(std::path::Path::new(&path), text.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
             if unreadable.rows > 0 {
-                notes.push(format!("{path}: {} rows couldn't be read and were left out", unreadable.rows));
+                notes.push(super::whole::unread_note(&path, unreadable.rows));
             }
             notes.extend(super::share::read_notes(&path, &ds.name, &unreadable));
             (notes, rustgis_data::export::numbers_written_as_null(&ds.features, &ds.fields, format), report)

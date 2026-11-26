@@ -815,9 +815,12 @@ fn layer_list(names: &[&str]) -> String {
 /// What `what` (an export to a file, a copy, a package: "{target}") says of the `n` features of
 /// `layer` it took without their geometry, as a place of each can't be given in
 /// longitude/latitude ([`Dataset::in_lonlat_leaving_out`]). `None` for none.
-pub fn unplaced_note(target: &str, layer: &str, n: usize) -> Option<String> {
+pub fn unplaced_note(target: &str, layer: &str, n: usize) -> Option<loss::Note> {
     (n > 0).then(|| {
-        format!("{target}: {n} feature(s) of {layer} have a place that can't be given in longitude/latitude, so their geometry is left out (and the feature, where only features with geometry are kept)")
+        loss::Note::loss(
+            loss::LossCode::DroppedGeometry,
+            format!("{target}: {n} feature(s) of {layer} have a place that can't be given in longitude/latitude, so their geometry is left out (and the feature, where only features with geometry are kept)"),
+        )
     })
 }
 

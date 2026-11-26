@@ -2146,7 +2146,7 @@ fn writes_points_lines_kmz_and_zipped_shapefiles() {
     // And the export says so, as the file has it; names kept (an id or geometry column moves
     // aside for a field) say nothing.
     assert_eq!(
-        crate::io::geopackage_names_note(&cased.fields, "c.gpkg").as_deref(),
+        crate::io::geopackage_names_note(&cased.fields, "c.gpkg").as_ref().map(crate::loss::Note::as_str),
         Some("c.gpkg: 1 field name was changed to fit a GeoPackage (unique ignoring case): 'a' → 'a_1'")
     );
     let kept: Vec<Field> = ["fid", "geom", "a"].iter().map(|n| Field::new(*n, FieldType::Integer)).collect();
@@ -2154,7 +2154,7 @@ fn writes_points_lines_kmz_and_zipped_shapefiles() {
     // A long name shows its start and the ending that makes it unique.
     let long: Vec<Field> =
         ["Ab", "ab", "Bb", "bb"].iter().map(|n| Field::new(format!("{n}{}", "x".repeat(50)), FieldType::Integer)).collect();
-    let note = crate::io::geopackage_names_note(&long, "l.gpkg").unwrap();
+    let note = crate::io::geopackage_names_note(&long, "l.gpkg").unwrap().text;
     let x = |n| "x".repeat(n);
     assert!(
         note.ends_with(&format!(
@@ -2172,7 +2172,7 @@ fn writes_points_lines_kmz_and_zipped_shapefiles() {
     );
     // So does one that fits until it is made unique.
     let edge: Vec<Field> = ["A".repeat(40), "a".repeat(40)].iter().map(|n| Field::new(n, FieldType::Integer)).collect();
-    let note = crate::io::geopackage_names_note(&edge, "e.gpkg").unwrap();
+    let note = crate::io::geopackage_names_note(&edge, "e.gpkg").unwrap().text;
     assert!(note.ends_with(&format!("'{}' → '{}…{}_1'", "a".repeat(40), "a".repeat(20), "a".repeat(18))), "{note}");
     // An empty layer writes too.
     let empty = Dataset::new("e", GeometryType::Point, vec![]);
@@ -3336,7 +3336,7 @@ fn a_csv_export_takes_x_and_y_in_a_system_asked_for() {
     };
     assert!((pt(&back_lonlat).x - pt(&ds_lonlat).x).abs() < 1e-9 && (pt(&back_lonlat).y - pt(&ds_lonlat).y).abs() < 1e-9);
     // The file can't say its system, so that is said.
-    let note = crate::io::csv_system_note("pts.csv", ds.geometry_type, lv95).unwrap();
+    let note = crate::io::csv_system_note("pts.csv", ds.geometry_type, lv95).unwrap().text;
     assert!(note.contains("EPSG:2056") && note.contains("can't say"), "{note}");
     assert_eq!(crate::io::csv_system_note("pts.gpkg", ds.geometry_type, lv95), None);
     // Fields named x and y push the columns to easting and northing; every name taken is said.
@@ -4018,7 +4018,8 @@ fn geopackage_dates_are_written_and_read_as_dates() {
     crate::io::write_path(&permits, &path).unwrap();
     assert_eq!(
         crate::io::utc_dates_note(&permits.fields, &crate::io::offset_dates(permits.features.iter(), &permits.fields), "permits.gpkg")
-            .as_deref(),
+            .as_ref()
+            .map(crate::loss::Note::as_str),
         Some("permits.gpkg: 1 date-time was written in UTC, as GeoPackage stores them, without their own offsets, in 'seen'")
     );
     // Milliseconds are all a DATETIME holds: finer digits are rounded, and said; none lost, none said.
@@ -4028,7 +4029,9 @@ fn geopackage_dates_are_written_and_read_as_dates() {
         fine.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![Value::Null, at(t)]);
     }
     assert_eq!(
-        crate::io::fine_dates_note(&fine.fields, &crate::io::fine_dates(fine.features.iter(), &fine.fields), "fine.gpkg").as_deref(),
+        crate::io::fine_dates_note(&fine.fields, &crate::io::fine_dates(fine.features.iter(), &fine.fields), "fine.gpkg")
+            .as_ref()
+            .map(crate::loss::Note::as_str),
         Some("fine.gpkg: 3 date-times were rounded to the millisecond, as GeoPackage stores them, in 'seen'")
     );
     let rounded = workspace.path().join("fine.gpkg");
@@ -4083,7 +4086,7 @@ fn geopackage_dates_are_written_and_read_as_dates() {
     assert_eq!(crate::io::text_in_dates(moment.features.iter(), &moment.fields), [1, 1]);
     let text = crate::io::text_in_dates(permits.features.iter(), &permits.fields);
     assert_eq!(
-        crate::io::text_in_dates_note(&permits.fields, &text, "permits.gpkg").as_deref(),
+        crate::io::text_in_dates_note(&permits.fields, &text, "permits.gpkg").as_ref().map(crate::loss::Note::as_str),
         Some("permits.gpkg: 2 values aren't dates and were written as they are, and read back empty, in 'issued', 'seen'")
     );
     // Dates by a declared type's own name, not a part of another.
@@ -4431,6 +4434,9 @@ fn native_file_dates_preserve_zone_policy_and_fractional_seconds() {
     assert_eq!(back.features[0].attrs[2].to_string(), "2026-03-05T12:30:00.123456Z");
     assert_eq!(back.features[1].attrs[3], Value::Text("2026-01-01T00:00:00Z".into()));
     let note = parquet::values_note(&ds, "out.parquet").unwrap();
+    // No value is unfit, but the offsets left out are lost.
+    assert_eq!(note.loss, Some(crate::loss::LossCode::DroppedValue));
+    let note = note.text;
     assert!(note.contains("2 date-times were written in UTC") && note.contains("2 date-times were written as ISO text"), "{note}");
     // A replayable source feed chooses the same schema as an in-memory export.
     let input = fgb::write(&ds).unwrap();
@@ -4441,17 +4447,17 @@ fn native_file_dates_preserve_zone_policy_and_fractional_seconds() {
     assert_eq!(summary.written, 2);
     // Without a label of their own: the export adds its path once.
     assert_eq!(
-        summary.date_messages,
+        summary.date_messages.iter().map(|n| (n.text.as_str(), n.loss)).collect::<Vec<_>>(),
         [
-            "2 date-times were written in UTC without their original offsets, in 'instant'",
-            "2 date-times were written as ISO text because their column mixes zoned and unzoned values, in 'mixed'"
+            ("2 date-times were written in UTC without their original offsets, in 'instant'", Some(crate::loss::LossCode::DroppedValue)),
+            ("2 date-times were written as ISO text because their column mixes zoned and unzoned values, in 'mixed'", None)
         ]
     );
     let (streamed, _) = crate::io::read_path(&path).unwrap();
     assert_eq!(streamed.fields, back.fields);
     ds.features[0].attrs[0] = Value::Text("2026-02-30".into());
     assert!(fgb::write(&ds).unwrap_err().to_string().contains("invalid date"));
-    let note = parquet::values_note(&ds, "bad.parquet").unwrap();
+    let note = parquet::values_note(&ds, "bad.parquet").unwrap().text;
     assert!(note.contains("1 value couldn't be written"));
     let (bad, _) = crate::io::read_bytes("bad.parquet", &parquet::write(&ds).unwrap()).unwrap();
     assert!(bad.features[0].attrs[0].is_null());

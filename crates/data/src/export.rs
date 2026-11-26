@@ -76,7 +76,7 @@ pub struct Exported {
     /// empty for the other formats).
     pub written_values: Vec<usize>,
     /// GeoParquet timestamp representation changes counted during export.
-    pub date_messages: Vec<String>,
+    pub date_messages: Vec<crate::loss::Note>,
     /// What reading the source lost or assumed besides the counts above
     /// ([`crate::source::Batch::notes`]), said as they are.
     pub read_notes: crate::loss::Notes,
