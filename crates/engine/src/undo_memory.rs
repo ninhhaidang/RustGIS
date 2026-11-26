@@ -99,11 +99,15 @@ impl Budget {
     pub(crate) fn trim(&mut self, live: &Project, undo: &mut Vec<Step>, redo: &mut Vec<Step>) -> Option<NoticeText> {
         let mut seen: HashSet<_> = rows(live).map(|features| features.allocation_key().as_ptr() as usize).collect();
         seen.extend(self.readers.allocations().iter().map(|key| key.as_ptr() as usize));
-        let mut used = 0usize;
+        // Rasters the open project holds cost history nothing, as its rows don't (#2908).
+        let mut rasters_seen = HashSet::new();
+        raster_bytes(std::iter::once(live), &mut rasters_seen);
+        let mut used = 0u64;
         let undo_protected = usize::from(!undo.is_empty());
         let mut account = |step: &Step| {
-            used = used.saturating_add(self.private_bytes(&step.8, &mut seen));
-            used <= self.limit
+            let rows = self.private_bytes(&step.8, &mut seen) as u64;
+            used = used.saturating_add(rows).saturating_add(raster_bytes(std::iter::once(&step.0), &mut rasters_seen));
+            used <= self.limit as u64
         };
 
         // Work in reverse eviction order. Keep the newest undo even if it alone exceeds the
@@ -142,7 +146,7 @@ impl Budget {
         }
         bytes = bytes.saturating_add(self.private_bytes(&self.readers.allocations(), &mut seen));
         let projects = std::iter::once(live).chain(undo.iter().chain(redo).map(|step| &step.0));
-        (bytes as u64).saturating_add(raster_bytes(projects))
+        (bytes as u64).saturating_add(raster_bytes(projects, &mut HashSet::new()))
     }
 
     /// Says what the session holds ([`Self::held`]) to the process-wide figure the memory limits
@@ -311,9 +315,9 @@ impl Drop for Reservation {
     }
 }
 
-/// The pixels and embedded files of the rasters in `projects`, each shared allocation once.
-fn raster_bytes<'a>(projects: impl Iterator<Item = &'a Project>) -> u64 {
-    let mut seen = HashSet::new();
+/// The pixels and embedded files of the rasters in `projects`, each shared allocation once,
+/// leaving out those already in `seen`.
+fn raster_bytes<'a>(projects: impl Iterator<Item = &'a Project>, seen: &mut HashSet<usize>) -> u64 {
     let mut bytes = 0u64;
     let rasters = projects
         .flat_map(|project| project.maps.iter().chain(project.offline_areas.iter().map(|area| &area.data)))
@@ -497,6 +501,45 @@ mod tests {
         session.run("edit.redo", &json!({})).unwrap();
         assert_eq!(value(&session), &Value::Text(b));
         assert!(!session.can_redo(), "only the nearer redo fits");
+    }
+
+    /// A project with one 64 × 64 raster (16 KiB of pixels) and no rows.
+    fn raster_session(limit: usize) -> Session {
+        use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster};
+        let mut session = Session::new(crate::Project::default());
+        let gt = GeoTransform { origin_x: 0.0, origin_y: 64.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let r = Raster::new("grid", 64, 64, vec![vec![1.0; 64 * 64]], gt, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap();
+        session.map_mut().add_raster("grid", rustgis_map::raster::RasterLayer::from_path(r, "grid.tif"));
+        session.undo_memory.limit = limit;
+        session.undo_memory.free = || None;
+        session
+    }
+
+    fn paint(session: &mut Session, value: f64) {
+        let square = json!([[1.0, 1.0], [10.0, 1.0], [10.0, 10.0], [1.0, 10.0]]);
+        session.run("raster.editPixels", &json!({"layer": "grid", "polygon": square, "value": value})).unwrap();
+    }
+
+    #[test]
+    fn raster_edits_count_their_pixels_against_the_undo_budget() {
+        // Each step keeps a 16 KiB copy of the pixels: 40 KiB holds two of them, not five (#2908).
+        let mut session = raster_session(40 << 10);
+        let mark = session.notice_mark();
+        for value in 2..7 {
+            paint(&mut session, f64::from(value));
+        }
+        assert_eq!(session.undo_depth(), 2);
+        let notices = session.notices_since(mark);
+        assert_eq!(notices.iter().filter(|n| n.text.contains("older steps are dropped")).count(), 1, "{notices:?}");
+
+        // With room for them all, every step is kept and nothing is said.
+        let mut session = raster_session(1 << 30);
+        let mark = session.notice_mark();
+        for value in 2..7 {
+            paint(&mut session, f64::from(value));
+        }
+        assert_eq!(session.undo_depth(), 5);
+        assert!(!session.notices_since(mark).iter().any(|n| n.text.contains("older steps are dropped")));
     }
 
     /// Memory planned so the open rows and one copy of them fit with `spare` bytes over,
