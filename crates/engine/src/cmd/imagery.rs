@@ -76,7 +76,7 @@ pub fn commands() -> Vec<C> {
         C::new("raster.process", "Process", "Analyze › Raster", process).inputs(process_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"layer": raster, "operation": "clip"|"resample", "extent"?: [minLon, minLat, maxLon, maxLat] (clip; the view when omitted), "polygon"?: polygon layer (clip to its selected or all polygons; cells outside become no-data, or see-through in a raster with alpha or a three-band colour one without no-data), "selectedOnly"?: bool (clip to selected polygons when true, all when false), "factor"?: n (resample: n×n pixels become one), "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#),
         C::new("raster.mosaic", "Mosaic Rasters", "Analyze › Raster", raster_mosaic).inputs(mosaic_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(
-            r#"{"inputs": [raster layer or file path, …] (two or more, in one coordinate system and cell size; where they overlap the first wins), "name"?: output, "path"?: GeoTIFF to write the mosaic to}"#,
+            r#"{"inputs": [raster layer or file path, …] (two or more, in one coordinate system and cell size; where they overlap the first wins), "name"?: output, "path"?: GeoTIFF to write the mosaic to, "ran"?: (internal: a raster the app has worked out)}"#,
         ),
         C::new("raster.editPixels", "Pixel Editor", "Imagery › Imagery Tools", edit_pixels).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"layer": raster, "polygon": [[lon, lat], …], "value"?: number (no-data when omitted), "band"?: 1-based (all when omitted)}"#),
@@ -171,13 +171,6 @@ fn layer_of(r: Raster) -> Result<rustgis_map::RasterLayer, String> {
     let bytes = rustgis_data::raster::geotiff::write_all(&r).map_err(|e| e.to_string())?;
     let fname = format!("{}.tif", r.name);
     Ok(rustgis_map::RasterLayer::from_bytes(r, fname, bytes))
-}
-
-/// Adds a raster layer; classes get unique-value colours.
-pub(crate) fn add(s: &mut Session, r: Raster, classes: bool) -> CmdResult {
-    let n = r.name.clone();
-    let layer = if classes { class_layer(r)? } else { layer_of(r)? };
-    super::raster::add_raster(s, &n, layer)
 }
 
 /// A raster of classes as a layer, each class a colour of its own.
@@ -480,7 +473,7 @@ fn warp_to_fit(s: &mut Session, p: &Value, layer: &str, r: &Raster) -> CmdResult
     // A file written is the layer's source; without one the pixels are kept in the project.
     let rl = match &path {
         Some(path) => {
-            let wrote = super::raster::write_and_report(s, &out, 0, true, path)?;
+            let wrote = super::raster::write_and_report(s, &out, 0, path)?;
             info["path"] = json!(path);
             info["cog"] = wrote.get("cog").cloned().unwrap_or(Value::Null);
             let e = out.extent();
@@ -832,12 +825,7 @@ pub(crate) fn rasterize_work(s: &Session, p: &Value) -> Result<super::workflows:
             let (mut written, mut staged) = (rustgis_data::loss::Notes::new(), None);
             let mut rl = match &path {
                 Some(path) => {
-                    let (wrote, file) = super::raster::write_cog_staged(
-                        &out,
-                        0,
-                        path,
-                        "export the resulting layer with share.exportRaster and give \"band\" for another",
-                    )?;
+                    let (wrote, file) = super::raster::write_cog_staged(&out, 0, path, super::raster::RESULT_BAND)?;
                     written = wrote.notes;
                     staged = Some(file);
                     info["path"] = json!(path);
@@ -947,7 +935,7 @@ fn add_output(s: &mut Session, out: Raster, path: Option<String>, classes: bool,
     // A file written is the layer's source; without one the pixels are kept in the project.
     let mut rl = match &path {
         Some(path) => {
-            let wrote = super::raster::write_and_report(s, &out, 0, true, path)?;
+            let wrote = super::raster::write_and_report(s, &out, 0, path)?;
             info["path"] = json!(path);
             info["cog"] = wrote.get("cog").cloned().unwrap_or(Value::Null);
             RasterLayer::from_path(out, path.clone())
@@ -2350,33 +2338,42 @@ pub(crate) fn mosaic_stays_in_project(s: &Session, p: &Value) -> bool {
 
 /// Merges rasters on one grid (tiles of an elevation model, say) into one, keeping their
 /// coordinate system and cell size; where they overlap, the first input with data wins.
+///
+/// Made on another thread from the app (`workflows::IN_BACKGROUND`), with progress and Cancel
+/// ([`mosaic_rasters_work`]).
 fn raster_mosaic(s: &mut Session, p: &Value) -> CmdResult {
-    let inputs = p.get("inputs").and_then(Value::as_array).ok_or("inputs is a list of raster layers or file paths")?;
-    if inputs.len() < 2 {
-        return Err("a mosaic needs two or more rasters".into());
-    }
-    if inputs.len() > MAX_MOSAIC_INPUTS {
-        return Err(format!("a mosaic takes at most {MAX_MOSAIC_INPUTS} inputs"));
-    }
-    // The name given, checked before any input is read; empty when none is (the first input's then).
-    let given = name(p, String::new())?;
-    let max = rustgis_data::raster::max_samples() as i64;
-    let mut rs: Vec<Arc<Raster>> = Vec::with_capacity(inputs.len());
-    // Each input's place on the first one's grid, and the bounds of them all so far.
-    let mut places: Vec<(i64, i64)> = Vec::with_capacity(inputs.len());
-    let (mut c0, mut r0, mut c1, mut r1) = (0i64, 0i64, 0i64, 0i64);
-    // Each input is checked as it is read, so a mismatched or oversized set fails before the
-    // rest are loaded. What reading a file left out is said once they are all read.
-    let mut lost: Vec<(String, String)> = Vec::new();
-    for v in inputs {
+    super::workflows::made_or_ran(s, p, "raster.mosaic")
+}
+
+/// A mosaic's input as the command's start reads it of the session: a layer's raster, shared, or
+/// the file the work reads.
+enum MosaicInput {
+    Layer(Arc<Raster>),
+    File(String),
+}
+
+impl MosaicInput {
+    fn of(s: &Session, v: &Value) -> Result<MosaicInput, String> {
         let n = mosaic_name(v)?;
-        let r = if mosaic_reads_file(s, v) {
-            let r = rustgis_data::raster::read_path(std::path::Path::new(n)).map_err(|e| format!("{n}: {e}"))?;
-            lost.extend(r.lost.iter().map(|l| (n.to_string(), l.clone())));
-            Arc::new(r)
-        } else {
-            mosaic_layer(s, v)?
-        };
+        if mosaic_reads_file(s, v) { Ok(MosaicInput::File(n.to_string())) } else { mosaic_layer(s, v).map(MosaicInput::Layer) }
+    }
+}
+
+/// The inputs a mosaic has taken, each checked against the first as it is taken ([`Self::take`]),
+/// then joined ([`Self::join`]).
+struct Tiles {
+    /// The most values the mosaic may hold.
+    max: i64,
+    rs: Vec<Arc<Raster>>,
+    /// Each input's place on the first one's grid, and the bounds of them all so far.
+    places: Vec<(i64, i64)>,
+    from: (i64, i64),
+    to: (i64, i64),
+}
+
+impl Tiles {
+    /// Takes `r` as the next input, or says why it can't join the ones before.
+    fn take(&mut self, r: Arc<Raster>) -> Result<(), String> {
         // An overview would quietly coarsen the whole mosaic.
         if let Some((fw, fh)) = r.overview {
             return Err(format!(
@@ -2384,7 +2381,7 @@ fn raster_mosaic(s: &mut Session, p: &Value) -> CmdResult {
                 r.name, r.width, r.height
             ));
         }
-        let first = rs.first().unwrap_or(&r);
+        let first = self.rs.first().unwrap_or(&r);
         mosaic_matches(first, &r)?;
         // Snapped to whole cells only when it is already within a hundredth of one.
         let (c, rr) = first.transform.to_pixel(r.transform.to_world(0.0, 0.0));
@@ -2396,9 +2393,10 @@ fn raster_mosaic(s: &mut Session, p: &Value) -> CmdResult {
             return Err(format!("{}'s cells don't line up with {}'s: resample them onto one grid first", r.name, first.name));
         }
         let (pc, pr) = (c.round() as i64, rr.round() as i64);
-        (c0, r0) = if rs.is_empty() { (pc, pr) } else { (c0.min(pc), r0.min(pr)) };
-        (c1, r1) = (c1.max(pc + i64::from(r.width)), r1.max(pr + i64::from(r.height)));
-        let (w, h) = (c1 - c0, r1 - r0);
+        self.from = if self.rs.is_empty() { (pc, pr) } else { (self.from.0.min(pc), self.from.1.min(pr)) };
+        self.to = (self.to.0.max(pc + i64::from(r.width)), self.to.1.max(pr + i64::from(r.height)));
+        let (w, h) = (self.to.0 - self.from.0, self.to.1 - self.from.1);
+        let max = self.max;
         let samples = w.saturating_mul(h).saturating_mul(r.band_count().max(1) as i64);
         if samples > max || w > i64::from(u32::MAX) || h > i64::from(u32::MAX) {
             return Err(format!(
@@ -2406,101 +2404,191 @@ fn raster_mosaic(s: &mut Session, p: &Value) -> CmdResult {
                 r.band_count()
             ));
         }
-        places.push((pc, pr));
-        rs.push(r);
+        self.places.push((pc, pr));
+        self.rs.push(r);
+        Ok(())
     }
-    super::raster::say_losses(s, lost);
-    let first = rs.first().ok_or("a mosaic needs two or more rasters")?;
-    let (w, h) = (c1 - c0, r1 - r0);
-    if w <= 0 || h <= 0 {
-        return Err("the mosaic would be empty".into());
-    }
-    let (w, h) = (w as u32, h as u32);
-    let nodata = first.nodata.or(Some(NODATA as f64));
-    let fill = nodata.map(|v| v as f32).unwrap_or(NODATA);
-    let mut bands = (0..first.band_count())
-        .map(|_| raster::filled(w as usize, h as usize, fill))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    for (r, (pc, pr)) in rs.iter().zip(&places) {
-        let (dc, dr) = ((pc - c0) as usize, (pr - r0) as usize);
-        for (out, b) in bands.iter_mut().zip(&r.bands) {
-            for row in 0..r.height as usize {
-                let (Some(src), Some(dst)) = (
-                    b.data.get(row * r.width as usize..(row + 1) * r.width as usize),
-                    out.get_mut((dr + row) * w as usize + dc..(dr + row) * w as usize + dc + r.width as usize),
-                ) else {
-                    continue;
-                };
-                for (d, v) in dst.iter_mut().zip(src) {
-                    // Earlier inputs keep their cells; later ones only fill the gaps.
-                    if (*d == fill || d.is_nan()) && r.is_valid(*v) {
-                        *d = *v;
+
+    /// The mosaic, named `given` or after its first input; what it has to say goes to `notes`. Its
+    /// inputs' rows are counted, each band's, and Cancel is looked at about every [`MOSAIC_PIECE`]
+    /// cells copied; measuring the result ([`Raster::new`]'s statistics) doesn't look.
+    fn join(self, given: String, notes: &mut Notes) -> Result<Raster, String> {
+        let Tiles { rs, places, from: (c0, r0), to: (c1, r1), .. } = self;
+        let first = rs.first().ok_or("a mosaic needs two or more rasters")?;
+        let (w, h) = (c1 - c0, r1 - r0);
+        if w <= 0 || h <= 0 {
+            return Err("the mosaic would be empty".into());
+        }
+        let (w, h) = (w as u32, h as u32);
+        let nodata = first.nodata.or(Some(NODATA as f64));
+        let fill = nodata.map(|v| v as f32).unwrap_or(NODATA);
+        let mut bands = (0..first.band_count())
+            .map(|_| raster::filled(w as usize, h as usize, fill))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let rows = rs.iter().map(|r| (r.height as usize).saturating_mul(r.band_count())).fold(0, usize::saturating_add);
+        rustgis_data::progress::begin(rows);
+        for (r, (pc, pr)) in rs.iter().zip(&places) {
+            let (dc, dr) = ((pc - c0) as usize, (pr - r0) as usize);
+            let (rows, width) = (r.height as usize, r.width as usize);
+            let piece = (MOSAIC_PIECE / width.max(1)).max(1);
+            for (out, b) in bands.iter_mut().zip(&r.bands) {
+                for start in (0..rows).step_by(piece) {
+                    let end = (start + piece).min(rows);
+                    for row in start..end {
+                        let (Some(src), Some(dst)) = (
+                            b.data.get(row * width..(row + 1) * width),
+                            out.get_mut((dr + row) * w as usize + dc..(dr + row) * w as usize + dc + width),
+                        ) else {
+                            continue;
+                        };
+                        for (d, v) in dst.iter_mut().zip(src) {
+                            // Earlier inputs keep their cells; later ones only fill the gaps.
+                            if (*d == fill || d.is_nan()) && r.is_valid(*v) {
+                                *d = *v;
+                            }
+                        }
                     }
+                    rustgis_data::progress::step(end - start).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        let o = first.transform.to_world(c0 as f64, r0 as f64);
+        let gt = GeoTransform { origin_x: o.x, origin_y: o.y, ..first.transform };
+        let mut out = Raster::new(
+            if given.is_empty() { format!("{}_mosaic", first.name) } else { given },
+            w,
+            h,
+            bands,
+            gt,
+            first.crs,
+            nodata,
+            first.color.clone(),
+            first.data_type.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+        // Band and class names and wavelengths are the first input's, as its cells are where they
+        // overlap; an input giving its bands other ones is said.
+        out.bands.iter_mut().zip(&first.bands).for_each(|(o, i)| {
+            o.name = i.name.clone();
+            o.classes = i.classes.clone();
+            o.wavelength = i.wavelength;
+        });
+        out.copyright = first.copyright.clone();
+        // The first input's metadata accompanies its pixels; report other credits rather than
+        // silently dropping them or attributing every input to the first one's owner.
+        let credits = rs
+            .iter()
+            .skip(1)
+            .filter(|r| r.copyright.is_some() && r.copyright != first.copyright)
+            .map(|r| (r.name.clone(), "its copyright differs from the first input's and is not kept in the mosaic".to_string()))
+            .collect();
+        notes.extend(super::raster::loss_lines(credits).into_iter().map(|n| (n, false)));
+        // Cells rounded when an input was read may be among those the mosaic keeps.
+        out.keep_rounded_marks(rs.iter().map(|r| &**r));
+        let other: Vec<&str> =
+            rs.iter()
+                .skip(1)
+                .filter(|r| {
+                    r.bands.iter().zip(&first.bands).any(|(b, f)| {
+                        b.name != f.name || b.classes != f.classes || !raster::pam::same_wavelength(b.wavelength, f.wavelength)
+                    })
+                })
+                .map(|r| r.name.as_str())
+                .collect();
+        if !other.is_empty() {
+            let note =
+                format!("{}: band names, classes or wavelengths other than {}'s, which the mosaic keeps", other.join(", "), first.name);
+            notes.push((note, false));
+        }
+        Ok(out)
+    }
+}
+
+/// About how many cells a mosaic copies between two looks at Cancel: whole rows, one at least.
+const MOSAIC_PIECE: usize = 1 << 20;
+
+/// What `raster.mosaic` reads of the session (each input's layer, or that it is a file, the name and
+/// the path), and the work that reads the files, joins the inputs, writes the GeoTIFF to `path` when
+/// given and makes the layer; its notices are said once the layer is added, or with its error when
+/// it fails after the inputs are read.
+///
+/// Each input is checked as it is taken, in their order, so a mismatched or oversized set fails
+/// before the rest are read: the layers ahead of the first file as the command starts, the rest on
+/// the work's thread. Cancel is looked at between inputs and as they are copied ([`Tiles::join`]),
+/// and where a file format's reader and the GeoTIFF writer look: some formats are read without a
+/// look.
+pub(crate) fn mosaic_rasters_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
+    let inputs = p.get("inputs").and_then(Value::as_array).ok_or("inputs is a list of raster layers or file paths")?;
+    if inputs.len() < 2 {
+        return Err("a mosaic needs two or more rasters".into());
+    }
+    if inputs.len() > MAX_MOSAIC_INPUTS {
+        return Err(format!("a mosaic takes at most {MAX_MOSAIC_INPUTS} inputs"));
+    }
+    // The name given, checked before any input is read; empty when none is (the first input's then).
+    let given = name(p, String::new())?;
+    let path = ps(p, "path").map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
+    let mut tiles = Tiles { max: raster::max_samples() as i64, rs: Vec::new(), places: Vec::new(), from: (0, 0), to: (0, 0) };
+    // What the work takes, from the first file on, up to an input that is neither a file nor a
+    // layer: its error comes when the work gets there, as the inputs before it may have their own.
+    let mut rest: Vec<Result<MosaicInput, String>> = Vec::new();
+    for v in inputs {
+        match MosaicInput::of(s, v) {
+            Ok(MosaicInput::Layer(r)) if rest.is_empty() => tiles.take(r)?,
+            Err(e) if rest.is_empty() => return Err(e),
+            input => {
+                let last = input.is_err();
+                rest.push(input);
+                if last {
+                    break;
                 }
             }
         }
     }
-    let o = first.transform.to_world(c0 as f64, r0 as f64);
-    let gt = GeoTransform { origin_x: o.x, origin_y: o.y, ..first.transform };
-    let mut out = Raster::new(
-        if given.is_empty() { format!("{}_mosaic", first.name) } else { given },
-        w,
-        h,
-        bands,
-        gt,
-        first.crs,
-        nodata,
-        first.color.clone(),
-        first.data_type.clone(),
-    )
-    .map_err(|e| e.to_string())?;
-    // Band and class names and wavelengths are the first input's, as its cells are where they
-    // overlap; an input giving its bands other ones is said.
-    out.bands.iter_mut().zip(&first.bands).for_each(|(o, i)| {
-        o.name = i.name.clone();
-        o.classes = i.classes.clone();
-        o.wavelength = i.wavelength;
-    });
-    out.copyright = first.copyright.clone();
-    // The first input's metadata accompanies its pixels; report other credits rather than
-    // silently dropping them or attributing every input to the first one's owner.
-    super::raster::say_losses(
-        s,
-        rs.iter()
-            .skip(1)
-            .filter(|r| r.copyright.is_some() && r.copyright != first.copyright)
-            .map(|r| (r.name.clone(), "its copyright differs from the first input's and is not kept in the mosaic".to_string()))
-            .collect(),
-    );
-    // Cells rounded when an input was read may be among those the mosaic keeps.
-    out.keep_rounded_marks(rs.iter().map(|r| &**r));
-    let other: Vec<&str> = rs
-        .iter()
-        .skip(1)
-        .filter(|r| {
-            r.bands
-                .iter()
-                .zip(&first.bands)
-                .any(|(b, f)| b.name != f.name || b.classes != f.classes || !raster::pam::same_wavelength(b.wavelength, f.wavelength))
-        })
-        .map(|r| r.name.as_str())
-        .collect();
-    if !other.is_empty() {
-        s.notify(
-            format!("{}: band names, classes or wavelengths other than {}'s, which the mosaic keeps", other.join(", "), first.name),
-            false,
-        );
-    }
-    let path = ps(p, "path").map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
-    if let Some(path) = &path {
-        super::raster::write_and_report(s, &out, 0, false, path)?;
-    }
-    let mut v = add(s, out, false)?;
-    if let (Some(o), Some(path)) = (v.as_object_mut(), path) {
-        o.insert("path".into(), json!(path));
-    }
-    Ok(v)
+    Ok(Box::new(move || {
+        // What reading a file left out is said once they are all read.
+        let mut lost: Vec<(String, String)> = Vec::new();
+        for input in rest {
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+            let r = match input? {
+                MosaicInput::Layer(r) => r,
+                MosaicInput::File(n) => {
+                    let r = raster::read_path(std::path::Path::new(&n)).map_err(|e| format!("{n}: {e}"))?;
+                    lost.extend(r.lost.iter().map(|l| (n.clone(), l.clone())));
+                    Arc::new(r)
+                }
+            };
+            tiles.take(r)?;
+        }
+        let mut notes: Notes = super::raster::loss_lines(lost).into_iter().map(|n| (n, false)).collect();
+        let made = (|| -> Result<super::workflows::Made, String> {
+            // The inputs are let go of once joined, before the file is written.
+            let out = tiles.join(given, &mut notes)?;
+            let name = out.name.clone();
+            // Written beside it, the file is put in its place as the layer is added: a run cancelled
+            // before then leaves the file there as it was.
+            let wrote = path.as_deref().map(|p| super::raster::write_plain_staged(&out, 0, p, super::raster::RESULT_BAND)).transpose()?;
+            let layer = layer_of(out)?;
+            let (written, staged) = wrote.map(|(wrote, file)| (wrote.notes, file)).unzip();
+            let written = written.unwrap_or_default();
+            // Said with the error should its file not go in place; what the file holds then isn't.
+            let said: Vec<String> = notes.iter().map(|(n, _)| n.clone()).collect();
+            let notes = std::mem::take(&mut notes);
+            let then: super::workflows::Then = Box::new(move |s: &mut Session, _: &mut Value| {
+                say(s, notes);
+                for note in written {
+                    s.say_written(note);
+                }
+            });
+            let made = super::workflows::made_layer(name, layer, path.map(|path| json!({"path": path})), Some(then));
+            Ok(match staged {
+                Some(file) => made.committing(file, said),
+                None => made,
+            })
+        })();
+        made.map_err(|e| with_notes(e, &notes))
+    }))
 }
 
 /// Whether `r` can join a mosaic on `first`'s grid: one coordinate system, cell size and band count.

@@ -493,14 +493,22 @@ pub(crate) fn as_scan(p: &Value) -> Result<bool, String> {
     }
 }
 
-/// Says what reading several rasters left out, each `(raster, line)`: one notice a kind (the same
-/// line), naming the rasters that share it (three, then a count), as AGENTS.md's Never silent asks.
+/// Says what reading several rasters left out ([`loss_lines`]), a notice a line.
+pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, String)>) {
+    for line in loss_lines(losses) {
+        s.notify(line, false);
+    }
+}
+
+/// What reading several rasters left out, each `(raster, line)`, as it is said: one line a kind (the
+/// same line), naming the rasters that share it (three, then a count), as AGENTS.md's Never silent
+/// asks.
 ///
 /// Lines that differ only in their numbers ("1 scale…", "2 scale…") are one kind. When the
 /// numbers are the same for every raster the kind is said once; when they differ, each raster's
 /// own line is said (three rasters or fewer), or the range they give, for each of them ("4
 /// rasters (a, b, c, …), each: 1–2 scale…"): never summed, since a size limit isn't a count.
-pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, String)>) {
+pub(crate) fn loss_lines(losses: Vec<(String, String)>) -> Vec<String> {
     // A line's kind: its text with each number taken out, and those numbers. A number is a run of
     // digits standing as a word of its own: one inside a name (`scene2024.tif`) stays text.
     fn kind_of(line: &str) -> (Vec<&str>, Vec<u64>) {
@@ -551,13 +559,12 @@ pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, String)>) {
             None => kinds.push((parts_owned, numbers.iter().map(|n| (*n, *n)).collect(), vec![(name, line)])),
         }
     }
+    let mut lines = Vec::new();
     for (parts, ranges, named) in kinds {
         let differ = ranges.iter().any(|(lo, hi)| lo != hi);
         // A few rasters whose numbers differ: each its own, so none is lost in a range.
         if differ && named.len() <= 3 {
-            for (name, line) in named {
-                s.notify(format!("{name}: {line}"), false);
-            }
+            lines.extend(named.into_iter().map(|(name, line)| format!("{name}: {line}")));
             continue;
         }
         let names: Vec<String> = named.into_iter().map(|(name, _)| name).collect();
@@ -576,8 +583,9 @@ pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, String)>) {
             }
         };
         let each = if differ { ", each" } else { "" };
-        s.notify(format!("{who}{each}: {line}"), false);
+        lines.push(format!("{who}{each}: {line}"));
     }
+    lines
 }
 
 /// Opens a raster file by path; `ignored` is said with what reading it lost (options given that
@@ -1309,6 +1317,9 @@ pub(super) fn write_geotiff_with_guidance(
     wrote_geotiff(r, bi, path, cog, band_hint)
 }
 
+/// The band instruction of a file a tool writes of its result ([`write_geotiff_with_guidance`]).
+pub(super) const RESULT_BAND: &str = "export the resulting layer with share.exportRaster and give \"band\" for another";
+
 /// [`write_geotiff_with_guidance`]'s Cloud Optimized GeoTIFF, written beside `path` and put in
 /// its place when the returned file is committed (as a background run's raster is added).
 pub(super) fn write_cog_staged(
@@ -1319,6 +1330,30 @@ pub(super) fn write_cog_staged(
 ) -> Result<(super::exports::Wrote, rustgis_data::io::StagedWrite), String> {
     let (cog, staged) = raster::cogwrite::write_staged(r, bi, Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
     Ok((wrote_geotiff(r, bi, path, Some(cog), band_hint)?, staged))
+}
+
+/// [`write_geotiff_with_guidance`]'s plain GeoTIFF, written beside `path` and put in its place when
+/// the returned file is committed, as [`write_cog_staged`]'s is. It is encoded in memory first, as
+/// `share.exportRaster`'s plain one is; Cancel is looked at as it is encoded and every megabyte
+/// written.
+pub(super) fn write_plain_staged(
+    r: &Raster,
+    bi: usize,
+    path: &str,
+    band_hint: &str,
+) -> Result<(super::exports::Wrote, rustgis_data::io::StagedWrite), String> {
+    use std::io::Write;
+    let bytes = raster::geotiff::write(r, bi).map_err(|e| e.to_string())?;
+    let look = || rustgis_data::progress::check().map_err(std::io::Error::other);
+    let (staged, ()) = rustgis_data::io::stage_streamed(Path::new(path), |w| {
+        for piece in bytes.chunks(1 << 20) {
+            look()?;
+            w.write_all(piece)?;
+        }
+        look()
+    })
+    .map_err(|e: std::io::Error| format!("{path}: {e}"))?;
+    Ok((wrote_geotiff(r, bi, path, None, band_hint)?, staged))
 }
 
 /// What writing `r`'s band `bi` to `path` says.
@@ -1351,10 +1386,10 @@ fn wrote_geotiff(
     })
 }
 
-/// Writes a tool's raster file and reports the same export notes as `share.exportRaster`.
-pub(super) fn write_and_report(s: &mut Session, r: &Raster, bi: usize, cog: bool, path: &str) -> Result<Value, String> {
-    let wrote =
-        write_geotiff_with_guidance(r, bi, cog, path, "export the resulting layer with share.exportRaster and give \"band\" for another")?;
+/// Writes a tool's raster file, a Cloud Optimized GeoTIFF, and reports the same export notes as
+/// `share.exportRaster`.
+pub(super) fn write_and_report(s: &mut Session, r: &Raster, bi: usize, path: &str) -> Result<Value, String> {
+    let wrote = write_geotiff_with_guidance(r, bi, true, path, RESULT_BAND)?;
     for note in wrote.notes {
         s.say_written(note);
     }

@@ -477,7 +477,7 @@ raster.info layer?
 raster.mask layer? values? min? max? inside? clear?
 raster.measure layer? kind points base?
 raster.measurements clear?
-raster.mosaic inputs name? path?
+raster.mosaic inputs name? path? ran?
 raster.process layer operation extent? polygon? selectedOnly? factor? name? ran?
 raster.project layer crs? cellSize? origin? extent? grid? resampling? name? path?
 raster.rasterize layer field? value? nodata? crs? cellSize? origin? extent? grid? name? path? ran?

@@ -20944,6 +20944,8 @@ fn plugin_mosaics_of_project_layers_need_no_files() {
         json!({"inputs": ["west", "east.tif"]}),
         json!({"inputs": ["west", "../east.tif"]}),
         json!({"inputs": ["west", "east"], "name": "../elevation"}),
+        // A run to hand over is no way round it: what is named is asked about all the same.
+        json!({"inputs": ["west", "east.tif"], "ran": 1}),
     ] {
         let e = forward(&mut s, "eng-mosaic", "raster.mosaic", params.clone()).unwrap_err();
         assert!(e.contains("'files' permission"), "{params}: {e}");
@@ -20955,6 +20957,7 @@ fn plugin_mosaics_of_project_layers_need_no_files() {
         (json!({"inputs": ["west", "Countries"]}), "no raster layer 'Countries'"),
         (json!({"inputs": ["west", 3]}), "each input is a raster layer's name or a file path"),
         (json!({"inputs": vec!["west"; 10_001]}), "at most 10000 inputs"),
+        (json!({"inputs": ["west", "east"], "ran": 1}), "no longer kept"),
     ] {
         let e = forward(&mut s, "eng-mosaic", "raster.mosaic", params.clone()).unwrap_err();
         assert!(e.contains(why) && !e.contains("permission"), "{params}: {e}");
@@ -21017,16 +21020,11 @@ fn clip_resample_and_mosaic_run_with_imagery_off() {
         forward(&mut s, "eng-imagery-off", id, p).unwrap();
     }
     check(&s, "plugin");
-    // As the desktop app runs clip and resample: worked out on a thread, landed, then added by the
-    // command. A mosaic has no such run.
+    // As the desktop app runs them: worked out on a thread, landed, then added by the command.
     #[cfg(not(target_arch = "wasm32"))]
     {
         use crate::cmd::workflows::{raster_land, raster_start};
         for (id, p) in commands("app") {
-            if id == "raster.mosaic" {
-                s.run(id, &p).unwrap();
-                continue;
-            }
             let run = raster_start(&mut s, id, &p).unwrap();
             let ran = run.id;
             let made = std::thread::spawn(move || run.run(&rustgis_analysis::control::Control::new())).join().unwrap().unwrap();
@@ -53958,6 +53956,141 @@ fn raster_tools_run_on_another_thread() {
     assert!(raster_start(&mut s, "raster.classifySupervised", &none).err().unwrap().contains("at least one band"));
     // Pixels edited by hand stay immediate.
     assert!(runs_in_background("raster.editPixels").is_none());
+}
+
+/// Mosaic Rasters made on another thread, as the app makes it (#2907): the cells, the answer, the
+/// file and what it says are those of one made here, nothing is said and no file is put in place
+/// before it lands, and it is refused with the same words, whether its start or its run refuses it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_mosaic_made_on_another_thread_is_the_one_made_here() {
+    use crate::cmd::workflows::{raster_land, raster_start};
+    use rustgis_analysis::control::Control;
+    use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+    let dir = std::env::temp_dir().join(format!("rustgis-mosaic-thread-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let at = |file: &str| dir.join(file).display().to_string();
+    // Two bands of 10 × 10 cells, `base` and up, with a hole at the top left.
+    let tile = |name: &str, x0: f64, base: f32| {
+        let band = |b: f32| (0..100).map(|i| if i == 0 { -9999.0 } else { base + b + i as f32 }).collect::<Vec<f32>>();
+        let gt = GeoTransform { origin_x: x0, origin_y: 1.0, pixel_width: 0.1, pixel_height: -0.1 };
+        Raster::new(name, 10, 10, vec![band(0.0), band(0.5)], gt, Crs::LonLat, Some(-9999.0), ColorHint::Gray, "Float32").unwrap()
+    };
+    let mut s = Session::new(Project::default());
+    let mut over = tile("over", 0.5, 900.0);
+    over.bands[0].name = "Altitude".into();
+    over.copyright = Some("Someone".into());
+    for r in [tile("west", 0.0, 100.0), over, tile("off", 0.55, 0.0)] {
+        let (name, bytes) = (r.name.clone(), geotiff::write_all(&r).unwrap());
+        crate::cmd::raster::add_raster(&mut s, &name, rustgis_map::RasterLayer::from_bytes(r, format!("{name}.tif"), bytes)).unwrap();
+    }
+    // A file that says what its reading left out, one that lies off the grid, and one that isn't a raster.
+    for (file, r) in [("east.tif", tile("east", 1.0, 200.0)), ("astray.tif", tile("astray", 2.03, 0.0))] {
+        std::fs::write(at(file), geotiff::write_all(&r).unwrap()).unwrap();
+    }
+    let sidecar = r#"<PAMDataset><PAMRasterBand band="1"><Offset>5</Offset></PAMRasterBand></PAMDataset>"#;
+    std::fs::write(at("east.tif.aux.xml"), sidecar).unwrap();
+    std::fs::write(at("broken.tif"), b"not a raster").unwrap();
+    let cells = |s: &Session, v: &Value| {
+        let l = s.map().layer(v["layer"].as_u64().unwrap() as u32).unwrap();
+        let r = l.raster.as_ref().unwrap().data.clone().unwrap();
+        let bits: Vec<u32> = r.bands.iter().flat_map(|b| b.data.iter().map(|x| x.to_bits())).collect();
+        let names: Vec<String> = r.bands.iter().map(|b| b.name.clone()).collect();
+        (r.width, r.height, r.transform, r.nodata, names, bits)
+    };
+    let said = |s: &Session, mark: u64, path: &str| -> Vec<String> {
+        s.notices_since(mark).iter().map(|n| n.text.replace(path, "PATH")).collect()
+    };
+    for (inputs, file, notices) in [
+        // Where they overlap, the first wins.
+        (json!(["west", "over"]), None, 2),
+        (json!(["over", "west"]), None, 1),
+        (json!(["west", at("east.tif"), "over"]), None, 3),
+        (json!([at("east.tif"), "over", "west"]), Some("mosaic.tif"), 4),
+    ] {
+        let with = |name: &str| {
+            let path = file.map(|f| at(&format!("{name}_{f}")));
+            (json!({"inputs": inputs, "name": name, "path": path}), path.unwrap_or("(no file)".into()))
+        };
+        let (p, path_here) = with("here");
+        let mark = s.notice_mark();
+        let here = s.run("raster.mosaic", &p).unwrap();
+        let said_here = said(&s, mark, &path_here);
+        // What the file lost, the credits left out, the band names not kept, then the file written.
+        assert_eq!(said_here.len(), notices, "{inputs}: {said_here:?}");
+        let (p, path_there) = with("there");
+        if file.is_some() {
+            std::fs::write(&path_there, b"before").unwrap();
+        }
+        // Let go of once made, before it lands (a late Cancel, another project opened): the file
+        // there stays, and no other is left.
+        let files = || std::fs::read_dir(&dir).unwrap().count();
+        let before = files();
+        let run = raster_start(&mut s, "raster.mosaic", &p).unwrap();
+        let mark = s.notice_mark();
+        let made = std::thread::spawn(move || run.run(&Control::new())).join().unwrap().unwrap();
+        drop(made);
+        assert!(file.is_none() || std::fs::read(&path_there).unwrap() == b"before", "{inputs}");
+        assert_eq!(files(), before, "{inputs}: a staged file was left");
+        let run = raster_start(&mut s, "raster.mosaic", &p).unwrap();
+        let id = run.id;
+        let made = std::thread::spawn(move || run.run(&Control::new())).join().unwrap().unwrap();
+        assert!(s.notices_since(mark).is_empty(), "nothing is said before it lands: {:?}", s.notices_since(mark));
+        assert!(file.is_none() || std::fs::read(&path_there).unwrap() == b"before", "{inputs}: in place before it lands");
+        assert_eq!(raster_land(&mut s, id, made), Ok(true));
+        let there = s.finish_raster("raster.mosaic", id, &p).unwrap();
+        assert_eq!(said(&s, mark, &path_there), said_here, "{inputs}");
+        assert_eq!(cells(&s, &there), cells(&s, &here), "{inputs}");
+        assert!((here.get("path").is_some(), there.get("path").is_some()) == (file.is_some(), file.is_some()), "{here} {there}");
+        for key in ["width", "height", "bands"] {
+            assert_eq!(there[key], here[key], "{inputs}: {key}");
+        }
+        if file.is_some() {
+            assert_eq!(std::fs::read(&path_there).unwrap(), std::fs::read(&path_here).unwrap(), "{inputs}");
+        }
+    }
+    // Where it is refused first, whichever input: an error of an earlier input comes before a later
+    // one's, and a file that can't be written says what the inputs had to say too.
+    let nowhere = dir.join("no").join("such.tif").display().to_string();
+    for (p, why, starts) in [
+        (json!({"inputs": ["west"]}), "two or more", false),
+        (json!({"inputs": ["west", "nowhere"]}), "no raster layer 'nowhere'", false),
+        (json!({"inputs": ["west", "off", "nowhere"]}), "don't line up", false),
+        (json!({"inputs": ["west", "over"], "name": "n".repeat(201)}), "name", false),
+        (json!({"inputs": [at("gone.tif"), "nowhere"]}), "gone.tif", true),
+        (json!({"inputs": [at("broken.tif"), "west"]}), "broken.tif", true),
+        (json!({"inputs": ["west", at("east.tif"), "nowhere"]}), "no raster layer 'nowhere'", true),
+        (json!({"inputs": ["west", at("astray.tif"), at("gone.tif")]}), "don't line up", true),
+        (json!({"inputs": ["west", at("east.tif"), 3]}), "each input is a raster layer's name or a file path", true),
+        (json!({"inputs": ["west", at("east.tif")], "path": nowhere}), "not applied", true),
+    ] {
+        let layers = s.map().layers.len();
+        let here = s.run("raster.mosaic", &p).unwrap_err();
+        assert!(here.contains(why), "{p}: {here}");
+        let there = match raster_start(&mut s, "raster.mosaic", &p) {
+            Err(e) => (e, false),
+            Ok(run) => (std::thread::spawn(move || run.run(&Control::new())).join().unwrap().err().unwrap(), true),
+        };
+        assert_eq!(there, (here, starts), "{p}");
+        assert_eq!(s.map().layers.len(), layers, "{p}");
+    }
+    // A file that can't be put in place (a folder is there) is refused as the raster is added, with
+    // what the inputs had to say and not that it was exported.
+    std::fs::create_dir(at("folder.tif")).unwrap();
+    let p = json!({"inputs": ["west", at("east.tif")], "path": at("folder.tif")});
+    let (layers, files) = (s.map().layers.len(), std::fs::read_dir(&dir).unwrap().count());
+    let mark = s.notice_mark();
+    let here = s.run("raster.mosaic", &p).unwrap_err();
+    assert!(here.starts_with(&at("folder.tif")) && here.contains("not applied") && !here.contains("Exported"), "{here}");
+    let run = raster_start(&mut s, "raster.mosaic", &p).unwrap();
+    let id = run.id;
+    let made = run.run(&Control::new()).unwrap();
+    assert_eq!(raster_land(&mut s, id, made), Ok(true));
+    assert_eq!(s.finish_raster("raster.mosaic", id, &p).unwrap_err(), here);
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.contains("Exported")), "{:?}", s.notices_since(mark));
+    assert_eq!((s.map().layers.len(), std::fs::read_dir(&dir).unwrap().count()), (layers, files));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Export Features and Export Raster written on another thread, as the app writes them (#1291
