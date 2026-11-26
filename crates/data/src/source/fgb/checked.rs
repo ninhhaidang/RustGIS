@@ -70,6 +70,11 @@ impl<R: Read + Seek> Features<R> {
         self.inner.features_count()
     }
 
+    /// The file's geometry type, which the reader reads a feature as unless it is Unknown.
+    pub(super) fn geometry_type(&self) -> flatgeobuf::GeometryType {
+        self.inner.header().geometry_type()
+    }
+
     /// Checks failures even when selection or advance swallowed them as end-of-file.
     pub(super) fn next(&mut self) -> flatgeobuf::Result<Option<&flatgeobuf::FgbFeature>> {
         if let Some(e) = self.failure.borrow_mut().take() {

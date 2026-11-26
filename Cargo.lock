@@ -5228,6 +5228,7 @@ dependencies = [
  "calamine",
  "csv",
  "encoding_rs",
+ "flatbuffers 24.12.23",
  "flate2",
  "flatgeobuf",
  "geo",
