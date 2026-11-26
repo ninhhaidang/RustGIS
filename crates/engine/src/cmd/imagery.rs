@@ -170,7 +170,7 @@ pub(crate) fn bands_param(p: &Value, r: &Raster) -> Result<Vec<usize>, String> {
 fn layer_of(r: Raster) -> Result<rustgis_map::RasterLayer, String> {
     let bytes = rustgis_data::raster::geotiff::write_all(&r).map_err(|e| e.to_string())?;
     let fname = format!("{}.tif", r.name);
-    Ok(rustgis_map::RasterLayer::from_bytes(r, fname, bytes))
+    Ok(rustgis_map::RasterLayer::from_written(r, fname, bytes))
 }
 
 /// A raster of classes as a layer, each class a colour of its own.

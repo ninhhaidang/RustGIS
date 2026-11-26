@@ -223,7 +223,7 @@ mod desktop {
             rustgis_data::progress::check().map_err(|e| e.to_string())?;
             let bytes = rustgis_data::raster::geotiff::write_all(&raster).map_err(|e| e.to_string())?;
             let layer_name = raster.name.clone();
-            let mut layer = RasterLayer::from_bytes(raster, format!("{layer_name}.tif"), bytes);
+            let mut layer = RasterLayer::from_written(raster, format!("{layer_name}.tif"), bytes);
             // Drawn in colour over the range the index means something in, not grey over this window's own.
             let (ramp, min, max) = index_look(id);
             layer.style.renderer = RasterRenderer::Stretch { band: 0, ramp, invert: false };
@@ -674,7 +674,7 @@ mod desktop {
         rustgis_data::progress::check().map_err(|e| e.to_string())?;
         let bytes = rustgis_data::raster::geotiff::write_all(&raster).map_err(|e| e.to_string())?;
         let name = raster.name.clone();
-        let mut layer = RasterLayer::from_bytes(raster, format!("{name}.tif"), bytes);
+        let mut layer = RasterLayer::from_written(raster, format!("{name}.tif"), bytes);
         layer.style.renderer = RasterRenderer::Rgb { red: 0, green: 1, blue: 2 };
         let then = noted(name.clone(), notes);
         Ok(super::super::workflows::made_layer(name, layer, Some(extra), Some(then)))

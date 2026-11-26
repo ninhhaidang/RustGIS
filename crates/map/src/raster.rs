@@ -110,6 +110,11 @@ pub struct RasterLayer {
     /// [`RasterLayer::dropped_unsaid`]).
     #[serde(skip)]
     dropped: Vec<&'static str>,
+    /// The pixels and the file that `embedded` was written from them as, while both are still the
+    /// layer's (see [`RasterLayer::written_file`]): held weakly, so a change to either, which takes
+    /// a new allocation, breaks the pairing.
+    #[serde(skip)]
+    written: Option<(Weak<Raster>, Weak<Vec<u8>>)>,
 }
 
 /// Called once with a cloud-optimised GeoTIFF's overview, or why it couldn't be read.
@@ -333,6 +338,7 @@ impl RasterLayer {
             lost_said: false,
             look_lost: None,
             dropped: Vec::new(),
+            written: None,
         })
     }
 
@@ -383,12 +389,31 @@ impl RasterLayer {
             lost_said: false,
             look_lost: None,
             dropped: Vec::new(),
+            written: None,
         }
     }
 
     /// A raster from a file's bytes, kept in the project.
     pub fn from_bytes(raster: Raster, file_name: impl Into<String>, bytes: Vec<u8>) -> RasterLayer {
         Self::from_shared(raster, file_name, Arc::new(bytes))
+    }
+
+    /// A raster with the file [`rustgis_data::raster::geotiff::write_all`] wrote of it (or
+    /// [`rustgis_data::raster::geotiff::write`] of its first band, the same file when that writes every
+    /// band), kept in the project: [`RasterLayer::written_file`] gives that file back while neither
+    /// changes.
+    pub fn from_written(raster: Raster, file_name: impl Into<String>, bytes: Vec<u8>) -> RasterLayer {
+        let mut layer = Self::from_bytes(raster, file_name, bytes);
+        layer.written = layer.data.as_ref().map(Arc::downgrade).zip(layer.embedded.as_ref().map(Arc::downgrade));
+        layer
+    }
+
+    /// The embedded file, when it is the one [`RasterLayer::from_written`] was given for the
+    /// pixels the layer holds now: an export that writes every band writes those same bytes.
+    pub fn written_file(&self) -> Option<&Arc<Vec<u8>>> {
+        let (pixels, file) = self.written.as_ref()?;
+        let (data, embedded) = (self.data.as_ref()?, self.embedded.as_ref()?);
+        (Weak::as_ptr(pixels) == Arc::as_ptr(data) && Weak::as_ptr(file) == Arc::as_ptr(embedded)).then_some(embedded)
     }
 
     /// Keeps the original shared allocation used to decode an uploaded raster.
@@ -421,6 +446,7 @@ impl RasterLayer {
             lost_said: false,
             look_lost: None,
             dropped: Vec::new(),
+            written: None,
         }
     }
 
@@ -465,6 +491,7 @@ impl RasterLayer {
             lost_said: false,
             look_lost: None,
             dropped: Vec::new(),
+            written: None,
         }
     }
 
@@ -896,6 +923,7 @@ impl RasterLayer {
             lost_said: _,
             look_lost: _,
             dropped: _,
+            written: _,
         } = self;
         if *in_place || *tiled || opening.is_some() || read_still.is_some() || self.casts_shadows() {
             return None;
@@ -2602,6 +2630,7 @@ impl RasterLayer {
             lost_said: _,
             look_lost: _,
             dropped: _,
+            written: _,
         } = self;
         let mut out = Vec::new();
         if let Some(p) = path {
@@ -3215,6 +3244,25 @@ mod tests {
         let mut missing = RasterLayer { path: Some("/nonexistent/x.tif".into()), embedded: None, ..back };
         assert!(missing.reload().is_err());
         assert!(missing.data.is_none());
+    }
+
+    #[test]
+    fn a_written_file_is_given_back_only_while_its_pixels_and_bytes_are_the_layers() {
+        let r = dem();
+        let bytes = rustgis_data::raster::geotiff::write_all(&r).unwrap();
+        assert!(RasterLayer::from_bytes(r.clone(), "dem.tif", bytes.clone()).written_file().is_none());
+        let written = RasterLayer::from_written(r, "dem.tif", bytes.clone());
+        assert_eq!(written.written_file().map(|b| b.as_slice()), Some(bytes.as_slice()));
+        // A copy shares both, so it gives the file too.
+        assert!(written.clone().written_file().is_some());
+        let mut edited = written.clone();
+        if let Some(band) = edited.data.as_mut().and_then(|d| Arc::make_mut(d).bands.first_mut()) {
+            band.data[0] += 1.0;
+        }
+        assert!(edited.written_file().is_none());
+        let mut replaced = written.clone();
+        replaced.embedded = Some(Arc::new(bytes));
+        assert!(replaced.written_file().is_none());
     }
 
     /// A plain web address is read as it was before logins: never downloaded whole on reload.

@@ -412,7 +412,7 @@ pub(crate) type Then = Box<dyn FnOnce(&mut Session, &mut Value) + Send>;
 pub(crate) fn made(raster: Raster, extra: Option<Value>) -> Result<Made, String> {
     let bytes = rustgis_data::raster::geotiff::write_all(&raster).map_err(|e| e.to_string())?;
     let name = raster.name.clone();
-    let layer = rustgis_map::RasterLayer::from_bytes(raster, format!("{name}.tif"), bytes);
+    let layer = rustgis_map::RasterLayer::from_written(raster, format!("{name}.tif"), bytes);
     Ok(made_layer(name, layer, extra, None))
 }
 

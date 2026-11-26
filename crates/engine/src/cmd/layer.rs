@@ -6707,7 +6707,11 @@ pub fn read_cog_window_until(asked: &WindowAsked, stop: &std::sync::atomic::Atom
             bytes
         }
     };
-    let layer = rustgis_map::RasterLayer::from_bytes(r, format!("{name}.tif"), bytes);
+    let layer = if plain.is_some() {
+        rustgis_map::RasterLayer::from_written(r, format!("{name}.tif"), bytes)
+    } else {
+        rustgis_map::RasterLayer::from_bytes(r, format!("{name}.tif"), bytes)
+    };
     let mut notes = vec![read];
     notes.extend(plain);
     notes.extend(finer);
