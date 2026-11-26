@@ -7915,7 +7915,7 @@ pub(crate) fn layout_menu(app: &mut RustGisApp, ui: &mut Ui, n: &str) {
 
 #[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A layer linked to its file says so after its name, with the file and what linking means
@@ -8499,7 +8499,7 @@ mod tests {
         app.session.map().layer_by_name(name).map(|l| l.id).unwrap_or_default()
     }
 
-    fn drag_layer(h: &mut egui_kittest::Harness<'_, RustGisApp>, from: egui::Pos2, to: egui::Pos2) {
+    pub(crate) fn drag_layer(h: &mut egui_kittest::Harness<'_, RustGisApp>, from: egui::Pos2, to: egui::Pos2) {
         use egui::{Event, Modifiers, PointerButton};
         let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
         h.event(Event::PointerMoved(from));
@@ -8516,7 +8516,7 @@ mod tests {
 
     /// A finger on `from` that moves through `to` in steps, as winit reports a touch (touch event
     /// and pointer events together), `held` frames before it starts moving and let go at the end.
-    fn touch_drag(h: &mut egui_kittest::Harness<'_, RustGisApp>, from: egui::Pos2, to: egui::Pos2, held: usize) {
+    pub(crate) fn touch_drag(h: &mut egui_kittest::Harness<'_, RustGisApp>, from: egui::Pos2, to: egui::Pos2, held: usize) {
         use egui::{Event, Modifiers, PointerButton, TouchDeviceId, TouchId, TouchPhase};
         let touch = |phase, pos| Event::Touch { device_id: TouchDeviceId(1), id: TouchId(1), phase, pos, force: None };
         let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
