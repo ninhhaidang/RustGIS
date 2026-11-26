@@ -8,7 +8,7 @@ use super::{Batch, FeatureSource, Reproject, Request, Sampler, SourceInfo, clamp
 use crate::raster::Crs;
 use crate::{DataError, Feature, Field, FieldType, GeometryType, Result, Value, wkb};
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OpenFlags, params_from_iter};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params_from_iter};
 use rustgis_geom::Extent;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -21,6 +21,18 @@ pub use crate::io::{GpkgMode, GpkgTable, GpkgWritten};
 /// Rows fetched by id per query.
 const CHUNK: usize = 500;
 
+/// What a view read through the R-tree fetches a table's rows by, so they come in the order a
+/// scan of the table gives them.
+#[derive(Clone, Copy)]
+enum RowOrder {
+    /// The key, which is the rowid (a GeoPackage's `INTEGER PRIMARY KEY`).
+    Key,
+    /// The rowid, by this name, where the key is apart from it (declared `INT`, say).
+    Rowid(&'static str),
+    /// Neither: no rowid, or columns have taken all its names. A view is read by a scan.
+    Scan,
+}
+
 /// A feature table in a GeoPackage.
 pub struct GpkgSource {
     info: SourceInfo,
@@ -29,6 +41,7 @@ pub struct GpkgSource {
     table: String,
     geom: String,
     pk: Option<String>,
+    row_order: RowOrder,
     rtree: Option<String>,
     reproject: Reproject,
     /// A copy written for a file opened from memory, removed when the source is dropped.
@@ -286,6 +299,7 @@ impl GpkgSource {
                 }
             }
         }
+        let row_order = row_order(&conn, &table).map_err(err)?;
         // Looked up without regard to case, as SQLite names are; the real name is kept.
         let rtree_name = format!("rtree_{table}_{geom}");
         let rtree: Option<String> = conn
@@ -350,7 +364,7 @@ impl GpkgSource {
             // A system the definition gives, by its PROJ definition, so the layer keeps it
             // (`SourceInfo::coordinate_system`), as a Shapefile's .prj does (#1476).
             crs: reproject.info_crs(),
-            indexed: rtree.is_some(),
+            indexed: rtree.is_some() && !matches!(row_order, RowOrder::Scan),
             notes,
             zm_dropped: false,
         };
@@ -361,6 +375,7 @@ impl GpkgSource {
             table,
             geom,
             pk,
+            row_order,
             rtree,
             reproject,
             temp: None,
@@ -424,6 +439,19 @@ impl GpkgSource {
         let mut cols = vec![self.pk.as_deref().map(quote).unwrap_or_else(|| "rowid".into()), quote(&self.geom)];
         cols.extend(self.info.fields.iter().map(|f| quote(&f.name)));
         cols.join(", ")
+    }
+
+    /// The order a scan of the table gives, written out (` ORDER BY …`) so that SQLite can't read
+    /// it another way, such as down a covering index: the order a view read through the R-tree
+    /// fetches in.
+    fn order_by(&self) -> String {
+        match (self.row_order, &self.pk) {
+            // The rowid itself, or a name of it no column has taken: no sort.
+            (RowOrder::Key, Some(pk)) => format!(" ORDER BY {}", quote(pk)),
+            (RowOrder::Rowid(rowid), _) => format!(" ORDER BY {rowid}"),
+            // Without a key no view is read through the R-tree, so there's no order to match.
+            (RowOrder::Key, None) | (RowOrder::Scan, _) => String::new(),
+        }
     }
 
     /// Turns a row (id, geometry, fields…) into a feature; `None` for an unreadable geometry.
@@ -520,7 +548,12 @@ impl FeatureSource for GpkgSource {
             Row::Bad => out.skipped += 1,
         };
         match (native, &self.rtree, &self.pk) {
-            (Some(e), Some(rt), Some(pk)) => {
+            // A count alone (`limit` 0) fetches no rows, so it needs no order: the index counts it.
+            (Some(e), Some(rt), Some(pk)) if limit == 0 || !matches!(self.row_order, RowOrder::Scan) => {
+                // One read, so a write between picking the ids and fetching them (and, for a key
+                // apart from the rowid, between looking up their rowids and fetching by them)
+                // can't hand back a row that wasn't picked. A read rolls nothing back.
+                let _read = conn.unchecked_transaction().map_err(err)?;
                 // The index gives the matching ids; an evenly spread sample of them is fetched.
                 // Counted first, then streamed keeping every `step`-th, so a huge match never sits
                 // in memory as a list of ids.
@@ -531,7 +564,7 @@ impl FeatureSource for GpkgSource {
                 let step = usize::try_from(stride(out.matched, limit)).unwrap_or(usize::MAX);
                 let mut st = conn.prepare(&format!("SELECT id {filter}")).map_err(err)?;
                 // A row error (a corrupt page) fails the read rather than truncating it quietly.
-                let picked: Vec<i64> = st
+                let mut picked: Vec<i64> = st
                     .query_map(args, |r| r.get(0))
                     .map_err(err)?
                     .step_by(step.max(1))
@@ -539,9 +572,20 @@ impl FeatureSource for GpkgSource {
                     .collect::<rusqlite::Result<_>>()
                     .map_err(err)?;
                 out.complete = step == 1;
+                let table = quote(&self.table);
+                // The index lists them in its own order. They are fetched in the table's, as a
+                // whole read gives them: the order the map draws them in.
+                let by = match self.row_order {
+                    RowOrder::Rowid(rowid) => {
+                        picked = rowids(conn, &table, rowid, &quote(pk), &picked).map_err(err)?;
+                        rowid.to_string()
+                    }
+                    _ => quote(pk),
+                };
+                picked.sort_unstable();
                 for chunk in picked.chunks(CHUNK) {
                     let marks = vec!["?"; chunk.len()].join(",");
-                    let sql = format!("SELECT {} FROM {} WHERE {} IN ({marks})", self.select_list(), quote(&self.table), quote(pk));
+                    let sql = format!("SELECT {} FROM {table} WHERE {by} IN ({marks}) ORDER BY {by}", self.select_list());
                     let mut st = conn.prepare(&sql).map_err(err)?;
                     let mut rows = st.query(params_from_iter(chunk.iter())).map_err(err)?;
                     while let Some(r) = rows.next().map_err(err)? {
@@ -557,7 +601,7 @@ impl FeatureSource for GpkgSource {
             }
             _ => {
                 // A scan: the envelope in each geometry's header tests the extent before decoding.
-                let sql = format!("SELECT {} FROM {}", self.select_list(), quote(&self.table));
+                let sql = format!("SELECT {} FROM {}{}", self.select_list(), quote(&self.table), self.order_by());
                 let mut st = conn.prepare(&sql).map_err(err)?;
                 let mut rows = st.query([]).map_err(err)?;
                 // A whole read knows its count, unless the file's own; an extent, bounded natively
@@ -630,7 +674,7 @@ impl FeatureSource for GpkgSource {
         same_file()?;
         let req = Request { extent, limit: usize::MAX, own: None };
         let native = extent.and_then(|e| self.reproject.extent_from_lonlat(&e));
-        let sql = format!("SELECT {} FROM {}", self.select_list(), quote(&self.table));
+        let sql = format!("SELECT {} FROM {}{}", self.select_list(), quote(&self.table), self.order_by());
         let mut st = conn.prepare(&sql).map_err(err)?;
         let mut rows = st.query([]).map_err(err)?;
         let mut out = Batch { complete: true, ..Batch::default() };
@@ -649,6 +693,40 @@ impl FeatureSource for GpkgSource {
         chunks.flush()?;
         Ok(out)
     }
+}
+
+/// How to fetch rows of `table` in a scan's order ([`RowOrder`]). Only "no such row" answers a
+/// question here; a statement that fails fails the open, rather than picking an order unseen.
+fn row_order(conn: &Connection, table: &str) -> rusqlite::Result<RowOrder> {
+    // SQLite indexes a primary key that isn't the rowid itself.
+    if conn.query_row("SELECT 1 FROM pragma_index_list(?1) WHERE origin = 'pk'", [table], |_| Ok(())).optional()?.is_none() {
+        return Ok(RowOrder::Key);
+    }
+    // A column takes a rowid's name from it; a table without rowids has none of them, and a query
+    // naming one doesn't prepare (where it fails otherwise, the table is read by a scan: slower,
+    // never out of order).
+    for name in ["rowid", "_rowid_", "oid"] {
+        let taken = "SELECT 1 FROM pragma_table_xinfo(?1) WHERE lower(name) = ?2";
+        if conn.query_row(taken, [table, name], |_| Ok(())).optional()?.is_none()
+            && conn.prepare(&format!("SELECT {name} FROM {}", quote(table))).is_ok()
+        {
+            return Ok(RowOrder::Rowid(name));
+        }
+    }
+    Ok(RowOrder::Scan)
+}
+
+/// The rowids (named `rowid`) of the rows of `table` whose `key` is among `keys`.
+fn rowids(conn: &Connection, table: &str, rowid: &str, key: &str, keys: &[i64]) -> rusqlite::Result<Vec<i64>> {
+    let mut found = Vec::with_capacity(keys.len());
+    for chunk in keys.chunks(CHUNK) {
+        let marks = vec!["?"; chunk.len()].join(",");
+        let mut st = conn.prepare(&format!("SELECT {rowid} FROM {table} WHERE {key} IN ({marks})"))?;
+        for id in st.query_map(params_from_iter(chunk.iter()), |r| r.get(0))? {
+            found.push(id?);
+        }
+    }
+    Ok(found)
 }
 
 /// A file's device and inode, which tell it from another file put at its path since; `None`
