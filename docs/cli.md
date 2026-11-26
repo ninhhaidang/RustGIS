@@ -172,7 +172,7 @@ An `--allow` that names no kind or code is refused with status 2, as is `--allow
 | `changed.cut` | Shorten the text to what the format holds (254 bytes for a Shapefile; nothing past a NUL character), or write to a format without the limit, such as GeoPackage. |
 | `changed.body` | Export in the layer's own coordinate system, which keeps its body. |
 | `changed.encoding` | Put a .cpg file naming the file's own encoding beside it. |
-| `changed.rounded` | Keep the source file where finer values matter, or write to a format that holds them (times finer than the format keeps, or numbers past a dBase field's precision). |
+| `changed.rounded` | Keep the source file where finer values matter, or write to a format that holds them (times finer than the format keeps, numbers past a dBase field's precision, or whole numbers past 2^53 in a decimal field). |
 | `changed.position` | Export in a coordinate system that holds the positions, such as WGS 84. |
 | `approximated.datum` | Export in the layer's own coordinate system, or give that system with a known transformation to WGS 84. |
 | `approximated.curve` | Keep the source file where exact curves matter: RustGIS draws curves as straight segments. |

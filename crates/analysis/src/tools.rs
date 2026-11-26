@@ -3360,7 +3360,9 @@ fn dissolve(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
             "Dissolve: {not_polygons} feature(s) left out, with their values: no geometry, an empty polygon, or a point or line rather than a polygon"
         ) });
     }
-    messages.extend(rounded_notice(&rounded, out.fields.get(first_added..).unwrap_or_default()));
+    let (said, rounded) = rounded_notice(&rounded, out.fields.get(first_added..).unwrap_or_default());
+    messages.extend(said);
+    losses.extend(rounded);
     Ok(ToolResult { losses, output: Output::Layer(out), messages })
 }
 
@@ -6059,8 +6061,9 @@ fn count_points_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result
         }
     }
     let mut messages = vec![format!("Summarize Within: {total} points counted")];
-    messages.extend(rounded_notice(&rounded, out.fields.get(first..).unwrap_or_default()));
-    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
+    let (said, losses) = rounded_notice(&rounded, out.fields.get(first..).unwrap_or_default());
+    messages.extend(said);
+    Ok(ToolResult { losses, output: Output::Layer(out), messages })
 }
 
 /// A lon/lat line or ring as a `geo` line string, in degrees.
@@ -6476,8 +6479,9 @@ fn summary_statistics(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
     }
     let n = out.features.len();
     let mut messages = vec![format!("Summary Statistics: {n} rows")];
-    messages.extend(rounded_notice(&rounded, out.fields.get(first_added..).unwrap_or_default()));
-    Ok(ToolResult { losses: Vec::new(), output: Output::Table(out), messages })
+    let (said, losses) = rounded_notice(&rounded, out.fields.get(first_added..).unwrap_or_default());
+    messages.extend(said);
+    Ok(ToolResult { losses, output: Output::Table(out), messages })
 }
 
 /// The output fields of a statistics list over `ds`: `<STAT>_<field>` for each request, typed by
@@ -6586,17 +6590,23 @@ fn statistic_values(
 /// naming their output fields `fields` (one per request, as `rounded` counts them), as a decimal
 /// field holds whole numbers exactly only up to 2^53; and the whole numbers written as text past
 /// the i64 range that were read as decimals, whose statistics aren't checked, naming their input
-/// fields. Empty when nothing was rounded.
-fn rounded_notice(rounded: &Rounded, fields: &[Field]) -> Vec<String> {
+/// fields. The first is a loss, with its code; the second says they may be rounded, so it is a
+/// plain notice. Both empty when nothing was rounded.
+fn rounded_notice(rounded: &Rounded, fields: &[Field]) -> (Vec<String>, Vec<rustgis_data::loss::LossMessage>) {
     let mut notices = Vec::new();
+    let mut losses = Vec::new();
+    // Each counted result came out rounded: a value changed.
     let total: usize = rounded.results.iter().sum();
     if total > 0 {
         let names: Vec<&str> = rounded.results.iter().zip(fields).filter(|(n, _)| **n > 0).map(|(_, f)| f.name.as_str()).collect();
         let results = if total == 1 { "result" } else { "results" };
-        notices.push(format!(
-            "{total} {results} rounded in {}: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)",
-            names.join(", ")
-        ));
+        losses.push(rustgis_data::loss::LossMessage {
+            code: rustgis_data::loss::LossCode::ChangedRounded,
+            text: format!(
+                "{total} {results} rounded in {}: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)",
+                names.join(", ")
+            ),
+        });
     }
     let total: usize = rounded.texts.iter().map(|(_, n)| n).sum();
     if total > 0 {
@@ -6608,7 +6618,7 @@ fn rounded_notice(rounded: &Rounded, fields: &[Field]) -> Vec<String> {
             names.join(", ")
         ));
     }
-    notices
+    (notices, losses)
 }
 
 /// The statistics list of a tool that adds statistics to its own output (Dissolve, Summarize
@@ -6815,8 +6825,9 @@ fn pivot_table(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     }
     let n = out.features.len();
     let mut messages = vec![format!("Pivot Table: {n} rows, {} pivot fields", columns.len())];
-    messages.extend(rounded_notice(&rounded, out.fields.get(first_pivot_field..).unwrap_or_default()));
-    Ok(ToolResult { losses: Vec::new(), output: Output::Table(out), messages })
+    let (said, losses) = rounded_notice(&rounded, out.fields.get(first_pivot_field..).unwrap_or_default());
+    messages.extend(said);
+    Ok(ToolResult { losses, output: Output::Table(out), messages })
 }
 
 /// Whether a pivot value is missing: null, or a number that isn't one.
@@ -8385,7 +8396,9 @@ fn spatial_join_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result
             "{total} matched {numbers} in {names} {were} left out: a whole-number sum takes whole numbers in the 64-bit range, the other rules numbers a decimal holds"
         ) });
     }
-    messages.extend(rounded_notice(&rounded, &merged_fields));
+    let (said, rounded) = rounded_notice(&rounded, &merged_fields);
+    messages.extend(said);
+    losses.extend(rounded);
     Ok(ToolResult { losses, output: Output::Layer(out), messages })
 }
 

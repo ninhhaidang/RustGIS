@@ -118,7 +118,7 @@ loss_codes! {
     ChangedRounded => (
         "changed.rounded",
         Changed,
-        "Keep the source file where finer values matter, or write to a format that holds them (times finer than the format keeps, or numbers past a dBase field's precision)."
+        "Keep the source file where finer values matter, or write to a format that holds them (times finer than the format keeps, numbers past a dBase field's precision, or whole numbers past 2^53 in a decimal field)."
     ),
     ChangedPosition => (
         "changed.position",

@@ -106,7 +106,7 @@ fn join(layers: &Layers, merge: Json) -> ToolResult {
 const JOINED: &str = "Spatial Join: 4 features joined (8 matches)";
 
 fn rounded(n: &str, fields: &str) -> String {
-    format!("{n} rounded in {fields}: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)")
+    format!("ChangedRounded: {n} rounded in {fields}: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)")
 }
 
 #[test]
@@ -299,7 +299,7 @@ fn a_number_too_large_for_a_decimal_is_left_out_and_counted() {
     };
     let res = join(&layers, json!([{"field": "n", "rule": "mean"}, {"field": "d", "rule": "sum"}]));
     // D's mean of n leaves out "1e309", and its sum of d "-1E400"; C's mean of n is still rounded.
-    assert_eq!(said(&res), [JOINED.to_string(), rounded("1 result", "join_n"), notice("2 matched numbers", "join_n, join_d")]);
+    assert_eq!(said(&res), [JOINED.to_string(), notice("2 matched numbers", "join_n, join_d"), rounded("1 result", "join_n")]);
     let out = layer(res);
     assert_eq!((column(&out, "join_n")[3].clone(), column(&out, "join_d")[3].clone()), (Value::Float(3.0), Value::Float(4.5)));
     for (n_rule, d_rule) in [("max", "min"), ("min", "max")] {

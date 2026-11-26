@@ -42,6 +42,11 @@ fn column<'a>(ds: &'a Dataset, name: &str) -> Vec<&'a Value> {
 fn names(ds: &Dataset) -> Vec<&str> {
     ds.fields.iter().map(|f| f.name.as_str()).collect()
 }
+/// What a run says: its messages, then its losses, each after its code.
+fn said(r: &ToolResult) -> Vec<String> {
+    r.messages.iter().cloned().chain(r.losses.iter().map(|l| format!("{:?}: {}", l.code, l.text))).collect()
+}
+
 fn layer(r: ToolResult) -> Dataset {
     match r.output {
         Output::Layer(d) => d,
@@ -280,7 +285,7 @@ fn dissolve_without_statistics_is_unchanged() {
             base["field"] = json!(f);
         }
         let res = rustgis_analysis::run("dissolve", &layers, &base).unwrap();
-        let messages = res.messages.clone();
+        let messages = said(&res);
         let plain = layer(res);
         let expected: &[&str] = if field.is_some() { &["zone", "count"] } else { &["count"] };
         assert_eq!(names(&plain), expected);
@@ -290,14 +295,14 @@ fn dissolve_without_statistics_is_unchanged() {
             // A separator isn't read without statistics.
             p["separator"] = json!(5);
             let res = rustgis_analysis::run("dissolve", &layers, &p).unwrap();
-            assert_eq!(res.messages, messages, "{empty}");
+            assert_eq!(said(&res), messages, "{empty}");
             assert_eq!(layer(res), plain, "{empty}");
         }
         // Statistics add fields after the others and leave them as they were.
         let mut p = base.clone();
         p["statistics"] = json!([{"field": "pop", "statistic": "SUM"}]);
         let res = rustgis_analysis::run("dissolve", &layers, &p).unwrap();
-        assert_eq!(res.messages, messages);
+        assert_eq!(said(&res), messages);
         let with = layer(res);
         assert_eq!(with.fields[..plain.fields.len()], plain.fields[..]);
         for (a, b) in with.features.iter().zip(plain.features.iter()) {
@@ -423,10 +428,10 @@ fn summarize_within_adds_statistics_of_the_points_in_each_polygon() {
             .unwrap();
     // SUM and MAX of `big` near i64::MAX are rounded in west and east, and the tool says so.
     assert_eq!(
-        res.messages,
+        said(&res),
         [
             "Summarize Within: 8 points counted",
-            "4 results rounded in SUM_big, MAX_big: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)"
+            "ChangedRounded: 4 results rounded in SUM_big, MAX_big: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)"
         ]
     );
     let out = layer(res);
@@ -510,14 +515,14 @@ fn summarize_within_statistics_take_only_selected_points_in_record_order() {
 fn summarize_within_without_statistics_is_unchanged() {
     let layers = Layers::default().with(zones()).with(sites());
     let res = rustgis_analysis::run("countPoints", &layers, &json!({"polygons": "zones", "points": "sites"})).unwrap();
-    let messages = res.messages.clone();
+    let messages = said(&res);
     let plain = layer(res);
     assert_eq!(names(&plain), ["name", "point_count"]);
     assert_eq!(column(&plain, "point_count"), [&int(4), &int(4), &int(0), &int(0)]);
     for empty in [json!([]), json!(""), Json::Null] {
         let p = json!({"polygons": "zones", "points": "sites", "statistics": empty, "separator": []});
         let res = rustgis_analysis::run("countPoints", &layers, &p).unwrap();
-        assert_eq!(res.messages, messages, "{empty}");
+        assert_eq!(said(&res), messages, "{empty}");
         assert_eq!(layer(res), plain, "{empty}");
     }
     // From JSON text, the same as from a list.
@@ -604,7 +609,7 @@ fn a_record_selected_twice_counts_once() {
     let statistics = json!([{"field": "val", "statistic": "COUNT"}, {"field": "val", "statistic": "SUM"}]);
     let res =
         rustgis_analysis::run("countPoints", &layers, &json!({"polygons": "zones", "points": "sites", "statistics": statistics})).unwrap();
-    assert_eq!(res.messages, ["Summarize Within: 3 points counted"]);
+    assert_eq!(said(&res), ["Summarize Within: 3 points counted"]);
     let out = layer(res);
     assert_eq!(column(&out, "point_count"), [&int(2), &int(1), &int(0), &int(0)]);
     assert_eq!(column(&out, "COUNT_val"), [&int(2), &int(1), &int(0), &int(0)]);
@@ -643,28 +648,28 @@ fn rounded_statistics_are_reported_and_exact_ones_are_not() {
         {"field": "small", "statistic": "MEAN"},
     ]);
     let note = |n: &str, fields: &str| {
-        format!("{n} rounded in {fields}: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)")
+        format!("ChangedRounded: {n} rounded in {fields}: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)")
     };
     // Dissolve: zone A rounds SUM_n and MAX_n (its MIN is 2), zone B rounds SUM_m (2^53 + 1);
     // MAX_m, 2^53, fits. CONCATENATE writes the whole numbers as they are.
     let res = rustgis_analysis::run("dissolve", &layers, &json!({"input": "large", "field": "zone", "statistics": statistics})).unwrap();
-    assert_eq!(res.messages, ["Dissolve: 2 features".to_string(), note("3 results", "SUM_n, MAX_n, SUM_m")]);
+    assert_eq!(said(&res), ["Dissolve: 2 features".to_string(), note("3 results", "SUM_n, MAX_n, SUM_m")]);
     let out = layer(res);
     assert_eq!(column(&out, "CONCATENATE_n"), [&text("9007199254740993, 2"), &text("3, 4")]);
     assert_eq!(column(&out, "MIN_n"), [&float(2.0), &float(3.0)]);
     // One group: SUM_m of 1, 2, 2^53 and 1 in record order passes 2^53 but comes out exact,
     // 2^53 + 4, so only SUM_n and MAX_n are rounded.
     let res = rustgis_analysis::run("dissolve", &layers, &json!({"input": "large", "statistics": statistics})).unwrap();
-    assert_eq!(res.messages[1], note("2 results", "SUM_n, MAX_n"));
+    assert_eq!(said(&res)[1], note("2 results", "SUM_n, MAX_n"));
     assert_eq!(column(&layer(res), "SUM_m"), [&float(9_007_199_254_740_996.0)]);
     // Only zone B: SUM_m alone, one value.
     let only_b = Layers::default().with(large_numbers()).select("large", &[2, 3]);
     let res = rustgis_analysis::run("dissolve", &only_b, &json!({"input": "large", "statistics": statistics})).unwrap();
-    assert_eq!(res.messages[1], note("1 result", "SUM_m"));
+    assert_eq!(said(&res)[1], note("1 result", "SUM_m"));
     // Fields within 2^53: no notice.
     let clean = json!([{"field": "small", "statistic": "SUM"}, {"field": "n", "statistic": "MIN"}, {"field": "n", "statistic": "COUNT"}]);
     let res = rustgis_analysis::run("dissolve", &layers, &json!({"input": "large", "field": "zone", "statistics": clean})).unwrap();
-    assert_eq!(res.messages, ["Dissolve: 2 features"]);
+    assert_eq!(said(&res), ["Dissolve: 2 features"]);
 
     // Summarize Within over the same records as points: a zone holding all of them.
     let points = run("featureToPoint", &layers, json!({"input": "large", "output": "large_points"}));
@@ -674,20 +679,20 @@ fn rounded_statistics_are_reported_and_exact_ones_are_not() {
     let res =
         rustgis_analysis::run("countPoints", &layers, &json!({"polygons": "area", "points": "large_points", "statistics": statistics}))
             .unwrap();
-    assert_eq!(res.messages, ["Summarize Within: 4 points counted".to_string(), note("2 results", "SUM_n, MAX_n")]);
+    assert_eq!(said(&res), ["Summarize Within: 4 points counted".to_string(), note("2 results", "SUM_n, MAX_n")]);
     let res =
         rustgis_analysis::run("countPoints", &layers, &json!({"polygons": "area", "points": "large_points", "statistics": clean})).unwrap();
-    assert_eq!(res.messages, ["Summarize Within: 4 points counted"]);
+    assert_eq!(said(&res), ["Summarize Within: 4 points counted"]);
 
     // Summary Statistics, by zone and from its single-field shortcut.
     let layers = Layers::default().with(large_numbers());
     let res =
         rustgis_analysis::run("summaryStatistics", &layers, &json!({"input": "large", "case": "zone", "statistics": statistics})).unwrap();
-    assert_eq!(res.messages, ["Summary Statistics: 2 rows".to_string(), note("3 results", "SUM_n, MAX_n, SUM_m")]);
+    assert_eq!(said(&res), ["Summary Statistics: 2 rows".to_string(), note("3 results", "SUM_n, MAX_n, SUM_m")]);
     let res = rustgis_analysis::run("summaryStatistics", &layers, &json!({"input": "large", "field": "n"})).unwrap();
-    assert_eq!(res.messages, ["Summary Statistics: 1 rows".to_string(), note("2 results", "SUM_n, MAX_n")]);
+    assert_eq!(said(&res), ["Summary Statistics: 1 rows".to_string(), note("2 results", "SUM_n, MAX_n")]);
     let res = rustgis_analysis::run("summaryStatistics", &layers, &json!({"input": "large", "field": "small"})).unwrap();
-    assert_eq!(res.messages, ["Summary Statistics: 1 rows"]);
+    assert_eq!(said(&res), ["Summary Statistics: 1 rows"]);
     // The shortcut reads a text field's values as numbers: whole numbers written as text past 2^53
     // are rounded and reported too. The MEAN, (2^53 + 1 + 1) / 2, is whole and rounded as well.
     let csv = "code\n9007199254740993\nn/a\n1\n";
@@ -695,7 +700,7 @@ fn rounded_statistics_are_reported_and_exact_ones_are_not() {
     assert_eq!(field_ty(&codes, "code"), FieldType::Text, "premise: a column with a word in it is text");
     let layers = Layers::default().with(codes);
     let res = rustgis_analysis::run("summaryStatistics", &layers, &json!({"input": "codes", "field": "code"})).unwrap();
-    assert_eq!(res.messages, ["Summary Statistics: 1 rows".to_string(), note("3 results", "SUM_code, MEAN_code, MAX_code")]);
+    assert_eq!(said(&res), ["Summary Statistics: 1 rows".to_string(), note("3 results", "SUM_code, MEAN_code, MAX_code")]);
 }
 
 #[test]
@@ -706,7 +711,7 @@ fn rounding_check_survives_whole_numbers_past_the_i64_range() {
     assert_eq!(field_ty(&codes, "code"), FieldType::Text, "premise: a column with a word in it is text");
     let layers = Layers::default().with(codes);
     let res = rustgis_analysis::run("summaryStatistics", &layers, &json!({"input": "codes", "field": "code"})).unwrap();
-    assert_eq!(res.messages, ["Summary Statistics: 1 rows"], "decimals past the i64 range are decimals, not whole numbers");
+    assert_eq!(said(&res), ["Summary Statistics: 1 rows"], "decimals past the i64 range are decimals, not whole numbers");
     // A whole number written as text in digits past the i64 range is read as a decimal too, past
     // what the checks take exactly: the tool says so once for the field, and its statistics aren't
     // checked one by one. One the decimal holds (10^20) is counted as well, as its statistics
@@ -717,7 +722,7 @@ fn rounding_check_survives_whole_numbers_past_the_i64_range() {
     let layers = Layers::default().with(codes);
     let res = rustgis_analysis::run("summaryStatistics", &layers, &json!({"input": "codes", "field": "code"})).unwrap();
     assert_eq!(
-        res.messages,
+        said(&res),
         [
             "Summary Statistics: 1 rows".to_string(),
             "3 whole numbers written as text in code are past the 64-bit integer range and were read as decimals, so statistics of them may be rounded"
@@ -734,7 +739,7 @@ fn rounding_check_survives_whole_numbers_past_the_i64_range() {
     let layers = Layers::default().with(codes);
     let res = rustgis_analysis::run("summaryStatistics", &layers, &json!({"input": "codes", "field": "code"})).unwrap();
     assert_eq!(
-        res.messages,
+        said(&res),
         [
             "Summary Statistics: 1 rows".to_string(),
             "1 whole number written as text in code is past the 64-bit integer range and was read as a decimal, so statistics of it may be rounded"
@@ -751,19 +756,19 @@ fn rounding_check_survives_whole_numbers_past_the_i64_range() {
     let statistics = json!([{"field": "code", "statistic": "MAX"}, {"field": "code", "statistic": "FIRST"}]);
     let p = json!({"input": "codes", "case": "k", "statistics": statistics});
     assert_eq!(
-        rustgis_analysis::run("summaryStatistics", &layers, &p).unwrap().messages,
+        said(&rustgis_analysis::run("summaryStatistics", &layers, &p).unwrap()),
         ["Summary Statistics: 3 rows"],
         "a text field's statistics are text, read as they are"
     );
     let p = json!({"input": "codes", "case": "k", "field": "code"});
     let res = rustgis_analysis::run("summaryStatistics", &layers, &p).unwrap();
     assert_eq!(
-        res.messages,
+        said(&res),
         [
             "Summary Statistics: 3 rows".to_string(),
-            "1 result rounded in MIN_code: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)".to_string(),
             "2 whole numbers written as text in code are past the 64-bit integer range and were read as decimals, so statistics of them may be rounded"
-                .to_string()
+                .to_string(),
+            "ChangedRounded: 1 result rounded in MIN_code: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)".to_string()
         ]
     );
     // One such value.
@@ -771,7 +776,7 @@ fn rounding_check_survives_whole_numbers_past_the_i64_range() {
     let res =
         rustgis_analysis::run("summaryStatistics", &Layers::default().with(codes), &json!({"input": "codes", "field": "code"})).unwrap();
     assert_eq!(
-        res.messages[1],
+        said(&res)[1],
         "1 whole number written as text in code is past the 64-bit integer range and was read as a decimal, so statistics of it may be rounded"
     );
     // An Integer field holding such decimals beside a whole number, through every statistic.
@@ -787,7 +792,7 @@ fn rounding_check_survives_whole_numbers_past_the_i64_range() {
         .collect();
     let layers = Layers::default().with(ds);
     let res = rustgis_analysis::run("summaryStatistics", &layers, &json!({"input": "huge", "statistics": all})).unwrap();
-    assert_eq!(res.messages, ["Summary Statistics: 1 rows"]);
+    assert_eq!(said(&res), ["Summary Statistics: 1 rows"]);
 }
 
 /// Whole numbers written as text past the i64 range are counted per record: a point in two
@@ -826,11 +831,12 @@ fn a_rounded_text_in_overlapping_polygons_is_counted_once() {
     let layers = Layers::default().with(zones()).with(pts.clone()).select("sites", &[1, 0]);
     let res = rustgis_analysis::run("countPoints", &layers, &p("sites")).unwrap();
     assert_eq!(
-        res.messages,
+        said(&res),
         [
             "Summarize Within: 4 points counted".to_string(),
-            "2 results rounded in MIN_n: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)".to_string(),
-            one(1)
+            one(1),
+            "ChangedRounded: 2 results rounded in MIN_n: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)"
+                .to_string()
         ]
     );
     let out = layer(res);
@@ -842,12 +848,12 @@ fn a_rounded_text_in_overlapping_polygons_is_counted_once() {
     // All sites: site 2's HUGE is a second value, and site 3's LOW lies in no polygon and isn't read.
     let layers = Layers::default().with(zones()).with(pts.clone());
     let res = rustgis_analysis::run("countPoints", &layers, &p("sites")).unwrap();
-    assert_eq!(res.messages[0], "Summarize Within: 5 points counted");
-    assert_eq!(res.messages[2], many(2));
+    assert_eq!(said(&res)[0], "Summarize Within: 5 points counted");
+    assert_eq!(said(&res)[1], many(2));
     assert_eq!(column(&layer(res), "COUNT_n"), [&int(3), &int(2), &int(0), &int(0)]);
     // Without statistics nothing is read, and nothing said.
     let res = rustgis_analysis::run("countPoints", &layers, &json!({"polygons": "zones", "points": "sites"})).unwrap();
-    assert_eq!(res.messages, ["Summarize Within: 5 points counted"]);
+    assert_eq!(said(&res), ["Summarize Within: 5 points counted"]);
 
     // Dissolve: records 0 and 2 in zone A, 1 and 3 in zone B, with the same values; each is in one
     // group, and the count is the same by zone and as one group. Zone B's MAX, 2^53 + 1, is the one
@@ -867,19 +873,20 @@ fn a_rounded_text_in_overlapping_polygons_is_counted_once() {
     let layers = Layers::default().with(ds.clone());
     let res = rustgis_analysis::run("dissolve", &layers, &json!({"input": "parcels", "field": "zone", "statistics": statistics})).unwrap();
     assert_eq!(
-        res.messages,
+        said(&res),
         [
             "Dissolve: 2 features".to_string(),
-            "1 result rounded in MAX_n: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)".to_string(),
-            many(3)
+            many(3),
+            "ChangedRounded: 1 result rounded in MAX_n: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)"
+                .to_string()
         ]
     );
     let res = rustgis_analysis::run("dissolve", &layers, &json!({"input": "parcels", "statistics": statistics})).unwrap();
-    assert_eq!(res.messages, ["Dissolve: 1 features".to_string(), many(3)]);
+    assert_eq!(said(&res), ["Dissolve: 1 features".to_string(), many(3)]);
     // Only zone A, selected with a repeat: its two values.
     let layers = Layers::default().with(ds).select("parcels", &[2, 0, 2]);
     let res = rustgis_analysis::run("dissolve", &layers, &json!({"input": "parcels", "field": "zone", "statistics": statistics})).unwrap();
-    assert_eq!(res.messages, ["Dissolve: 1 features".to_string(), many(2)]);
+    assert_eq!(said(&res), ["Dissolve: 1 features".to_string(), many(2)]);
 }
 
 /// A Double field's values are decimals already: statistics of them round as decimal arithmetic
@@ -904,7 +911,7 @@ fn decimal_fields_get_no_rounding_notice() {
         .collect();
     let layers = Layers::default().with(ds);
     let res = rustgis_analysis::run("dissolve", &layers, &json!({"input": "decimals", "field": "zone", "statistics": statistics})).unwrap();
-    assert_eq!(res.messages, ["Dissolve: 2 features"]);
+    assert_eq!(said(&res), ["Dissolve: 2 features"]);
     let out = layer(res);
     assert_eq!(column(&out, "SUM_d"), [&float(9_007_199_254_740_996.0), &float(0.5)], "rounded, as decimals are");
     assert_eq!(column(&out, "MAX_d"), [&float(BIG), &float(0.5)]);
@@ -915,7 +922,7 @@ fn decimal_fields_get_no_rounding_notice() {
     let layers = Layers::default().with(points).with(area);
     let p = json!({"polygons": "area", "points": "decimal_points", "statistics": statistics});
     let res = rustgis_analysis::run("countPoints", &layers, &p).unwrap();
-    assert_eq!(res.messages, ["Summarize Within: 3 points counted"]);
+    assert_eq!(said(&res), ["Summarize Within: 3 points counted"]);
     assert_eq!(column(&layer(res), "SUM_d"), [&float(9_007_199_254_740_996.0)]);
     // CSV: a column of whole numbers with a decimal among them reads as Double as well.
     let csv = "d\n9007199254740994\n1\n0.5\n";
@@ -924,9 +931,9 @@ fn decimal_fields_get_no_rounding_notice() {
     assert_eq!(column(&ds, "d"), [&float(BIG), &float(1.0), &float(0.5)], "premise");
     let layers = Layers::default().with(ds);
     let res = rustgis_analysis::run("summaryStatistics", &layers, &json!({"input": "decimals", "statistics": statistics})).unwrap();
-    assert_eq!(res.messages, ["Summary Statistics: 1 rows"]);
+    assert_eq!(said(&res), ["Summary Statistics: 1 rows"]);
     let res = rustgis_analysis::run("summaryStatistics", &layers, &json!({"input": "decimals", "field": "d"})).unwrap();
-    assert_eq!(res.messages, ["Summary Statistics: 1 rows"], "through the shortcut too");
+    assert_eq!(said(&res), ["Summary Statistics: 1 rows"], "through the shortcut too");
 }
 
 #[test]
@@ -948,15 +955,15 @@ fn whole_numbers_written_as_text_are_counted_and_joined_exactly() {
     ]);
     let layers = Layers::default().with(ds);
     let res = rustgis_analysis::run("summaryStatistics", &layers, &json!({"input": "codes", "statistics": statistics})).unwrap();
-    let Output::Table(out) = res.output else { panic!("a table") };
-    assert_eq!(column(&out, "UNIQUE_n"), [&int(3)]);
+    let Output::Table(out) = &res.output else { panic!("a table") };
+    assert_eq!(column(out, "UNIQUE_n"), [&int(3)]);
     // 2^53 + 1 twice is the mode; as decimals all four would be 2^53 or 2^53 + 4.
-    assert_eq!(column(&out, "MODE_n"), [&float(9_007_199_254_740_992.0)], "2^53 + 1, written as a decimal");
-    assert_eq!(column(&out, "MINORITY_n"), [&float(9_007_199_254_740_992.0)], "2^53, the lowest of the rarest");
-    assert_eq!(column(&out, "CONCATENATE_n"), [&text("9007199254740993, 9007199254740992, 9007199254740993, 9007199254740995")]);
+    assert_eq!(column(out, "MODE_n"), [&float(9_007_199_254_740_992.0)], "2^53 + 1, written as a decimal");
+    assert_eq!(column(out, "MINORITY_n"), [&float(9_007_199_254_740_992.0)], "2^53, the lowest of the rarest");
+    assert_eq!(column(out, "CONCATENATE_n"), [&text("9007199254740993, 9007199254740992, 9007199254740993, 9007199254740995")]);
     // MODE, 2^53 + 1, comes out rounded, and the tool says so; MINORITY, 2^53, fits.
-    assert_eq!(res.messages.len(), 2, "{:?}", res.messages);
-    assert!(res.messages[1].starts_with("1 result rounded in MODE_n:"), "{:?}", res.messages);
+    assert_eq!(said(&res).len(), 2, "{:?}", said(&res));
+    assert!(said(&res)[1].starts_with("ChangedRounded: 1 result rounded in MODE_n:"), "{:?}", said(&res));
 }
 
 /// Pivot Table's statistics, rounded from whole numbers past 2^53, are reported as Summary
@@ -966,7 +973,7 @@ fn whole_numbers_written_as_text_are_counted_and_joined_exactly() {
 fn pivot_table_reports_rounded_cells() {
     const BIG: i64 = (1 << 53) + 1;
     let note = |n: &str, fields: &str| {
-        format!("{n} rounded in {fields}: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)")
+        format!("ChangedRounded: {n} rounded in {fields}: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)")
     };
     let table = |res: ToolResult| match res.output {
         Output::Table(d) => d,
@@ -979,15 +986,15 @@ fn pivot_table_reports_rounded_cells() {
     // Zone A's SUM of n, 2^53 + 1 + 2, comes out 2^53 + 2 (2^53, then 2 added); zone B's, 3 + 4, is
     // exact.
     let res = by_zone("n", "SUM");
-    assert_eq!(res.messages, [clean[0].to_string(), note("1 result", "A")]);
+    assert_eq!(said(&res), [clean[0].to_string(), note("1 result", "A")]);
     let out = table(res);
     assert_eq!((column(&out, "A"), column(&out, "B")), (vec![&float(9_007_199_254_740_994.0)], vec![&float(7.0)]));
-    assert_eq!(by_zone("n", "MAX").messages, [clean[0].to_string(), note("1 result", "A")]);
+    assert_eq!(said(&by_zone("n", "MAX")), [clean[0].to_string(), note("1 result", "A")]);
     // Zone B's SUM of m, 1 + 2^53, is rounded; its MAX, 2^53, fits.
-    assert_eq!(by_zone("m", "SUM").messages, [clean[0].to_string(), note("1 result", "B")]);
+    assert_eq!(said(&by_zone("m", "SUM")), [clean[0].to_string(), note("1 result", "B")]);
     // Statistics within 2^53, and CONCATENATE, which writes whole numbers as they are: no notice.
     for (value, stat) in [("m", "MAX"), ("small", "SUM"), ("small", "MEAN"), ("n", "MIN"), ("n", "COUNT"), ("n", "CONCATENATE")] {
-        assert_eq!(by_zone(value, stat).messages, clean, "{value} {stat}");
+        assert_eq!(said(&by_zone(value, stat)), clean, "{value} {stat}");
     }
 
     // Rounded cells counted in each pivot field, over every row, and named in field order.
@@ -1003,10 +1010,10 @@ fn pivot_table_reports_rounded_cells() {
     let layers = Layers::default().with(ds.clone());
     let pivot = |p: Json| rustgis_analysis::run("pivotTable", &layers, &p).unwrap_or_else(|e| panic!("{p}: {e}"));
     let res = pivot(json!({"input": "years", "fields": "r", "pivot": "y", "value": "v", "statistic": "SUM"}));
-    assert_eq!(res.messages, ["Pivot Table: 2 rows, 3 pivot fields".to_string(), note("3 results", "y2020, y2021")]);
+    assert_eq!(said(&res), ["Pivot Table: 2 rows, 3 pivot fields".to_string(), note("3 results", "y2020, y2021")]);
     // Without a statistic each value is placed as it is, an Integer, exactly.
     let res = pivot(json!({"input": "years", "fields": "r", "pivot": "y", "value": "v"}));
-    assert_eq!(res.messages, ["Pivot Table: 2 rows, 3 pivot fields"]);
+    assert_eq!(said(&res), ["Pivot Table: 2 rows, 3 pivot fields"]);
     let out = table(res);
     assert_eq!(field_ty(&out, "y2020"), FieldType::Integer);
     assert_eq!(column(&out, "y2020"), [&int(BIG), &int(BIG)]);
@@ -1020,15 +1027,15 @@ fn pivot_table_reports_rounded_cells() {
     let pivot = |p: Json| rustgis_analysis::run("pivotTable", &layers, &p).unwrap_or_else(|e| panic!("{p}: {e}"));
     let res = pivot(json!({"input": "years", "fields": "r", "pivot": "y", "value": "v", "statistic": "MIN"}));
     assert_eq!(
-        res.messages,
+        said(&res),
         [
             "Pivot Table: 2 rows, 3 pivot fields".to_string(),
-            note("3 results", "y2020, y2021"),
             "1 whole number written as text in v is past the 64-bit integer range and was read as a decimal, so statistics of it may be rounded"
-                .to_string()
+                .to_string(),
+            note("3 results", "y2020, y2021")
         ]
     );
     let res = pivot(json!({"input": "years", "fields": "r", "pivot": "y", "value": "v"}));
-    assert_eq!(res.messages, ["Pivot Table: 2 rows, 3 pivot fields"]);
+    assert_eq!(said(&res), ["Pivot Table: 2 rows, 3 pivot fields"]);
     assert_eq!(column(&table(res), "y2022"), [&text("123456789012345678901"), &Value::Null]);
 }

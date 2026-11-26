@@ -5648,6 +5648,8 @@ impl RustGisApp {
                 dbf_notes.extend(rustgis_engine::cmd::share::read_notes(&name, &l.name, &lost));
                 // CSV holds a point a row, GPX a name for each feature and no areas; reading text back, CSV reads blanks as null and KML and GPX trim it.
                 dbf_notes.extend(io::export_losses_notes(&ds, &ext, io::name_field(&ds), &name).map_err(|e| e.to_string())?);
+                // NaN and infinities, which GeoJSON can't hold, written as null.
+                let null_numbers = rustgis_engine::data::export::numbers_written_as_null(&ds.features, &ds.fields, &ext);
                 drop(ds);
                 // Said only once the download is taken, as the other notes are.
                 dbf_notes.extend(io::left_out_note(&name, &ext, left_out));
@@ -5659,6 +5661,7 @@ impl RustGisApp {
                 }
                 if self.download(&name, bytes) {
                     rustgis_engine::cmd::share::notify_export_query(&mut self.session, &name, &layer_name, &query_report);
+                    rustgis_engine::cmd::share::notify_null_numbers(&mut self.session, &name, null_numbers);
                     for note in notes
                         .into_iter()
                         .chain(dbf_notes)
@@ -9826,6 +9829,33 @@ mod download_service_tests {
                     format!("Cities.geojson: the definition query on Cities left out {} of the source features", total - 1)
                 );
             }
+        }
+    }
+
+    /// The web download says the numbers GeoJSON can't hold, written as null, with their code, once
+    /// the browser takes the file; a refused download says nothing of them.
+    #[test]
+    fn feature_download_says_numbers_written_as_null() {
+        use rustgis_engine::data::{Dataset, Field, FieldType, Geometry, GeometryType, Value};
+        use rustgis_engine::geom::Coord;
+        // A NaN accepted, a NaN refused, and finite numbers only (nothing to say).
+        for (accept, first) in [(true, f64::NAN), (false, f64::NAN), (true, 2.5)] {
+            let download: Box<dyn Fn(&str, Vec<u8>) -> Result<(), String>> =
+                if accept { Box::new(|_, _| Ok(())) } else { Box::new(|_, _| Err("browser rejected download".into())) };
+            let mut app = RustGisApp::with_sample().with_services(Services { download: Some(download), ..Default::default() });
+            let mut ds = Dataset::new("Gauges", GeometryType::Point, vec![Field::new("level", FieldType::Double)]);
+            ds.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![Value::Float(first)]);
+            ds.push(Some(Geometry::Point(Coord::new(3.0, 4.0))), vec![Value::Float(1.5)]);
+            let id = app.session.map_mut().add_dataset(ds);
+            let mark = app.session.notice_mark();
+            let run = app.run("ui.exportLayer", json!({"layer": id, "format": "geojson"}));
+            if accept {
+                run.unwrap();
+            }
+            let said: Vec<_> =
+                app.session.notices_since(mark).iter().filter(|n| n.text.contains("written as null")).map(|n| n.loss()).collect();
+            let expected = if accept && first.is_nan() { vec![Some(rustgis_engine::data::loss::LossCode::DroppedValue)] } else { vec![] };
+            assert_eq!(said, expected, "accepted: {accept}, first: {first}");
         }
     }
 
