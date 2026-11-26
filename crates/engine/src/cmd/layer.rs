@@ -58,7 +58,7 @@ pub fn commands() -> Vec<C> {
         C::new("layer.addEncodedPolyline", "Add Encoded Polyline", "Home › Add", add_encoded_polyline).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"polyline": "encoded polyline text" | [texts] (one line each), "precision"?: 5 (Google) | 6 (OSRM, Valhalla), "name"?: text}"#,
         ),
-        C::new("layer.addDataText", "Add Data (from text)", "Home › Add", add_data_text).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"fileName": "name.geojson|.csv|.tsv|.city.json|.gml|.dxf (CityJSON and CityGML: all their layers)", "text": string, "name"?: text, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"? (as layer.addData, for delimited text; crs also for a CityJSON or CityGML model, and for a DXF), "layer"?, "paperSpace"?, "blocks"? (as layer.addData, for a DXF)}"#),
+        C::new("layer.addDataText", "Add Data (from text)", "Home › Add", add_data_text).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"fileName": "name.geojson|.csv|.tsv|.city.json|.gml|.dxf|.kml|.gpx|.rss|.xml (LandXML, GeoRSS) (a file of several layers, such as a city model, KML or GPX: all its layers)", "text": string, "name"?: text, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"? (as layer.addData, for delimited text; crs also for a CityJSON or CityGML model, and for a DXF), "layer"?, "paperSpace"?, "blocks"? (as layer.addData, for a DXF)}"#),
         C::new("layer.addSample", "Add Sample Data", "Home › Add › Add Data", add_sample).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"name": "countries"|"cities"|"rivers"|"lakes"}"#),
         C::new("layer.remove", "Remove", "Layers", remove).roles(&[]).effects(crate::policy::Effects::NONE)
             .key("Delete")
@@ -2348,11 +2348,7 @@ fn read_layers_file(p: &Value, path: &str) -> LayersRead {
     let crs = ps(p, "crs").map(str::trim).filter(|c| !c.is_empty());
     let reads = match crs {
         Some(text) if full.to_ascii_lowercase().ends_with(".zip") => {
-            rustgis_data::io::read_zip_in(&full, &bytes, Some(rustgis_data::raster::Crs::parse(text)?))
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .map(|(dataset, report)| rustgis_data::io::LayerRead { dataset, report, styles: Vec::new() })
-                .collect()
+            rustgis_data::io::read_zip_layers(&full, &bytes, Some(rustgis_data::raster::Crs::parse(text)?)).map_err(|e| e.to_string())?
         }
         Some(text) if rustgis_data::io::is_city_model(&full, &bytes) => {
             city_reads(&full, &bytes, Some(rustgis_data::raster::Crs::parse(text)?))?
@@ -2816,17 +2812,30 @@ pub(crate) fn add_layers(s: &mut Session, p: &Value, file_name: &str, bytes: &[u
     let lower = file_name.to_ascii_lowercase();
     let kml = lower.ends_with(".kml") || lower.ends_with(".kmz");
     // A KML's ground overlays (pictures) are raster layers, added after its placemarks.
-    let overlays = if kml && ps(p, "layer").is_none() { ground_overlays(s, file_name, bytes, local_file) } else { Vec::new() };
+    // Past the size a KML is read within, it is refused below without being scanned first.
+    let within = bytes.len() as u64 <= rustgis_data::io::BYTES_FLOOR;
+    let picked = ps(p, "layer").is_some_and(|l| !l.trim().is_empty());
+    let overlays = if kml && !picked && within { ground_overlays(s, file_name, bytes, local_file) } else { Vec::new() };
+    // A layer picked leaves the document's ground overlays (pictures, not layers) out: said.
+    if kml && picked && within {
+        match rustgis_data::kml::ground_overlays(file_name, bytes) {
+            Ok((found, undrawn, over_budget)) if found.len() + undrawn + over_budget > 0 => s.notify(
+                format!(
+                    "{file_name}: {} ground overlays (pictures) aren't added with a layer picked; add the file without \"layer\" to draw them",
+                    found.len() + undrawn + over_budget
+                ),
+                false,
+            ),
+            Ok(_) => {}
+            Err(e) => s.notify(format!("{file_name}: its ground overlays (pictures) couldn't be read, so none is added: {e}"), false),
+        }
+    }
     // A DXF drawing: its coordinate system (it never says) and one of its own layers.
     let dxf = rustgis_data::dxf::is_dxf_name(file_name);
     let reads = match crs.filter(|_| landxml) {
         _ if lower.ends_with(".zip") && crs.is_some() => {
             let crs = crs.map(|text| super::parse_crs(s, text)).transpose()?;
-            rustgis_data::io::read_zip_in(file_name, bytes, crs)
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .map(|(dataset, report)| rustgis_data::io::LayerRead { dataset, report, styles: Vec::new() })
-                .collect()
+            rustgis_data::io::read_zip_layers(file_name, bytes, crs).map_err(|e| e.to_string())?
         }
         // A city model (CityJSON or CityGML) with a coordinate system given, which takes the place
         // of any it names.
@@ -2887,6 +2896,11 @@ fn add_picked(
             })
             .map(|(_, r)| {
                 let mut said = r.report.clone();
+                // What the zip says of itself goes to the picked layer once, below.
+                if lower.ends_with(".zip") {
+                    let prefix = format!("{file_name}: ");
+                    said.messages.retain(|n| !n.text.starts_with(&prefix));
+                }
                 // The layer's own Z/M note, by its code: that layer says it.
                 if r.dataset.zm_dropped
                     && let Some(at) = said.messages.iter().position(|n| n.loss == Some(rustgis_data::loss::LossCode::DroppedZm))
@@ -2896,9 +2910,21 @@ fn add_picked(
                 (r.dataset.source.clone(), said)
             })
             .collect();
+        // What a zip says of itself (members skipped, overlays not drawn) sits on its first layer,
+        // named by the zip: it goes with whichever layer is picked.
+        let zip_wide: Vec<rustgis_data::loss::Note> = match reads.first() {
+            Some(first) if lower.ends_with(".zip") && !pick(&first.dataset.name) => {
+                let prefix = format!("{file_name}: ");
+                first.report.messages.iter().filter(|n| n.text.starts_with(&prefix)).cloned().collect()
+            }
+            _ => Vec::new(),
+        };
         reads.retain(|r| pick(&r.dataset.name));
         if reads.is_empty() {
             return Err(format!("{file_name}: no layer '{want}' (layers: {})", names.join(", ")));
+        }
+        if let Some(kept) = reads.first_mut() {
+            kept.report.messages.extend(zip_wide);
         }
         for (source, said) in file_wide {
             if let Some(kept) = reads.iter_mut().find(|r| r.dataset.source == source) {
@@ -2994,7 +3020,11 @@ fn add_reads(
 fn ground_overlays(s: &mut Session, file_name: &str, bytes: &[u8], local_file: bool) -> Vec<(String, rustgis_data::raster::Raster)> {
     match rustgis_data::kml::ground_overlays(file_name, bytes) {
         Ok(overlays) => overlays_drawn(s, file_name, overlays, local_file),
-        Err(_) => Vec::new(),
+        // Overlays that can't even be listed (a KMZ entry too large to expand) are said.
+        Err(e) => {
+            s.notify(format!("{file_name}: its ground overlays (pictures) couldn't be read, so none is added: {e}"), false);
+            Vec::new()
+        }
     }
 }
 
@@ -7010,7 +7040,9 @@ pub(crate) fn add_data_text_after(s: &mut Session, p: &Value, zoom: Option<bool>
     let text = s_req(p, "text")?;
     // A city model: all its layers, in the coordinate system given or with a layer picked. A DXF
     // drawing too, which takes its coordinate system and whether its blocks are drawn from here.
+    // Every other file of several layers too (KML, GPX, GeoRSS, LandXML), as its bytes are read.
     if rustgis_data::dxf::is_dxf_name(name)
+        || rustgis_data::io::is_multi_layer_name(name)
         || rustgis_data::cityjson::is_cityjson_name(name)
         || rustgis_data::io::is_citygml(name, text.as_bytes())
         || (["crs", "layer"].iter().any(|k| ps(p, k).is_some_and(|c| !c.trim().is_empty()))

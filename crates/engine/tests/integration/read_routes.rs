@@ -18,9 +18,9 @@
 //! aren't zipped; text is read only when it is UTF-8. GDAL and DuckDB are not routes
 //! here yet.
 //!
-//! Routes that read a format differently today are listed in [`DIFFERENT`] with how they differ;
-//! any other difference still fails, and a route that starts agreeing fails until its entry is
-//! removed, so the list only shrinks.
+//! A route that refuses a file the path reads, on purpose, is listed in [`REFUSED`]; any other
+//! difference still fails, and a listed route that starts reading the file fails until its entry
+//! is removed, so the list only shrinks.
 use super::never_silent_reading::cases;
 use base64::Engine;
 use rustgis_engine::data::loss::LossCode;
@@ -39,36 +39,10 @@ enum Route {
     Zip,
 }
 
-/// How a route listed in [`DIFFERENT`] reads a file differently from its path; anything else
-/// it does differently still fails.
-#[derive(Clone, Copy)]
-enum Differs {
-    /// Refuses it, saying why.
-    Refuses,
-    /// Adds only the first of its layers, says so, and says no code the path doesn't.
-    FirstLayer,
-}
-
-/// Routes that read a corpus file differently from its path today: the file, the route, and
-/// how. Each is said, not silent.
-const DIFFERENT: &[(&str, Route, Differs)] = &[
-    // A zip's feature-service page, workbook, GeoRSS feed and LandXML file aren't read.
-    ("a.feature.pbf", Route::Zip, Differs::Refuses),
-    ("a.xlsx", Route::Zip, Differs::Refuses),
-    ("a.xls", Route::Zip, Differs::Refuses),
-    ("a.xlsb", Route::Zip, Differs::Refuses),
-    ("a.ods", Route::Zip, Differs::Refuses),
-    ("a.rss", Route::Zip, Differs::Refuses),
-    ("a.xml", Route::Zip, Differs::Refuses),
-    // GeoRSS and LandXML aren't read from text.
-    ("a.rss", Route::Text, Differs::Refuses),
-    ("a.xml", Route::Text, Differs::Refuses),
-    // A KML document or GPX file of several layers adds them all by path, bytes or download.
-    ("a.kml", Route::Text, Differs::FirstLayer),
-    ("a.kml", Route::Zip, Differs::FirstLayer),
-    ("a.kmz", Route::Zip, Differs::FirstLayer),
-    ("a.gpx", Route::Text, Differs::FirstLayer),
-    ("a.gpx", Route::Zip, Differs::FirstLayer),
+/// Routes that refuse a corpus file its path reads, saying why: the file and the route.
+const REFUSED: &[(&str, Route)] = &[
+    // A zip's `.pbf` members aren't read: one can't be told from a vector tile by its name.
+    ("a.feature.pbf", Route::Zip),
 ];
 
 /// What one read gave: each layer and table as text, the loss codes said, and whether
@@ -201,29 +175,13 @@ fn difference(path: &Result<Read, String>, other: &Result<Read, String>) -> Opti
     }
 }
 
-/// Whether `other` differs from the path's read of `content` (named `file`) only as `how` says.
-fn differs_as(how: Differs, file: &str, content: &[u8], path: &Result<Read, String>, other: &Result<Read, String>) -> bool {
-    match (how, path, other) {
-        // A crash `Session::run` caught is a bug, never the refusal listed.
-        (Differs::Refuses, Ok(_), Err(_)) => !crashed(other),
-        (Differs::FirstLayer, Ok(a), Ok(b)) => {
-            // The first in the file's own order: the map lists the path's layers in the order
-            // they were added, not read.
-            let first =
-                rustgis_engine::data::io::read_layers(file, content).ok().and_then(|l| l.into_iter().next()).map(|l| l.dataset.name);
-            let is_first = |layer: &String| first.as_ref().is_some_and(|name| layer.starts_with(&format!("{name} ")));
-            b.said
-                && b.codes.is_subset(&a.codes)
-                && a.layers.len() > 1
-                && b.layers.len() == 1
-                && a.layers.contains(&b.layers[0])
-                && is_first(&b.layers[0])
-        }
-        _ => false,
-    }
+/// Whether `other` is a refusal, not a crash, of what the path reads.
+fn refuses(path: &Result<Read, String>, other: &Result<Read, String>) -> bool {
+    // A crash `Session::run` caught is a bug, never the refusal listed.
+    path.is_ok() && other.is_err() && !crashed(other)
 }
 
-/// Reads every corpus file by `route` and by path, and fails on a difference [`DIFFERENT`]
+/// Reads every corpus file by `route` and by path, and fails on a difference [`REFUSED`]
 /// doesn't list, or an entry for `route` that no longer differs.
 fn route_reads_as_the_path_does(route: Route) {
     let root = std::env::temp_dir().join(format!("rustgis-read-routes-{route:?}-{}", std::process::id()));
@@ -237,8 +195,7 @@ fn route_reads_as_the_path_does(route: Route) {
             let Some(by_path) = read(&dir, Route::Path, c.file, content, beside) else { continue };
             compared += 1;
             let Some(what) = difference(&by_path, &other) else { continue };
-            let listed = DIFFERENT.iter().find(|&&(file, r, _)| file == c.file && r == route);
-            if listed.is_some_and(|&(_, _, how)| differs_as(how, c.file, content, &by_path, &other)) {
+            if REFUSED.contains(&(c.file, route)) && refuses(&by_path, &other) {
                 differing.insert(c.file);
             } else {
                 failures.push(format!("{} [{}, {kind}]: {what}", c.name, c.file));
@@ -246,9 +203,9 @@ fn route_reads_as_the_path_does(route: Route) {
         }
     }
     let _ = std::fs::remove_dir_all(&root);
-    for &(file, r, _) in DIFFERENT {
+    for &(file, r) in REFUSED {
         if r == route && !differing.contains(file) {
-            failures.push(format!("{file} now reads as its path does: remove it from DIFFERENT"));
+            failures.push(format!("{file} now reads as its path does: remove it from REFUSED"));
         }
     }
     assert!(compared > 0, "no file travels by {route:?}");
@@ -283,4 +240,58 @@ fn a_download_reads_as_its_path_does() {
 #[test]
 fn a_zipped_file_reads_as_its_path_does() {
     route_reads_as_the_path_does(Route::Zip);
+}
+
+/// What a zip says of itself (its KML's overlays not drawn, here) sits on its first layer; picking
+/// another layer with `layer` still says it.
+#[test]
+fn a_zips_own_notices_reach_the_layer_picked() {
+    let dir = std::env::temp_dir().join(format!("rustgis-read-routes-picked-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let kml = br##"<?xml version="1.0"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><Placemark><Point><coordinates>1,2</coordinates></Point></Placemark><GroundOverlay><name>o</name><Icon><href>p.png</href></Icon><LatLonBox><north>1</north><south>0</south><east>1</east><west>0</west></LatLonBox></GroundOverlay></Document></kml>"##;
+    // Its first layer from another member, then from the same member as the layer picked.
+    let two = br##"<?xml version="1.0"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><Placemark><Point><coordinates>1,2</coordinates></Point></Placemark><Placemark><LineString><coordinates>0,0 1,1</coordinates></LineString></Placemark><GroundOverlay><name>o</name><Icon><href>p.png</href></Icon><LatLonBox><north>1</north><south>0</south><east>1</east><west>0</west></LatLonBox></GroundOverlay></Document></kml>"##;
+    let cases: [(&[(&str, &[u8])], &str, &str); 2] =
+        [(&[("a.csv", b"id,x,y\n1,1,2\n"), ("b.kml", kml)], "b", "b.kml (1)"), (&[("a.kml", two)], "lines", "a.kml (1)")];
+    for (i, (members, pick, named)) in cases.into_iter().enumerate() {
+        let entries: Vec<(String, Vec<u8>)> = members.iter().map(|(n, b)| (n.to_string(), b.to_vec())).collect();
+        let path = dir.join(format!("trip{i}.zip"));
+        std::fs::write(&path, rustgis_engine::data::zip::write(&entries).unwrap()).unwrap();
+        for layer in [None, Some(pick)] {
+            let mut s = Session::new(Project::default());
+            let mark = s.notice_mark();
+            let mut p = json!({"path": path});
+            if let Some(l) = layer {
+                p["layer"] = json!(l);
+            }
+            s.run("layer.addData", &p).unwrap();
+            let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+            // Said once, whichever layer is picked.
+            let overlays: Vec<&String> = said.iter().filter(|n| n.contains("ground overlays (pictures) aren't drawn")).collect();
+            assert!(overlays.len() == 1 && overlays[0].contains(named), "{i} {layer:?}: {said:?}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A KML added with `layer` leaves its ground overlays out, and says how many.
+#[test]
+fn a_kml_layer_picked_says_the_overlays_left_out() {
+    let dir = std::env::temp_dir().join(format!("rustgis-read-routes-overlays-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let kml = br##"<?xml version="1.0"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><Placemark><Point><coordinates>1,2</coordinates></Point></Placemark><GroundOverlay><name>o</name><Icon><href>p.png</href></Icon><LatLonBox><north>1</north><south>0</south><east>1</east><west>0</west></LatLonBox></GroundOverlay></Document></kml>"##;
+    let path = dir.join("trip.kml");
+    std::fs::write(&path, kml).unwrap();
+    for picked in [false, true] {
+        let mut s = Session::new(Project::default());
+        let mark = s.notice_mark();
+        let p = if picked { json!({"path": path, "layer": "trip"}) } else { json!({"path": path}) };
+        s.run("layer.addData", &p).unwrap();
+        let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        let left_out = said.iter().filter(|n| n.contains("1 ground overlays (pictures) aren't added with a layer picked")).count();
+        assert_eq!(left_out, usize::from(picked), "picked {picked}: {said:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
