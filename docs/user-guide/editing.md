@@ -103,7 +103,8 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
   Polygon (in a layer edited in its own grid, each of these changes it with the rest), and a
   notice counts them by layer; Flip Line flips it in the layer's own coordinates. An edit of that
   one feature (a vertex, a shape conversion; Reshape, Trace or Merge with it, outside a layer
-  edited in its own grid) is refused, naming the layer and the feature; Set Geometry gives it a new shape, and Delete removes it.
+  edited in its own grid) is refused, naming the layer and the feature; Set Geometry gives it a
+  new shape, and Delete removes it.
   Beyond 85.05°, where Web Mercator stops, Move, Rotate and Scale work on the ground: a feature
   that reaches beyond it, or that the edit would take beyond it, moves rigidly, together with the
   selected features sharing a vertex with it (their center goes the distance and direction asked,
@@ -173,13 +174,18 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
 - **Edit Vertices** (Edit › Features): reshape the selected features on the map. Their vertices
   show as square handles and each edge has a round midpoint handle. Drag a vertex to move it;
   drag a midpoint, or click an edge, to insert a vertex; click a vertex and press ++delete++ to
-  remove it (a line keeps at least two vertices, a polygon ring three). A selected feature with
-  a place that can't be given in longitude/latitude (see [Places with no longitude/latitude](data-formats.md#places-with-no-longitudelatitude))
-  gets no handles, and a notice says so once, naming it or counting them. Clicking elsewhere
+  remove it (a line keeps at least two vertices, a polygon ring three). The handles sit where
+  the map draws the vertices. On a map in the layer's own coordinate system they are its stored
+  coordinates: a vertex you drag is written where you let go, in the layer's coordinates, and
+  every other vertex stays exactly as stored. On another map, a selected feature with a place
+  that can't be given in longitude/latitude (see [Places with no longitude/latitude](data-formats.md#places-with-no-longitudelatitude))
+  gets no handles, and a notice says so once, naming it or counting them; on a map in its
+  layer's own system it gets its handles. Clicking elsewhere
   selects the feature there (++shift++ adds it). Multipart features and polygon holes work the
   same way, dragged vertices snap when snapping is on, and each move, insertion or deletion is
   one undo step. ++esc++ finishes. From scripts and the command line, `edit.vertex` does the
-  same to one vertex and `edit.setGeometry` (Set Geometry) replaces a feature's whole shape.
+  same to one vertex, given in longitude/latitude (`lon`, `lat`) or in the layer's own
+  coordinates (`x`, `y`), and `edit.setGeometry` (Set Geometry) replaces a feature's whole shape.
 - **Feature templates**: named default values for new features, made from a selected feature;
   the Create tool uses the chosen template.
 - **Snapping** (**Edit › Snapping**): new and dragged vertices snap to nearby vertices, edges and
@@ -476,7 +482,8 @@ The command uses row positions and the same vertex addresses as `edit.vertex`:
 {"layer":"Parcels","row":0,"part":0,"ring":0,"index":3,"lon":12.5,"lat":41.9}
 ```
 
-Run these parameters with `edit.moveSharedVertex`. It returns the source `part`, `ring` and
+Run these parameters with `edit.moveSharedVertex`. In place of `lon` and `lat`, `x` and `y` give
+the place in the layer's own coordinates, written as given. It returns the source `part`, `ring` and
 `index`, plus `modified`: the number of features whose geometry or attributes actually changed.
 Every matched feature runs through attribute rules and archiving in one transaction; a rejection
 rolls back the whole edit. A successful command is one undo step. As with `edit.vertex`, a direct

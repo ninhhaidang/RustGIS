@@ -87,7 +87,7 @@ fn rotated_drag_snaps_to_another_part_and_undoes_once() {
     drag(&mut h, from, to);
     let preview = h.state().map.vertex_drag.expect("vertex drag");
     assert!(preview.snapped && !preview.insert);
-    assert!((preview.at.x - c(180., 0.).x).abs() < 1e-9);
+    assert!((preview.lonlat(h.state()).unwrap().x - c(180., 0.).x).abs() < 1e-9);
     assert_eq!(first(&h), c(0., 0.));
     assert_eq!(h.state().session.undo_depth(), 0);
     release(&mut h, to);
@@ -129,7 +129,7 @@ fn midpoint_insertion_keeps_whole_feature_exclusion() {
     assert!(preview.insert && !preview.snapped);
     release(&mut h, to);
     let geometry = h.state().session.map().layers[0].dataset.features[0].geometry.as_ref().unwrap();
-    assert_eq!(geometry.vertex(VertexId::new(0, 0, 1)), Some(preview.at));
+    assert_eq!(geometry.vertex(VertexId::new(0, 0, 1)), preview.lonlat(h.state()));
     assert_eq!(geometry.vertex(VertexId::new(0, 0, 2)), Some(c(0., 160.)));
     assert_eq!(h.state().session.undo_depth(), 1);
 }

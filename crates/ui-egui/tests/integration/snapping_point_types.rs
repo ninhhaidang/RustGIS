@@ -121,7 +121,7 @@ fn rotated_drag_to_multipoint_commits_and_undoes_once() {
     drag(&mut h, from, to);
     let preview = h.state().map.vertex_drag.unwrap();
     assert!(preview.snapped && !preview.insert);
-    near(preview.at, target);
+    near(preview.lonlat(h.state()).unwrap(), target);
     assert!(marker(&h).unwrap().distance(screen(&h, target)) < 0.1);
     near(first(&h), c(0., 0.));
     assert_eq!(h.state().session.undo_depth(), 0);
@@ -146,10 +146,10 @@ fn edge_only_drag_ignores_point_target() {
     let preview = h.state().map.vertex_drag.unwrap();
     assert!(!preview.snapped);
     assert!(marker(&h).is_none());
-    assert!((preview.at.x - target.x).abs() > 1e-6);
+    assert!((preview.lonlat(h.state()).unwrap().x - target.x).abs() > 1e-6);
     near(first(&h), c(0., 0.));
     release(&mut h, to);
-    near(first(&h), preview.at);
+    near(first(&h), preview.lonlat(h.state()).unwrap());
     assert_eq!(h.state().session.undo_depth(), 1);
 }
 
@@ -188,7 +188,7 @@ fn multipoint_source_remains_excluded_as_a_whole() {
     let preview = h.state().map.vertex_drag.unwrap();
     assert!(!preview.snapped);
     release(&mut h, to);
-    near(first(&h), preview.at);
+    near(first(&h), preview.lonlat(h.state()).unwrap());
     let geometry = h.state().session.map().layers[0].dataset.features[0].geometry.as_ref().unwrap();
     assert_eq!(geometry.vertex(VertexId::new(0, 0, 1)), Some(own));
     assert_eq!(h.state().session.undo_depth(), 1);

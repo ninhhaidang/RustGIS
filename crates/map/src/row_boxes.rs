@@ -44,9 +44,9 @@ impl Grid {
     /// The grid of `rows`' boxes, made in two walks over every row's vertices: one for the box
     /// they are all in, one to list each row's box, so no box is kept per row (a list of them
     /// would take 32 bytes a row while the grid is made). Capped at 256 by 256 cells, so the
-    /// cells' headers (24 bytes each) take about 1.5 MB at most; each row is listed at 4 bytes a
-    /// cell it is in, in at most [`MAX_CELLS_PER_ROW`] cells (usually one to four), or once in
-    /// the wide list.
+    /// cells' headers (24 bytes each) take about 1.5 MB at most; each row is listed at least 4
+    /// bytes (more where a cell's list keeps spare room as it grows) for each cell it is in, in
+    /// at most [`MAX_CELLS_PER_ROW`] cells, or once in the wide list.
     fn new(rows: &Features) -> Grid {
         // A row's box, empty for a row without a shape or a place (`Geometry::extent` leaves out a
         // coordinate that isn't a number, so every other box is finite).
@@ -136,8 +136,8 @@ impl Grid {
 
 impl Cache {
     /// The rows of `rows` whose shape's box may meet `within` (a superset of those that do; one
-    /// without a shape only past `u32::MAX` rows, when every row is given), each once, in order. The grid is made again only once the rows
-    /// change.
+    /// without a shape only past `u32::MAX` rows, when every row is given), each once, in order.
+    /// The grid is made again only once the rows change.
     pub(super) fn touching(&self, rows: &Features, within: &Extent) -> Vec<usize> {
         // The grid is disposable; a poisoned lock does not invalidate the features themselves.
         let mut grid = self.0.lock().unwrap_or_else(|e| e.into_inner());

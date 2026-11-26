@@ -666,11 +666,11 @@ pub fn commands() -> Vec<C> {
             .when(need_editable)
             .params(r#"{"layer"?, "row": number, "geometry": GeoJSON geometry}"#),
         C::new("edit.vertex", "Edit Vertex", "Edit › Features › Modify", edit_vertex).roles(&[]).effects(crate::policy::Effects::NONE).when(need_editable).params(
-            r#"{"layer"?, "row": number, "action": "move"|"insert"|"delete", "part"?: number, "ring"?: number, "index": number (insert: the vertex the new one follows), "lon"?, "lat"?}"#,
+            r#"{"layer"?, "row": number, "action": "move"|"insert"|"delete", "part"?: number, "ring"?: number, "index": number (insert: the vertex the new one follows), "lon"?, "lat"?, "x"?, "y"? (in place of lon/lat: in the layer's own coordinates, written as they are)}"#,
         ),
         C::new("edit.merge", "Merge", "Edit › Features › Modify", merge).roles(&[]).effects(crate::policy::Effects::NONE).when(need_editable_selection),
         C::new("edit.moveSharedVertex", "Move Shared Vertex", "Edit › Features › Modify", shared_vertex::run).roles(&[]).effects(crate::policy::Effects::NONE).when(need_editable).params(
-            r#"{"layer"?, "row": number, "part"?: number, "ring"?: number, "index": number, "lon": degrees, "lat": degrees}"#,
+            r#"{"layer"?, "row": number, "part"?: number, "ring"?: number, "index": number, "lon"?: degrees, "lat"?: degrees, "x"?, "y"? (in place of lon/lat: in the layer's own coordinates)}"#,
         ),
         C::new("edit.explode", "Explode", "Edit › Features › Modify", explode).roles(&[]).effects(crate::policy::Effects::NONE).when(need_editable_selection),
         C::new("edit.split", "Split", "Edit › Features › Modify", split).roles(&[]).effects(crate::policy::Effects::NONE).when(need_editable_selection).params(r#"{"lon", "lat"}"#),
@@ -681,7 +681,7 @@ pub fn commands() -> Vec<C> {
             .when(need_editable_selection)
             .params(r#"{"line": GeoJSON LineString (lon/lat) drawn across the selected line or polygon's boundary}"#),
         C::new("edit.trace", "Trace Edge Path", "Edit › Features", sketch::trace).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
-            r#"{"from": [lon, lat], "to": [lon, lat], "layer"?, "row"?: number (else the nearest edge within the tolerance), "tolerancePx"?: number (default: the snapping tolerance)} (fromOffM and toOffM in Web Mercator metres, or metres of the grid of a layer held in a projected system)"#,
+            r#"{"from": [lon, lat], "to": [lon, lat], "layer"?, "row"?: number (else the nearest edge within the tolerance), "tolerancePx"?: number (default: the snapping tolerance); returns fromOffM and toOffM: Web Mercator metres, or metres of the grid of a layer held in a projected system}"#,
         ),
         C::new("edit.traverse", "Traverse", "Edit › Features › Modify", traverse).roles(&[]).effects(crate::policy::Effects::NONE).when(need_editable).params(
             r#"{"layer"?, "start": [lon, lat], "units"?: "Meters" (default)|"Feet"|"Kilometers"|"Miles", "legs": [{"distance": number, "bearing": degrees from north}]} (closed in a polygon layer, open in a line layer)"#,
@@ -1435,29 +1435,98 @@ fn edit_vertex(s: &mut Session, p: &Json) -> CmdResult {
         }
     };
     let v = rustgis_data::VertexId::new(num("part")?.unwrap_or(0), num("ring")?.unwrap_or(0), num("index")?.ok_or("index is required")?);
-    let at = || -> Result<Coord, String> {
-        let (lon, lat) = (f(p, "lon").ok_or("lon is required")?, f(p, "lat").ok_or("lat is required")?);
-        if !(lon.is_finite() && lat.is_finite()) || lon.abs() > 360.0 || lat.abs() > 90.0 {
-            return Err("lon and lat are degrees".into());
-        }
-        Ok(Coord::new(lon, lat))
-    };
-    // In longitude/latitude, from the layer's own coordinates (`replace_geometry` writes it back).
+    let action = ps(p, "action").ok_or("action is required")?;
+    if !matches!(action, "move" | "insert" | "delete") {
+        return Err(format!("unknown action '{action}'"));
+    }
+    // A deleted vertex needs no place.
+    let own_at = own_place(p)?;
     let l = s.map().layer(id).ok_or("no such row")?;
     let feature = l.dataset.features.row(row).ok_or("no such row")?;
     let own = feature.geometry().ok_or("the feature has no shape")?;
-    let g = l.dataset.feature_to_lonlat(feature.id(), own)?.into_owned();
-    let (g, v) = match ps(p, "action").ok_or("action is required")? {
-        "move" => (g.move_vertex(v, at()?).ok_or("no such vertex")?, v),
-        "insert" => {
-            let g = g.insert_vertex(v, at()?).ok_or("vertices can only be inserted in lines and polygons")?;
-            (g, rustgis_data::VertexId::new(v.part, v.ring, v.index + 1))
-        }
-        "delete" => (g.delete_vertex(v)?, v),
-        a => return Err(format!("unknown action '{a}'")),
+    // Deleting a vertex, or placing one in the layer's own coordinates, edits the feature as it
+    // is stored: no other vertex moves, and a feature with no place in longitude/latitude can be
+    // edited too (#2032 C2f-7).
+    if action == "delete" || own_at.is_some() {
+        let g = own.clone();
+        let (g, v) = vertex_edit(g, action, v, || own_at.ok_or_else(|| "x and y are both required".to_string()))?;
+        replace_geometry_own(s, id, row, g)?;
+        return Ok(json!({"part": v.part, "ring": v.ring, "index": v.index}));
+    }
+    // In longitude/latitude, from the layer's own coordinates (`replace_geometry` writes it back).
+    let Ok(g) = l.dataset.feature_to_lonlat(feature.id(), own) else {
+        // A feature with a place that has no longitude/latitude: edited as stored, the place given
+        // in longitude/latitude written in the layer's coordinates (a place snapped to as stored).
+        let g = own.clone();
+        let (g, v) = vertex_edit(g, action, v, || lonlat_in_own(s, id, lonlat_place(p)?))?;
+        replace_geometry_own(s, id, row, g)?;
+        return Ok(json!({"part": v.part, "ring": v.ring, "index": v.index}));
     };
+    let (g, v) = vertex_edit(g.into_owned(), action, v, || lonlat_place(p))?;
     replace_geometry(s, id, row, g)?;
     Ok(json!({"part": v.part, "ring": v.ring, "index": v.index}))
+}
+
+/// A place in longitude/latitude in the coordinates of layer `id`, as [`replace_geometry`] writes
+/// an edit's places: a stored place of a layer in its system that it reads as ([`held_places`]),
+/// as stored; any other converted as the layer is drawn.
+fn lonlat_in_own(s: &Session, id: u32, at: Coord) -> Result<Coord, String> {
+    let point = Geometry::Point(at);
+    let held = held_places(s, id, &[], &[&point]);
+    match s.map().layer(id).ok_or("no such layer")?.dataset.edit_from_lonlat(point, &held)? {
+        Geometry::Point(c) => Ok(c),
+        _ => Err("the place can't be given in the layer's coordinates".into()),
+    }
+}
+
+/// A vertex's place given in the layer's own coordinates (`x`, `y`: as the vertex editor gives it
+/// on a map in the layer's system, #2032 C2f-7), or `None` when it is given in longitude/latitude
+/// ([`lonlat_place`]) or not at all. Both kinds at once, or half of one, are refused.
+pub(super) fn own_place(p: &Json) -> Result<Option<Coord>, String> {
+    let given = |k: &str| p.get(k).is_some_and(|v| !v.is_null());
+    if !given("x") && !given("y") {
+        // Half a pair is refused here too, even where no place is needed (a deleted vertex).
+        if given("lon") != given("lat") {
+            return Err("lon and lat are both required".into());
+        }
+        return Ok(None);
+    }
+    if given("lon") || given("lat") {
+        return Err("give lon and lat or x and y, not both".into());
+    }
+    let (x, y) = (f(p, "x").ok_or("x and y are both required")?, f(p, "y").ok_or("x and y are both required")?);
+    if !(x.is_finite() && y.is_finite()) {
+        return Err("x and y must be numbers".into());
+    }
+    Ok(Some(Coord::new(x, y)))
+}
+
+/// A vertex's place given in longitude/latitude (`lon`, `lat`).
+pub(super) fn lonlat_place(p: &Json) -> Result<Coord, String> {
+    let (lon, lat) = (f(p, "lon").ok_or("lon is required")?, f(p, "lat").ok_or("lat is required")?);
+    if !(lon.is_finite() && lat.is_finite()) || lon.abs() > 360.0 || lat.abs() > 90.0 {
+        return Err("lon and lat are degrees".into());
+    }
+    Ok(Coord::new(lon, lat))
+}
+
+/// [`edit_vertex`]'s `action` on vertex `v` of `g`, placing a moved or inserted vertex `at`, with
+/// the vertex edited after it (an inserted one follows `v`).
+fn vertex_edit(
+    g: Geometry,
+    action: &str,
+    v: rustgis_data::VertexId,
+    at: impl FnOnce() -> Result<Coord, String>,
+) -> Result<(Geometry, rustgis_data::VertexId), String> {
+    match action {
+        "move" => Ok((g.move_vertex(v, at()?).ok_or("no such vertex")?, v)),
+        "insert" => {
+            let g = g.insert_vertex(v, at()?).ok_or("vertices can only be inserted in lines and polygons")?;
+            Ok((g, rustgis_data::VertexId::new(v.part, v.ring, v.index + 1)))
+        }
+        "delete" => Ok((g.delete_vertex(v)?, v)),
+        a => Err(format!("unknown action '{a}'")),
+    }
 }
 
 /// The places an edit of layer `id`, given in longitude/latitude (`edited`), keeps as stored when
@@ -1865,8 +1934,9 @@ fn split(s: &mut Session, p: &Json) -> CmdResult {
 }
 
 /// [`split`] of the selected lines of layer `id`, held in `grid`'s projected system, in its own
-/// coordinates (#2032 C2f-7): at the point nearest `at` (longitude/latitude) on its segments as they run straight there, measured flat in its
-/// grid. Every place of the line stays as stored; only the point it is split at is new.
+/// coordinates (#2032 C2f-7): at the point nearest `at` (longitude/latitude) on its segments as
+/// they run straight there, measured flat in its grid. Every place of the line stays as stored;
+/// only the point it is split at is new.
 fn split_own(s: &mut Session, id: u32, grid: OwnGrid, at: Coord) -> CmdResult {
     // Converted as the layer is drawn; the split point is projected onto a segment anyway, so
     // stored places aren't looked up for it.

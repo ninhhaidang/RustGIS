@@ -304,3 +304,30 @@ fn streamed_and_disabled_editing_use_existing_guards() {
     assert!(error.contains("Load All Features"), "{error}");
     assert_eq!(s.undo_depth(), 0);
 }
+
+/// With `x`/`y` (the vertex editor on a map in the layer's own system), every coincident node
+/// moves to the place as given, in the layer's coordinates; giving lon/lat too is refused.
+#[test]
+fn a_place_in_the_layers_own_coordinates_moves_every_corner_as_given() {
+    let (mut s, id) = fixture();
+    let utm = rustgis_engine::data::raster::Crs::from_epsg(32631).unwrap();
+    s.map_mut().layer_mut(id).unwrap().dataset.hold_in(utm).unwrap();
+    let corner = s.map().layer(id).unwrap().dataset.features.geometry(0).unwrap().vertex(VertexId::new(0, 0, 0)).unwrap();
+    let at = Coord::new(corner.x + 12.345_678_9, corner.y - 0.987_654_3);
+    let r = s.run("edit.moveSharedVertex", &json!({"layer": id, "row": 0, "index": 0, "x": at.x, "y": at.y})).unwrap();
+    assert_eq!(r["modified"], json!(4));
+    for f in features(&s, id) {
+        let g = f.geometry.unwrap();
+        let mut hits = 0;
+        g.for_each_coord(|c| {
+            assert_ne!(c, corner, "{g:?}");
+            hits += usize::from(c == at);
+        });
+        assert!(hits >= 1, "{g:?}");
+    }
+    let both = json!({"layer": id, "row": 0, "index": 0, "x": at.x, "y": at.y, "lon": 0.0, "lat": 0.0});
+    assert!(s.run("edit.moveSharedVertex", &both).unwrap_err().contains("not both"));
+    // A null beside a place is no place.
+    let null = json!({"layer": id, "row": 0, "index": 0, "x": at.x, "y": at.y, "lon": null});
+    assert!(s.run("edit.moveSharedVertex", &null).is_ok());
+}

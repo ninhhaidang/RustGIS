@@ -19,7 +19,7 @@ use crate::Camera;
 pub const GLOBE_DISTANCE: f64 = 6.0;
 
 /// How a map is drawn.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Projection {
     /// The flat Web Mercator map.
     #[default]

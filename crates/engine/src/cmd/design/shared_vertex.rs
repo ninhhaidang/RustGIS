@@ -15,18 +15,20 @@ pub(super) fn run(s: &mut Session, p: &Value) -> CmdResult {
     let id = s.layer_id(p)?;
     let row = index(p, "row", None)?;
     let vertex = VertexId::new(index(p, "part", Some(0))?, index(p, "ring", Some(0))?, index(p, "index", None)?);
-    let lon = super::f(p, "lon").ok_or("lon is required")?;
-    let lat = super::f(p, "lat").ok_or("lat is required")?;
-    if !(lon.is_finite() && lat.is_finite()) || lon.abs() > 360.0 || lat.abs() > 90.0 {
-        return Err("lon and lat are degrees".into());
-    }
+    let own = super::own_place(p)?;
     let layer = s.map().layer(id).ok_or("no such layer")?;
-    // The place in the layer's own coordinates, where its vertices are matched exactly: a stored
-    // place it was snapped to, as stored.
-    let place = Geometry::Point(Coord::new(lon, lat));
-    let held = super::held_places(s, id, &[], &[&place]);
-    let Geometry::Point(at) = layer.dataset.edit_from_lonlat(place, &held)? else {
-        return Err("the place can't be given in the layer's coordinates".into());
+    // The place in the layer's own coordinates, where its vertices are matched exactly: as given
+    // there (`x`, `y`), or from longitude/latitude, a stored place it was snapped to as stored.
+    let at = match own {
+        Some(at) => at,
+        None => {
+            let place = Geometry::Point(super::lonlat_place(p)?);
+            let held = super::held_places(s, id, &[], &[&place]);
+            let Geometry::Point(at) = layer.dataset.edit_from_lonlat(place, &held)? else {
+                return Err("the place can't be given in the layer's coordinates".into());
+            };
+            at
+        }
     };
     let source = layer.dataset.features.get(row).ok_or("no such row")?.geometry.as_ref().ok_or("the feature has no shape")?;
     if !matches!(source, Geometry::Polygon(_)) {

@@ -3861,8 +3861,9 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
             let cam = app.session.map().camera;
             let key = [c.x, c.y, cam.center.x + cam.center.y * 1e-3, cam.res, app.session.revision as f64];
             match (&app.map.vertex_drag, &app.map.snap) {
-                // A dragged vertex has snapped already (leaving its own feature out).
-                (Some(d), _) => d.snapped.then_some(d.at),
+                // A dragged vertex has snapped already (leaving its own feature out), in view
+                // coordinates.
+                (Some(d), _) => d.snapped_lonlat,
                 (None, Some((k, at))) if *k == key => *at,
                 _ => {
                     // Asked directly, not as a command: commands mark the map changed.

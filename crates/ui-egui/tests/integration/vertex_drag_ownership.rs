@@ -324,7 +324,7 @@ fn closed_line_and_polygon_keep_their_existing_closure_semantics() {
         let preview = h.state().map.vertex_drag.unwrap();
         release(&mut h, to);
         let actual = h.state().session.map().layers[0].dataset.features[0].geometry.as_ref().unwrap();
-        assert_eq!(actual.vertex(VertexId::new(0, 0, 0)), Some(preview.at));
+        assert_eq!(actual.vertex(VertexId::new(0, 0, 0)), preview.lonlat(h.state()));
         match actual {
             Geometry::Polygon(parts) => assert_eq!(parts[0][0].first(), parts[0][0].last()),
             Geometry::Line(parts) => assert_eq!(parts[0].last(), Some(&c(0., 0.))),

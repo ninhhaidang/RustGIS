@@ -244,3 +244,79 @@ fn a_split_says_how_many_segments_it_couldnt_measure_and_a_clean_one_says_nothin
     let said = split(Geometry::Line(vec![vec![Coord::new(X, Y), Coord::new(X + SIDE, Y + SIDE)]]));
     assert!(said.iter().all(|t| !t.contains("could not be measured")), "{said:?}");
 }
+
+/// `edit.vertex` with `x`/`y` (the vertex editor on a map in the layer's own system) writes the
+/// place as given, in the layer's coordinates; a deleted vertex leaves every other as stored. A
+/// feature with a place that can't be given in longitude/latitude is edited so too (#2032 C2f-7).
+#[test]
+fn a_vertex_given_in_the_layers_own_coordinates_is_written_as_it_is() {
+    let far = Geometry::Polygon(vec![vec![vec![
+        Coord::new(500_000.1, 5_200_000.3),
+        Coord::new(501_000.7, 5_200_000.9),
+        Coord::new(1e9, 5_201_000.0),
+        Coord::new(500_000.1, 5_201_000.0),
+        Coord::new(500_000.1, 5_200_000.3),
+    ]]]);
+    let mut s = session(held("Parcels", GeometryType::Polygon, vec![square(500_000.0, 5_000_000.0, 100.0), far.clone()]));
+    let id = s.map().layers[0].id;
+    let at = Coord::new(500_012.345_678_9, 5_000_003.210_987_6);
+    let before = stored(&s);
+    let r = s.run("edit.vertex", &json!({"layer": id, "row": 0, "action": "move", "index": 1, "x": at.x, "y": at.y})).unwrap();
+    assert_eq!(r, json!({"part": 0, "ring": 0, "index": 1}));
+    let after = stored(&s);
+    assert_eq!(after[1], at, "written as given");
+    assert_eq!(after.iter().zip(&before).filter(|(a, b)| a != b).count(), 1, "no other place moved");
+    let r =
+        s.run("edit.vertex", &json!({"layer": id, "row": 0, "action": "insert", "index": 1, "x": 500_050.0, "y": 5_000_001.0})).unwrap();
+    assert_eq!(r, json!({"part": 0, "ring": 0, "index": 2}));
+    assert_eq!(
+        s.map().layers[0].dataset.features.geometry(0).unwrap().vertex(rustgis_data::VertexId::new(0, 0, 2)),
+        Some(Coord::new(500_050.0, 5_000_001.0))
+    );
+    // The feature with no place in longitude/latitude: moved and a vertex deleted, as stored.
+    assert!(s.map().layers[0].dataset.feature_to_lonlat(1, &far).is_err());
+    s.run("edit.vertex", &json!({"layer": id, "row": 1, "action": "move", "index": 0, "x": 500_000.5, "y": 5_200_000.5})).unwrap();
+    s.run("edit.vertex", &json!({"layer": id, "row": 1, "action": "delete", "index": 1})).unwrap();
+    let g = s.map().layers[0].dataset.features.geometry(1).unwrap().clone();
+    let want = far.move_vertex(rustgis_data::VertexId::new(0, 0, 0), Coord::new(500_000.5, 5_200_000.5)).unwrap();
+    assert_eq!(g, want.delete_vertex(rustgis_data::VertexId::new(0, 0, 1)).unwrap());
+    // Undo goes back step by step.
+    s.run("edit.undo", &json!(null)).unwrap();
+    assert_eq!(s.map().layers[0].dataset.features.geometry(1), Some(&want));
+    // Both kinds of place, or half of one, are refused.
+    let both = json!({"layer": id, "row": 0, "action": "move", "index": 1, "x": 1.0, "y": 2.0, "lon": 9.0, "lat": 45.0});
+    assert!(s.run("edit.vertex", &both).unwrap_err().contains("not both"));
+    let half = json!({"layer": id, "row": 0, "action": "move", "index": 1, "x": 1.0});
+    assert!(s.run("edit.vertex", &half).unwrap_err().contains("x and y"));
+    let half = json!({"layer": id, "row": 0, "action": "delete", "index": 1, "lon": 9.0, "lat": null});
+    assert!(s.run("edit.vertex", &half).unwrap_err().contains("lon and lat"));
+}
+
+/// A vertex of a feature with a place that has no longitude/latitude, moved to a place given in
+/// longitude/latitude (a vertex snapped to), is written in the layer's coordinates: the place
+/// snapped to as stored, every other vertex as it was.
+#[test]
+fn a_lonlat_place_on_a_feature_with_no_lonlat_is_written_in_its_own_coordinates() {
+    let far = Geometry::Polygon(vec![vec![vec![
+        Coord::new(500_000.1, 5_200_000.3),
+        Coord::new(501_000.7, 5_200_000.9),
+        Coord::new(1e9, 5_201_000.0),
+        Coord::new(500_000.1, 5_201_000.0),
+        Coord::new(500_000.1, 5_200_000.3),
+    ]]]);
+    let corner = Coord::new(500_100.123_456_7, 5_000_100.765_432_1);
+    let other = Geometry::Polygon(vec![vec![vec![
+        Coord::new(500_000.0, 5_000_000.0),
+        Coord::new(500_100.0, 5_000_000.0),
+        corner,
+        Coord::new(500_000.0, 5_000_100.0),
+        Coord::new(500_000.0, 5_000_000.0),
+    ]]]);
+    let mut s = session(held("Parcels", GeometryType::Polygon, vec![other, far.clone()]));
+    let id = s.map().layers[0].id;
+    assert!(s.map().layers[0].dataset.feature_to_lonlat(1, &far).is_err());
+    let [lon, lat] = lonlat(corner);
+    s.run("edit.vertex", &json!({"layer": id, "row": 1, "action": "move", "index": 1, "lon": lon, "lat": lat})).unwrap();
+    let g = s.map().layers[0].dataset.features.geometry(1).unwrap().clone();
+    assert_eq!(g, far.move_vertex(rustgis_data::VertexId::new(0, 0, 1), corner).unwrap());
+}

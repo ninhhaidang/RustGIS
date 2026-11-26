@@ -102,7 +102,7 @@ edit.flip
 edit.groundToGrid on? scale? rotation?
 edit.merge
 edit.move dx dy units?
-edit.moveSharedVertex layer? row part? ring? index lon lat
+edit.moveSharedVertex layer? row part? ring? index lon? lat? x? y?
 edit.paste layer? text?
 edit.pasteSpecial name? text?
 edit.previewShapeConversion layer? row featureId? kind request? image? frame?
@@ -124,7 +124,7 @@ edit.traverse layer? start units? legs
 edit.undo
 edit.updateBox layer? row featureId? box
 edit.updateCircle layer? row featureId? circle
-edit.vertex layer? row action part? ring? index lon? lat?
+edit.vertex layer? row action part? ring? index lon? lat? x? y?
 embeddings.add dataset url? year? bands? stretch? dimension? bbox? name? ran?
 embeddings.addCube dataset bbox? start? end? bands? stretch? name? found? complete? unusable?
 embeddings.change dataset from? to? bbox? cellSize? name? ran?

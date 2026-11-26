@@ -170,15 +170,20 @@ fn split_and_cut_leave_out_what_they_cant_place() {
     assert!(e.contains("can't be given in longitude/latitude, so they can't be cut"), "{e}");
 }
 
-/// An edit of the one feature that can't be placed (a vertex, a reshape, a merge with it) is
-/// refused naming the layer and the feature.
+/// An edit of the one feature that can't be placed (a reshape, a merge with it) is refused
+/// naming the layer and the feature. A vertex moved to a place in longitude/latitude is written
+/// in the layer's coordinates, every other vertex as stored (#2032 C2f-7).
 #[test]
 fn an_edit_of_a_feature_it_cant_place_names_it() {
     let mut s = session(true);
     let id = s.map().layer_by_name("lines").unwrap().dataset.features.row(1).unwrap().id();
     let named = format!("lines: feature {id} has a place in");
-    let e = s.run("edit.vertex", &json!({"layer": "lines", "row": 1, "action": "move", "index": 0, "lon": 10.0, "lat": 45.0})).unwrap_err();
-    assert!(e.contains(&named) && e.contains("so it can't be edited there"), "{e}");
+    let before = s.map().layer_by_name("lines").unwrap().dataset.features.geometry(1).unwrap().clone();
+    s.run("edit.vertex", &json!({"layer": "lines", "row": 1, "action": "move", "index": 0, "lon": 10.0, "lat": 45.0})).unwrap();
+    let after = s.map().layer_by_name("lines").unwrap().dataset.features.geometry(1).unwrap().clone();
+    let v = rustgis_data::VertexId::new(0, 0, 0);
+    assert_ne!(after.vertex(v), before.vertex(v));
+    assert_eq!(after.move_vertex(v, before.vertex(v).unwrap()), Some(before), "only the moved vertex changes");
     select(&mut s, "lines", &[1]);
     let across = json!({"type": "LineString", "coordinates": [[10.0, 45.0], [10.01, 45.01]]});
     let e = s.run("edit.reshape", &json!({"line": across})).unwrap_err();
