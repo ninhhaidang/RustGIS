@@ -43,6 +43,8 @@ struct Link {
     linked: bool,
     copy: bool,
     rule: bool,
+    /// The file holds several tables, one answer for all of them (a GeoPackage).
+    tables: bool,
     answered: bool,
 }
 
@@ -180,6 +182,11 @@ fn add_chosen(app: &mut RustGisApp, path: &str, layers: &[String], linked: Optio
     app.map.invalidate();
 }
 
+/// Whether a listing found several layers in the file.
+fn several(listing: &Value) -> bool {
+    listing["count"].as_u64().is_some_and(|n| n > 1)
+}
+
 /// Shows the first file waiting to be chosen from; one that turns out to hold a single layer (or
 /// can't be listed) is added as it would have been.
 pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
@@ -191,15 +198,15 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         let landed = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
         match landed {
             None => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
-            Some(Ok(v)) if (c.pick && v["count"].as_u64().is_some_and(|n| n > 1)) || v["link"].is_object() => {
-                if c.pick && v["count"].as_u64().is_some_and(|n| n > 1) {
+            Some(Ok(v)) if (c.pick && several(&v)) || v["link"].is_object() => {
+                if c.pick && several(&v) {
                     c.layers =
                         v["layers"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|l| (l.to_string(), true)).collect();
                 }
                 // One that can't be read whole can only be linked.
                 c.link = v["link"]["copy"].as_bool().map(|copy| {
                     let rule = v["link"]["linked"] == true;
-                    Link { linked: !copy || rule, copy, rule, answered: false }
+                    Link { linked: !copy || rule, copy, rule, tables: several(&v), answered: false }
                 });
                 c.listing = None;
             }
@@ -319,6 +326,9 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
 
 /// Copy into the project or link to the file (#2350), with what each means: a linked layer is
 /// read in place, so editing it or defining its projection asks for Load All Features first.
+/// While the question is unanswered for a file of several tables ([`Link::tables`]), and it starts
+/// at "Link to the file" for a rule that would link some table, the dialog says each table follows
+/// its own size (#2977).
 fn link_choice(ui: &mut egui::Ui, link: &mut Link, t: &Tokens) {
     let dim = |text: &str| egui::RichText::new(text.to_string()).color(t.text_dim);
     ui.add_enabled_ui(link.copy, |ui| {
@@ -334,6 +344,12 @@ fn link_choice(ui: &mut egui::Ui, link: &mut Link, t: &Tokens) {
         )))
         .wrap(),
     );
+    if link.tables && link.rule && !link.answered {
+        ui.add(
+            egui::Label::new(dim(tl!("Until you choose, each table follows its own size: large ones are linked, small ones copied.")))
+                .wrap(),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -607,7 +623,8 @@ mod tests {
         h.state_mut().ui.choosing.push(c);
         h.run_steps(2);
         h.get_by_label("Link to the file").click();
-        h.run_steps(1);
+        // The note goes with the answer and moves the buttons up; the Add button is found a frame later.
+        h.run_steps(2);
         h.get_by_label("Add 2").click();
         h.run_steps(2);
         let layers = &h.state().session.map().layers;
@@ -625,6 +642,36 @@ mod tests {
         let layers = &h.state().session.map().layers;
         assert_eq!(layers.len(), before + 4);
         assert!(layers[..2].iter().all(|l| !l.is_streamed()));
+    }
+
+    /// A GeoPackage whose question starts at "Link to the file" for a rule that links some table
+    /// says, until the user answers, that each table follows its own size (#2977), with the list of
+    /// tables or without it (Ask Which Layers to Add off); a file answered, one that copies all,
+    /// and a file of one table say nothing of the kind.
+    #[test]
+    fn a_link_question_says_each_table_follows_its_size_until_answered() {
+        use egui_kittest::kittest::Queryable;
+        const NOTE: &str = "Until you choose, each table follows its own size: large ones are linked, small ones copied.";
+        // Whether the note is there before the answer and after a click on Link.
+        let shown = |listing: Value, pick: bool| {
+            let mut h = harness(RustGisApp::new(Session::new(Project::default())));
+            let opened = h.state().session.opened;
+            let mut c = listed(opened, "/nonexistent/survey.gpkg", Ok(listing));
+            c.pick = pick;
+            h.state_mut().ui.choosing.push(c);
+            h.run_steps(2);
+            let before = h.query_by_label(NOTE).is_some();
+            h.get_by_label("Link to the file").click();
+            h.run_steps(2);
+            (before, h.query_by_label(NOTE).is_some())
+        };
+        let mixed = json!({"count": 2, "layers": ["a", "b"], "link": {"linked": true, "copy": true}});
+        assert_eq!(shown(mixed.clone(), true), (true, false), "said until the answer, then no longer");
+        assert_eq!(shown(mixed, false), (true, false), "the same with no list of tables");
+        let small = json!({"count": 2, "layers": ["a", "b"], "link": {"linked": false, "copy": true}});
+        assert_eq!(shown(small, true), (false, false), "every table copied: nothing to say");
+        let one = json!({"count": 1, "layers": ["a"], "link": {"linked": true, "copy": true}});
+        assert_eq!(shown(one, false), (false, false), "one table: no rule to follow per table");
     }
 
     /// Cancel, or the window closed, stops the listing still on its way (AGENTS.md › Never hold

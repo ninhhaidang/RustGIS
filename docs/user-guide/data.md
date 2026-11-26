@@ -1492,7 +1492,9 @@ past 32 MiB starts at Link, and stays linked even when it holds few features). A
 the file's path (relative to the project's folder when it can, so a folder moved whole keeps it),
 not its features: to edit it or define its projection, choose **Load All Features** first. A file
 too large to read whole can only be linked. A GeoPackage of several tables asks once, at the foot
-of **Choose Layers**; one table read in place links them all. A GeoPackage table's size is the
+of **Choose Layers**, starting at **Link to the file** if any table would be linked. While that
+answer is untouched, a note says each table follows its own size (a large one is linked, a small
+one copied); clicking either answer sends it for every table. A GeoPackage table's size is the
 feature count GDAL keeps in `gpkg_ogr_contents`, when the file has one along with the triggers GDAL
 keeps it up to date by, so a large table isn't scanned to count it; otherwise its rows are counted
 (a table with Z or M on every geometry is always counted, as that also counts its geometries). A
