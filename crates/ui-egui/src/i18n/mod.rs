@@ -528,6 +528,13 @@ pub fn note_raw(n: &rustgis_assistant::provider::Note) -> String {
     fmt_raw(n.template, &args)
 }
 
+/// `logical`, a message made in logical order (of parts from [`fmt_raw`] and [`t_raw`]), in
+/// display form, as [`fmt`] gives its message: for a message put together from parts, which
+/// is put in display form once, as a whole.
+pub(crate) fn display(logical: &str) -> String {
+    rtl::visual(logical)
+}
+
 /// [`fmt`] in logical order, without the display form: for a message shown with
 /// [`paragraph`], which fits a right-to-left message to its rows and puts each row in
 /// display form itself.

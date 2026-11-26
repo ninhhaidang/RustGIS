@@ -118,6 +118,8 @@ pub struct Dialogs {
     pub csv_crs_dirty: bool,
     /// Import DXF's file, picked before the dialog opens.
     pub dxf: Option<DxfFile>,
+    /// Select By Attributes' Values list: its field, and the values read for it.
+    pub values: crate::fieldvalues::Form,
     /// Reset collapsed then closed dialogs when reopening
     pub reset_collapse: bool,
 }
@@ -1037,6 +1039,8 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     });
     if (!open || close) && app.dialogs.open == Some(which) {
         app.dialogs.open = None;
+        // Its values read are dropped with the dialog.
+        app.dialogs.values = Default::default();
         if which == "addDxf" {
             app.dialogs.dxf = None;
         }
@@ -2880,12 +2884,27 @@ const MAX_FIELD_CHIPS: usize = 40;
 /// offer. A field an earlier one shadows (`name` after `Name`: the expression reads the first,
 /// letter case aside) gets no button, as the completion list doesn't offer it.
 pub(crate) fn field_chips(ui: &mut egui::Ui, fields: &[rustgis_engine::data::Field], text: &mut String) {
+    field_chips_with(ui, fields, text, |_| {});
+}
+
+/// [`field_chips`] with `first` drawn right after the "Fields:" label, in the row of the buttons
+/// (Select By Attributes' Values button). Returns the name of the field whose button was clicked
+/// this frame, for what depends on the field last chosen.
+pub(crate) fn field_chips_with(
+    ui: &mut egui::Ui,
+    fields: &[rustgis_engine::data::Field],
+    text: &mut String,
+    first: impl FnOnce(&mut egui::Ui),
+) -> Option<String> {
+    let mut clicked = None;
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new(tl!("Fields:")).small().weak());
+        first(ui);
         let mut seen = std::collections::HashSet::new();
         for f in fields.iter().filter(|f| seen.insert(f.name.to_ascii_lowercase())).take(MAX_FIELD_CHIPS) {
             if ui.small_button(&f.name).clicked() {
                 add_word(text, &crate::exprcomplete::field_ref(&f.name));
+                clicked = Some(f.name.clone());
             }
         }
     });
@@ -2900,6 +2919,7 @@ pub(crate) fn field_chips(ui: &mut egui::Ui, fields: &[rustgis_engine::data::Fie
             add_word(text, &word);
         }
     });
+    clicked
 }
 
 fn select_by_attributes(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) -> bool {
@@ -2944,7 +2964,7 @@ fn select_by_attributes(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) -> 
     // Suggestions as it's typed: the fields, functions, variables and keywords (#1240).
     let ds = app.session.map().layer_by_name(&app.dialogs.layer).map(|l| &l.dataset);
     let id = egui::Id::unique("sba_where");
-    crate::exprcomplete::expr_edit_lines(ui, id, &mut app.dialogs.text, ds, |text| {
+    let edit = crate::exprcomplete::expr_edit_lines(ui, id, &mut app.dialogs.text, ds, |text| {
         text_box(text)
             .hint_text(tl!("e.g. pop_est > 100000000 AND continent = 'Asia'"))
             .desired_rows(3)
@@ -2952,8 +2972,23 @@ fn select_by_attributes(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) -> 
             .font(egui::TextStyle::Monospace)
     })
     .labelled_by(input_label.id);
+    // The Values list is of the field last clicked, or typed in the box.
+    app.dialogs.values.follow(&app.dialogs.layer);
+    if let Some(ds) = ds.filter(|_| edit.has_focus()) {
+        app.dialogs.values.follow_box(ui, id, &app.dialogs.text, ds);
+    }
     let fields = ds.map(|d| d.fields.as_slice()).unwrap_or_default();
-    field_chips(ui, fields, &mut app.dialogs.text);
+    let mut picked = None;
+    let clicked = field_chips_with(ui, fields, &mut app.dialogs.text, |ui| {
+        picked = crate::fieldvalues::button(ui, &mut app.dialogs.values, ds);
+    });
+    if let Some(field) = clicked {
+        app.dialogs.values.choose(&field);
+    }
+    if let (Some((field, value)), Some(ds)) = (picked, ds) {
+        app.dialogs.values.accept(&mut app.dialogs.text, &field, &value, ds);
+    }
+    crate::fieldvalues::said(ui, &app.dialogs.values);
     // Live validation, once no suggestion is offered: a word still being chosen isn't an error yet.
     let offering = crate::exprcomplete::offering(ui, id);
     let check = app
@@ -4432,6 +4467,292 @@ mod tests {
         assert_eq!(shown(&h, "continent"), continent, "the list closed");
         assert_eq!(h.state().dialogs.open, Some("selectByAttributes"), "Escape took the list, not the dialog");
         assert!(h.query_by_label_contains("Invalid:").is_some(), "the error once the list is closed");
+    }
+
+    /// Select By Attributes' Values list: the distinct values of the field last clicked, typed or
+    /// put the cursor in; a click writes the comparison with the field, or only the value after an
+    /// operator. Read once when the list is opened, not each frame it stays open, and dropped when
+    /// the field or the layer changes.
+    #[test]
+    fn select_by_attributes_values_list_writes_what_it_lists() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.run("ui.dialog", json!({"name": "selectByAttributes"})).unwrap();
+        app.dialogs.layer = "Countries".into();
+        let mut h = app_harness(app);
+        h.run_steps(3);
+        let values = |h: &mut egui_kittest::Harness<'static, RustGisApp>| {
+            h.get_by_role_and_label(Role::Button, "Values ▾").click();
+            h.run();
+        };
+        let pick = |h: &mut egui_kittest::Harness<'static, RustGisApp>, value: &str| {
+            h.get_by_role_and_label(Role::Button, value).click();
+            h.run();
+        };
+        // No field chosen yet: it says what to do, as the list has nothing to show.
+        values(&mut h);
+        assert!(h.query_by_label("Click a field, or put the cursor in one, to list its values").is_some());
+        // A field clicked: its values are listed, read once however long the list stays open.
+        h.get_by_role_and_label(Role::Button, "continent").click();
+        h.run();
+        assert!(h.query_by_label("Click a field, or put the cursor in one, to list its values").is_none(), "said no more");
+        // The button wrote the field into the box, and the box is not cleared: the value adds the
+        // comparison to it, not the field again.
+        assert_eq!(h.state().dialogs.text, "continent ");
+        values(&mut h);
+        h.run_steps(5);
+        assert_eq!(h.state().dialogs.values.reads, 1);
+        assert!(h.query_by_label_contains("evenly spread").is_none() && h.query_by_label_contains("read for the view").is_none());
+        pick(&mut h, "'Asia'");
+        assert_eq!(h.state().dialogs.text, "continent = 'Asia' ", "the comparison, the value quoted");
+        assert!(h.query_by_role_and_label(Role::Button, "'Africa'").is_none(), "the list closed");
+        // Opened again for the same field: the values are kept.
+        values(&mut h);
+        assert_eq!(h.state().dialogs.values.reads, 1, "kept while the dialog stays on the field");
+        // After an operator only the value goes.
+        h.state_mut().dialogs.text = "continent <> ".into();
+        pick(&mut h, "'Africa'");
+        assert_eq!(h.state().dialogs.text, "continent <> 'Africa' ");
+        h.state_mut().dialogs.text = "name IN (".into();
+        values(&mut h);
+        pick(&mut h, "'Asia'");
+        assert_eq!(h.state().dialogs.text, "name IN ('Asia') ", "a list of one, closed so the clause reads");
+        // Another field reads its own values.
+        h.get_by_role_and_label(Role::Button, "name").click();
+        h.run();
+        h.state_mut().dialogs.text.clear();
+        values(&mut h);
+        assert_eq!(h.state().dialogs.values.reads, 2);
+        assert!(h.query_by_role_and_label(Role::Button, "'Asia'").is_none(), "not the last field's values");
+        // Another layer has no field chosen: the list is dropped with the layer.
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.state_mut().dialogs.layer = "Cities".into();
+        h.run_steps(2);
+        values(&mut h);
+        assert!(h.query_by_label("Click a field, or put the cursor in one, to list its values").is_some());
+        // Dropped with the dialog.
+        h.state_mut().dialogs.layer = "Countries".into();
+        h.run_steps(2);
+        h.get_by_role_and_label(Role::Button, "continent").click();
+        h.run();
+        values(&mut h);
+        assert_eq!(h.state().dialogs.values.reads, 3);
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Cancel").click();
+        h.run();
+        assert_eq!((h.state().dialogs.open, h.state().dialogs.values.reads), (None, 0));
+    }
+
+    /// The value goes where the cursor was that the field came from, not at the end of the clause.
+    #[test]
+    fn select_by_attributes_values_list_fills_the_gap_at_the_cursor() {
+        use egui::accesskit::Role;
+        use egui::text::{CCursor, CCursorRange};
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.run("ui.dialog", json!({"name": "selectByAttributes"})).unwrap();
+        app.dialogs.layer = "Countries".into();
+        let mut h = app_harness(app);
+        h.run_steps(3);
+        let id = egui::Id::unique("sba_where");
+        h.state_mut().dialogs.text = "continent =  AND pop_est > 1".into();
+        h.ctx.memory_mut(|m| m.request_focus(id));
+        h.run();
+        let mut state = egui::widgets::text_edit::TextEditState::load(&h.ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(12))));
+        state.store(&h.ctx, id);
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Values ▾").click();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "'Asia'").click();
+        h.run();
+        assert_eq!(h.state().dialogs.text, "continent = 'Asia' AND pop_est > 1", "the gap filled, the rest kept");
+    }
+
+    /// Compared with something computed (`upper(name) = ▮`), there is no field to list: not the one
+    /// clicked before.
+    #[test]
+    fn select_by_attributes_values_list_lists_nothing_beside_a_computed_left_side() {
+        use egui::accesskit::Role;
+        use egui::text::{CCursor, CCursorRange};
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.run("ui.dialog", json!({"name": "selectByAttributes"})).unwrap();
+        app.dialogs.layer = "Countries".into();
+        let mut h = app_harness(app);
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Button, "continent").click();
+        h.run();
+        let id = egui::Id::unique("sba_where");
+        h.state_mut().dialogs.text = "upper(name) = ".into();
+        h.ctx.memory_mut(|m| m.request_focus(id));
+        h.run();
+        let mut state = egui::widgets::text_edit::TextEditState::load(&h.ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(14))));
+        state.store(&h.ctx, id);
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Values ▾").click();
+        h.run();
+        assert!(h.query_by_label("Click a field, or put the cursor in one, to list its values").is_some(), "no field chosen");
+        assert!(h.query_by_role_and_label(Role::Button, "'Asia'").is_none(), "continent isn't listed");
+    }
+
+    /// The list stays as it was read while it is open: rows that change under it (a streamed
+    /// layer's next view) don't change what Enter takes. Opened again, it reads the rows then.
+    #[test]
+    fn select_by_attributes_values_list_does_not_change_while_open() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        use rustgis_engine::data::Value;
+        let mut app = RustGisApp::with_sample();
+        app.run("ui.dialog", json!({"name": "selectByAttributes"})).unwrap();
+        app.dialogs.layer = "Countries".into();
+        let mut h = app_harness(app);
+        h.run_steps(3);
+        let layer = |h: &egui_kittest::Harness<'static, RustGisApp>| {
+            h.state().session.map().layer_by_name("Countries").map(|l| (l.id, l.dataset.clone()))
+        };
+        let (id, ds) = layer(&h).unwrap();
+        let field = ds.fields.iter().position(|f| f.name == "continent").unwrap();
+        let first =
+            rustgis_engine::data::query::field_values(&ds, field, rustgis_engine::data::query::VALUES_READ).values[0].written.clone();
+        h.get_by_role_and_label(Role::Button, "continent").click();
+        h.run();
+        h.state_mut().dialogs.text.clear();
+        h.get_by_role_and_label(Role::Button, "Values ▾").click();
+        h.run();
+        assert_eq!(h.state().dialogs.values.reads, 1);
+        // A new value that sorts before the rest arrives while the list is open.
+        let mut attrs = vec![Value::Null; ds.fields.len()];
+        attrs[field] = Value::Text("Aaa".into());
+        h.state_mut().session.map_mut().layer_mut(id).unwrap().dataset.push(None, attrs);
+        h.run_steps(3);
+        assert!(h.query_by_role_and_label(Role::Button, "'Aaa'").is_none(), "the list is as it was opened");
+        assert_eq!(h.state().dialogs.values.reads, 1, "not read again while open");
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().dialogs.text, format!("continent = {first} "), "Enter takes the value that was highlighted");
+        // Opened again: the rows now.
+        h.state_mut().dialogs.text.clear();
+        h.get_by_role_and_label(Role::Button, "Values ▾").click();
+        h.run();
+        assert_eq!(h.state().dialogs.values.reads, 2);
+        assert!(h.query_by_role_and_label(Role::Button, "'Aaa'").is_some(), "read again on the next opening");
+    }
+
+    /// A value with a `%` or `_` after `LIKE` is not written, and the box says why.
+    #[test]
+    fn select_by_attributes_values_list_says_why_a_wildcard_value_is_not_added_after_like() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let features = ["a_b", "plain"]
+            .iter()
+            .map(|n| json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [0, 0]}, "properties": {"name": n}}));
+        let text = json!({"type": "FeatureCollection", "features": features.collect::<Vec<_>>()}).to_string();
+        let mut app = RustGisApp::new(Session::new(rustgis_engine::Project::default()));
+        app.run("layer.addDataText", json!({"fileName": "people.geojson", "text": text})).unwrap();
+        app.run("ui.dialog", json!({"name": "selectByAttributes"})).unwrap();
+        let mut h = app_harness(app);
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Button, "name").click();
+        h.run();
+        h.state_mut().dialogs.text = "name LIKE ".into();
+        h.get_by_role_and_label(Role::Button, "Values ▾").click();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "'a_b'").click();
+        h.run();
+        assert_eq!(h.state().dialogs.text, "name LIKE ", "nothing written");
+        assert!(h.query_by_label_contains("matches more than itself").is_some(), "and it says why");
+        // Another value goes in, and the note goes.
+        h.get_by_role_and_label(Role::Button, "Values ▾").click();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "'plain'").click();
+        h.run();
+        assert_eq!(h.state().dialogs.text, "name LIKE 'plain' ");
+        assert!(h.query_by_label_contains("matches more than itself").is_none());
+    }
+
+    /// A field typed in the box is the one listed, as one clicked is.
+    #[test]
+    fn select_by_attributes_values_list_follows_the_field_typed() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.run("ui.dialog", json!({"name": "selectByAttributes"})).unwrap();
+        app.dialogs.layer = "Countries".into();
+        let mut h = app_harness(app);
+        h.run_steps(3);
+        h.ctx.memory_mut(|m| m.request_focus(egui::Id::unique("sba_where")));
+        h.run();
+        h.event(egui::Event::Text("continent".into()));
+        h.run();
+        h.event(egui::Event::Text(" = ".into()));
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Values ▾").click();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "'Asia'").click();
+        h.run();
+        assert_eq!(h.state().dialogs.text, "continent = 'Asia' ", "the operator typed, only the value added");
+    }
+
+    /// A value holding a single quote is written with it doubled, and the clause picks the row.
+    /// A list of values read from a sample says so (`read` of `of` features), a streamed layer's
+    /// says they are of the features in view, and the whole of a layer says nothing.
+    #[test]
+    fn select_by_attributes_values_list_quotes_values_and_says_where_they_come_from() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let points = |names: Vec<String>| {
+            let features = names.iter().enumerate().map(
+                |(i, n)| json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [i % 90, 0]}, "properties": {"name": n}}),
+            );
+            json!({"type": "FeatureCollection", "features": features.collect::<Vec<_>>()}).to_string()
+        };
+        let open = |text: String| {
+            let mut app = RustGisApp::new(Session::new(rustgis_engine::Project::default()));
+            app.run("layer.addDataText", json!({"fileName": "people.geojson", "text": text})).unwrap();
+            app.run("ui.dialog", json!({"name": "selectByAttributes"})).unwrap();
+            let mut h = app_harness(app);
+            h.run_steps(3);
+            h.get_by_role_and_label(Role::Button, "name").click();
+            h.run();
+            h.state_mut().dialogs.text.clear();
+            h.get_by_role_and_label(Role::Button, "Values ▾").click();
+            h.run();
+            h
+        };
+        let mut h = open(points(vec!["O'Brien".into(), "Paul".into()]));
+        h.get_by_role_and_label(Role::Button, "'O''Brien'").click();
+        h.run();
+        let text = h.state().dialogs.text.clone();
+        assert_eq!(text, "name = 'O''Brien' ");
+        let layer = h.state().session.map().layer_by_name(&h.state().dialogs.layer).map(|l| l.dataset.clone());
+        let layer = layer.unwrap();
+        assert_eq!(rustgis_engine::data::query::select(&text, &layer), Ok(vec![0]), "the clause picks the feature it was made from");
+
+        // All of the layer: nothing said. As a streamed layer's view: said.
+        let mut h = open(points(vec!["a".into(), "b".into(), "a".into()]));
+        assert!(h.query_by_label_contains("evenly spread").is_none() && h.query_by_label_contains("read for the view").is_none());
+        let id = h.state().session.map().layer_by_name(&h.state().dialogs.layer).map(|l| l.id).unwrap();
+        h.state_mut().session.map_mut().layer_mut(id).unwrap().dataset.windowed = true;
+        // The list stays as it was read while it is open; opened again, it says so.
+        h.get_by_role_and_label(Role::Button, "Values ▾").click();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Values ▾").click();
+        h.run();
+        assert!(h.query_by_label("Values of the 3 features read for the view").is_some());
+
+        // More features than are read: a sample, and how much of it.
+        let names = (0..rustgis_engine::data::query::VALUES_READ + 50).map(|i| format!("n{}", i % 7)).collect();
+        let h = open(points(names));
+        let layer = h.state().session.map().layer_by_name(&h.state().dialogs.layer).map(|l| l.dataset.clone()).unwrap();
+        let got = rustgis_engine::data::query::field_values(&layer, 0, rustgis_engine::data::query::VALUES_READ);
+        assert!(got.read < got.of, "a sample was read");
+        let said = format!("Values of {} of {} features, evenly spread", got.read, got.of);
+        assert!(h.query_by_label(&said).is_some(), "the list says {said:?}");
     }
 
     /// Calculate Field previews what it would write (#2817): the first three rows of a table, as

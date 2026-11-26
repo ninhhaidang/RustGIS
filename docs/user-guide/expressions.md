@@ -274,6 +274,27 @@ which **Set Filter** applies, those boxes apply what's written when they lose fo
 in the list keeps the focus, so a field taken from it isn't applied half written; while the list
 is open Escape closes it, not the box nor the Display Filters menu.
 
+Select By Attributes also has a **Values** menu beside the field buttons. It lists the distinct
+values of the field last clicked, or the one a value typed at the cursor would be compared with
+(`continent = ` lists `continent`), in the same list. Choosing a value adds what the clause takes
+there, so it still reads: the comparison (`continent = 'Asia'`, the field in double quotes when its
+name needs them, a `'` in the value doubled) where none is open, or what follows a field button
+just clicked (`continent ` becomes `continent = 'Asia'`); only the value after `=`, `<>`, `<`, `>`,
+`<=`, `>=`, `LIKE`, `ILIKE` (whatever is compared, `upper(name) = 'PARIS'` too), in a list
+(`IN ('Asia', 'Africa')`, closed for you) or after `BETWEEN` (which takes the value for both ends,
+to edit); a list of one after `IN`; and in place of a text begun and left open. When the field
+came from the cursor, the value goes where the cursor was and the rest of the clause is kept
+(`continent = ▮ AND pop_est > 1`). After `LIKE` a value with a `%` or `_` isn't added, as the
+suggestions leave it out: it would match more than itself, and the box says to use `=`. Nor is
+a value that would take the clause past its longest length. The values are read as the
+suggestions' are, once when the list is opened and kept while it stays open, and the help says
+when they come from a sample of the layer or, for a streamed layer, from the features read for the
+view, and how many features have a value not listed (longer than 100 characters, with a
+line break or other control character, or a number too large to write in full). True and false are listed as `TRUE` and `FALSE`,
+and a value inside a bracket where one goes is the value alone (`continent = ('Asia')`), each
+bracket left open closed after it. A field with nothing to list (all null, or only values not
+listed) says so under the buttons.
+
 They help too in the clause boxes of several lines: Select By Attributes' **Where**, the Layer
 Properties **Query** tab and a label class's SQL query. There the list shows under the cursor's
 line and the signature over the line of its call. While the list is open, Enter takes its item

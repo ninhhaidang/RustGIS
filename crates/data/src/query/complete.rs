@@ -6,7 +6,7 @@
 use std::cell::{OnceCell, RefCell};
 use std::ops::Range;
 
-use super::{FuncSpec, Kw, Lexed, Open, Parser, Probe, Tok, lex_spans};
+use super::{Arith, FuncSpec, Kw, Lexed, Open, Parser, Probe, Tok, lex_first, lex_spans};
 use crate::value::ClassText;
 use crate::{Dataset, Value};
 
@@ -50,6 +50,10 @@ pub struct Completion {
     /// Whether the value typed here is a `LIKE` / `ILIKE` pattern, where `%` and `_` match more
     /// than themselves (`name LIKE '▮`).
     pub pattern: bool,
+    /// Whether a value typed here is the right-hand side of a comparison, `LIKE`, `IN` or
+    /// `BETWEEN`, whatever its left side is: a field ([`field`](Self::field) says which) or
+    /// something computed (`upper(name) = ▮`), which has no field to take values from.
+    pub compared: bool,
 }
 
 /// A call the cursor is in, from [`complete_at`]: its function, which argument (from 0), and
@@ -134,7 +138,69 @@ pub fn complete_at(text: &str, cursor: usize, ds: &Dataset) -> Option<Completion
         call,
         field: probe.field,
         pattern: probe.pattern,
+        compared: probe.compared,
     })
+}
+
+/// The brackets `text`, a part of an expression, leaves open, and those it closes that it didn't
+/// open, read as the lexer reads it: none in a text or a quoted name (`')'`, `"a)"`, `!a)!`).
+/// `None` when it can't be read into words (as [`complete_at`]); a quote left open at the end
+/// holds the rest.
+pub fn brackets(text: &str) -> Option<(usize, usize)> {
+    let (mut open, mut unopened) = (0usize, 0usize);
+    for t in lex_spans(text, true).ok()?.toks {
+        match t {
+            Tok::LParen => open += 1,
+            Tok::RParen => match open.checked_sub(1) {
+                Some(n) => open = n,
+                None => unopened += 1,
+            },
+            _ => {}
+        }
+    }
+    Some((open, unopened))
+}
+
+/// What `text`, what follows a cursor where a value goes, starts with, as [`follows`] reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Follows {
+    /// A value, which a value written there would stand beside (`= ▮'Africa'`, `▮!name!`): a
+    /// text or quoted name (finished or not), a number, a sign (a value before `-5` would
+    /// subtract it), a bracket, a variable, a `CASE`, or a name that isn't a word coming after a
+    /// value.
+    Value,
+    /// A comparison, which takes the value before it as its left side: a comparison operator
+    /// (`▮= 'Old'`, `▮!= 'Old'`) or `IS`, `NOT`, `LIKE`, `ILIKE`, `IN`, `BETWEEN`.
+    Comparison,
+    /// An operator that makes a value of the one before it (`▮* 2`, `▮|| 'x'`).
+    Operator,
+    /// Anything else: nothing, a closing bracket, a comma, `AND`, `OR`, `WHEN`, `THEN`, `ELSE`,
+    /// `END`, or what can't be read into words.
+    Other,
+}
+
+/// What `text`, what follows a cursor where a value goes, starts with: its first word read as
+/// the lexer reads it, so `!=` is an operator and `!a!` a name. Only that word is read, so what
+/// comes after it needn't read (`'Africa'#`).
+pub fn follows(text: &str) -> Follows {
+    let Some(Lexed { toks, open, .. }) = lex_first(text, true, 1).ok() else { return Follows::Other };
+    let left_side = [Kw::Is, Kw::Not, Kw::Like, Kw::Ilike, Kw::In, Kw::Between];
+    let joins = [Kw::And, Kw::Or, Kw::When, Kw::Then, Kw::Else, Kw::End];
+    let is = |word: &str, kws: &[Kw]| kws.iter().any(|k| k.word().eq_ignore_ascii_case(word));
+    match toks.into_iter().next() {
+        Some(Tok::Str(_) | Tok::QuotedIdent(_) | Tok::Num(_) | Tok::Var(_) | Tok::LParen | Tok::Arith(Arith::Add | Arith::Sub)) => {
+            Follows::Value
+        }
+        Some(Tok::Op(_)) => Follows::Comparison,
+        Some(Tok::Concat | Tok::Arith(_)) => Follows::Operator,
+        Some(Tok::Ident(word)) if is(&word, &left_side) => Follows::Comparison,
+        Some(Tok::Ident(word)) if is(&word, &joins) => Follows::Other,
+        Some(Tok::Ident(_)) => Follows::Value,
+        Some(Tok::RParen | Tok::Comma) => Follows::Other,
+        // A text or name begun and never closed holds the rest.
+        None if open.is_some() => Follows::Value,
+        None => Follows::Other,
+    }
 }
 
 /// The most features [`field_values`] reads of a layer. Where a value compared with a field is
@@ -147,7 +213,7 @@ pub const VALUES_READ: usize = 10_000;
 /// The longest text [`field_values`] gives, in chars. A longer one is a description, not a
 /// value anyone compares with by typing it, and a list as wide as its widest item would run off
 /// the screen with it.
-pub(crate) const VALUE_CHARS: usize = 100;
+pub const VALUE_CHARS: usize = 100;
 
 /// A value of a field, from [`field_values`]: as an expression writes it ([`literal`]: `'O''Br'`,
 /// `3.25`), and as it reads (`O'Br`), what is typed inside its quotes.
@@ -169,6 +235,11 @@ pub struct FieldValues {
     pub read: usize,
     /// How many features the dataset holds: more than `read` when a sample was read.
     pub of: usize,
+    /// How many of the features read have a value left out of `values`: a text or float written
+    /// longer than [`VALUE_CHARS`], a text that breaks a line, an infinite float or a whole number
+    /// too large to write exactly ([`literal`]), for a list of `values` to say it isn't all of
+    /// them. Null and NaN are no value, and aren't counted.
+    pub left_out: usize,
 }
 
 /// The distinct values field `field` of `ds` holds, read from at most `most` of its features,
@@ -180,15 +251,27 @@ pub fn field_values(ds: &Dataset, field: usize, most: usize) -> FieldValues {
     let step = usize::try_from(crate::source::stride(of as u64, most.max(1))).unwrap_or(usize::MAX);
     let mut seen = std::collections::HashSet::new();
     let mut values = Vec::new();
-    let mut read = 0;
+    let (mut read, mut left_out) = (0, 0);
     for f in ds.features.iter().step_by(step) {
         read += 1;
         let Some(v) = f.attrs.get(field) else { continue };
         if matches!(v, Value::Text(t) if t.chars().nth(VALUE_CHARS).is_some() || t.chars().any(char::is_control)) {
+            left_out += 1;
             continue;
         }
-        // A float is written in full (`1e300` as 301 digits): too long to list, as a text is.
-        if let Some(written) = literal(v).filter(|w| !matches!(v, Value::Float(_)) || w.len() <= VALUE_CHARS)
+        let written = literal(v);
+        let unlisted = match v {
+            // A float is written in full (`1e300` as 301 digits): too long to list, as a text is.
+            Value::Float(x) => x.is_infinite() || written.as_ref().is_some_and(|w| w.len() > VALUE_CHARS),
+            // 9e15 or more, which the lexer would read as a float.
+            Value::Int(_) => written.is_none(),
+            _ => false,
+        };
+        if unlisted {
+            left_out += 1;
+            continue;
+        }
+        if let Some(written) = written
             && !seen.contains(&written)
         {
             seen.insert(written.clone());
@@ -198,13 +281,13 @@ pub fn field_values(ds: &Dataset, field: usize, most: usize) -> FieldValues {
     let by_number = ClassText::numeric(values.iter().map(|(t, _)| t));
     values.sort_by(|a, b| if by_number { a.0.cmp(&b.0) } else { a.0.text().cmp(b.0.text()) });
     let values = values.into_iter().map(|(text, written)| FieldValue { written, text: text.into_text() }).collect();
-    FieldValues { values, read, of }
+    FieldValues { values, read, of, left_out }
 }
 
 /// `v` as an expression writes it, to compare a field with: a number as it is (in full, `3.25`,
 /// not rounded as a table shows it), a text, date or date-time in single quotes (a `'` in it
-/// doubled, as the lexer reads it). None for what is no literal: null, true or false (keywords),
-/// a number that isn't finite, and a whole number of 9e15 or more, which the lexer reads as a
+/// doubled, as the lexer reads it), true or false as `TRUE` or `FALSE`. None for what is no
+/// literal: null, a number that isn't finite, and a whole number of 9e15 or more, which the lexer reads as a
 /// float (`query::num`), so that it would pick no feature, or its neighbour's.
 pub fn literal(v: &Value) -> Option<String> {
     match v {
@@ -213,7 +296,8 @@ pub fn literal(v: &Value) -> Option<String> {
         Value::Float(x) if x.is_finite() => Some(if *x == 0.0 { 0.0 } else { *x }.to_string()),
         Value::Text(t) => Some(format!("'{}'", t.replace('\'', "''"))),
         Value::Date(_) | Value::DateTime(_) => Some(format!("'{v}'")),
-        Value::Int(_) | Value::Float(_) | Value::Null | Value::Bool(_) => None,
+        Value::Bool(b) => Some(if *b { "TRUE" } else { "FALSE" }.to_string()),
+        Value::Int(_) | Value::Float(_) | Value::Null => None,
     }
 }
 
@@ -243,27 +327,30 @@ mod tests {
             Field::new("r", FieldType::Double),
             Field::new("d", FieldType::Date),
             Field::new("s", FieldType::DateTime),
+            Field::new("b", FieldType::Boolean),
         ];
         let mut d = Dataset::new("t", GeometryType::Point, fields);
+        // Each boolean is one feature's, so `b = …` picks only that one: the other rows' are null.
         let rows = [
-            ("O'Brien", -5, 3.25, "2026-03-05", "2026-03-05T08:00:00Z"),
-            ("Pop Est", 7, 0.1 + 0.2, "1999-12-31", "2026-03-05T08:00:00+02:00"),
-            ("", 0, 1e-7, "2000-02-29", "2026-03-05T08:00:00.250"),
-            ("x", 8_999_999_999_999_999, 2.5, "2000-03-01", "2026-03-05T09:00:00Z"),
-            ("y", 8_999_999_999_999_998, 3.5, "2000-03-02", "2026-03-05T10:00:00Z"),
+            ("O'Brien", -5, 3.25, "2026-03-05", "2026-03-05T08:00:00Z", Value::Bool(true)),
+            ("Pop Est", 7, 0.1 + 0.2, "1999-12-31", "2026-03-05T08:00:00+02:00", Value::Bool(false)),
+            ("", 0, 1e-7, "2000-02-29", "2026-03-05T08:00:00.250", Value::Null),
+            ("x", 8_999_999_999_999_999, 2.5, "2000-03-01", "2026-03-05T09:00:00Z", Value::Null),
+            ("y", 8_999_999_999_999_998, 3.5, "2000-03-02", "2026-03-05T10:00:00Z", Value::Null),
         ];
-        for (t, i, r, day, at) in rows {
+        for (t, i, r, day, at, b) in rows {
             let attrs = vec![
                 Value::Text(t.into()),
                 Value::Int(i),
                 Value::Float(r),
                 Value::Date(Date::parse(day).unwrap()),
                 Value::DateTime(DateTime::parse(at).unwrap()),
+                b,
             ];
             d.push(None, attrs);
         }
         for (row, f) in d.features.clone().iter().enumerate() {
-            for (i, v) in f.attrs.iter().enumerate() {
+            for (i, v) in f.attrs.iter().enumerate().filter(|(_, v)| **v != Value::Null) {
                 let written = literal(v).unwrap();
                 let name = &d.fields[i].name;
                 assert_eq!(crate::query::select(&format!("{name} = {written}"), &d), Ok(vec![row]), "{name} = {written}");
@@ -274,9 +361,9 @@ mod tests {
         assert_eq!(literal(&Value::Float(-0.0)).as_deref(), Some("0"));
         assert_eq!(literal(&Value::Int(8_999_999_999_999_999)).as_deref(), Some("8999999999999999"));
         assert_eq!(literal(&Value::Int(-8_999_999_999_999_999)).as_deref(), Some("-8999999999999999"));
+        assert_eq!(literal(&Value::Bool(false)).as_deref(), Some("FALSE"));
         for v in [
             Value::Null,
-            Value::Bool(true),
             Value::Float(f64::NAN),
             Value::Float(f64::INFINITY),
             Value::Int(9_000_000_000_000_000),
@@ -287,9 +374,50 @@ mod tests {
         }
     }
 
-    /// A field's values: each once, in Unique Values' order, without what is no literal (null,
-    /// true, false, a text that breaks a line or too long to list); of a large layer, an evenly
-    /// spread sample.
+    /// What follows a cursor is read as the lexer reads it: `!=` is an operator, `!a!` a name, a
+    /// text never closed a value, and a bracket in a text or quoted name is no bracket.
+    #[test]
+    fn what_follows_is_read_as_the_lexer_reads_it() {
+        for (text, then) in [
+            ("'a'", Follows::Value),
+            (" !a b!", Follows::Value),
+            ("\"a\"", Follows::Value),
+            ("'Afr", Follows::Value),
+            ("!Af", Follows::Value),
+            ("-5", Follows::Value),
+            ("+5", Follows::Value),
+            ("(1)", Follows::Value),
+            ("@row_number", Follows::Value),
+            ("name", Follows::Value),
+            ("upper(name)", Follows::Value),
+            ("CASE WHEN 1 THEN 2 END", Follows::Value),
+            ("'Africa' AND pop > #", Follows::Value),
+            ("'Africa'#", Follows::Value),
+            ("!=#", Follows::Comparison),
+            (" != 1", Follows::Comparison),
+            ("<> 1", Follows::Comparison),
+            ("= 'Old'", Follows::Comparison),
+            ("IN ('a')", Follows::Comparison),
+            ("not like 'a%'", Follows::Comparison),
+            ("|| 'x'", Follows::Operator),
+            ("* 2", Follows::Operator),
+            ("", Follows::Other),
+            (") AND", Follows::Other),
+            (", 'b')", Follows::Other),
+            ("AND pop > 1", Follows::Other),
+            ("then 1", Follows::Other),
+            ("#", Follows::Other),
+        ] {
+            assert_eq!(follows(text), then, "{text}");
+        }
+        assert_eq!(brackets("((a = ')' AND \"b)\" = !c)! "), Some((2, 0)));
+        assert_eq!(brackets(" AND b = 1)) "), Some((0, 2)));
+        assert_eq!(brackets("(a = 'open ("), Some((1, 0)));
+        assert_eq!(brackets("#"), None);
+    }
+
+    /// A field's values: each once, in Unique Values' order, without what is no literal (null, a
+    /// text that breaks a line or too long to list); of a large layer, an evenly spread sample.
     #[test]
     fn a_fields_values_are_read_once_each_from_a_bounded_sample() {
         let fields = vec![Field::new("t", FieldType::Text), Field::new("n", FieldType::Double), Field::new("b", FieldType::Boolean)];
@@ -311,11 +439,23 @@ mod tests {
         let written = |field| field_values(&d, field, VALUES_READ).values.into_iter().map(|v| v.written).collect::<Vec<_>>();
         let v = field_values(&d, 0, VALUES_READ);
         assert_eq!((v.read, v.of), (9, 9));
+        // The text of two lines and the one too long are counted as left out; null and NaN are no
+        // value to list, not one left out.
+        assert_eq!(v.left_out, 2);
+        assert_eq!(field_values(&d, 1, VALUES_READ).left_out, 2, "1e300 and -1e-300 in full");
+        // A number too large to write exactly, and an infinite one, are left out and counted.
+        let mut big = Dataset::new("t", GeometryType::Point, vec![Field::new("n", FieldType::Double)]);
+        for n in [Value::Int(9_000_000_000_000_000), Value::Float(f64::INFINITY), Value::Float(f64::NEG_INFINITY), Value::Int(7)] {
+            big.push(None, vec![n]);
+        }
+        let got = field_values(&big, 0, VALUES_READ);
+        assert_eq!((got.left_out, got.values.len()), (3, 1));
         let longest = "x".repeat(VALUE_CHARS);
         assert_eq!(written(0), ["'A'".to_string(), "'b'".to_string(), format!("'{longest}'")], "up to the longest text listed");
         assert_eq!(v.values.first(), Some(&FieldValue { written: "'A'".into(), text: "A".into() }));
         assert_eq!(written(1), ["-1.5", "9", "10"], "by number, `10` and `10.0` once, none written too long");
-        assert!(field_values(&d, 2, VALUES_READ).values.is_empty(), "true and false are keywords");
+        assert_eq!(written(2), ["TRUE"], "as the keyword, once");
+        assert_eq!(field_values(&d, 2, VALUES_READ).left_out, 0);
         assert!(field_values(&d, 9, VALUES_READ).values.is_empty(), "no such field");
         // Past the most read: every other feature, from the first.
         let mut big = Dataset::new("t", GeometryType::Point, vec![Field::new("i", FieldType::Integer)]);
@@ -396,6 +536,35 @@ mod tests {
         assert_eq!(at_end("name = 'O''Br").prefix, "O'Br");
         // A value compared with something that isn't a field has no field to take values from.
         assert_eq!(at_end("upper(name) = ").field, None);
+    }
+
+    /// A value is compared whatever its left side is: a field, or something computed that has no
+    /// field to list values of.
+    #[test]
+    fn a_value_compared_with_anything_is_said_compared() {
+        for text in [
+            "name = ",
+            "pop >= ",
+            "name LIKE ",
+            "name IN ('a', ",
+            "pop BETWEEN ",
+            "pop BETWEEN 1 AND ",
+            "upper(name) = ",
+            "upper(name) LIKE '",
+            "pop + 1 BETWEEN ",
+            "pop * 2 IN (",
+            // A bracket where the value goes holds the value.
+            "name = (",
+            "pop > ((",
+            "name IN ((",
+        ] {
+            assert!(at_end(text).compared, "{text}");
+        }
+        assert_eq!(at_end("name = (").field, Some(0));
+        // A bracket that starts a clause, or holds one, compares nothing.
+        for text in ["", "pop ", "pop > 5 ", "upper(", "name = 'a' AND ", "pop BETWEEN 1 ", "(", "pop > 5 AND (", "name = (pop > 1 AND "] {
+            assert!(!at_end(text).compared, "{text}");
+        }
     }
 
     #[test]

@@ -35,7 +35,10 @@ mod complete;
 #[cfg(test)]
 mod legacy;
 
-pub use complete::{Call, Completion, FieldValue, FieldValues, Place, VALUES_READ, complete_at, field_values, literal};
+pub use complete::{
+    Call, Completion, FieldValue, FieldValues, Follows, Place, VALUE_CHARS, VALUES_READ, brackets, complete_at, field_values, follows,
+    literal,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
@@ -649,6 +652,12 @@ struct Lexed {
 /// `@` or `$` that is the last character, ends it instead of being an error. Anything else that
 /// can't be read is an error either way.
 fn lex_spans(s: &str, tolerant: bool) -> Result<Lexed, String> {
+    lex_first(s, tolerant, usize::MAX)
+}
+
+/// As [`lex_spans`], reading no more than the first `most` tokens: what comes after them, which
+/// may not read (`'a'#`), isn't looked at.
+fn lex_first(s: &str, tolerant: bool, most: usize) -> Result<Lexed, String> {
     if s.chars().count() > MAX_LEN {
         return Err("the expression is too long".into());
     }
@@ -664,7 +673,9 @@ fn lex_spans(s: &str, tolerant: bool) -> Result<Lexed, String> {
         }
         cs.get(st..*i).map(|s| s.iter().collect()).unwrap_or_default()
     };
-    while let Some(&c) = cs.get(i) {
+    while let Some(&c) = cs.get(i)
+        && out.len() < most
+    {
         let start = i;
         let before = out.len();
         match c {
@@ -821,6 +832,11 @@ struct Probe {
     field: Option<usize>,
     /// Whether that value is a `LIKE` / `ILIKE` pattern (`name LIKE ▮`).
     pattern: bool,
+    /// Whether the value at the end is compared, whatever the left side is (`upper(name) = ▮`).
+    compared: bool,
+    /// Where the last compared value starts (a token), with `field` and `pattern` for it: a
+    /// bracket opened there compares the value just inside it too (`name = (▮`).
+    compared_from: Option<(usize, Option<usize>, bool)>,
 }
 
 /// How a token is written, for the symbols [`Probe`] notes.
@@ -864,17 +880,35 @@ impl Parser<'_> {
             what(&mut p);
         }
     }
-    /// Notes that a value at the end would be compared with `l`, when `l` is a field.
+    /// Notes that a value at the end would be compared with `l`, and with which field when `l` is
+    /// one.
     fn note_compared(&self, l: &Expr) {
         self.note_compared_as(l, false);
     }
     /// As [`note_compared`](Self::note_compared), the value a `LIKE` pattern when `pattern`.
     fn note_compared_as(&self, l: &Expr, pattern: bool) {
-        if let Expr::Field(f) = l {
-            self.note(self.pos, |p| {
-                p.field = Some(*f);
-                p.pattern = pattern;
-            });
+        let field = if let Expr::Field(f) = l { Some(*f) } else { None };
+        self.note_compared_at(self.pos, field, pattern);
+    }
+    /// Notes that the value starting at token `i` is compared, with `field` when one.
+    fn note_compared_at(&self, i: usize, field: Option<usize>, pattern: bool) {
+        if let Some(probe) = &self.probe {
+            probe.borrow_mut().compared_from = Some((i, field, pattern));
+        }
+        self.note(i, |p| {
+            p.compared = true;
+            p.field = field;
+            p.pattern = pattern;
+        });
+    }
+    /// Notes, for a bracket at token `open` where a compared value starts, that the value just
+    /// inside it is compared as well (`name = (▮`, `pop > ((▮`).
+    fn note_compared_within(&self, open: usize) {
+        let from = self.probe.as_ref().and_then(|p| p.borrow().compared_from);
+        if let Some((at, field, pattern)) = from
+            && at == open
+        {
+            self.note_compared_at(open + 1, field, pattern);
         }
     }
     fn probing(&self) -> bool {
@@ -1254,6 +1288,7 @@ impl Parser<'_> {
         self.note(self.pos, |p| p.operand = true);
         match self.next() {
             Some(Tok::LParen) => {
+                self.note_compared_within(self.pos.saturating_sub(1));
                 let e = self.or()?;
                 self.note(self.pos, |p| p.symbols.push(")"));
                 if self.next() != Some(Tok::RParen) {

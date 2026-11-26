@@ -44,23 +44,62 @@ enum Item {
 /// Which features a field's values were read from, for the help to say when it isn't all of the
 /// layer's (`query::field_values`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct ValuesRead {
+pub(crate) struct ValuesRead {
     read: usize,
     of: usize,
     /// A streamed layer's: its dataset holds the features read for the view.
-    view: bool,
+    pub(crate) view: bool,
+    /// How many of the features read have a value too long to list, with a control character, or too
+    /// large to write in full.
+    pub(crate) left_out: usize,
 }
 
 impl ValuesRead {
-    /// What the help says of where the values come from; None when they are all the layer's.
+    /// Where `got` was read from, in `ds`: a streamed layer's dataset holds the features read for
+    /// the view (`Dataset::windowed`).
+    pub(crate) fn of(got: &query::FieldValues, ds: &Dataset) -> Self {
+        Self { read: got.read, of: got.of, view: ds.windowed, left_out: got.left_out }
+    }
+
+    /// What the help says of where the values come from, and of values not listed, in display
+    /// form (put in it once, as a whole); None when they are all the layer's.
     fn note(self) -> Option<String> {
+        let from = self.source();
+        let left = (self.left_out > 0).then(|| self.left_out_note());
+        let note = match (from, left) {
+            (Some(from), Some(left)) => crate::i18n::fmt_raw("{from}\n{left_out}", &[("from", &from), ("left_out", &left)]),
+            (from, left) => from.or(left)?,
+        };
+        Some(crate::i18n::display(&note))
+    }
+
+    /// That the values of `left_out` features aren't listed, and why, in logical order: a part
+    /// of a message, which [`i18n::fmt`](crate::i18n::fmt) puts in display form as a whole.
+    pub(crate) fn left_out_note(self) -> String {
+        let (n, max) = (self.left_out.to_string(), query::VALUE_CHARS.to_string());
+        let args = [("n", n.as_str()), ("max", max.as_str())];
+        match self.left_out {
+            1 => crate::i18n::fmt_raw(
+                "The value of 1 feature isn't listed: longer than {max} characters, with a line break or other control character, or too large",
+                &args,
+            ),
+            _ => crate::i18n::fmt_raw(
+                "The values of {n} features aren't listed: longer than {max} characters, with a line break or other control character, or too large",
+                &args,
+            ),
+        }
+    }
+
+    /// Where the values come from, in logical order as [`left_out_note`](Self::left_out_note);
+    /// None when they are all the layer's.
+    fn source(self) -> Option<String> {
         let (read, of) = (self.read.to_string(), self.of.to_string());
         let args = [("read", read.as_str()), ("of", of.as_str())];
         match (self.view, self.read < self.of) {
             (false, false) => None,
-            (false, true) => Some(crate::i18n::fmt("Values of {read} of {of} features, evenly spread", &args)),
-            (true, false) => Some(crate::i18n::fmt("Values of the {of} features read for the view", &args)),
-            (true, true) => Some(crate::i18n::fmt("Values of {read} of the {of} features read for the view, evenly spread", &args)),
+            (false, true) => Some(crate::i18n::fmt_raw("Values of {read} of {of} features, evenly spread", &args)),
+            (true, false) => Some(crate::i18n::fmt_raw("Values of the {of} features read for the view", &args)),
+            (true, true) => Some(crate::i18n::fmt_raw("Values of {read} of the {of} features read for the view, evenly spread", &args)),
         }
     }
 }
@@ -189,7 +228,7 @@ fn values(c: &Completion, text: &str, ds: &Dataset, asked: bool) -> Vec<Item> {
         return Vec::new();
     }
     let got = query::field_values(ds, i, query::VALUES_READ);
-    let read = ValuesRead { read: got.read, of: got.of, view: ds.windowed };
+    let read = ValuesRead::of(&got, ds);
     let lower = c.prefix.to_lowercase();
     got.values
         .into_iter()
@@ -638,12 +677,39 @@ pub(crate) fn menu(ui: &mut Ui, label: impl Into<egui::WidgetText>, menu: Menu) 
         }
     };
     let describe = |i: usize| catalog.get(i).map(|(_, item)| spoken_item(item, None));
-    let items = || catalog.iter().map(|(s, _)| s.clone()).collect();
+    let items = || catalog.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>();
     let (_, accepted) = crate::completion::menu(ui, label, items, |_| None, describe, true, help);
     find(&accepted?).map(|item| match item {
         Item::Function(f) if f.max > 0 => format!("{}(", f.name),
         item => shown(item),
     })
+}
+
+/// A button `label` that opens the list of a field's values, as the Functions and Variables menus
+/// do, each value's help naming its `field` and, when the values aren't all of the layer's, where
+/// they were read from. `values` gives the values as an expression writes them (`'Paris'`, `10`)
+/// and where they were read from; it is called each frame the list is open, so it should hold
+/// what it worked out. Returns the value accepted, as written.
+pub(crate) fn values_menu(
+    ui: &mut Ui,
+    label: impl Into<egui::WidgetText>,
+    field: &str,
+    values: impl FnOnce() -> (std::rc::Rc<[String]>, ValuesRead),
+) -> Option<String> {
+    // Given with the values, and wanted by the help drawn after them.
+    let read = std::cell::Cell::new(None);
+    let items = || {
+        let (items, from) = values();
+        read.set(Some(from));
+        items
+    };
+    let help = |ui: &mut Ui, value: &str, width: f32| {
+        if let Some(read) = read.get() {
+            draw_help(ui, &Item::Value(value.to_string(), field.to_string(), read), None, width);
+        }
+    };
+    let spoken = |_: usize| read.get().map(|read| spoken_item(&Item::Value(String::new(), field.to_string(), read), None));
+    crate::completion::menu(ui, label, items, |_| None, spoken, true, help).1
 }
 
 /// The Functions and Variables menus beside a clause's buttons (`menu`). Returns what to add for
@@ -920,15 +986,30 @@ mod tests {
     /// layer's view.
     #[test]
     fn a_values_help_says_what_they_were_read_from() {
-        let note = |read, of, view| ValuesRead { read, of, view }.note();
+        let note = |read, of, view| ValuesRead { read, of, view, left_out: 0 }.note();
         assert_eq!(note(4, 4, false), None);
         assert_eq!(note(10_000, 25_000, false).as_deref(), Some("Values of 10000 of 25000 features, evenly spread"));
         assert_eq!(note(40, 40, true).as_deref(), Some("Values of the 40 features read for the view"));
         assert_eq!(note(10_000, 30_000, true).as_deref(), Some("Values of 10000 of the 30000 features read for the view, evenly spread"));
+        // Values left out are said, with or without a sample.
+        let left = "The values of 3 features aren't listed: longer than 100 characters, with a line break or other control character, or too large";
+        assert_eq!(
+            ValuesRead { read: 4, of: 4, view: false, left_out: 1 }.note().as_deref(),
+            Some(
+                "The value of 1 feature isn't listed: longer than 100 characters, with a line break or other control character, or too large"
+            )
+        );
+        assert_eq!(ValuesRead { read: 4, of: 4, view: false, left_out: 3 }.note().as_deref(), Some(left));
+        assert_eq!(
+            ValuesRead { read: 10, of: 20, view: false, left_out: 3 }.note(),
+            Some(format!("Values of 10 of 20 features, evenly spread\n{left}"))
+        );
         let mut streamed = places();
         streamed.windowed = true;
         let offer = offer_at("name = '", 8, &streamed, false).unwrap();
-        assert!(matches!(offer.of.first(), Some(Item::Value(_, field, ValuesRead { read: 5, of: 5, view: true })) if field == "name"));
+        assert!(
+            matches!(offer.of.first(), Some(Item::Value(_, field, ValuesRead { read: 5, of: 5, view: true, left_out: 0 })) if field == "name")
+        );
     }
 
     fn catalog_harness(size: egui::Vec2) -> egui_kittest::Harness<'static, ()> {

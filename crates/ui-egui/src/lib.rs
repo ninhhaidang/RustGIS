@@ -50,6 +50,7 @@ mod extensionsui;
 mod failureui;
 mod fieldlists;
 mod fieldmenu;
+mod fieldvalues;
 #[cfg(not(target_arch = "wasm32"))]
 mod filedialog;
 mod fill_editor;

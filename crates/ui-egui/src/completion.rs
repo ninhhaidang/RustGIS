@@ -878,15 +878,18 @@ struct MenuState {
 /// and what it says (`describe`) given to a screen reader with each. The same from the keyboard:
 /// Tab to the button, Enter (or Space) opens it, and Tab on to another widget closes it. Returns
 /// the button, and the item accepted.
-pub(crate) fn menu(
+pub(crate) fn menu<L>(
     ui: &mut Ui,
     label: impl Into<egui::WidgetText>,
-    items: impl FnOnce() -> Vec<String>,
+    items: impl FnOnce() -> L,
     icon: impl Fn(&str) -> Option<&'static str>,
     describe: impl Fn(usize) -> Option<String>,
     has_help: bool,
     help: impl FnOnce(&mut Ui, &str, f32),
-) -> (egui::Response, Option<String>) {
+) -> (egui::Response, Option<String>)
+where
+    L: std::ops::Deref<Target = [String]>,
+{
     let button = ui.button(label);
     let id = button.id.with("menu");
     let pass = ui.ctx().cumulative_pass_nr();
@@ -910,7 +913,9 @@ pub(crate) fn menu(
         });
     }
     s.pass = pass;
-    let items = if s.open { items() } else { Vec::new() };
+    // Lent, not copied: a field's values can run to thousands (`fieldvalues`).
+    let held = s.open.then(items);
+    let items: &[String] = held.as_deref().unwrap_or_default();
     let n = items.len();
     // While it's open the arrows and Escape are the list's, not egui's: they'd move the focus off
     // the button (to another button, which Enter would then press) or drop it. A focused row's
@@ -980,7 +985,7 @@ pub(crate) fn menu(
         let scroll = &mut s.scroll;
         let mut got = Rows::default();
         let drawn = popup(ui, id, corner, room, |ui| {
-            got = rows(ui, &items, selected, pointer_leads, scroll, follow, has_help, icon, describe, help)
+            got = rows(ui, items, selected, pointer_leads, scroll, follow, has_help, icon, describe, help)
         });
         // The arrows move the highlight with the focus on the button: the highlighted row is the
         // button's active descendant, read as a box's list's is (`List::show`).
