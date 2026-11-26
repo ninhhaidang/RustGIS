@@ -1401,6 +1401,72 @@ pub(crate) mod tests {
         app
     }
 
+    /// Turned off as its extension with a run under way, through the app's own frame: the run
+    /// stops, the conversation and the message waiting are kept and said, and nothing is sent
+    /// until it is on again.
+    #[test]
+    fn turning_the_extension_off_stops_a_run_keeps_the_conversation_and_sends_nothing() {
+        let mut app = RustGisApp::with_sample();
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let count = sent.clone();
+        app.services.http = Some(Box::new(move |_, _| *count.lock().unwrap() += 1));
+        let mut config = Config::from_env("custom");
+        config.base_url = "https://example.test/v1".into();
+        config.model = "test".into();
+        let mut agent = Agent::new(config, &app.session);
+        let request = agent.ask("Zoom to Tokyo", &app.session);
+        assert!(agent.busy());
+        app.assistant.inflight = Some((agent.generation(), crate::Slot::default()));
+        app.assistant.agent = Some(agent);
+        app.assistant.loaded = true;
+        let ctx = egui::Context::default();
+        let frame = |app: &mut RustGisApp| {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
+            output.textures_delta.clear();
+        };
+        frame(&mut app);
+        let said = |app: &RustGisApp| -> Vec<String> {
+            app.session.notices.iter().filter(|n| n.text.contains("AI Assistant")).map(|n| n.text.clone()).collect()
+        };
+        assert_eq!(said(&app), Vec::<String>::new());
+        // A message asked for and not sent yet.
+        app.run("ui.pane.assistant", serde_json::json!({"ask": "Label the cities"})).unwrap();
+
+        app.run("extension.disable", serde_json::json!({"id": "assistant"})).unwrap();
+        // A step that follows the command turning it off (an approved one of its own) isn't sent.
+        crate::assistant::follow(&mut app, request, &ctx);
+        // A model list due waits too.
+        app.assistant.catalog_pending = true;
+        frame(&mut app);
+        frame(&mut app);
+        let agent = app.assistant.agent.as_ref().unwrap();
+        assert!(!agent.busy());
+        let kept = agent.transcript.len();
+        assert!(kept > 0);
+        assert!(app.assistant.inflight.is_none() && app.assistant.queued.is_none());
+        assert_eq!(app.assistant.input, "Label the cities");
+        assert!(app.ui.right_open.is_empty());
+        let notices = said(&app);
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].contains("running request was stopped") && notices[0].contains("conversation is kept"), "{notices:?}");
+        assert_eq!(*sent.lock().unwrap(), 0);
+        // Pictures picked before, landing now, are counted in one notice rather than attached; a
+        // cancelled pick isn't one.
+        for name in ["map.png", "sketch.png", ""] {
+            app.open_picked(&format!("{}{name}", crate::ASSISTANT_PICK), &[0]).unwrap();
+        }
+        frame(&mut app);
+        let late: Vec<String> = said(&app).into_iter().filter(|n| n.contains("Pictures not attached")).collect();
+        assert_eq!(late.len(), 1, "{late:?}");
+        assert!(late[0].ends_with("not attached: 2."), "{late:?}");
+        assert!(!app.assistant.pictures.any() && !app.assistant.pictures.reading());
+
+        app.run("extension.enable", serde_json::json!({"id": "assistant"})).unwrap();
+        frame(&mut app);
+        assert_eq!(app.assistant.agent.as_ref().unwrap().transcript.len(), kept);
+        assert_eq!(*sent.lock().unwrap(), 1);
+    }
+
     /// Clicking Stop drops the old UI backoff deadline and streamed chunks before another run.
     #[test]
     fn stop_button_clears_retry_deadline_and_chunks() {

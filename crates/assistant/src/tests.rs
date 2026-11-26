@@ -1095,6 +1095,30 @@ fn always_allow_is_per_command_and_never_for_reserved_actions() {
     }
 }
 
+/// A call that turns the AI Assistant off, approved, ends its reply: a call after it that needs
+/// no approval isn't run, and says why.
+#[test]
+fn calls_after_one_turning_the_assistant_off_are_not_run() {
+    let mut s = sample();
+    let mut a = Agent::new(cfg("openai"), &s);
+    let Step::Send(_) = a.ask("x", &s) else { panic!("expected a request") };
+    let before = s.map().center_lonlat();
+    let run = |command: &str, params: Value| json!({"command": command, "params": params}).to_string();
+    let reply = json!({"choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [
+        {"id": "c0", "type": "function", "function": {"name": "run_command", "arguments": run("extension.disable", json!({"id": "assistant"}))}},
+        {"id": "c1", "type": "function", "function": {"name": "run_command", "arguments": run("map.goToXY", json!({"lon": 2.35, "lat": 48.85, "scale": 5000000}))}}
+    ]}, "finish_reason": "tool_calls"}]});
+    assert_eq!(a.receive(a.generation(), ok(reply), &mut s), Step::Confirm);
+    assert!(a.pending(&s).is_some_and(|p| p.0.starts_with("extension.disable")));
+    // Nothing left to ask about or run: the results go back.
+    assert!(matches!(a.decide(true, false, &mut s), Step::Send(_)));
+    assert!(!s.extensions().is_on("assistant"));
+    let after = s.map().center_lonlat();
+    assert!((after.x - before.x).abs() < 1e-9 && (after.y - before.y).abs() < 1e-9, "the map moved to {after:?}");
+    let not_run = |e: &Entry| matches!(e, Entry::Tool { result, error: true, .. } if result.contains("turned the AI Assistant off"));
+    assert_eq!(a.transcript.iter().filter(|e| not_run(e)).count(), 1, "{:?}", a.transcript);
+}
+
 #[test]
 fn stopping_a_request_drops_its_message() {
     let s = sample();
@@ -3895,6 +3919,26 @@ fn the_assistant_hands_tasks_to_agent_threads_in_the_background() {
     assert_eq!(a.threads()[0].id, "claude-code-2", "thread ids aren't reused");
     a.clear();
     assert!(a.threads().is_empty() && a.take_delegations().is_empty());
+    // Suspended (the app turned the assistant off): a report waiting stays in the transcript and
+    // is never sent.
+    assert!(matches!(a.ask("once more", &s), Step::Send(_)));
+    let call = calls("delegate", json!({"task": "w", "agent": "claude-code"}));
+    assert!(matches!(a.receive(a.generation(), ok(call), &mut s), Step::Send(_)));
+    let thread = a.threads()[0].id.clone();
+    // A long report from a thread that failed: the transcript says it failed, and its cut counts
+    // what the thread wrote.
+    let long = "x".repeat(tools::MAX_RESULT + 100);
+    a.thread_report(&thread, long, true);
+    a.suspend();
+    assert!(!a.busy() && a.threads().is_empty() && a.take_delegations().is_empty());
+    assert!(a.deliver(&s).is_none(), "not sent to the model");
+    let said = format!("{thread} (Claude Code) failed: ");
+    let cut = format!("(cut: {} characters in all)", tools::MAX_RESULT + 100);
+    assert!(
+        a.transcript.iter().any(|e| matches!(e, Entry::Note(n) if n.to_string().starts_with(&said) && n.to_string().ends_with(&cut))),
+        "{:?}",
+        a.transcript.last()
+    );
     // The command line offers no agents: such a delegation is refused.
     let mut c = Agent::new(cfg("openai"), &s);
     let mut replies = VecDeque::from(vec![ok(calls("delegate", json!({"task": "z", "agent": "codex"}))), ok(say("Couldn't."))]);

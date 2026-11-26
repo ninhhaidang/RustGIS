@@ -714,6 +714,34 @@ fn process_is_on_the_analyze_tab_with_imagery_off_and_on() {
     }
 }
 
+/// The AI Assistant extension's buttons and Command Search rows are there only while it is on
+/// (#1752), and turning it off closes its pane.
+#[test]
+fn the_assistant_leaves_the_ribbon_and_command_search_while_its_extension_is_off() {
+    let mut h = harness();
+    h.set_size(egui::vec2(2400.0, 860.0));
+    for (on, command) in [(true, "extension.enable"), (false, "extension.disable"), (true, "extension.enable")] {
+        h.state_mut().run(command, json!({"id": "assistant"})).unwrap();
+        for tab in ["Analyze", "View"] {
+            h.state_mut().run("ui.tab", json!({"tab": tab})).unwrap();
+            h.run_steps(4);
+            assert_eq!(h.query_all_by_label("AI Assistant").count(), usize::from(on), "{tab}, on: {on}");
+        }
+        // On the Home tab, only Command Search could name it.
+        h.state_mut().run("ui.tab", json!({"tab": "Home"})).unwrap();
+        h.state_mut().ui.command_search = Some("ui.pane.assistant".into());
+        h.run_steps(4);
+        assert_eq!(h.query_all_by_label_contains("AI Assistant").count() > 0, on, "Command Search, on: {on}");
+        h.state_mut().ui.command_search = None;
+        h.run_steps(2);
+    }
+    h.state_mut().run("ui.pane.assistant", json!(null)).unwrap();
+    h.run_steps(3);
+    h.state_mut().run("extension.disable", json!({"id": "assistant"})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.right, None);
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn mcp_relay_early_start_wakes_queued_request_and_updates_ui() {

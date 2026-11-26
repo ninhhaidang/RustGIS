@@ -178,17 +178,21 @@ Extensions are optional parts of RustGIS that you turn on or off. Unlike a
 [plugin](../plugins.md), an extension ships with RustGIS: there is nothing to download or install.
 **Plugins › Extensions** opens the Extensions window, which lists each extension with a switch,
 what it adds and where it shows. An extension with a tab of its own adds that tab after Help
-(before plugins' own tabs) while it is on; one without a tab adds a group to the Plugins tab.
+(before plugins' own tabs) while it is on; one without a tab adds its buttons to RustGIS's own
+tabs, or a group to the Plugins tab.
 
 | Extension | Default | Adds |
 | --- | --- | --- |
 | **Imagery** (`imagery`) | Off | The Imagery tab: Ortho Mapping, Reality Mapping, Alignment (Georeference), Image Analysis, Image Classification (with Deep Learning Tools), Imagery Sharing, Mensuration and Imagery Tools (Indices, Pixel Editor), and their commands (`imagery.*`, `dl.*`, and the `raster.*` commands those groups run). Process (clip and resample a raster), Mosaic Rasters, Project Raster and Polygons to Raster aren't part of it and always run |
+| **AI Assistant** (`assistant`) | On | The [AI Assistant](assistant.md) pane, with its buttons in Analyze › AI and View › Windows (`ui.pane.assistant`). The [MCP server](../mcp.md) (`rustgis-cli mcp`, and the desktop app's MCP Relay) and `rustgis-cli ask` aren't part of it and run either way |
 
-While an extension is off, its tab, its buttons, its Workflows pane sections and its commands in
-Command Search and the AI Assistant's command search are hidden. Its commands are refused with a
-message naming the extension, whoever runs them: a script, a model, the command line, Python or
-the assistant. Hiding the extension's tab in Settings › Customize › Ribbon only hides the tab; the
-commands still run.
+While an extension is off, its tab, its pane, its buttons, its Workflows pane sections and its
+commands in Command Search, the Keyboard Shortcuts editor, the Quick Access Toolbar and the AI
+Assistant's command search are hidden. Its commands are refused with a message naming the
+extension, whoever runs them: a shortcut, a script, a model, the command line, Python or the
+assistant. Shortcuts and Quick Access buttons you gave them are kept and come back with it.
+Hiding the extension's tab in Settings › Customize › Ribbon only hides the tab; the commands still
+run.
 
 The desktop and web apps start each extension at its default and remember your choices (the
 `extensions` setting). A setting saved by a newer RustGIS that names extensions this version

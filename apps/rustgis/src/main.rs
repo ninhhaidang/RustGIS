@@ -477,11 +477,13 @@ impl eframe::App for App {
 
 #[cfg(target_os = "macos")]
 impl App {
-    /// The menu bar: built once the app runs, again for a new language or shortcut; its items
+    /// The menu bar: built once the app runs, again for a new language, shortcut or extension
+    /// choice; its items
     /// greyed out as their commands are; the commands chosen from it run, unless a dialog (Save
     /// changes?) has the keys, as the keymap's do.
     fn menus(&mut self, ctx: &egui::Context) {
-        // The shortcuts shown can only change with the language or the keymap.
+        // The items and shortcuts shown can only change with the language, the keymap or the
+        // extensions that are on.
         let seen = (self.0.chosen_lang(), self.0.shortcuts_fingerprint());
         if self.2.seen != Some(seen) {
             self.2.seen = Some(seen);

@@ -1713,10 +1713,17 @@ impl RustGisApp {
         widgets::enabled(self, command)
     }
 
+    /// Whether `command` belongs to an extension that is off, so that a menu offering it leaves
+    /// it out.
+    pub fn command_hidden(&self, command: &str) -> bool {
+        extensionsui::hidden(self, command)
+    }
+
     /// A fingerprint of the keymap's key combinations and what they run: cheap to take every
     /// frame (no allocation), it changes when a shortcut is added, removed or rebound (to
-    /// another key or another command), or Command Search opens or closes, so a caller can
-    /// rebuild [`RustGisApp::command_keys`] only then.
+    /// another key or another command), Command Search opens or closes, or an extension is
+    /// turned on or off, so a caller can rebuild [`RustGisApp::command_keys`], or a menu, only
+    /// then.
     pub fn shortcuts_fingerprint(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1742,6 +1749,9 @@ impl RustGisApp {
         self.ui.keymap.bindings.len().hash(&mut h);
         // Command Search takes the number keys while it is open.
         self.ui.command_search.is_some().hash(&mut h);
+        for e in rustgis_engine::extensions::ALL {
+            self.session.extensions().is_on(e.id).hash(&mut h);
+        }
         h.finish()
     }
 
@@ -2528,7 +2538,11 @@ impl RustGisApp {
         if let Some(name) = name.strip_prefix(ASSISTANT_PICK) {
             // An answer with no name is a cancelled picker.
             if !name.is_empty() {
-                assistantpictures::received(self, name, bytes.to_vec());
+                if extensionsui::hidden(self, "ui.pane.assistant") {
+                    self.assistant.late_pictures += 1;
+                } else {
+                    assistantpictures::received(self, name, bytes.to_vec());
+                }
             }
             return Ok(Value::Null);
         }
@@ -3988,6 +4002,10 @@ impl RustGisApp {
 
     /// Runs a `ui.*` command: panes, dialogs and the app's own settings.
     fn run_ui(&mut self, id: &str, p: &Value) -> Result<Value, String> {
+        // A pane of an extension that is off says so, as its other commands do (#1752).
+        if let Some(why) = self.session.extensions().blocks(id) {
+            return Err(why);
+        }
         // A pane's command toggles it; `{"close": true}` closes it, in view or not (a tab's ✕),
         // whatever else the command is given (SQL to run, a question to ask).
         if p.get("close").and_then(Value::as_bool) == Some(true) && panes::close_pane_of(self, id) {
@@ -7087,6 +7105,9 @@ impl RustGisApp {
         if ctx.current_pass_index() == 0 {
             self.frame_start = Some(web_time::Instant::now());
         }
+        // An extension turned off while the last frame was drawn stops its work first: the AI
+        // Assistant's agent threads lose their relay access before the relay runs anything.
+        extensionsui::persist(self);
         // The MCP relay: what attached agents sent runs here, on this session, before the frame
         // draws (Session lives on this thread; the listener only queues messages).
         #[cfg(not(target_arch = "wasm32"))]

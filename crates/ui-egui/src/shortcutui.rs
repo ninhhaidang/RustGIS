@@ -108,7 +108,7 @@ fn rows(app: &RustGisApp, web: bool) -> Vec<(String, Value, String)> {
             rows.push((command.to_string(), params.clone(), keymap::label(app, command, params)));
         }
     }
-    rows.retain(|(id, _, _)| crate::chrome::command_available(id, web));
+    rows.retain(|(id, _, _)| crate::chrome::command_available(id, web) && !crate::extensionsui::hidden(app, id));
     let mut seen = std::collections::HashSet::new();
     rows.retain(|(command, params, _)| seen.insert((command.clone(), params.to_string())));
     rows.sort_by_cached_key(|a| a.2.to_lowercase());
@@ -118,6 +118,7 @@ fn rows(app: &RustGisApp, web: bool) -> Vec<(String, Value, String)> {
 /// Whether Command Search can open a matching row in the editor.
 pub fn can_customize(app: &RustGisApp, id: &str) -> bool {
     if !crate::chrome::command_available(id, cfg!(target_arch = "wasm32"))
+        || crate::extensionsui::hidden(app, id)
         || matches!(id, "edit.copy" | "edit.cut" | "edit.paste")
         || NEEDS_DIALOG.contains(&id)
     {

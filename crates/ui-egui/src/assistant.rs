@@ -38,6 +38,8 @@ pub struct AssistantState {
     /// The message waiting is the input box's own draft (sent from the box, which keeps it until
     /// it goes): nothing to put back if it isn't sent.
     pub(crate) queued_from_box: bool,
+    /// Pictures that landed while the extension was off, to be said once.
+    pub(crate) late_pictures: usize,
     /// The request out: its generation and where its response lands.
     pub(crate) inflight: Option<(u64, Reply)>,
     /// The pieces of the request out's reply, as they stream in (desktop).
@@ -631,6 +633,11 @@ fn end_threads(app: &mut RustGisApp) {
 /// Carries out what the agent asked for.
 pub(crate) fn follow(app: &mut RustGisApp, step: Step, ctx: &egui::Context) {
     app.map.invalidate();
+    // A command it ran, approved, may have turned its own extension off: nothing more is sent,
+    // and the next frame stops the run.
+    if !app.session.extensions().is_on(rustgis_engine::extensions::ASSISTANT.id) {
+        return;
+    }
     if let Step::Retry(after) = step {
         let generation = app.assistant.agent.as_ref().map_or(0, Agent::generation);
         app.assistant.retry = Some((generation, web_time::Instant::now() + after));
@@ -662,13 +669,77 @@ fn with_agent(app: &mut RustGisApp, f: impl FnOnce(&mut Agent, &mut rustgis_engi
     Some(step)
 }
 
+/// The AI Assistant extension was turned off: everything it would still do on its own stops
+/// (the run, a message waiting to be sent, the agent threads, a sign-in under way), and the
+/// conversation is kept for when it's on again. A chat request already sent may still reach its
+/// provider; its reply is dropped. A model list under way is kept and applied when it's on again;
+/// a sign-in is cancelled. Says what happened, when there was anything to say.
+pub(crate) fn turned_off(app: &mut RustGisApp) {
+    let busy = app.assistant.busy();
+    #[cfg(not(target_arch = "wasm32"))]
+    let threads = app.assistant.threads.count();
+    #[cfg(target_arch = "wasm32")]
+    let threads = 0;
+    // Dropping a sign-in stops its callback server, so it can't finish while off.
+    #[cfg(not(target_arch = "wasm32"))]
+    let signing_in = app.assistant.login.take().is_some();
+    #[cfg(target_arch = "wasm32")]
+    let signing_in = false;
+    // A message not sent yet goes back to the message box.
+    unqueue(&mut app.assistant);
+    if let Some(agent) = app.assistant.agent.as_mut() {
+        agent.suspend();
+    }
+    drop_request(&mut app.assistant);
+    app.assistant.always = false;
+    end_threads(app);
+    let chat = app.assistant.agent.as_ref().is_some_and(|a| !a.transcript.is_empty())
+        || !app.assistant.input.trim().is_empty()
+        || app.assistant.pictures.any();
+    let mut said = Vec::new();
+    if busy {
+        said.push(tl!("The AI Assistant's running request was stopped; what it had already done stays.").to_string());
+    }
+    if threads > 0 {
+        said.push(crate::i18n::fmt("Agent threads stopped: {n}.", &[("n", &threads.to_string())]));
+    }
+    if signing_in {
+        said.push(tl!("The ChatGPT sign-in under way was cancelled.").to_string());
+    }
+    if chat {
+        said.push(tl!("The AI Assistant's conversation is kept until RustGIS closes: turn the extension on again to see it.").to_string());
+    }
+    // Still running: for agents the user runs, which the extension doesn't cover.
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.relay.is_some() || app.file_bridge.is_some() {
+        said.push(
+            tl!("Agents on this computer can still control RustGIS: that isn't part of the extension. Click its status in the status bar to stop it.")
+                .to_string(),
+        );
+    }
+    if !said.is_empty() {
+        app.session.notify(said.join(" "), false);
+    }
+}
+
 /// Per-frame: responses that arrived, a message queued by a command, and settings to save.
 pub(crate) fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
+    // While the extension is off nothing is sent or run: what is already on its way (a model
+    // list, a picture being read) waits for it to be on again. Keys and settings are still kept.
+    let on = app.session.extensions().is_on(rustgis_engine::extensions::ASSISTANT.id);
+    let late = std::mem::take(&mut app.assistant.late_pictures);
+    if late > 0 {
+        let said = crate::i18n::fmt("The AI Assistant is off. Pictures not attached: {n}.", &[("n", &late.to_string())]);
+        app.session.notify(said, false);
+    }
     #[cfg(not(target_arch = "wasm32"))]
     poll_keys(app, ctx);
     #[cfg(not(target_arch = "wasm32"))]
-    poll_sign_in(app, ctx);
-    if app.assistant.catalog_pending
+    if on {
+        poll_sign_in(app, ctx);
+    }
+    if on
+        && app.assistant.catalog_pending
         && let Some(cfg) = app.assistant.agent.as_ref().map(|a| a.config.clone())
     {
         list_models(app, &cfg, ctx);
@@ -679,6 +750,9 @@ pub(crate) fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
         if let Some(cfg) = app.assistant.agent.as_ref().map(|a| a.config.clone()) {
             save_config(app, &cfg, ctx);
         }
+    }
+    if !on {
+        return;
     }
     // Pictures read off the frame are taken in here, not only by the desktop composer, so a
     // message waiting for one goes even while no composer is drawn.

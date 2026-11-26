@@ -33,6 +33,8 @@ const MIN_MAP_WIDTH: f32 = 320.0;
 const RIGHT_PANE_MAX: f32 = 640.0;
 
 pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
+    // Before one is drawn, and so loads or asks its provider anything.
+    crate::extensionsui::close_panes(app);
     let t = Tokens::get(ui.ctx());
     let frame = egui::Frame::NONE.fill(t.pane).inner_margin(egui::Margin::ZERO);
     app.ui.pane_rects = [None; 2];

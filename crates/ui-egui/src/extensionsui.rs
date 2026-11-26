@@ -1,13 +1,13 @@
 //! The Extensions window (Plugins › Extensions, #1752): every extension with a switch to turn it
 //! on or off, and where to find it when it's on. What the user chose is the `extensions`
 //! setting: read at start, written whenever it changes (by the window, command search, a script
-//! or the command line in the app alike).
+//! or the command line in the app alike). The panes of an extension that is off are closed.
 
 use egui::{Align2, vec2};
 use serde_json::json;
 
-use crate::RustGisApp;
 use crate::theme::Tokens;
+use crate::{RightPane, RustGisApp};
 use rustgis_engine::extensions;
 
 /// The setting the choices are kept in.
@@ -31,13 +31,33 @@ pub fn load(app: &mut RustGisApp) {
     app.extensions.saved = Some(app.session.extensions().clone());
 }
 
-/// Writes the choices when they changed since they were last written.
+/// Whether command `id` belongs to an extension that is off: no button, menu item or search
+/// row offers it.
+pub(crate) fn hidden(app: &RustGisApp, id: &str) -> bool {
+    app.session.extensions().blocks(id).is_some()
+}
+
+/// Closes the panes of extensions that are off: one open as it was turned off, or brought back
+/// by a saved pane set.
+pub(crate) fn close_panes(app: &mut RustGisApp) {
+    if !app.session.extensions().is_on(extensions::ASSISTANT.id) {
+        app.ui.close_right(RightPane::Assistant);
+    }
+}
+
+/// Each frame: follows an extension turned off (its panes close and its work stops), and writes
+/// the choices when they changed since they were last written.
 pub fn persist(app: &mut RustGisApp) {
+    close_panes(app);
+    let assistant = extensions::ASSISTANT.id;
     let now = app.session.extensions();
     if app.extensions.saved.as_ref() == Some(now) {
         return;
     }
     let now = now.clone();
+    if !now.is_on(assistant) && app.extensions.saved.as_ref().is_some_and(|was| was.is_on(assistant)) {
+        crate::assistant::turned_off(app);
+    }
     // A setting that couldn't be read is never written over (said when it was read).
     if let (Some(save), Some(text)) = (&app.services.save_pref, now.to_setting()) {
         save(SETTING, &text);
@@ -50,10 +70,12 @@ fn set(app: &mut RustGisApp, id: &str, on: bool) {
     match app.run("extension.enable", json!({"id": id, "enabled": on})) {
         Ok(_) => {
             let name = extensions::get(id).map_or(id, |e| e.name);
-            let text = if on {
-                crate::i18n::fmt("{name} is on.", &[("name", tl_raw!(name))])
-            } else {
-                crate::i18n::fmt("{name} is off: its tab and commands are hidden.", &[("name", tl_raw!(name))])
+            let tab = extensions::get(id).is_some_and(|e| e.tab.is_some());
+            let name = [("name", tl_raw!(name))];
+            let text = match (on, tab) {
+                (true, _) => crate::i18n::fmt("{name} is on.", &name),
+                (false, true) => crate::i18n::fmt("{name} is off: its tab and commands are hidden.", &name),
+                (false, false) => crate::i18n::fmt("{name} is off: its buttons and commands are hidden.", &name),
             };
             app.extensions.message = Some((true, text));
         }
@@ -80,7 +102,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.label(
                 egui::RichText::new(tl!(
-                    "Extensions are optional parts of RustGIS: nothing to download. Turn one off to hide its tab and commands."
+                    "Extensions are optional parts of RustGIS: nothing to download. Turn one off to hide its buttons and commands."
                 ))
                 .size(12.0)
                 .color(t.text_dim),
@@ -125,12 +147,16 @@ fn row(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens, e: &extensions::Exte
         }
     });
     ui.label(egui::RichText::new(tl_raw!(e.description)).size(12.0));
-    let place = match e.tab {
-        Some(caption) => crate::i18n::fmt("On its own tab, {tab}.", &[("tab", tl_raw!(caption))]),
-        None => tl!("On the Plugins tab.").to_string(),
+    let place = match (e.tab, e.place) {
+        (Some(caption), _) => crate::i18n::fmt("On its own tab, {tab}.", &[("tab", tl_raw!(caption))]),
+        (None, Some(place)) => crate::i18n::fmt("In {place}.", &[("place", &crate::i18n::location(place))]),
+        (None, None) => tl!("On the Plugins tab.").to_string(),
     };
-    let count = e.commands.len().to_string();
-    let said = crate::i18n::fmt("{place} {count} commands.", &[("place", &place), ("count", &count)]);
+    // An extension of one command is its pane's switch: no count to give.
+    let said = match e.commands.len() {
+        1 => place,
+        n => crate::i18n::fmt("{place} {count} commands.", &[("place", &place), ("count", &n.to_string())]),
+    };
     ui.label(egui::RichText::new(said).size(11.5).color(t.text_dim));
     if on != was {
         set(app, e.id, on);
@@ -233,6 +259,58 @@ mod tests {
         assert!(crate::ribbon::tab_exists(&app, &tab));
         persist(&mut app);
         assert!(prefs.lock().unwrap().iter().any(|(k, v)| k == SETTING && v.contains("\"imagery\":true")));
+    }
+
+    /// What was said of the AI Assistant, refusals (errors) apart.
+    fn assistant_notices(app: &RustGisApp) -> Vec<String> {
+        app.session.notices.iter().filter(|n| !n.error && n.text.contains("AI Assistant")).map(|n| n.text.clone()).collect()
+    }
+
+    #[test]
+    fn turning_the_assistant_off_closes_its_pane_refuses_it_and_is_saved() {
+        let prefs = Arc::new(Mutex::new(Vec::new()));
+        let mut app = app_with_prefs(&prefs);
+        load(&mut app);
+        let offered = |app: &RustGisApp| crate::shortcutui::can_customize(app, "ui.pane.assistant");
+        // On until the user says otherwise.
+        assert!(offered(&app));
+        app.run("ui.pane.assistant", json!(null)).unwrap();
+        app.run("ui.paneSet", json!({"save": "with chat"})).unwrap();
+
+        set(&mut app, "assistant", false);
+        persist(&mut app);
+        assert!(app.extensions.message.as_ref().is_some_and(|(ok, said)| *ok && said.contains("its buttons and commands are hidden")));
+        assert!(!app.ui.right_open.contains(&RightPane::Assistant));
+        assert!(!offered(&app));
+        for params in [json!(null), json!({"ask": "hello"}), json!({"close": true})] {
+            let why = app.run("ui.pane.assistant", params).unwrap_err();
+            assert!(why.contains("AI Assistant extension, which is off"), "{why}");
+        }
+        assert_eq!(app.assistant.queued, None);
+        // A saved pane set doesn't bring the pane back.
+        app.run("ui.paneSet", json!({"load": "with chat"})).unwrap();
+        close_panes(&mut app);
+        assert!(!app.ui.right_open.contains(&RightPane::Assistant));
+        // No conversation: nothing to say beyond the window's own line.
+        assert_eq!(assistant_notices(&app), Vec::<String>::new());
+
+        // A shell's menus and shortcut cache are built again.
+        let off = app.shortcuts_fingerprint();
+        app.run("extension.enable", json!({"id": "assistant"})).unwrap();
+        assert_ne!(app.shortcuts_fingerprint(), off);
+        app.run("extension.disable", json!({"id": "assistant"})).unwrap();
+        persist(&mut app);
+
+        let saved = prefs.lock().unwrap().iter().rev().find(|(k, _)| k == SETTING).map(|(_, v)| v.clone()).unwrap();
+        assert!(saved.contains("\"assistant\":false"), "{saved}");
+        let mut again = app_with_prefs(&prefs);
+        load(&mut again);
+        assert!(again.run("ui.pane.assistant", json!(null)).is_err());
+        again.run("extension.enable", json!({"id": "assistant"})).unwrap();
+        persist(&mut again);
+        assert!(offered(&again));
+        again.run("ui.pane.assistant", json!(null)).unwrap();
+        assert_eq!(again.ui.right, Some(RightPane::Assistant));
     }
 
     #[test]

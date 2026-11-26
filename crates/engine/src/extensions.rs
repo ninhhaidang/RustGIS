@@ -25,12 +25,15 @@ pub struct Extension {
     pub name: &'static str,
     /// One sentence on what it adds.
     pub description: &'static str,
-    /// The caption of its own ribbon tab (`extension:<id>`), or `None` for a group on the Plugins
-    /// tab.
+    /// The caption of its own ribbon tab (`extension:<id>`), or `None` for one without a tab:
+    /// its buttons are at `place`, or in a group on the Plugins tab.
     pub tab: Option<&'static str>,
+    /// Where its buttons are, for one that adds them to RustGIS's own tabs (`Tab › Group`).
+    pub place: Option<&'static str>,
     /// Whether the desktop and web apps start with it on until the user says otherwise.
     pub default_on: bool,
-    /// The command ids it owns.
+    /// The command ids it owns: the engine's, and the front end's `ui.*` ones, which the front
+    /// end refuses while it is off.
     pub commands: &'static [&'static str],
 }
 
@@ -42,6 +45,7 @@ pub const IMAGERY: Extension = Extension {
     name: "Imagery",
     description: "Ortho and reality mapping, georeferencing, image analysis and classification, deep learning, mensuration and hosted imagery, on a tab of its own.",
     tab: Some("Imagery"),
+    place: None,
     default_on: false,
     commands: &[
         "imagery.workspace",
@@ -67,8 +71,21 @@ pub const IMAGERY: Extension = Extension {
     ],
 };
 
+/// The AI Assistant: the chat pane, its buttons and the local agents it starts. The MCP server
+/// (`rustgis-cli mcp` and the desktop app's MCP Relay), for agents the user runs, and
+/// `rustgis-cli ask` are no part of it.
+pub const ASSISTANT: Extension = Extension {
+    id: "assistant",
+    name: "AI Assistant",
+    description: "A chat pane that answers questions about your data and acts on the map, using the AI model you choose.",
+    tab: None,
+    place: Some("Analyze › AI"),
+    default_on: true,
+    commands: &["ui.pane.assistant"],
+};
+
 /// Every extension, in the order the Extensions window lists them.
-pub const ALL: &[Extension] = &[IMAGERY];
+pub const ALL: &[Extension] = &[IMAGERY, ASSISTANT];
 
 /// The most entries the setting keeps (a hand-edited or hostile one can't grow without bound).
 const MAX_ENTRIES: usize = 256;
@@ -222,7 +239,8 @@ mod tests {
         for e in ALL {
             assert!(e.id.chars().all(|c| c.is_ascii_lowercase() || c == '-'), "{}", e.id);
             for c in e.commands {
-                assert!(registry.iter().any(|s| s.id == *c), "{} owns {c}, which isn't a command", e.id);
+                // `ui.*` commands are the front end's, which checks them against its own.
+                assert!(c.starts_with("ui.") || registry.iter().any(|s| s.id == *c), "{} owns {c}, which isn't a command", e.id);
                 assert_eq!(owner(c).map(|o| o.id), Some(e.id), "{c} is owned twice");
             }
         }
@@ -238,6 +256,23 @@ mod tests {
         assert!(apps.blocks("raster.classify").is_some());
         let (chosen, _) = State::from_setting(Some(r#"{"imagery": true}"#));
         assert!(chosen.is_on("imagery"));
+    }
+
+    #[test]
+    fn the_assistant_is_on_until_the_user_turns_it_off() {
+        const { assert!(ASSISTANT.default_on) };
+        let (apps, _) = State::from_setting(None);
+        assert!(apps.is_on("assistant"));
+        assert_eq!(apps.blocks("ui.pane.assistant"), None);
+        let (mut off, said) = State::from_setting(Some(r#"{"assistant": false}"#));
+        assert_eq!(said, None);
+        let why = off.blocks("ui.pane.assistant").unwrap_or_default();
+        assert!(why.contains("AI Assistant extension, which is off"), "{why}");
+        // The relay is for agents the user runs: no extension owns it.
+        assert_eq!(off.blocks("ui.mcpRelay"), None);
+        assert!(off.set("assistant", true).is_ok());
+        assert_eq!(off.blocks("ui.pane.assistant"), None);
+        assert!(off.to_setting().is_some_and(|t| t.contains("\"assistant\":true")));
     }
 
     /// Clip, resample, mosaic, project and rasterize serve any raster (#2823): no extension owns them.

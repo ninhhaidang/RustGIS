@@ -199,11 +199,18 @@ fn shortcut(app: &RustGisApp, action: Action, fixed: Option<(Key, bool)>) -> Opt
     app.shortcuts_of(command).into_iter().find(|k| k.modifiers.command && !matches!(k.logical_key, Key::Z | Key::Y))
 }
 
-/// The app's own items, in order, with their shortcuts now.
+/// Whether an item's command belongs to an extension that is off: the menus leave it out.
+fn hidden(app: &RustGisApp, action: Action) -> bool {
+    matches!(action, Command(id, _) if app.command_hidden(id))
+}
+
+/// The app's own items shown now, in order, with their shortcuts.
 fn own_items(app: &RustGisApp) -> impl Iterator<Item = (String, &'static str, Action, Option<KeyboardShortcut>)> + '_ {
     MENUS.iter().enumerate().flat_map(move |(m, (_, rows))| {
         rows.iter().enumerate().filter_map(move |(r, row)| match *row {
-            Item(label, action, fixed) => Some((format!("rustgis.{m}.{r}"), label, action, shortcut(app, action, fixed))),
+            Item(label, action, fixed) if !hidden(app, action) => {
+                Some((format!("rustgis.{m}.{r}"), label, action, shortcut(app, action, fixed)))
+            }
             _ => None,
         })
     })
@@ -353,6 +360,7 @@ impl MenuBar {
             let sub = Submenu::new(label(lang, title), true);
             for row in *rows {
                 match *row {
+                    Item(_, action, _) if hidden(app, action) => {}
                     Item(..) => {
                         let (id, text, action, shortcut) = own.next().ok_or("the menu's items are out of step")?;
                         let enabled = enabled_now(app, action, false);
@@ -542,6 +550,19 @@ mod tests {
         // A command whose shortcut has no ⌘ (Home zooms to the full extent) shows none.
         assert_eq!(k(Command("map.zoomFull", "")), None);
         assert_eq!(command_of(Command("ui.tab", r#"{"tab":"Settings"}"#)).map(|c| c.1["tab"].clone()), Some(Value::from("Settings")));
+    }
+
+    /// The AI Assistant's item leaves the menus while its extension is off, and the bar is built
+    /// again for it.
+    #[test]
+    fn the_items_of_an_extension_that_is_off_are_left_out() {
+        let mut app = RustGisApp::new(Session::new(Project::default()));
+        let offered = |app: &RustGisApp| own_items(app).any(|(_, label, ..)| label == "AI Assistant");
+        assert!(offered(&app));
+        let before = signature(&app);
+        assert!(app.run("extension.disable", serde_json::json!({"id": "assistant"})).is_ok());
+        assert!(!offered(&app));
+        assert_ne!(signature(&app), before);
     }
 
     const UNDO: Action = Keys { command: "edit.undo", fallback: (Key::Z, false) };

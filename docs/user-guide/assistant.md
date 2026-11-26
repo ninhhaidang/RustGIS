@@ -46,6 +46,24 @@ controls.
 From the command line, `rustgis-cli ask` sends one request (see
 [Command Line](../cli.md#asking-the-ai-assistant)).
 
+## Turning the assistant off
+
+The AI Assistant is an [extension](index.md#extensions), on until you turn it off in
+**Plugins › Extensions** (on a phone, in the desktop interface). While it is off, its pane, its
+buttons and its entries in Command Search, the Keyboard Shortcuts editor, the Quick Access
+Toolbar and the macOS menu bar are gone, and `ui.pane.assistant` is refused, from a shortcut you
+gave it too. Turning it off stops a request that is running (what it had already done stays, with
+Undo as usual; a request already under way may still finish at the provider, a ChatGPT one after
+renewing its sign-in, and its reply is dropped), the agent threads it started and a ChatGPT
+sign-in under way, and says so in a notice. The
+conversation is kept until RustGIS closes and is there when you turn the extension on again. Its
+settings, saved keys and sign-in are kept too. The desktop and web apps remember the choice.
+
+It doesn't cover agents and requests of your own: `rustgis-cli ask`, the
+[MCP server](../mcp.md) (`rustgis-cli mcp`) and the desktop app's **MCP Relay** command run
+either way. If agents were allowed to control RustGIS they still can, as the status bar shows;
+click it there to stop them.
+
 ## Attaching pictures
 
 A picture can go with a message: a map whose style you want, a screenshot of something that

@@ -218,7 +218,9 @@ fn header_branding(ui: &mut Ui, app: &mut RustGisApp, right: f32, tokens: &Token
 
 /// Fits as many toolbar items as the header has room for. At the narrowest width, search joins the overflow.
 fn quick_access(ui: &mut Ui, app: &mut RustGisApp, right: f32, separate_search: bool) {
-    let pinned = app.ui.quick_access.clone();
+    // A pinned command of an extension that is off stays pinned, and isn't shown (#1752).
+    let mut pinned = app.ui.quick_access.clone();
+    pinned.retain(|id| !crate::extensionsui::hidden(app, id));
     let mut items = vec![
         ("project.new", "new", "New project"),
         ("ui.open", "open", "Open project"),
@@ -1501,6 +1503,10 @@ pub fn command_search(app: &mut RustGisApp, ctx: &egui::Context) {
             if !command_available(id, cfg!(target_arch = "wasm32")) {
                 continue;
             }
+            // A pane of an extension that is off isn't offered (#1752).
+            if crate::extensionsui::hidden(app, id) {
+                continue;
+            }
             // Only a shell with a touch interface (a phone's) has one to go back to.
             if id == "ui.touchInterface" && app.touch.is_none() {
                 continue;
@@ -1730,6 +1736,7 @@ pub fn about(app: &mut RustGisApp, ctx: &egui::Context) {
                         .keymap
                         .grouped()
                         .into_iter()
+                        .filter(|(command, ..)| !crate::extensionsui::hidden(app, command))
                         .map(|(command, params, keys)| {
                             let keys: Vec<String> = keys.into_iter().map(|c| c.shown(ctx)).collect();
                             (keys.join(" / "), crate::keymap::label(app, command, params))

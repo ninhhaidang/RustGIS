@@ -158,7 +158,19 @@ pub struct Agent {
     /// Delegations for the app to start ([`Agent::take_delegations`]).
     delegations: Vec<Delegation>,
     /// Threads' reports waiting for the assistant to be free ([`Agent::deliver`]).
-    reports: Vec<(String, String, String, bool)>,
+    reports: Vec<Report>,
+}
+
+/// A thread's report waiting for the model, and the line the transcript shows for it, each cut
+/// from the report as written so that what a cut says counts what the thread wrote.
+struct Report {
+    thread: String,
+    label: String,
+    /// For the model: at most [`tools::MAX_RESULT`] characters.
+    text: String,
+    /// For the transcript: shorter, and saying when the thread failed.
+    note: String,
+    error: bool,
 }
 
 /// An agent thread on this computer: an ACP session that works in the background and takes
@@ -262,7 +274,9 @@ impl Agent {
         let Some(t) = self.threads.iter_mut().find(|t| t.id == thread) else { return };
         t.working = false;
         let label = t.agent.label.to_string();
-        self.reports.push((thread.to_string(), label, tools::clip(&report, tools::MAX_RESULT), error));
+        let failed = if error { " failed" } else { "" };
+        let note = format!("{thread} ({label}){failed}: {}", tools::clip(&report, 600));
+        self.reports.push(Report { thread: thread.to_string(), label, text: tools::clip(&report, tools::MAX_RESULT), note, error });
     }
 
     /// A thread ended (stopped, closed, or its process exited): it takes no more follow-ups.
@@ -280,8 +294,8 @@ impl Agent {
             let mut message = String::from(
                 "(Not from the user: agent threads working in the background have reported. Tell the user briefly what came of it.)",
             );
-            for (id, label, report, error) in std::mem::take(&mut a.reports) {
-                a.transcript.push(Entry::Note(Note::text(format!("{id} ({label}): {}", tools::clip(&report, 600)))));
+            for Report { thread: id, label, text: report, note, error } in std::mem::take(&mut a.reports) {
+                a.transcript.push(Entry::Note(Note::text(note)));
                 let quoted = report.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
                 let quoted = tools::bounded_json(&serde_json::json!({"report":quoted}), a.config.tool_output_token_limit);
                 message.push_str(&format!(
@@ -917,6 +931,7 @@ impl Agent {
         let State::Calls(q, _) = &mut self.state else { return };
         let Some(call) = q.pop_front() else { return };
         let permit = self.pending_policy.take().filter(|_| allow).map(Pending::allow);
+        let was_on = s.extensions().is_on(rustgis_engine::extensions::ASSISTANT.id);
         let (content, error, images) = if allow {
             match self.run_tool(s, &call, tokens, permit) {
                 Ok((c, images)) => (c, false, images),
@@ -927,6 +942,13 @@ impl Agent {
         };
         let shown = if allow { content.clone() } else { "Declined".to_string() };
         self.record(call, content, shown, error, images);
+        // A call that turned the AI Assistant off ends its reply: the calls after it aren't run.
+        if was_on && !s.extensions().is_on(rustgis_engine::extensions::ASSISTANT.id) {
+            let why = "Not run: an earlier call turned the AI Assistant off.";
+            while matches!(&self.state, State::Calls(q, _) if !q.is_empty()) {
+                self.record_front(why.to_string(), why.to_string(), true);
+            }
+        }
     }
 
     /// Takes the first waiting call off the queue with its result (and what the transcript shows).
@@ -1150,6 +1172,18 @@ impl Agent {
             self.child = None;
         }
         self.halt(Entry::Note(Note::new("Stopped.")), "Stopped by the user.", "Stopped by the user.");
+    }
+
+    /// Ends everything that would go on by itself, keeping the conversation: the run stops, and
+    /// the agent threads are forgotten. Reports waiting for the model stay in the transcript and
+    /// aren't sent to it.
+    pub fn suspend(&mut self) {
+        self.stop();
+        self.threads.clear();
+        self.delegations.clear();
+        for report in std::mem::take(&mut self.reports) {
+            self.transcript.push(Entry::Note(Note::text(report.note)));
+        }
     }
 
     /// Runs one step of the conversation. A bug in RustGIS that panics while reading a reply or

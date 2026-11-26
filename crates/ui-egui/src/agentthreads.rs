@@ -63,6 +63,11 @@ pub struct Threads {
 }
 
 impl Threads {
+    /// How many threads there are, working or waiting for a follow-up.
+    pub(crate) fn count(&self) -> usize {
+        self.runs.len()
+    }
+
     /// Publish the shared approval setting synchronously to every live ACP session.
     pub(crate) fn set_auto(&self, auto: bool) {
         for t in &self.runs {
