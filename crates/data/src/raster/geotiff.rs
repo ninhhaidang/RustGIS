@@ -1197,6 +1197,28 @@ impl Chunks {
             })?;
         let ((xs, xe), (ys, ye)) = (span.kept(span.cols, x0, cols, k), span.kept(span.rows, y0, rows, k));
         let (sc, sr) = (u64::from(span.cols.0), u64::from(span.rows.0));
+        // Every pixel kept and none to count: a run of a row at a time. Threads reading an image
+        // take turns placing their chunks, so this part of a read isn't shared among them.
+        if k == 1 && changed.is_none() {
+            let (width, left) = (xe.saturating_sub(xs) as usize, (xs - x0) as usize);
+            for y in ys..ye {
+                let src = ((y - y0) as usize * stride + left) * per_pixel;
+                let dst = (y - sr) as usize * ow + (xs - sc) as usize;
+                let Some(src) = values.get(src..src + width * per_pixel) else { continue };
+                for b in 0..self.samples {
+                    let band = if self.planar { plane } else { b };
+                    let Some(row) = bands.get_mut(band).and_then(|v| v.get_mut(dst..dst + width)) else { continue };
+                    if per_pixel == 1 {
+                        row.copy_from_slice(src);
+                    } else {
+                        for (slot, v) in row.iter_mut().zip(src.iter().skip(b).step_by(per_pixel)) {
+                            *slot = *v;
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
         let mut y = ys;
         while y < ye {
             let mut x = xs;
