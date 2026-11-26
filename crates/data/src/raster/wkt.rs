@@ -432,18 +432,20 @@ fn code_with_shift(crs: Crs) -> Option<u16> {
 /// ([`unapplied`]), or of a bound system without a transformation ([`untransformed`]); `whose`
 /// says whose it is (`the file's`), and `crs` is the system it is read as.
 fn dropped_note(root: &Node, whose: &str, crs: Crs) -> Option<String> {
-    dropped_note_by(root, whose, code_with_shift(crs).map(|code| format!("EPSG:{code}")).as_deref())
+    dropped_note_by(root, whose, || code_with_shift(crs).map(|code| format!("EPSG:{code}")))
 }
 
 /// [`dropped_note`] for a system read by `by`, a code whose own shift to WGS 84 is used in place
-/// of one the file gives that isn't applied, or by none.
-fn dropped_note_by(root: &Node, whose: &str, by: Option<&str>) -> Option<String> {
+/// of one the file gives that isn't applied, or by none. `by` is asked only for a shift that
+/// isn't applied: finding a code's shift can read the whole EPSG catalog, most of what opening a
+/// small file takes.
+fn dropped_note_by(root: &Node, whose: &str, by: impl FnOnce() -> Option<String>) -> Option<String> {
     let datum = geogcs(root).and_then(|g| g.child("DATUM"));
     // On the source's datum, or on the source itself when it has none ([`put_mark`]).
     if let Some(what) = unapplied(datum).or_else(|| mark(Some(root), UNAPPLIED)) {
         let what = clip(&what);
         // Read by a code whose own shift is applied in its place: off by the difference.
-        return Some(match by {
+        return Some(match by() {
             Some(code) => format!(
                 "{whose} {what} isn't applied; {code}'s own shift to WGS 84 is used in its place, so positions may be off by the difference between the two"
             ),
@@ -464,7 +466,7 @@ pub fn unapplied_note(text: &str, crs: Crs) -> Option<String> {
 /// [`unapplied_note`] for a system read by PROJ definition `def`, named `name` (an Esri code), whose
 /// own shift to WGS 84, when it has one, is used in place of the one the text gives.
 pub(crate) fn unapplied_note_beside(text: &str, name: &str, def: &str) -> Option<String> {
-    let by = bundled_shift(def).is_some_and(|s| s.iter().any(|v| *v != 0.0)).then_some(name);
+    let by = || bundled_shift(def).is_some_and(|s| s.iter().any(|v| *v != 0.0)).then(|| name.to_owned());
     dropped_note_by(&tree(text).ok()?, "the definition's", by)
 }
 
