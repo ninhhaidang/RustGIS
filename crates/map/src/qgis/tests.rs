@@ -1111,7 +1111,7 @@ fn every_corpus_file_reads() {
     };
     // Pin the corpus sizes so a regeneration cannot silently drop fixtures.
     let styles = files("generated/qml", &["qml"]);
-    assert_eq!(styles.len(), 110, "style corpus changed: {styles:?}");
+    assert_eq!(styles.len(), 126, "style corpus changed: {styles:?}");
     // Raster image markers' files are found from the style's folder and the project's.
     let mut read = |source: &str| {
         use base64::Engine;
@@ -1126,7 +1126,9 @@ fn every_corpus_file_reads() {
         let dir = path.parent().unwrap().to_string_lossy().to_string();
         let mut report = Report::default();
         super::read_style(&text, "layer", &dir, &mut read, &mut report).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        if path.to_string_lossy().contains("symbol-raster-marker-") {
+        // By the file's name: the checkout's own folders may contain anything.
+        let name = path.file_name().unwrap().to_string_lossy();
+        if name.starts_with("symbol-raster-marker-") {
             assert!(
                 !report.notes.iter().any(|n| n.text.starts_with("raster image markers whose")),
                 "{}: {:?}",
@@ -1134,9 +1136,18 @@ fn every_corpus_file_reads() {
                 report.notes
             );
         }
+        // Until the importer reads SVG markers (#2266 part E2a), which changes this on purpose.
+        if name.starts_with("symbol-svg-marker-") {
+            assert!(
+                report.notes.iter().any(|n| n.text.starts_with("SVG markers, drawn as circles")),
+                "{}: {:?}",
+                path.display(),
+                report.notes
+            );
+        }
     }
     let projects = files("generated/qgs", &["qgs", "qgz"]);
-    assert_eq!(projects.len(), 37, "project corpus changed: {projects:?}");
+    assert_eq!(projects.len(), 38, "project corpus changed: {projects:?}");
     for path in &projects {
         let bytes = std::fs::read(path).unwrap();
         let text = if path.extension().is_some_and(|e| e == "qgz") {

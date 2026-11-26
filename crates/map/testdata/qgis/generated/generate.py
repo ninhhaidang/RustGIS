@@ -646,15 +646,15 @@ def raster_marker_styles():
     }
 
 
-def raster_marker_symbol(make):
+def marker_symbol(make):
     from qgis.core import QgsMarkerSymbol
     return QgsMarkerSymbol([make()])
 
 
-def raster_markers_along_a_line(make):
+def markers_along_a_line(make):
     from qgis.core import QgsLineSymbol, QgsMarkerLineSymbolLayer
     ml = QgsMarkerLineSymbolLayer(True, 8)
-    ml.setSubSymbol(raster_marker_symbol(make))
+    ml.setSubSymbol(marker_symbol(make))
     return QgsLineSymbol([ml])
 
 
@@ -672,13 +672,13 @@ def raster_markers():
     p = new_project()
     for name, make in styles.items():
         vl = layer("points")
-        vl.setRenderer(QgsSingleSymbolRenderer(raster_marker_symbol(make)))
+        vl.setRenderer(QgsSingleSymbolRenderer(marker_symbol(make)))
         save_qml(vl, f"symbol-raster-marker-{name}")
         scrub_qml(f"symbol-raster-marker-{name}")
         vl.setName(f"raster marker {name}")
         p.addMapLayer(vl)
     vl = layer("lines")
-    vl.setRenderer(QgsSingleSymbolRenderer(raster_markers_along_a_line(styles["png"])))
+    vl.setRenderer(QgsSingleSymbolRenderer(markers_along_a_line(styles["png"])))
     save_qml(vl, "symbol-raster-marker-along-a-line")
     scrub_qml("symbol-raster-marker-along-a-line")
     vl.setName("raster markers along a line")
@@ -687,6 +687,109 @@ def raster_markers():
 
 
 attempt("raster markers", raster_markers)
+
+
+# SVG markers (#2266): an SVG with QGIS's parameters (`param(fill)` and the like) and one without,
+# in a file and embedded, one from QGIS's own library; colours with alpha and an outline width;
+# sizes in each unit, rotation, an offset, anchor points, a fixed aspect ratio, opacity, and
+# markers along a line. Each style also has a layer in `svg-markers.qgs`, which names the SVG files
+# relative to it.
+SVG_ICON = """<svg xmlns="http://www.w3.org/2000/svg" width="32" height="16" viewBox="0 0 32 16">
+  <rect width="16" height="16" fill="#c81e1e"/>
+  <rect x="16" width="16" height="8" fill="#1e5ac8"/>
+</svg>
+"""
+
+SVG_PARAMS = """<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10" viewBox="0 0 200 100">
+  <path d="M10 90 L100 10 L190 90 Z" fill="param(fill) #ff0000" fill-opacity="param(fill-opacity)"
+    stroke="param(outline) #000000" stroke-opacity="param(outline-opacity)" stroke-width="param(outline-width) 2"/>
+  <rect x="20" y="20" width="40" height="30"
+    style="fill:param(fill);stroke:param(outline);stroke-width:param(outline-width)"/>
+</svg>
+"""
+
+
+def svg_marker_images():
+    for name, text in (("icon.svg", SVG_ICON), ("marker.svg", SVG_PARAMS)):
+        with open(os.path.join(OUT, "data", name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+
+attempt("SVG marker images", svg_marker_images)
+
+
+def svg_marker_layer(path, size=6, unit=Qgis.RenderUnit.Millimeters, angle=0, offset=None, anchor=None, ratio=0,
+                     fill=(30, 150, 60), stroke=(40, 40, 40), width=0.4):
+    from qgis.core import QgsSvgMarkerSymbolLayer
+    from qgis.PyQt.QtCore import QPointF
+    sl = QgsSvgMarkerSymbolLayer(path)
+    sl.setSize(size)
+    sl.setSizeUnit(unit)
+    sl.setAngle(angle)
+    sl.setFillColor(QColor(*fill))
+    sl.setStrokeColor(QColor(*stroke))
+    sl.setStrokeWidth(width)
+    sl.setStrokeWidthUnit(Qgis.RenderUnit.Millimeters)
+    if offset:
+        sl.setOffset(QPointF(*offset))
+        sl.setOffsetUnit(Qgis.RenderUnit.Millimeters)
+    if anchor:
+        sl.setHorizontalAnchorPoint(getattr(Qgis.HorizontalAnchorPoint, anchor[0]))
+        sl.setVerticalAnchorPoint(getattr(Qgis.VerticalAnchorPoint, anchor[1]))
+    sl.setFixedAspectRatio(ratio)
+    return sl
+
+
+def svg_marker_styles():
+    import base64
+    icon = os.path.join(OUT, "data", "icon.svg")
+    params = os.path.join(OUT, "data", "marker.svg")
+    with open(icon, "rb") as fh:
+        embedded = "base64:" + base64.b64encode(fh.read()).decode("ascii")
+    library = os.path.join(QgsApplication.pkgDataPath(), "svg", "arrows", "Arrow_01.svg")
+    return {
+        "no-params": lambda: svg_marker_layer(icon),
+        "embedded": lambda: svg_marker_layer(embedded),
+        "library": lambda: svg_marker_layer(library),
+        "params": lambda: svg_marker_layer(params),
+        "params-alpha": lambda: svg_marker_layer(params, fill=(30, 150, 60, 128), stroke=(200, 30, 30, 128)),
+        "params-outline-width": lambda: svg_marker_layer(params, width=1.2),
+        "size-points": lambda: svg_marker_layer(icon, 18, Qgis.RenderUnit.Points),
+        "size-pixels": lambda: svg_marker_layer(icon, 24, Qgis.RenderUnit.Pixels),
+        "size-map-units": lambda: svg_marker_layer(icon, 60, Qgis.RenderUnit.MapUnits),
+        "rotated": lambda: svg_marker_layer(icon, angle=30),
+        "offset": lambda: svg_marker_layer(icon, offset=(3, -2)),
+        "anchor-top-left": lambda: svg_marker_layer(icon, anchor=("Left", "Top")),
+        "anchor-bottom-right": lambda: svg_marker_layer(icon, anchor=("Right", "Bottom")),
+        "fixed-aspect-ratio": lambda: svg_marker_layer(icon, ratio=1.0),
+        "opacity": lambda: svg_marker_layer(icon),
+    }
+
+
+def svg_markers():
+    styles = svg_marker_styles()
+    p = new_project()
+    for name, make in styles.items():
+        symbol = marker_symbol(make)
+        # An SVG marker layer has no opacity of its own, as a raster one has: the symbol's.
+        if name == "opacity":
+            symbol.setOpacity(0.5)
+        vl = layer("points")
+        vl.setRenderer(QgsSingleSymbolRenderer(symbol))
+        save_qml(vl, f"symbol-svg-marker-{name}")
+        scrub_qml(f"symbol-svg-marker-{name}")
+        vl.setName(f"SVG marker {name}")
+        p.addMapLayer(vl)
+    vl = layer("lines")
+    vl.setRenderer(QgsSingleSymbolRenderer(markers_along_a_line(styles["no-params"])))
+    save_qml(vl, "symbol-svg-marker-along-a-line")
+    scrub_qml("symbol-svg-marker-along-a-line")
+    vl.setName("SVG markers along a line")
+    p.addMapLayer(vl)
+    save_project(p, "svg-markers")
+
+
+attempt("SVG markers", svg_markers)
 
 
 # Each provider: one layer (offline ones valid, services and databases written as configured).

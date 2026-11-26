@@ -1,7 +1,7 @@
 """Removes what ties the generated projects to the machine that wrote them: the user QGIS records
-as their author (`saveUser`, `saveUserFull`) and the absolute paths a few settings keep (a
-relation's or an atlas's layer source), made relative to the project. Run by `generate.py` after
-it writes; also runs on its own: `python3 scrub.py OUT`.
+as their author (`saveUser`, `saveUserFull`, the metadata's `<author>`) and the absolute paths a
+few settings keep (a relation's or an atlas's layer source), made relative to the project. Run by
+`generate.py` after it writes; also runs on its own: `python3 scrub.py OUT`.
 """
 import os
 import re
@@ -9,10 +9,12 @@ import sys
 import zipfile
 
 USER = re.compile(r'(saveUser|saveUserFull)="[^"]*"')
+AUTHOR = re.compile(r"<author>[^<]*</author>")
 
 
 def scrub_text(text, out):
     text = USER.sub(r'\1=""', text)
+    text = AUTHOR.sub("<author>Unknown</author>", text)
     return text.replace(os.path.join(out, "data") + "/", "../data/")
 
 
