@@ -74,9 +74,9 @@ pub struct Import {
     /// The saved web-service connection to record on imported layers, not a group-plan parameter.
     connection: Option<Value>,
     token: u64,
-    /// The originating map (`dialogs::map_key`), so a deleted, replaced or renamed map cancels the
-    /// import and a moved one doesn't.
-    map: crate::dialogs::MapKey,
+    /// The project and map it started on (`dialogs::MapOwner`), so another project, or a deleted,
+    /// replaced or renamed map, cancels the import and a moved one doesn't.
+    owner: crate::dialogs::MapOwner,
     slot: Slot<Result<Vec<u8>, String>>,
     document: Option<String>,
     current: Option<String>,
@@ -342,7 +342,7 @@ pub fn start(app: &mut RustGisApp, p: &Value, refresh: bool) -> Result<(), Strin
         refresh,
         connection,
         token: app.session.download_started(),
-        map: crate::dialogs::map_key(&app.session),
+        owner: crate::dialogs::MapOwner::of(&app.session),
         slot: Slot::default(),
         document: None,
         current: None,
@@ -466,8 +466,16 @@ impl Import {
 
 pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     let Some(mut task) = app.ui.service_import.take() else { return };
-    if !app.session.download_is_pending(task.token) || crate::dialogs::map_key(&app.session) != task.map {
+    let pending = app.session.download_is_pending(task.token);
+    let moved = !task.owner.holds(&app.session);
+    if !pending || moved {
         app.session.download_failed(task.token);
+        // Said unless the download was already over before the map moved (it failed elsewhere,
+        // say). Opening another project drops or puts aside its downloads, so they are never
+        // pending here.
+        if moved && (pending || !task.owner.in_project(&app.session)) {
+            app.session.notify(tl!("The service import was cancelled because the map or project in view changed.").to_string(), false);
+        }
         return;
     }
     let landed = task.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -682,6 +690,64 @@ fn noted(app: &mut RustGisApp, landed: &Landed, note: Option<String>) {
 mod tests {
     use super::*;
 
+    /// An import in flight that is given up because the map in view changed says so, once; one whose
+    /// download is already over says nothing (#2987).
+    #[test]
+    fn an_import_given_up_for_another_map_says_so() {
+        let mut app = RustGisApp::with_sample();
+        let first = app.session.map().name.clone();
+        let task = |app: &mut RustGisApp| Import {
+            params: json!({}),
+            refresh: false,
+            connection: None,
+            token: app.session.download_started(),
+            owner: crate::dialogs::MapOwner::of(&app.session),
+            slot: Slot::default(),
+            document: Some("https://example.test/capabilities".into()),
+            current: None,
+            remaining: VecDeque::new(),
+            responses: Vec::new(),
+            bytes: 0,
+        };
+        let ctx = egui::Context::default();
+        let said = |app: &RustGisApp, mark: u64| {
+            app.session.notices_since(mark).iter().filter(|n| n.text.contains("service import was cancelled")).count()
+        };
+        // Another map in view: said once.
+        let mark = app.session.notice_mark();
+        let import = task(&mut app);
+        app.ui.service_import = Some(import);
+        app.run("map.new", json!({"name": "Second"})).unwrap();
+        poll(&mut app, &ctx);
+        assert_eq!(said(&app, mark), 1);
+        assert!(app.ui.service_import.is_none());
+        // Its map renamed: the name is part of what it finds its map by.
+        app.run("map.activate", json!({"name": first})).unwrap();
+        let mark = app.session.notice_mark();
+        let import = task(&mut app);
+        app.ui.service_import = Some(import);
+        app.run("map.rename", json!({"name": "Renamed"})).unwrap();
+        poll(&mut app, &ctx);
+        assert_eq!(said(&app, mark), 1);
+        // A download already over (failed elsewhere, say): nothing more to say.
+        let mark = app.session.notice_mark();
+        let import = task(&mut app);
+        app.session.download_failed(import.token);
+        app.ui.service_import = Some(import);
+        app.run("map.activate", json!({"name": "Second"})).unwrap();
+        poll(&mut app, &ctx);
+        assert_eq!(said(&app, mark), 0);
+        // Another project opened: its download is put aside with the project, so it is no longer
+        // pending here, and that is said all the same.
+        app.run("map.activate", json!({"name": "Second"})).unwrap();
+        let mark = app.session.notice_mark();
+        let import = task(&mut app);
+        app.ui.service_import = Some(import);
+        app.run("project.new", json!({})).unwrap();
+        poll(&mut app, &ctx);
+        assert_eq!(said(&app, mark), 1);
+    }
+
     /// An import in flight goes on when its map moves among the maps, and is given up when another
     /// map is in view (#2959).
     #[test]
@@ -694,7 +760,7 @@ mod tests {
             refresh: false,
             connection: None,
             token,
-            map: crate::dialogs::map_key(&app.session),
+            owner: crate::dialogs::MapOwner::of(&app.session),
             slot: Slot::default(),
             document: Some("https://example.test/capabilities".into()),
             current: None,
@@ -1017,7 +1083,7 @@ mod tests {
                 refresh: false,
                 connection: None,
                 token: 0,
-                map: (0, String::new()),
+                owner: crate::dialogs::MapOwner::of(&rustgis_engine::Session::new(rustgis_engine::Project::default())),
                 slot: Slot::default(),
                 document: None,
                 current: None,
