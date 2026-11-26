@@ -4,7 +4,7 @@
 
 use std::ops::Range;
 
-use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, Transformer};
+use rustgis_data::raster::{BandStats, ColorHint, Crs, GeoTransform, Raster, Transformer};
 use rustgis_geom::{Coord, Extent};
 
 /// The no-data value written by these operations.
@@ -43,6 +43,10 @@ pub fn derive(r: &Raster, name: &str, bands: Vec<Vec<f32>>) -> Result<Raster, St
 
 /// [`derive`] for a [`hillshade`]'s pixels: one band of whole numbers 1–255 stored as bytes
 /// (`UInt8`), with 0 as no-data, so it is written as 8-bit samples, not 32-bit floats.
+///
+/// Its statistics come from how many cells hold each value, counted on several threads
+/// ([`BandStats::of_byte_counts`]), the same as [`Raster::new`] makes by reading the cells twice,
+/// one of the passes on one thread; cells that aren't whole numbers to 255 take that way instead.
 pub fn derive_hillshade(r: &Raster, name: &str, mut shade: Vec<f32>) -> Result<Raster, String> {
     r.require_coordinates()?;
     for v in &mut shade {
@@ -50,7 +54,53 @@ pub fn derive_hillshade(r: &Raster, name: &str, mut shade: Vec<f32>) -> Result<R
             *v = 0.0;
         }
     }
-    Raster::new(name, r.width, r.height, vec![shade], r.transform, r.crs, Some(0.0), ColorHint::Gray, "UInt8").map_err(|e| e.to_string())
+    let Some(stats) = byte_stats(&shade)? else {
+        return Raster::new(name, r.width, r.height, vec![shade], r.transform, r.crs, Some(0.0), ColorHint::Gray, "UInt8")
+            .map_err(|e| e.to_string());
+    };
+    let mut out = Raster::unmeasured(name, r.width, r.height, vec![shade], r.transform, r.crs, Some(0.0), ColorHint::Gray, "UInt8")
+        .map_err(|e| e.to_string())?;
+    if let Some(band) = out.bands.first_mut() {
+        band.stats = stats;
+    }
+    Ok(out)
+}
+
+/// The cells [`byte_stats`] counts at a time: its 2 KB of counts for each are 0.05% of their cells.
+const BYTE_COUNT_CHUNK: usize = 1 << 20;
+
+/// The statistics of `cells` with 0 as no-data, from how many hold each value, when every one is
+/// a whole number from 0 to 255; `None` when one isn't.
+fn byte_stats(cells: &[f32]) -> Result<Option<BandStats>, String> {
+    let chunks: Vec<&[f32]> = cells.chunks(BYTE_COUNT_CHUNK).collect();
+    crate::control::begin(chunks.len());
+    // Two chunks, two million cells, before threads pay off; each thread takes one at a time, as
+    // there are few of them.
+    let threads = crate::parallel::threads_for_each(chunks.len(), 2, 0);
+    let counted = crate::parallel::try_map_each_on(
+        &chunks,
+        threads,
+        || (),
+        |_, _, chunk: &&[f32]| {
+            let mut counts = [0u64; 256];
+            for &v in *chunk {
+                let byte = v as u8;
+                if f32::from(byte) != v {
+                    return Ok::<_, String>(None);
+                }
+                if let Some(c) = counts.get_mut(usize::from(byte)) {
+                    *c += 1;
+                }
+            }
+            Ok(Some(counts))
+        },
+    )?;
+    let mut counts = [0u64; 256];
+    for chunk in counted {
+        let Some(chunk) = chunk else { return Ok(None) };
+        counts.iter_mut().zip(chunk).for_each(|(a, b)| *a += b);
+    }
+    Ok(BandStats::of_byte_counts(&counts, Some(0)))
 }
 
 fn band(r: &Raster, b: usize) -> Result<&[f32], String> {
@@ -291,7 +341,7 @@ pub fn hillshade_on(r: &Raster, b: usize, azimuth: f64, altitude: f64, zf: f64, 
             let aspect = (-gx).atan2(-gy);
             cos_zen * slope.cos() + sin_zen * slope.sin() * (az - aspect).cos()
         };
-        (v.max(0.0) * 255.0).round().max(1.0)
+        rustgis_data::raster::round_positive(v.max(0.0) * 255.0).max(1.0)
     })
 }
 
@@ -3097,6 +3147,44 @@ mod tests {
             hillshade(&r, 0, 315.0, 45.0, 1.5).unwrap_or_default(),
             [182.0, 184.0, 185.0, 183.0, 186.0, NODATA, 178.0, 175.0, 183.0, 178.0, 175.0, 174.0]
         );
+    }
+
+    /// A hillshade's bytes take the statistics [`Raster::new`] makes of them, counted instead of
+    /// read twice: over a ridged surface lit from several sides, with no-data in it, past a million
+    /// cells (on several threads); cells that aren't whole numbers to 255 take [`Raster::new`]'s.
+    #[test]
+    fn hillshade_bytes_take_the_statistics_of_their_cells() {
+        let gt = GeoTransform { origin_x: 500_000.0, origin_y: 4_800_000.0, pixel_width: 10.0, pixel_height: -10.0 };
+        let utm = Crs::Epsg(32616);
+        let (w, h) = (1200usize, 1000usize);
+        let cells: Vec<f32> = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f32, (i / w) as f32);
+                if (x - 600.0).hypot(y - 500.0) < 40.0 { -9999.0 } else { (x / 37.0).sin() * 80.0 + (y / 23.0).cos() * 50.0 }
+            })
+            .collect();
+        let dem = Raster::new("dem", w as u32, h as u32, vec![cells], gt, utm, Some(-9999.0), ColorHint::Gray, "Float32")
+            .unwrap_or_else(|e| panic!("{e}"));
+        let measured = |cells: Vec<f32>| {
+            Raster::new("shade", dem.width, dem.height, vec![cells], gt, utm, Some(0.0), ColorHint::Gray, "UInt8")
+                .unwrap_or_else(|e| panic!("{e}"))
+                .bands[0]
+                .stats
+                .clone()
+        };
+        for azimuth in [0.0, 135.0, 315.0] {
+            let shade = hillshade(&dem, 0, azimuth, 45.0, 1.0).unwrap_or_else(|e| panic!("{e}"));
+            let mut bytes = shade.clone();
+            bytes.iter_mut().filter(|v| !v.is_finite() || **v < 1.0).for_each(|v| *v = 0.0);
+            assert!(matches!(byte_stats(&bytes), Ok(Some(_))), "azimuth {azimuth}: not counted as bytes");
+            let out = derive_hillshade(&dem, "shade", shade).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(out.bands[0].stats, measured(out.bands[0].data.clone()), "azimuth {azimuth}");
+        }
+        let mut fractions = vec![3.5_f32; w * h];
+        fractions[0] = 300.0;
+        assert!(matches!(byte_stats(&fractions), Ok(None)), "fractions counted as bytes");
+        let out = derive_hillshade(&dem, "shade", fractions.clone()).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(out.bands[0].stats, measured(fractions));
     }
 
     /// A cell in full shadow is 1, not 0, so that the bytes made of a hillshade keep 0 for its

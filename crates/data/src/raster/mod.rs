@@ -308,7 +308,7 @@ impl BandStats {
                 let x = v as f64;
                 n += 1;
                 (min, max) = (lower(min, x), higher(max, x));
-                whole &= x.fract() == 0.0;
+                whole &= is_whole(x);
                 if sum {
                     sums = (sums.0 + x, sums.1 + x * x);
                 }
@@ -368,6 +368,40 @@ impl BandStats {
         BandStats { count: n, min, max, mean, std_dev, histogram, categories }
     }
 
+    /// Statistics of a band of whole numbers from 0 to 255, from how many of its cells hold each
+    /// (`counts`, by value), leaving out `nodata`: the same, to the bit, as [`Raster::new`] makes
+    /// by reading the cells, for a caller that counted them as it made them. The sums of whole
+    /// numbers are exact in `f64` as long as they stay below 2⁵³, so a pass over the cells in any
+    /// order makes the same mean and spread; `None` past that (some 1.4 × 10¹¹ cells), or past
+    /// what a count of cells holds here (`usize`, 32 bits in the browser).
+    pub fn of_byte_counts(counts: &[u64; 256], nodata: Option<u8>) -> Option<BandStats> {
+        let kept = || counts.iter().enumerate().filter(|&(v, &c)| c > 0 && nodata != Some(v as u8)).map(|(v, &c)| (v as u64, c));
+        let n: u64 = kept().map(|(_, c)| c).sum();
+        if n == 0 {
+            return Some(BandStats::default());
+        }
+        if n > (1u64 << 53) / (255 * 255) {
+            return None;
+        }
+        let (sum, sum2) = kept().fold((0u64, 0u64), |(s, s2), (v, c)| (s + v * c, s2 + v * v * c));
+        let count = usize::try_from(n).ok()?;
+        let (min, max) = (kept().next()?.0 as f64, kept().next_back()?.0 as f64);
+        let mean = sum as f64 / n as f64;
+        let std_dev = (sum2 as f64 / n as f64 - mean * mean).max(0.0).sqrt();
+        // The bins as [`Tally::run`] makes them, for whole numbers within 16 bits.
+        let span = max - min;
+        let k = (HISTOGRAM_BINS as f64 - 1.0) / if span > 0.0 { span } else { 1.0 };
+        let mut histogram = vec![0u64; HISTOGRAM_BINS];
+        for (v, c) in kept() {
+            let bin = round_positive((v as f64 - min) * k) as usize;
+            if let Some(h) = histogram.get_mut(bin.min(HISTOGRAM_BINS - 1)) {
+                *h += c;
+            }
+        }
+        let categories = Some(kept().map(|(v, _)| v as f64).collect());
+        Some(BandStats { count, min, max, mean, std_dev, histogram, categories })
+    }
+
     /// The value below which `p` (0–100) percent of pixels fall, from the histogram.
     pub fn percentile(&self, p: f64) -> f64 {
         let total: u64 = self.histogram.iter().sum();
@@ -410,6 +444,21 @@ struct Tally {
 /// Values below which a band is counted on one thread (#1252): threads pay off past about a
 /// million.
 const PARALLEL_VALUES: usize = 1 << 20;
+
+/// Whether `x` is a whole number: `x.fract() == 0.0`, without the call to the C library
+/// that `fract` makes where the processor has no instruction for it (x86-64's baseline). From 2⁵²
+/// up every `f64` is whole.
+fn is_whole(x: f64) -> bool {
+    x.is_finite() && (x.abs() >= 4_503_599_627_370_496.0 || x == x as i64 as f64)
+}
+
+/// `x.round()` for `x` from 0 to 2⁵², halves away from zero, without the call to the C library
+/// that `round` makes where the processor has no instruction for it (x86-64's baseline): for a
+/// histogram's bins here, and a hillshade's cells.
+pub fn round_positive(x: f64) -> f64 {
+    let whole = x as u64 as f64;
+    if x - whole >= 0.5 { whole + 1.0 } else { whole }
+}
 
 /// `x` when it is below `min`, else `min`: equal values (−0 and 0) keep the first.
 fn lower(min: f64, x: f64) -> f64 {
@@ -479,7 +528,7 @@ impl Tally {
                 continue;
             }
             let x = v as f64;
-            let bin = ((x - b.min) * b.k).round() as usize;
+            let bin = round_positive((x - b.min) * b.k) as usize;
             if let Some(h) = histogram.get_mut(bin.min(HISTOGRAM_BINS - 1)) {
                 *h += 1;
             }
@@ -2321,6 +2370,31 @@ pub(crate) mod tests {
         let small: Vec<f32> = (0..1000).map(|i| (i % 37) as f32).collect();
         assert_eq!(BandStats::from_values(&small), one_pass(&small, f32::is_finite));
         assert_eq!(BandStats::compute_on(&vec![f32::NAN; n], valid, None, 4), BandStats::default());
+    }
+
+    /// A band of whole numbers to 255 has the same statistics, to the bit, from how many cells
+    /// hold each value as from the cells: on one thread and on several (past a million cells), with
+    /// no-data among them, one value, three, and nothing but no-data.
+    #[test]
+    fn byte_counts_make_the_statistics_of_the_cells() {
+        let gt = GeoTransform { origin_x: 500_000.0, origin_y: 4_800_000.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let utm = Crs::from_epsg(32611).unwrap();
+        let spread = |n: u32| (0..n).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as f32).collect::<Vec<f32>>();
+        let three = (0..1000).map(|i| [0.0, 1.0, 255.0][i % 3]).collect::<Vec<f32>>();
+        for (w, h, cells) in [
+            (1000, 100, spread(100_000)),
+            (1500, 1000, spread(1_500_000)),
+            (10, 10, vec![7.0; 100]),
+            (100, 10, three),
+            (5, 2, vec![0.0; 10]),
+        ] {
+            let mut counts = [0u64; 256];
+            for v in &cells {
+                counts[*v as usize] += 1;
+            }
+            let r = Raster::new("bytes", w, h, vec![cells], gt, utm, Some(0.0), ColorHint::Gray, "UInt8").unwrap();
+            assert_eq!(BandStats::of_byte_counts(&counts, Some(0)), Some(r.bands[0].stats.clone()), "{w} × {h}");
+        }
     }
 
     /// Cells a raster's alpha draws see-through are left out of its colour bands' statistics,
