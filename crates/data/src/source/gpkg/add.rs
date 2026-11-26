@@ -49,7 +49,7 @@ pub(super) fn write_features(
         let replaced = Cell::new(None);
         // The replaced table's `last_change`, which the new one's moves past.
         let replaced_stamp = Cell::new(None);
-        let mut make = |multi, mixed| {
+        let mut make = |multi, mixed, _: &[crate::Feature]| {
             let layout = plan(name, geometry_type, fields, multi, mixed, srs_id);
             if let Some(t) = stamp(&tx, &layout.table)? {
                 replaced_stamp.set(Some(t));

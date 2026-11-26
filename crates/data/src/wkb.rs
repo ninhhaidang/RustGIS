@@ -112,7 +112,7 @@ pub fn has_zm(bytes: &[u8]) -> bool {
 }
 
 /// Encoded width: 16 bytes per coordinate, 4 per count and 5 per geometry head.
-fn wkb_size(g: &Geometry) -> usize {
+pub(crate) fn wkb_size(g: &Geometry) -> usize {
     let ring = |r: &[Coord]| 4 + 16 * r.len();
     match g {
         Geometry::Point(_) => 5 + 16,

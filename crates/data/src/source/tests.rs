@@ -5476,6 +5476,58 @@ fn geopackage_index_lists_only_features_with_a_place() {
     assert_eq!((indexed(&path, "first"), indexed(&path, "second")), (vec![1, 2], vec![2]));
 }
 
+/// A new GeoPackage whose rows 16 KiB pages hold in much less space (rows of about 2 KiB) is
+/// made with them, and any other with SQLite's own 4 KiB, whether the layer is written whole or
+/// streamed. A table added to a file leaves its pages as they were.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn geopackage_pages_follow_the_row_size() {
+    use crate::io::{GpkgMode, GpkgTable};
+    let folder = tempfile::tempdir().unwrap();
+    // 400 rings of about 16 bytes a place, each with as many places as `places` says.
+    let rings = |places: &dyn Fn(u32) -> u32| {
+        let mut ds = Dataset::new("rings", GeometryType::Polygon, vec![]);
+        for i in 0..400u32 {
+            let vertices = places(i);
+            let ring = (0..=vertices).map(|k| Coord::new(f64::from(i), f64::from(k % vertices) / 1000.0)).collect();
+            ds.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![]);
+        }
+        ds
+    };
+    let mut notes = Dataset::new("notes", GeometryType::None, vec![Field::new("note", FieldType::Text)]);
+    for _ in 0..400 {
+        notes.push(None, vec![Value::Text("n".repeat(2100))]);
+    }
+    let page_size =
+        |path: &Path| -> i64 { rusqlite::Connection::open(path).unwrap().query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap() };
+    for (name, ds, size) in [
+        ("small", rings(&|_| 8), 4096),
+        ("middling", rings(&|_| 128), 16384),
+        ("large", rings(&|_| 400), 4096),
+        // Three rows in ten just over half a wide page, which would hold one apiece.
+        ("mixed", rings(&|i| if i % 10 < 3 { 520 } else { 8 }), 4096),
+        ("text", notes, 16384),
+        ("empty", Dataset::new("none", GeometryType::Polygon, vec![]), 4096),
+    ] {
+        let (whole, streamed) = (folder.path().join(format!("{name}.gpkg")), folder.path().join(format!("{name}-streamed.gpkg")));
+        gpkg::write(&ds, &whole).unwrap();
+        let mut feed = |put: &mut dyn FnMut(&[crate::Feature]) -> crate::Result<()>| ds.features.chunks(300).try_for_each(&mut *put);
+        gpkg::write_features_in(&ds.name, ds.geometry_type, &ds.fields, &streamed, Crs::LonLat, &GpkgTable::default(), &mut feed).unwrap();
+        for path in [&whole, &streamed] {
+            assert_eq!(page_size(path), size, "{name}");
+            // An attribute table isn't a layer this reader opens.
+            if ds.geometry_type != GeometryType::None {
+                let source = gpkg::GpkgSource::open(path, None).unwrap();
+                assert_eq!(crate::source::materialize(&source).unwrap().0.features, ds.features, "{name}");
+            }
+        }
+    }
+    let path = folder.path().join("small.gpkg");
+    let target = GpkgTable { mode: GpkgMode::AddTable, name: Some("added".into()) };
+    gpkg::write_table_in(&rings(&|_| 128), &path, Crs::LonLat, &target).unwrap();
+    assert_eq!(page_size(&path), 4096, "an existing file keeps its pages");
+}
+
 /// A streamed export loads the spatial index in several runs once it holds enough boxes: every
 /// feature with a place is still indexed with its box, and the same layer builds the same index.
 #[cfg(not(target_arch = "wasm32"))]

@@ -748,13 +748,14 @@ fn file_identity(path: &Path) -> Option<(u64, u64)> {
 const WGS84_WKT: &str = "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]";
 
 /// A geometry as a GeoPackage blob: the `GP` header (little-endian, WGS 84, an XY envelope) and
-/// the WKB. Points of a multipoint layer are written as one-point multipoints.
-fn blob(g: &crate::Geometry, multi_points: bool, srs_id: i32) -> Vec<u8> {
+/// the WKB. Points of a multipoint layer are written as one-point multipoints. `extent` is the
+/// geometry's box.
+fn blob(g: &crate::Geometry, extent: &Extent, multi_points: bool, srs_id: i32) -> Vec<u8> {
     let g = match g {
         crate::Geometry::Point(c) if multi_points => &crate::Geometry::MultiPoint(vec![*c]),
         g => g,
     };
-    header_blob(&wkb::encode(g), &g.extent(), srs_id)
+    header_blob(&wkb::encode(g), extent, srs_id)
 }
 
 fn header_blob(wkb: &[u8], e: &Extent, srs_id: i32) -> Vec<u8> {
@@ -863,7 +864,7 @@ pub(crate) fn write_features_in(
     for _ in 0..4 {
         let tmp = temp_database_beside(path)?;
         let conn = Connection::open(&tmp).map_err(err)?;
-        let mut make = |multi, mixed| create(&conn, name, geometry_type, fields, crs, multi, mixed);
+        let mut make = |multi, mixed, first: &[crate::Feature]| create(&conn, name, geometry_type, fields, crs, multi, mixed, first);
         match fill(&conn, multi_points, mixed, keep_ids, &mut make, feed)? {
             Err(Redo::MultiPoints) => multi_points = Some(true),
             Err(Redo::Mixed) => mixed = true,
@@ -887,21 +888,24 @@ fn fill(
     multi_points: Option<bool>,
     mixed: bool,
     keep_ids: bool,
-    make: &mut dyn FnMut(bool, bool) -> Result<Layout>,
+    make: &mut dyn FnMut(bool, bool, &[crate::Feature]) -> Result<Layout>,
     feed: &mut dyn FnMut(&mut dyn FnMut(&[crate::Feature]) -> Result<()>) -> Result<()>,
 ) -> Result<std::result::Result<(Layout, Extent), Redo>> {
     let (mut layout, mut extent, mut redo) = (None, Extent::EMPTY, None);
     let mut boxes = Vec::new();
     let fed = feed(&mut |features| {
+        // An empty run (a chunk a definition query emptied) says nothing about the rows to come:
+        // the table, its page size and whether it holds multipoints wait for the first run with
+        // rows. Without any, the end of the feed makes it.
+        if layout.is_none() && features.is_empty() {
+            return Ok(());
+        }
         if layout.is_none() {
             let multi = multi_points.unwrap_or_else(|| features.iter().any(|f| matches!(f.geometry, Some(crate::Geometry::MultiPoint(_)))));
-            layout = Some(make(multi, mixed)?);
+            layout = Some(make(multi, mixed, features)?);
         }
         let Some(l) = layout.as_ref() else { return Err(DataError::Format("GeoPackage: no table to write".into())) };
-        for g in features.iter().filter_map(|f| f.geometry.as_ref()) {
-            extent = extent.union(&g.extent());
-        }
-        redo = insert(conn, l, features, keep_ids, &mut boxes)?;
+        redo = insert(conn, l, features, keep_ids, &mut boxes, &mut extent)?;
         match redo {
             // Stops the traversal; the export starts again.
             Some(_) => Err(DataError::Format("GeoPackage: starting again".into())),
@@ -914,7 +918,7 @@ fn fill(
         (Ok(()), None) => {
             let layout = match layout {
                 Some(l) => l,
-                None => make(multi_points.unwrap_or(false), mixed)?,
+                None => make(multi_points.unwrap_or(false), mixed, &[])?,
             };
             fill_index(conn, &layout, &mut boxes)?;
             Ok(Ok((layout, extent)))
@@ -987,18 +991,18 @@ fn build(conn: &Connection, ds: &crate::Dataset, name: &str, crs: Crs, pinned: O
     let multi_points = ds.features.iter().any(|f| matches!(f.geometry, Some(crate::Geometry::MultiPoint(_))));
     let kind = table_kind(ds);
     let mixed = ds.features.iter().any(|f| other_kind(f, kind));
-    let layout = create(conn, name, kind, &ds.fields, crs, multi_points, mixed)?;
+    let layout = create(conn, name, kind, &ds.fields, crs, multi_points, mixed, &ds.features)?;
     // Feature ids are kept when they are unique and fit; otherwise SQLite numbers the rows.
     let mut seen = std::collections::HashSet::new();
     let keep_ids = ds.features.iter().all(|f| i64::try_from(f.id).is_ok() && seen.insert(f.id));
     // The table is made for the whole layer, so nothing should need doing again; should a
     // feature not fit after all, the export fails rather than leave it out.
-    let mut boxes = Vec::new();
-    if insert(conn, &layout, &ds.features, keep_ids, &mut boxes)?.is_some() {
+    let (mut boxes, mut extent) = (Vec::new(), Extent::EMPTY);
+    if insert(conn, &layout, &ds.features, keep_ids, &mut boxes, &mut extent)?.is_some() {
         return Err(DataError::Format("GeoPackage: a feature doesn't fit the table chosen for the layer".into()));
     }
     fill_index(conn, &layout, &mut boxes)?;
-    finish(conn, &layout, ds.extent(), pinned)?;
+    finish(conn, &layout, extent, pinned)?;
     Ok(layout.table)
 }
 
@@ -1041,10 +1045,69 @@ const FEATURE_METADATA: &str = "CREATE TABLE IF NOT EXISTS gpkg_geometry_columns
     CREATE TABLE IF NOT EXISTS gpkg_extensions (table_name TEXT, column_name TEXT, extension_name TEXT NOT NULL,
         definition TEXT NOT NULL, scope TEXT NOT NULL, CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name));";
 
+/// SQLite's own page size.
+const PAGE: usize = 4096;
+/// The page size a new file gets instead when its rows fill such pages much better.
+const WIDE_PAGE: usize = 16 * 1024;
+/// How many of a layer's first features [`page_size`] looks at.
+const PAGE_SAMPLE: usize = 1000;
+/// About how many pages a new file holds besides its feature table's, nearly empty at any size.
+const OTHER_PAGES: usize = 16;
+
+/// The page size for a new file whose first features are `first`, `None` for SQLite's own
+/// [`PAGE`]: [`WIDE_PAGE`] when such pages would hold the rows of the first [`PAGE_SAMPLE`]
+/// features, counting what the other tables' pages grow by, in less than nine tenths of the
+/// space. A row of about 2 KiB (a polygon of 130 places) takes a 4 KiB page to itself and leaves
+/// half of it empty. A streamed export looks at its first run, so it chooses as a whole one does
+/// unless that run holds only some of those features.
+fn page_size(fields: &[Field], first: &[crate::Feature]) -> Option<usize> {
+    let rows: Vec<usize> = first
+        .iter()
+        .take(PAGE_SAMPLE)
+        .map(|f| {
+            // The geometry with its blob header, and about what each value takes.
+            let geometry = f.geometry.as_ref().map_or(0, |g| 40 + wkb::wkb_size(g));
+            let values = f.attrs.iter().take(fields.len()).map(|v| match v {
+                Value::Null => 1,
+                Value::Text(s) => 2 + s.len(),
+                _ => 9,
+            });
+            geometry.saturating_add(values.sum())
+        })
+        .collect();
+    let wide = table_bytes(&rows, WIDE_PAGE).saturating_add(OTHER_PAGES * (WIDE_PAGE - PAGE));
+    (wide.saturating_mul(10) < table_bytes(&rows, PAGE).saturating_mul(9)).then_some(WIDE_PAGE)
+}
+
+/// The bytes a table takes in pages of `page` bytes for rows of these sizes, added in order, as
+/// SQLite's file format lays them out: a row goes on the last leaf page or starts the next, and
+/// one too big for a page keeps its start there and the rest on overflow pages of its own.
+fn table_bytes(rows: &[usize], page: usize) -> usize {
+    // The most of a row a leaf page holds, and the least it keeps of one that overflows.
+    let (most, least) = (page - 35, (page - 12) * 32 / 255 - 23);
+    let (mut pages, mut used) = (1usize, 0usize);
+    for &row in rows {
+        let mut here = row;
+        if row > most {
+            let rest = least + (row - least) % (page - 4);
+            here = if rest <= most { rest } else { least };
+            pages = pages.saturating_add((row - here).div_ceil(page - 4));
+        }
+        // With it, its place in the page's list, its length, its id and where it overflows to.
+        let cell = here + 12;
+        if used + cell > page - 8 {
+            pages = pages.saturating_add(1);
+            used = 0;
+        }
+        used += cell;
+    }
+    pages.saturating_mul(page)
+}
+
 /// Creates the GeoPackage's tables and the empty feature table (and its spatial index) for a
-/// layer, in a transaction [`finish`] commits. A point layer holding any multipoint is a
-/// MULTIPOINT table, whose single points [`insert`] writes as one-point multipoints; a `mixed`
-/// layer's is a GEOMETRY table.
+/// layer, in a transaction [`finish`] commits, in pages sized for its `first` features
+/// ([`page_size`]). A point layer holding any multipoint is a MULTIPOINT table, whose single
+/// points [`insert`] writes as one-point multipoints; a `mixed` layer's is a GEOMETRY table.
 fn create(
     conn: &Connection,
     name: &str,
@@ -1053,6 +1116,7 @@ fn create(
     crs: Crs,
     multi_points: bool,
     mixed: bool,
+    first: &[crate::Feature],
 ) -> Result<Layout> {
     // An EPSG system by its code; a custom one numbered as GDAL numbers them.
     let srs_id = match crs.epsg() {
@@ -1060,8 +1124,10 @@ fn create(
         c => i32::from(c),
     };
     let layout = plan(name, geometry_type, fields, multi_points, mixed, srs_id);
+    // The page size goes first: it can't change once anything is written.
+    let page = page_size(fields, first).map_or_else(String::new, |p| format!("PRAGMA page_size = {p};"));
     conn.execute_batch(&format!(
-        "PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;
+        "{page} PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;
         PRAGMA application_id = 1196444487; PRAGMA user_version = 10400;
         {METADATA} {FEATURE_METADATA} BEGIN;"
     ))
@@ -1174,18 +1240,19 @@ enum Redo {
     Renumber,
 }
 
-/// Inserts features into the table [`create`] made, and puts the box of each one with a place in
-/// `boxes` for [`fill_index`] to load, loading them whenever [`INDEX_BATCH`] are waiting; the
-/// caller loads the rest at the end. With `keep_ids` each keeps its id;
-/// otherwise SQLite numbers it. Stops at the first feature the table as made can't hold as the
-/// whole layer would have it (a multipoint in a POINT table, geometry of another kind, an id
-/// that doesn't fit or is taken), saying what to [`Redo`].
+/// Inserts features into the table [`create`] made, grows `extent` to hold their geometry, and
+/// puts the box of each one with a place in `boxes` for [`fill_index`] to load, loading them
+/// whenever [`INDEX_BATCH`] are waiting; the caller loads the rest at the end. With `keep_ids`
+/// each keeps its id; otherwise SQLite numbers it. Stops at the first feature the table as made
+/// can't hold as the whole layer would have it (a multipoint in a POINT table, geometry of
+/// another kind, an id that doesn't fit or is taken), saying what to [`Redo`].
 fn insert(
     conn: &Connection,
     layout: &Layout,
     features: &[crate::Feature],
     keep_ids: bool,
     boxes: &mut Vec<IndexBox>,
+    extent: &mut Extent,
 ) -> Result<Option<Redo>> {
     use rusqlite::types::Value as Sql;
     let Layout { columns, fields, has_geom, multi_points, srs_id, table_q: t, geom_q: g, fid_q: i, .. } = layout;
@@ -1214,8 +1281,11 @@ fn insert(
         };
         let mut row: Vec<Sql> = Vec::with_capacity(names.len());
         row.push(id);
+        // The geometry's box, for its blob, the table's extent and the index.
+        let e = f.geometry.as_ref().map_or(Extent::EMPTY, crate::Geometry::extent);
+        *extent = extent.union(&e);
         if has_geom {
-            row.push(f.geometry.as_ref().map(|x| Sql::Blob(blob(x, multi_points, srs_id))).unwrap_or(Sql::Null));
+            row.push(f.geometry.as_ref().map(|x| Sql::Blob(blob(x, &e, multi_points, srs_id))).unwrap_or(Sql::Null));
         }
         for (k, fd) in fields.iter().enumerate() {
             row.push(sql_value(f.attrs.get(k).unwrap_or(&Value::Null), fd.ty));
@@ -1228,7 +1298,6 @@ fn insert(
             }
             Err(e) => return Err(err(e)),
         }
-        let e = f.geometry.as_ref().map(|x| x.extent()).unwrap_or(Extent::EMPTY);
         if has_geom && !e.is_empty() {
             boxes.push(IndexBox { key: 0, id: conn.last_insert_rowid(), bounds: [e.min_x, e.max_x, e.min_y, e.max_y] });
             // Loaded the moment a batch fills, so `boxes` never grows past one batch and a
