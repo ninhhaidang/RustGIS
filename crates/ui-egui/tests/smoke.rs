@@ -13,7 +13,11 @@ mod remembered_service;
 mod service_logins;
 /// Builds a headless World Atlas UI for interaction tests.
 fn harness() -> egui_kittest::Harness<'static, RustGisApp> {
-    egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 860.0)).with_max_steps(64).build_ui_state(
+    harness_with_size(egui::vec2(1400.0, 860.0))
+}
+
+fn harness_with_size(size: egui::Vec2) -> egui_kittest::Harness<'static, RustGisApp> {
+    egui_kittest::Harness::builder().with_size(size).with_max_steps(64).build_ui_state(
         |ui, app: &mut RustGisApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -21,6 +25,386 @@ fn harness() -> egui_kittest::Harness<'static, RustGisApp> {
         },
         RustGisApp::with_sample(),
     )
+}
+
+fn ime_and_key(h: &mut egui_kittest::Harness<'_, RustGisApp>, ime: egui::ImeEvent, key: egui::Key) {
+    event_and_key(h, egui::Event::Ime(ime), key);
+}
+
+fn event_and_key(h: &mut egui_kittest::Harness<'_, RustGisApp>, event: egui::Event, key: egui::Key) {
+    // Queue both events before stepping the harness.
+    h.input_mut().events.push(event);
+    h.input_mut().events.extend([true, false].map(|pressed| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }));
+}
+
+#[test]
+fn layer_filter_keeps_ime_anchor_during_preedit() {
+    use egui::{Event, ImeEvent};
+
+    let mut h = harness();
+    // This tests IME state, not whether the host has a CJK font.
+    h.ctx.set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+    h.run_steps(3);
+    h.get_by(|node| node.placeholder() == Some("Filter layers")).focus();
+    h.run_steps(3);
+    let ime = h.output().platform_output.ime.unwrap();
+    h.event(Event::Ime(ImeEvent::Preedit { text: "huanchong".into(), active_range_chars: None }));
+    h.run_steps(3);
+    assert_eq!(h.state().ui.layer_filter, "huanchong");
+    let composing = h.output().platform_output.ime.unwrap();
+    assert_eq!(composing.rect.top(), ime.rect.top());
+    assert_eq!(composing.cursor_rect.top(), ime.cursor_rect.top());
+    h.event(Event::Ime(ImeEvent::Commit("缓冲".into())));
+    h.run_steps(3);
+    assert_eq!(h.state().ui.layer_filter, "缓冲");
+    h.event(Event::Ime(ImeEvent::Preedit { text: "qu".into(), active_range_chars: None }));
+    h.run_steps(3);
+    h.event(Event::Ime(ImeEvent::Preedit { text: String::new(), active_range_chars: None }));
+    h.run_steps(3);
+    assert_eq!(h.state().ui.layer_filter, "缓冲");
+    assert_eq!(h.output().platform_output.ime.unwrap().rect.top(), ime.rect.top());
+}
+
+#[test]
+fn command_search_keeps_ime_anchor_and_accepts_committed_text() {
+    use egui::{Event, ImeEvent, Key, Modifiers};
+
+    for width in [960.0, 320.0] {
+        let mut h = harness_with_size(egui::vec2(width, 480.0));
+        // This tests IME state, not whether the host has a CJK font.
+        h.ctx.set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+        h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+        h.run_steps(4);
+        let ime = h.output().platform_output.ime.unwrap();
+        assert!(ime.rect.left() >= 0.0 && ime.rect.right() <= width);
+
+        let preedit = |text: &str| ImeEvent::Preedit { text: text.into(), active_range_chars: None };
+        h.event(Event::Ime(preedit("huanchong")));
+        h.run_steps(4);
+        assert_eq!(h.state().ui.command_search.as_deref(), Some("huanchong"));
+        let composing = h.output().platform_output.ime.unwrap();
+        assert_eq!(composing.rect.top(), ime.rect.top());
+        assert_eq!(composing.cursor_rect.top(), ime.cursor_rect.top());
+        assert!(!composing.should_interrupt_composition);
+
+        ime_and_key(&mut h, ImeEvent::Commit("缓冲".into()), Key::Enter);
+        h.run_steps(3);
+        assert_eq!(h.state().ui.command_search.as_deref(), Some("缓冲"));
+
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.key_press(Key::Backspace);
+        h.run_steps(4);
+        assert_eq!(h.state().ui.command_search.as_deref(), Some(""));
+        assert_eq!(h.output().platform_output.ime.unwrap().rect.top(), ime.rect.top());
+
+        // An Enter delivered alongside preedit must not run the matching Buffer tool.
+        ime_and_key(&mut h, preedit("buffer"), Key::Enter);
+        h.run_steps(3);
+        assert_eq!(h.state().ui.command_search.as_deref(), Some("buffer"));
+        ime_and_key(&mut h, preedit(""), Key::Escape);
+        h.run_steps(3);
+        assert_eq!(h.state().ui.command_search.as_deref(), Some(""));
+        assert!(h.output().platform_output.ime.is_some());
+
+        h.key_press(Key::Escape);
+        h.run_steps(3);
+        assert!(h.state().ui.command_search.is_none());
+        h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+        h.run_steps(3);
+        h.event(Event::Text("buffer".into()));
+        h.run_steps(3);
+        assert_eq!(h.state().ui.command_search.as_deref(), Some("buffer"));
+        h.key_press(Key::Enter);
+        h.run_steps(3);
+        assert!(h.state().ui.command_search.is_none());
+    }
+}
+
+#[test]
+fn command_search_escape_works_after_paste_replaces_preedit() {
+    use egui::{Event, ImeEvent, Key};
+
+    let mut h = harness();
+    h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+    h.run_steps(4);
+    h.event(Event::Ime(ImeEvent::Preedit { text: "huanchong".into(), active_range_chars: None }));
+    h.run_steps(2);
+    h.event(Event::Paste("buffer".into()));
+    h.run_steps(2);
+    assert_eq!(h.state().ui.command_search.as_deref(), Some("buffer"));
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().ui.command_search.is_none());
+}
+
+#[test]
+fn command_search_handles_keys_after_replacing_preedit_in_the_same_frame() {
+    use egui::{Event, ImeEvent, Key};
+
+    for (key, same_frame_preedit) in [(Key::Enter, false), (Key::Escape, false), (Key::Enter, true), (Key::Escape, true)] {
+        for replacement in [Event::Paste("buffer".into()), Event::Text("buffer".into())] {
+            let mut h = harness();
+            h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+            h.run_steps(4);
+            let preedit = Event::Ime(ImeEvent::Preedit { text: "huanchong".into(), active_range_chars: None });
+            if same_frame_preedit {
+                h.input_mut().events.push(preedit);
+            } else {
+                h.event(preedit);
+                h.run_steps(2);
+                assert_eq!(h.state().ui.command_search.as_deref(), Some("huanchong"));
+            }
+
+            event_and_key(&mut h, replacement, key);
+            h.run_steps(2);
+            assert!(h.state().ui.command_search.is_none(), "{key:?} should act on the replacement query");
+        }
+    }
+}
+
+#[test]
+fn command_search_ignores_enter_held_after_ime_commit() {
+    use egui::{Event, ImeEvent, Key, Modifiers};
+
+    let mut h = harness();
+    h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+    h.run_steps(4);
+    h.event(Event::Ime(ImeEvent::Preedit { text: "buffer".into(), active_range_chars: None }));
+    h.step();
+
+    let enter = |pressed| Event::Key { key: Key::Enter, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+    h.input_mut().events.extend([Event::Ime(ImeEvent::Commit("buffer".into())), enter(true)]);
+    h.step();
+    assert_eq!(h.state().ui.command_search.as_deref(), Some("buffer"));
+
+    h.event(enter(true)); // egui marks it as a repeat while the key is still down.
+    h.step();
+    assert_eq!(h.state().ui.command_search.as_deref(), Some("buffer"));
+
+    h.event(enter(false));
+    h.step();
+    h.key_press(Key::Enter);
+    h.step();
+    assert!(h.state().ui.command_search.is_none());
+}
+
+#[test]
+fn command_search_handles_escape_after_deleting_preedit_in_same_frame() {
+    use egui::{Event, ImeEvent, Key, Modifiers};
+
+    for delete_first in [false, true] {
+        let mut h = harness();
+        h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+        h.run_steps(4);
+        h.event(Event::Ime(ImeEvent::Preedit { text: "buffer".into(), active_range_chars: None }));
+        h.step();
+        assert_eq!(h.state().ui.command_search.as_deref(), Some("buffer"));
+
+        let mut keys = [Key::Escape, Key::Backspace];
+        if delete_first {
+            keys.reverse();
+        }
+        for key in keys {
+            h.input_mut().events.extend([true, false].map(|pressed| Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }));
+        }
+        h.step();
+        assert_eq!(h.state().ui.command_search.as_deref(), if delete_first { None } else { Some("") });
+    }
+}
+
+#[test]
+fn command_search_handles_keys_after_an_ime_reports_cleared_preedit() {
+    use egui::{Event, ImeEvent, Key};
+
+    for (notification, key) in [
+        (ImeEvent::Preedit { text: String::new(), active_range_chars: None }, Key::Enter),
+        (ImeEvent::Preedit { text: String::new(), active_range_chars: None }, Key::Escape),
+        (ImeEvent::Commit(String::new()), Key::Enter),
+    ] {
+        for clear_first in [true, false] {
+            let mut h = harness();
+            h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+            h.run_steps(4);
+            h.event(Event::Text("buffer".into()));
+            h.step();
+            h.event(Event::Ime(ImeEvent::Preedit { text: "x".into(), active_range_chars: None }));
+            h.step();
+            assert_eq!(h.state().ui.command_search.as_deref(), Some("bufferx"));
+
+            let key_events = |key| {
+                [true, false].map(|pressed| Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                })
+            };
+            let events = &mut h.input_mut().events;
+            events.extend(key_events(Key::Backspace));
+            if clear_first {
+                events.push(Event::Ime(notification.clone()));
+                events.extend(key_events(key));
+            } else {
+                events.extend(key_events(key));
+                events.push(Event::Ime(notification.clone()));
+            }
+            h.step();
+            assert_eq!(
+                h.state().ui.command_search.as_deref(),
+                if clear_first { None } else { Some("buffer") },
+                "{key:?}, clear_first={clear_first}"
+            );
+            assert_eq!(h.state().gp.tool, (clear_first && key == Key::Enter).then_some("buffer"));
+        }
+    }
+}
+
+#[test]
+fn command_search_keeps_ime_key_ownership_when_the_caret_moves() {
+    use egui::{Event, ImeEvent, Key};
+
+    let mut h = harness();
+    h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+    h.run_steps(4);
+    h.event(Event::Ime(ImeEvent::Preedit { text: "buffer".into(), active_range_chars: None }));
+    h.step();
+    h.key_press(Key::ArrowLeft);
+    h.step();
+    h.key_press(Key::Enter);
+    h.step();
+    assert_eq!(h.state().ui.command_search.as_deref(), Some("buffer"));
+    assert!(h.state().gp.tool.is_none());
+
+    h.event(Event::Ime(ImeEvent::Commit(String::new())));
+    h.step();
+    h.key_press(Key::Escape);
+    h.step();
+    assert!(h.state().ui.command_search.is_none());
+}
+
+#[test]
+fn command_search_keys_work_after_clicking_during_preedit() {
+    use egui::{Event, ImeEvent, Key, Modifiers, PointerButton};
+
+    for key in [Key::Enter, Key::Escape] {
+        let mut h = harness();
+        h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+        h.run_steps(4);
+        h.event(Event::Ime(ImeEvent::Preedit { text: "buffer".into(), active_range_chars: None }));
+        h.step();
+
+        let pos = h.output().platform_output.ime.unwrap().rect.center();
+        h.event(Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            h.event(Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+            h.step();
+        }
+        h.key_press(key);
+        h.step();
+        assert!(h.state().ui.command_search.is_none(), "{key:?} should act after the click");
+        assert_eq!(h.state().gp.tool, (key == Key::Enter).then_some("buffer"));
+    }
+}
+
+#[test]
+fn command_search_handles_cut_during_preedit() {
+    use egui::{Event, ImeEvent, Key};
+    for key in [Key::Enter, Key::Escape] {
+        let mut h = harness();
+        h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+        h.run_steps(4);
+        h.event(Event::Ime(ImeEvent::Preedit { text: "buffer".into(), active_range_chars: None }));
+        h.step();
+        h.event(Event::Cut);
+        h.step();
+        assert_eq!(h.state().ui.command_search.as_deref(), Some(""));
+        h.key_press(key);
+        h.step();
+        assert!(h.state().ui.command_search.is_none(), "{key:?} should work after cut");
+    }
+    let mut h = harness();
+    h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+    h.run_steps(4);
+    h.event(Event::Ime(ImeEvent::Preedit { text: "buffer".into(), active_range_chars: None }));
+    h.step();
+    h.key_press(Key::ArrowLeft);
+    h.step();
+    h.event(Event::Cut);
+    h.step();
+    assert_eq!(h.state().ui.command_search.as_deref(), Some("buffer"));
+    h.key_press(Key::Enter);
+    h.step();
+    assert_eq!(h.state().ui.command_search.as_deref(), Some("buffer"));
+}
+
+#[test]
+fn command_search_handles_click_and_preedit_in_same_frame() {
+    use egui::{Event, ImeEvent, Key, Modifiers, PointerButton};
+    for key in [Key::Enter, Key::Escape] {
+        let mut h = harness();
+        h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+        h.run_steps(4);
+        let pos = h.output().platform_output.ime.unwrap().rect.center();
+        h.input_mut().events.extend([
+            Event::Ime(ImeEvent::Preedit { text: "buffer".into(), active_range_chars: None }),
+            Event::PointerMoved(pos),
+            Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+            Event::PointerButton { pos, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
+        ]);
+        h.step();
+        h.key_press(key);
+        h.step();
+        assert!(h.state().ui.command_search.is_none(), "{key:?} should work after click");
+    }
+}
+
+#[test]
+fn command_search_runs_after_standalone_ime_commit_and_enter() {
+    use egui::{ImeEvent, Key};
+
+    let mut h = harness();
+    h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+    h.run_steps(4);
+    ime_and_key(&mut h, ImeEvent::Commit("buffer".into()), Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().ui.command_search.is_none());
+}
+
+#[test]
+fn command_search_accepts_typing_after_clicking_empty_results() {
+    use egui::{Event, Modifiers, PointerButton};
+
+    let mut h = harness();
+    h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+    h.run_steps(4);
+    let query = "zzzxq-no-matching-command";
+    h.event(Event::Text(query.into()));
+    h.run_steps(3);
+    assert_eq!(h.state().ui.command_search.as_deref(), Some(query));
+
+    let edit = h.output().platform_output.ime.unwrap().rect;
+    let pos = egui::pos2(edit.center().x, edit.bottom() + 60.0);
+    h.event(Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        h.event(Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(2);
+    }
+    h.event(Event::Text("a".into()));
+    h.run_steps(3);
+    assert_eq!(h.state().ui.command_search.as_deref(), Some(format!("{query}a").as_str()));
 }
 
 /// Runs a layer command through Command Search and checks that the search closes.
@@ -5009,6 +5393,14 @@ fn a_selected_text_is_dragged_on_the_map() {
         h.input_mut().events.push(egui::Event::PointerMoved(egui::pos2(x, 500.0)));
         h.step();
     }
+    let undo = h.state().session.undo_label().map(str::to_owned);
+    h.state_mut().run("ui.commandSearch", serde_json::Value::Null).unwrap();
+    h.run_steps(4);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().ui.command_search.is_none());
+    assert_eq!(anchor(&h), before);
+    assert_eq!(h.state().session.undo_label(), undo.as_deref());
     h.input_mut().events.push(egui::Event::PointerButton {
         pos: to,
         button: egui::PointerButton::Primary,

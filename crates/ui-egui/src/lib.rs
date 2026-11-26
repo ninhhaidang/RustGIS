@@ -997,6 +997,7 @@ pub struct UiState {
     /// A minimized ribbon temporarily opened from its tab strip.
     pub ribbon_peek: bool,
     pub command_search: Option<String>,
+    command_search_composing: bool,
     /// A ribbon button being shown by a task step's Show Me.
     pub show_me: Option<showme::ShowMe>,
     pub about: bool,
@@ -1263,6 +1264,7 @@ impl Default for UiState {
             ribbon_minimized: false,
             ribbon_peek: false,
             command_search: None,
+            command_search_composing: false,
             show_me: None,
             about: false,
             shortcuts: false,

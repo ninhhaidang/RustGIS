@@ -878,6 +878,9 @@ fn parse_scale(text: &str) -> Option<f64> {
 
 /// Global keyboard shortcuts.
 pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
+    if app.ui.command_search.is_some() {
+        return;
+    }
     // Behind a dialog (Save changes?, Recover unsaved work?, Command Search…) the keys are the
     // dialog's: Escape answers it rather than switching tools, and Ctrl+N can't start what it
     // asks about.
@@ -1356,6 +1359,45 @@ fn command_matches(id: &str, label: &str, location: &str, ql: &str) -> bool {
         || crate::i18n::location_raw(location).to_lowercase().contains(ql)
 }
 
+/// Keeps an Escape press owned by the palette until release, even after it closes.
+#[derive(Default)]
+struct CommandSearchEscape {
+    open: bool,
+    held: bool,
+    presses: Vec<(usize, egui::Event)>,
+}
+
+impl egui::Plugin for CommandSearchEscape {
+    fn debug_name(&self) -> &'static str {
+        "Command search Escape"
+    }
+
+    fn input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+        // egui stops drags on Escape before the application draws. Give palette
+        // presses only to the palette, in order relative to its IME events.
+        self.presses.clear();
+        let mut position = 0;
+        input.events.retain(|event| {
+            match event {
+                egui::Event::Key { key: Key::Escape, pressed: true, repeat, .. } if self.open || self.held => {
+                    if !self.held && !repeat {
+                        self.presses.push((position, event.clone()));
+                        position += 1;
+                    }
+                    self.held = true;
+                    return false;
+                }
+                egui::Event::Key { key: Key::Escape, pressed: false, .. } | egui::Event::WindowFocused(false) => {
+                    self.held = false;
+                }
+                _ => {}
+            }
+            position += 1;
+            true
+        });
+    }
+}
+
 /// The row the arrow keys have picked in Command Search, kept between frames while the palette
 /// stays open on the same query.
 #[derive(Clone, Default)]
@@ -1385,7 +1427,102 @@ pub(crate) const NUMBER_KEYS: [Key; 10] =
 /// The command palette: type to filter every command, Up and Down pick a row, Enter runs it, and
 /// Ctrl (⌘) with 1 … 9 and 0 runs one of the first ten.
 pub fn command_search(app: &mut RustGisApp, ctx: &egui::Context) {
-    let Some(mut q) = app.ui.command_search.take() else { return };
+    let Some(mut q) = app.ui.command_search.take() else {
+        app.ui.command_search_composing = false;
+        return;
+    };
+    if ctx.plugin_opt::<CommandSearchEscape>().is_none() {
+        ctx.add_plugin(CommandSearchEscape::default());
+    }
+    let edit_id = egui::Id::unique("command_search_input");
+    // Enter and Escape may arrive in the same frame that begins or ends a composition.
+    // Leave that frame's keys to the IME as well as keys during an ongoing preedit.
+    let focused = ctx.memory(|m| m.has_focus(edit_id));
+    app.ui.command_search_composing &= focused;
+    let escape_presses = ctx.with_plugin::<CommandSearchEscape, _>(|input| std::mem::take(&mut input.presses)).unwrap_or_default();
+    let (mut enter, mut escape, deleting_preedit, after_delete, ime_owns_keys) = ctx.input(|i| {
+        // Raw events preserve their positions even if another widget consumed a key.
+        let mut events = std::borrow::Cow::Borrowed(i.raw.events.as_slice());
+        for (position, event) in escape_presses {
+            let events = events.to_mut();
+            events.insert(position.min(events.len()), event);
+        }
+        let mut accept_keys = !app.ui.command_search_composing;
+        let mut ime_owns_frame = false;
+        let mut enter = false;
+        let mut escape = false;
+        let mut deleting_preedit = false;
+        let mut after_delete = (false, false);
+        for event in events.iter() {
+            match event {
+                egui::Event::Ime(egui::ImeEvent::Preedit { text, .. } | egui::ImeEvent::Commit(text))
+                    if focused && deleting_preedit && text.is_empty() =>
+                {
+                    // The IME can report the deletion itself before the next key arrives.
+                    deleting_preedit = false;
+                    after_delete = (false, false);
+                    ime_owns_frame = false;
+                    accept_keys = true;
+                    enter = false;
+                    escape = false;
+                    app.ui.command_search_composing = false;
+                }
+                egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) if focused => {
+                    deleting_preedit = false;
+                    after_delete = (false, false);
+                    ime_owns_frame |= app.ui.command_search_composing || !text.is_empty();
+                    app.ui.command_search_composing = !text.is_empty();
+                }
+                egui::Event::Ime(egui::ImeEvent::Commit(_)) if focused => {
+                    deleting_preedit = false;
+                    after_delete = (false, false);
+                    // A standalone commit can carry ordinary text.
+                    ime_owns_frame |= app.ui.command_search_composing;
+                    app.ui.command_search_composing = false;
+                }
+                egui::Event::Paste(text) | egui::Event::Text(text)
+                    if focused
+                        && !text.is_empty()
+                        && !matches!(event, egui::Event::Text(text) if !app.ui.command_search_composing || text == "\n" || text == "\r") =>
+                {
+                    // TextEdit replaces the preedit. Keys after the replacement can act
+                    // on the replacement, even if the preedit started in this frame.
+                    if ime_owns_frame {
+                        enter = false;
+                        escape = false;
+                    }
+                    ime_owns_frame = false;
+                    app.ui.command_search_composing = false;
+                    accept_keys = true;
+                    deleting_preedit = false;
+                    after_delete = (false, false);
+                }
+                egui::Event::Cut if app.ui.command_search_composing => {
+                    deleting_preedit = true;
+                }
+                egui::Event::Key { key: Key::Backspace | Key::Delete, pressed: true, .. } if app.ui.command_search_composing => {
+                    deleting_preedit = true;
+                }
+                egui::Event::Key { key, pressed: true, repeat: false, .. } => {
+                    if accept_keys && !ime_owns_frame {
+                        enter |= *key == Key::Enter;
+                        escape |= *key == Key::Escape;
+                    } else if deleting_preedit {
+                        after_delete.0 |= *key == Key::Enter;
+                        after_delete.1 |= *key == Key::Escape;
+                    }
+                }
+                _ => {}
+            }
+        }
+        (
+            enter && !ime_owns_frame,
+            escape && !ime_owns_frame,
+            deleting_preedit,
+            after_delete,
+            ime_owns_frame || app.ui.command_search_composing,
+        )
+    });
     let t = Tokens::get(ctx);
     let mut keep = true;
     let mut chosen: Option<String> = None;
@@ -1393,9 +1530,14 @@ pub fn command_search(app: &mut RustGisApp, ctx: &egui::Context) {
     let pass = ctx.cumulative_pass_nr();
     let cursor: Option<SearchCursor> = ctx.data(|d| d.get_temp(cursor_id));
     // The arrows are the list's, taken before the text box sees them (it would move its caret).
-    let (down, up) = ctx.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::ArrowDown), i.consume_key(Modifiers::NONE, Key::ArrowUp)));
+    let (down, up) = if ime_owns_keys {
+        (false, false)
+    } else {
+        ctx.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::ArrowDown), i.consume_key(Modifiers::NONE, Key::ArrowUp)))
+    };
     // Ctrl (⌘) and a digit run one of the first ten rows that can run: 1 the first, 0 the tenth.
-    let jump = ctx.input_mut(|i| NUMBER_KEYS.iter().position(|&key| i.consume_key(Modifiers::COMMAND, key)));
+    let jump =
+        if ime_owns_keys { None } else { ctx.input_mut(|i| NUMBER_KEYS.iter().position(|&key| i.consume_key(Modifiers::COMMAND, key))) };
     // Fits small screens: never wider or taller than the window allows.
     let screen = ctx.content_rect();
     let width = (screen.width() - 48.0).clamp(220.0, 520.0);
@@ -1405,13 +1547,34 @@ pub fn command_search(app: &mut RustGisApp, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
             icons::paint(ui.painter(), r, "search", t.text_dim, t.accent);
-            let te = ui.add(
-                egui::TextEdit::singleline(&mut q)
-                    .hint_text(tl!("Search commands — e.g. buffer, basemap, labels"))
-                    .desired_width(width - 56.0)
-                    .frame(egui::Frame::NONE),
-            );
-            te.request_focus();
+            let edit = egui::TextEdit::singleline(&mut q)
+                .id(edit_id)
+                .return_key(None)
+                .event_filter(egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, escape: true, ..Default::default() })
+                .hint_text(tl!("Search commands — e.g. buffer, basemap, labels"))
+                .desired_width(width - 56.0)
+                .frame(egui::Frame::NONE)
+                .show(ui);
+            // A deletion may remove the preedit without a corresponding IME event.
+            // Cursor movement alone can also collapse the range, so require a text edit.
+            if deleting_preedit && edit.response.response.changed() && edit.state.cursor.char_range().is_some_and(|range| range.is_empty())
+            {
+                enter |= after_delete.0;
+                escape |= after_delete.1;
+                app.ui.command_search_composing = false;
+            }
+            let edit = edit.response.response;
+            // Clicking or dragging in TextEdit switches its cursor to a regular
+            // selection, even when no IME event arrives to clear the preedit.
+            if edit.clicked() || edit.dragged() || (edit.hovered() && ui.input(|i| i.pointer.any_pressed())) {
+                app.ui.command_search_composing = false;
+            }
+            // The modal starts with an invisible sizing pass. Request focus only when
+            // the edit is interactive and unfocused, since a request can interrupt IME.
+            if edit.enabled() && !ctx.memory(|m| m.has_focus(edit_id)) {
+                app.ui.command_search_composing = false;
+                edit.request_focus();
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (r, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
                 if resp.hovered() {
@@ -1535,10 +1698,8 @@ pub fn command_search(app: &mut RustGisApp, ctx: &egui::Context) {
         };
         let row = step_row(row, runnable, down, up);
         ui.ctx().data_mut(|d| d.insert_temp(cursor_id, SearchCursor { query: q.clone(), row, pass }));
-        // The modal's area starts from its last size, so after a short result list the scroll
-        // area would get only that room back (egui's 64 px floor): ask for the full height
-        // whenever the list scrolls. A few hits still shrink the palette to fit.
-        egui::ScrollArea::vertical().max_height(list_h).min_scrolled_height(list_h).show(ui, |ui| {
+        // Keep the search field and IME candidate anchor stable as results change.
+        egui::ScrollArea::vertical().max_height(list_h).min_scrolled_height(list_h).auto_shrink([true, false]).show(ui, |ui| {
             let row_w = ui.available_width();
             // The number keys' column: as wide as the widest, so the hints line up.
             let number_w = NUMBER_KEYS
@@ -1609,13 +1770,12 @@ pub fn command_search(app: &mut RustGisApp, ctx: &egui::Context) {
                     app.ui.shortcut_editor.filter = id.clone();
                     keep = false;
                 }
-                let enter = picked && ui.input(|i| i.key_pressed(Key::Enter));
-                if resp.clicked() || enter || jumped {
+                if resp.clicked() || (picked && enter) || jumped {
                     chosen = Some(id.clone());
                 }
             }
         });
-        if ui.input(|i| i.key_pressed(Key::Escape)) {
+        if escape {
             keep = false;
         }
     });
@@ -1648,8 +1808,12 @@ pub fn command_search(app: &mut RustGisApp, ctx: &egui::Context) {
             let _ = app.run_by_user(&id, Value::Null);
         }
     }
+    ctx.with_plugin::<CommandSearchEscape, _>(|input| input.open = keep);
     if keep {
         app.ui.command_search = Some(q);
+    } else {
+        ctx.memory_mut(|m| m.surrender_focus(edit_id));
+        app.ui.command_search_composing = false;
     }
 }
 
