@@ -600,6 +600,34 @@ impl MapView {
         let live = self.frame_times.back().is_some_and(|t| *t > now - 0.5);
         live.then(|| self.frame_times.iter().filter(|t| **t > now - 1.0).count())
     }
+    /// Drops what the map keeps only to draw sooner, for a system short of memory: the moving
+    /// globe's and tilted map's drapes, and what [`MapView::drop_gpu`] does.
+    pub(crate) fn release_memory(&mut self) {
+        self.drape.clear();
+        self.tilt_drape.clear();
+        self.drop_gpu();
+        // A frame drawn mid-motion, finished or stopped, would put back the drawing copies of
+        // its map when taken: it is let go untaken.
+        let relay = self.motion_frame.relay.clone();
+        self.motion_frame = Default::default();
+        self.motion_frame.relay = relay;
+        self.motion_dropped = false;
+    }
+
+    /// Drops the GPU renderer's scenes, textures and buffers (the renderer itself too): a frame
+    /// drawn on the GPU after this makes them again.
+    pub(crate) fn drop_gpu(&mut self) {
+        self.gpu_renderer = None;
+        self.gpu_frame = None;
+        // (No live GPU scene is left to keep the tile key for.)
+        self.live_rev = None;
+        self.split_gpu = None;
+        for target in [&self.gpu_target, &self.gpu_target_split] {
+            *target.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+        self.invalidate();
+    }
+
     /// Forces a re-render on the next frame; also drops the GPU frame (the backend toggle
     /// relies on it).
     pub fn invalidate(&mut self) {
@@ -799,15 +827,7 @@ pub(crate) fn leave_gpu_if_out_of_memory(app: &mut RustGisApp) {
         return;
     }
     app.map.gpu_enabled = false;
-    app.map.gpu_renderer = None;
-    app.map.gpu_frame = None;
-    // (No live GPU scene is left to keep the tile key for.)
-    app.map.live_rev = None;
-    app.map.split_gpu = None;
-    for target in [&app.map.gpu_target, &app.map.gpu_target_split] {
-        *target.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-    app.map.invalidate();
+    app.map.drop_gpu();
     app.session.notify(
         tl!(
             "The graphics card ran out of memory, so the map is now drawn without it (CPU), which is slower. Click CPU in the status bar to try the graphics card again, with a smaller window or fewer layers."

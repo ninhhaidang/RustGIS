@@ -1618,8 +1618,11 @@ fn union_all<'a>(polys: impl IntoIterator<Item = &'a geo::Polygon<f64>>) -> Mult
 const MAX_BUFFER_VERTICES: usize = 2_000_000;
 /// Retained ordinary output/selector storage, separate from overlay complexity. Temporary
 /// geometry on each worker and the already loaded input are additional to this allowance. The
-/// browser's budget, and the fewest bytes [`max_buffer_bytes`] allows on the desktop.
-const MAX_BUFFER_BYTES: usize = if cfg!(target_arch = "wasm32") { 128 << 20 } else { 512 << 20 };
+/// browser's budget, and the fewest bytes [`max_buffer_bytes`] allows on the desktop (a phone:
+/// [`BROWSER_BUFFER_BYTES`]).
+const MAX_BUFFER_BYTES: usize = if cfg!(target_arch = "wasm32") { BROWSER_BUFFER_BYTES } else { 512 << 20 };
+/// The budget in the browser, and the fewest bytes [`max_buffer_bytes`] allows on a phone.
+const BROWSER_BUFFER_BYTES: usize = 128 << 20;
 /// The most bytes [`max_buffer_bytes`] allows, however much memory the computer has.
 const BUFFER_BYTES_CEILING: usize = 8 << 30;
 /// Drain results regularly instead of keeping a second whole-layer result array.
@@ -1630,10 +1633,12 @@ const MAX_SELECTOR_CHECKS: usize = 50_000_000;
 const BUFFER_STORAGE_ERROR: &str = "Buffer output or distance selectors exceed their memory budget; select fewer features";
 
 /// Buffer's retained-storage budget on this computer: on the desktop a quarter of its memory, from
-/// [`MAX_BUFFER_BYTES`] up to [`BUFFER_BYTES_CEILING`] (#1291 step 2); fixed in the browser.
+/// [`MAX_BUFFER_BYTES`] (a phone: [`BROWSER_BUFFER_BYTES`]) up to [`BUFFER_BYTES_CEILING`]
+/// (#1291 step 2); fixed in the browser.
 /// Less once RustGIS holds more than half the memory, never below the floor ([`rustgis_data::memory::planned`], #2431).
 pub fn max_buffer_bytes() -> usize {
-    rustgis_data::memory::planned(MAX_BUFFER_BYTES, BUFFER_BYTES_CEILING, 1)
+    let floor = if rustgis_data::memory::on_phone() { BROWSER_BUFFER_BYTES } else { MAX_BUFFER_BYTES };
+    rustgis_data::memory::planned(floor, BUFFER_BYTES_CEILING, 1)
 }
 
 /// [`BUFFER_STORAGE_ERROR`] with the budget it ran out of, so a run refused here but not on a

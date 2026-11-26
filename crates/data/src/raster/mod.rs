@@ -87,7 +87,7 @@ fn no_memory(w: usize, h: usize) -> DataError {
 /// overview is chosen.
 pub const BROWSER_SAMPLES: usize = 32_000_000;
 /// The fewest samples [`max_samples`] allows: 120 million (480 MB) on the desktop, and
-/// [`BROWSER_SAMPLES`] (its limit) in the browser.
+/// [`BROWSER_SAMPLES`] (its limit) in the browser. A phone takes the browser's ([`samples_floor`]).
 #[cfg(not(target_arch = "wasm32"))]
 pub const SAMPLES_FLOOR: usize = 120_000_000;
 #[cfg(target_arch = "wasm32")]
@@ -95,12 +95,18 @@ pub const SAMPLES_FLOOR: usize = BROWSER_SAMPLES;
 /// The most [`max_samples`] allows, however much memory the computer has: a billion (4 GB).
 pub const SAMPLES_CEILING: usize = 1_000_000_000;
 
+/// The fewest samples [`max_samples`] allows here: [`SAMPLES_FLOOR`], or on a phone
+/// ([`crate::memory::on_phone`]) the browser's [`BROWSER_SAMPLES`].
+pub fn samples_floor() -> usize {
+    if crate::memory::on_phone() { BROWSER_SAMPLES } else { SAMPLES_FLOOR }
+}
+
 /// Most samples (pixels × bands) held in memory: on the desktop, as many as a quarter of the
 /// computer's memory holds at 8 bytes each (a sample takes 4, and reading briefly needs about
-/// twice that), from [`SAMPLES_FLOOR`] up to [`SAMPLES_CEILING`] (#1291 step 2, #1318).
+/// twice that), from [`samples_floor`] up to [`SAMPLES_CEILING`] (#1291 step 2, #1318).
 /// Less once RustGIS holds more than half the memory, never below the floor ([`crate::memory::planned`], #2431).
 pub fn max_samples() -> usize {
-    crate::memory::planned(SAMPLES_FLOOR, SAMPLES_CEILING, 8)
+    crate::memory::planned(samples_floor(), SAMPLES_CEILING, 8)
 }
 
 // Shared by the elevation readers ([`hgt`], [`dted`]) and pictures read at a step.

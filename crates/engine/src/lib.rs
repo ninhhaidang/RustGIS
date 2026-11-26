@@ -1841,6 +1841,17 @@ impl Session {
         self.project.map_mut()
     }
 
+    /// Drops what is kept only to draw again sooner, for a system short of memory (a phone says
+    /// so): the tile and drawing caches ([`render::release_memory`]), and the drawing copies of
+    /// the layers switched off. Each is made or fetched again when next wanted; layers, results
+    /// and Undo history are kept.
+    pub fn release_memory(&mut self) {
+        crate::render::release_memory();
+        for layer in self.project.maps.iter_mut().flat_map(|map| &mut map.layers).filter(|layer| !layer.visible) {
+            layer.clear_cache();
+        }
+    }
+
     /// Whether a Zarr layer on the active map that follows the time slider is waiting for its
     /// step to be read off the frame ([`Session::zarr_off_frame`]): playing holds its next step.
     pub fn zarr_waiting(&self) -> bool {

@@ -376,6 +376,13 @@ fn lock() -> MutexGuard<'static, Store> {
     S.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Drops the kept meshes ([`crate::release_memory`]); one a scene draws is shared with it.
+pub(crate) fn release() {
+    let mut s = lock();
+    s.entries = HashMap::new();
+    s.bytes = 0;
+}
+
 /// The meshes of `tiles` (bottom first) for `style`'s `source` at `level`, each kept once made
 /// (while its tile and the style are, and within a memory budget; one made while the sprite was
 /// on its way until it has arrived); `None` for one that is no vector tile, or not made

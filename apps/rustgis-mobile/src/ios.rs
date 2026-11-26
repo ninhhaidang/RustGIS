@@ -10,7 +10,7 @@
 //! reference to a delegate, so [`Ios`] holds each one for as long as it is wanted.
 // UIKit's delegates are Objective-C classes declared here, and a few of its calls are unsafe;
 // each block says why it holds.
-#![expect(unsafe_code, reason = "Objective-C classes and the few UIKit calls objc2 marks unsafe; see each SAFETY")]
+#![expect(unsafe_code, reason = "Objective-C classes, the few UIKit calls objc2 marks unsafe and one libSystem function; see each SAFETY")]
 
 use crate::shell;
 use eframe::egui;
@@ -24,11 +24,11 @@ use objc2_core_location::{
 };
 use objc2_foundation::{NSArray, NSError, NSHomeDirectory, NSNotification, NSNotificationCenter, NSString, NSURL, NSValue};
 use objc2_ui_kit::{
-    NSValueUIGeometryExtensions, UIApplication, UIDocumentPickerDelegate, UIDocumentPickerViewController, UIImage, UIImagePickerController,
-    UIImagePickerControllerDelegate, UIImagePickerControllerInfoKey, UIImagePickerControllerOriginalImage,
-    UIImagePickerControllerSourceType, UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
-    UIKeyboardWillHideNotification, UINavigationControllerDelegate, UIScene, UISceneDelegate, UIViewController, UIWindow,
-    UIWindowDidBecomeVisibleNotification, UIWindowScene, UIWindowSceneDelegate,
+    NSValueUIGeometryExtensions, UIApplication, UIApplicationDidReceiveMemoryWarningNotification, UIDocumentPickerDelegate,
+    UIDocumentPickerViewController, UIImage, UIImagePickerController, UIImagePickerControllerDelegate, UIImagePickerControllerInfoKey,
+    UIImagePickerControllerOriginalImage, UIImagePickerControllerSourceType, UIKeyboardFrameEndUserInfoKey,
+    UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UINavigationControllerDelegate, UIScene, UISceneDelegate,
+    UIViewController, UIWindow, UIWindowDidBecomeVisibleNotification, UIWindowScene, UIWindowSceneDelegate,
 };
 use objc2_uniform_type_identifiers::UTTypeItem;
 use rustgis_engine::platform::{Event, Fix, Platform};
@@ -745,6 +745,68 @@ impl KeyboardObserver {
     }
 }
 
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements, and this class doesn't implement Drop.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "RustGISMemoryObserver"]
+    #[ivars = Arc<Shared>]
+    struct MemoryObserver;
+
+    impl MemoryObserver {
+        #[unsafe(method(memoryWarning:))]
+        fn warned(&self, _notification: &NSNotification) {
+            self.ivars().add(Event::LowMemory);
+            wake(self.mtm());
+        }
+    }
+);
+
+impl MemoryObserver {
+    fn new(mtm: MainThreadMarker, shared: Arc<Shared>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(shared);
+        // SAFETY: NSObject's `init` on a freshly allocated object.
+        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+        let center = NSNotificationCenter::defaultCenter();
+        // SAFETY: the selector is this class's own method, taking the notification; the observer
+        // is removed in `Ios`'s Drop, and lives as long as it.
+        unsafe {
+            center.addObserver_selector_name_object(
+                &this,
+                sel!(memoryWarning:),
+                Some(UIApplicationDidReceiveMemoryWarningNotification),
+                None,
+            );
+        }
+        this
+    }
+}
+
+// SAFETY: libSystem's function (`<os/proc.h>`, iOS 13 and later): no arguments, any thread.
+unsafe extern "C" {
+    /// The bytes the app may still take before iOS ends it for passing its limit; 0 where iOS
+    /// doesn't say (and once the app is at its limit).
+    safe fn os_proc_available_memory() -> usize;
+}
+
+/// Tells the engine what iOS allows (`rustgis_data::memory::set_phone`): what the system says is
+/// left at start, while the app holds little, stands for its limit, and is asked again each time a
+/// job plans. Where it says nothing at start, [`shell::MEMORY_UNSAID`] stands in, with nothing
+/// known to be free. Returns whether iOS said.
+fn plan_memory() -> bool {
+    let left = || os_proc_available_memory() as u64;
+    let start = left();
+    let taken = if start > 0 {
+        rustgis_engine::data::memory::set_phone(start, move || Some(left()))
+    } else {
+        rustgis_engine::data::memory::set_phone(shell::MEMORY_UNSAID, || None)
+    };
+    if !taken {
+        log::warn!("the memory limits were read before iOS's were set");
+    }
+    start > 0
+}
+
 thread_local! {
     /// The app's window scene, once UIKit has connected it ([`SceneDelegate`]).
     static SCENE: RefCell<Option<Retained<UIWindowScene>>> = const { RefCell::new(None) };
@@ -950,6 +1012,7 @@ pub struct Ios {
     location: Retained<CLLocationManager>,
     located: Retained<LocationDelegate>,
     keyboard: Retained<KeyboardObserver>,
+    memory: Retained<MemoryObserver>,
     /// A file to save being written, until its export picker shows.
     saving: RefCell<Option<Saving>>,
     /// The picker last presented, and when, until it is seen shown or declined
@@ -973,8 +1036,12 @@ struct Saving {
 
 impl Drop for Ios {
     fn drop(&mut self) {
-        // SAFETY: removes the observer `KeyboardObserver::new` added.
-        unsafe { NSNotificationCenter::defaultCenter().removeObserver(&self.keyboard) };
+        let center = NSNotificationCenter::defaultCenter();
+        // SAFETY: removes the observers `KeyboardObserver::new` and `MemoryObserver::new` added.
+        unsafe {
+            center.removeObserver(&self.keyboard);
+            center.removeObserver(&self.memory);
+        }
     }
 }
 
@@ -994,6 +1061,7 @@ impl Ios {
         Ios {
             mtm,
             writing_back: Arc::default(),
+            memory: MemoryObserver::new(mtm, shared.clone()),
             shared,
             folders,
             picker: RefCell::new(None),
@@ -1345,7 +1413,12 @@ pub fn main() {
     std::mem::forget(WindowWatcher::start(mtm));
     let folders = folders();
     let made = std::fs::create_dir_all(&folders.support).is_ok() && rustgis_engine::data::dirs::set_root(folders.support.clone());
+    // Before anything plans a job.
+    let said = plan_memory();
     let mut app = shell::front_end(made.then_some(folders.support.as_path()));
+    if !said {
+        shell::say_memory_unsaid(&mut app);
+    }
     // The app's Documents folder: files put there from a computer (Finder, `xcrun simctl`) are
     // opened once the window is up, as on Android.
     let documents = PathBuf::from(NSHomeDirectory().to_string()).join("Documents");

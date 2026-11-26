@@ -53,6 +53,16 @@ pub use tiles::{Live, live as live_tiles};
 pub use rustgis_tiles;
 pub use tiles::{draws_pictures as tile_draws_pictures, source_layers as tile_source_layers, spec as tile_spec, style_view};
 
+/// Drops what is kept only to draw again sooner, for a system short of memory: the tile cache
+/// with everything read through it ([`rustgis_tiles::cache::clear`]), and the pictures and meshes
+/// kept from one frame to the next. Each is made or fetched again when next wanted.
+pub fn release_memory() {
+    rustgis_tiles::cache::clear();
+    frame_cache::release();
+    layer_meshes::release();
+    tile_mesh::release();
+}
+
 /// Natural Earth 1:110m sample data (public domain), fetched by `build.rs` from rustgis-assets.
 /// The countries in another worldview are downloaded when one is chosen, never built in.
 pub mod sample_data {

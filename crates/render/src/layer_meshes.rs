@@ -111,6 +111,8 @@ struct Meshes {
     /// The scenes being drawn ([`Scene`]), by number, with the clock when each began.
     drawing: Vec<(u64, u64)>,
     scenes: u64,
+    /// The clock at the last [`release`].
+    released: u64,
 }
 
 impl Meshes {
@@ -147,7 +149,8 @@ pub(crate) fn bytes_of(cmds: &[DrawCmd]) -> usize {
 /// The kept meshes, shared by the threads that draw scenes (the UI's and the one that draws a
 /// view once it settles).
 #[cfg(not(test))]
-static MESHES: std::sync::Mutex<Meshes> = std::sync::Mutex::new(Meshes { kept: Vec::new(), clock: 0, drawing: Vec::new(), scenes: 0 });
+static MESHES: std::sync::Mutex<Meshes> =
+    std::sync::Mutex::new(Meshes { kept: Vec::new(), clock: 0, drawing: Vec::new(), scenes: 0, released: 0 });
 
 /// Runs `f` on the kept meshes.
 #[cfg(not(test))]
@@ -167,6 +170,17 @@ thread_local! {
 #[cfg(test)]
 fn with_meshes<R>(f: impl FnOnce(&mut Meshes) -> R) -> R {
     MESHES.with_borrow_mut(f)
+}
+
+/// Drops every kept mesh ([`crate::release_memory`]), those a scene being drawn has used too: a
+/// scene shares its meshes' data, so what it draws stays while it does. Until the scenes begun
+/// before this are done, [`keep`] keeps nothing, so one still drawing brings nothing back.
+pub(crate) fn release() {
+    with_meshes(|m| {
+        m.kept = Vec::new();
+        m.clock += 1;
+        m.released = m.clock;
+    });
 }
 
 /// A scene being drawn, from [`Scene::begin`] until it is dropped (when the scene is done,
@@ -244,6 +258,10 @@ fn keep_within(max: usize, layer: u64, look: LayerLook, made: Made, rows: &[bool
         return;
     }
     with_meshes(|m| {
+        // Not while a scene from before the last release is drawing: this may be its mesh.
+        if m.drawing.iter().any(|(_, began)| *began < m.released) {
+            return;
+        }
         // What goes for this one, worked out before anything goes: the layer's meshes of another
         // look (they no longer match), the one of this view, and past `VIEWS` its oldest; none
         // that a scene being drawn uses.
@@ -355,7 +373,7 @@ mod tests {
     /// (`frame_cache`) doesn't draw the layers under it. A frame drawn on the CPU instead fails
     /// the test.
     fn scene(m: &mut Map, view: &View) -> GpuScene {
-        crate::frame_cache::clear();
+        crate::frame_cache::release();
         match render_backend(m, view, Backend::Gpu) {
             Some(RenderOutput::Gpu(s)) => s,
             _ => panic!("no GPU scene"),
@@ -385,6 +403,21 @@ mod tests {
         if let Some(l) = m.layers.iter_mut().find(|l| l.id == id) {
             l.renderer = Renderer::Single(Symbol { fill, ..l.symbol(0) });
         }
+    }
+
+    /// A scene stopped by a memory warning may still be drawing: what it makes after the release
+    /// isn't kept, and a scene begun once it is done keeps again.
+    #[test]
+    fn a_release_is_not_undone_by_a_scene_begun_before_it() {
+        super::clear();
+        let (mut m, _, _, view) = two_layers();
+        let stopped = Scene::begin();
+        release();
+        scene(&mut m, &view);
+        assert_eq!(kept_bytes(), 0);
+        drop(stopped);
+        scene(&mut m, &view);
+        assert!(kept_bytes() > 0);
     }
 
     /// A scene of the same view after one layer was restyled takes the other's mesh, shared

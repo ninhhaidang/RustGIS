@@ -132,7 +132,7 @@ impl Shape {
 }
 
 /// The most samples a cell-by-cell command reads whole of a file, and holds of a result:
-/// [`rustgis_data::raster::SAMPLES_FLOOR`], what any desktop reads whole, or under test what
+/// [`rustgis_data::raster::samples_floor`], what any desktop (or any phone) reads whole, or under test what
 /// [`BLOCKS_PAST`] sets on this thread. Not the computer's own limit, which follows what it has
 /// free: the permission check and the run decide the same way however that changes between them.
 fn whole_limit() -> usize {
@@ -140,7 +140,7 @@ fn whole_limit() -> usize {
     if let Some(max) = BLOCKS_PAST.with(std::cell::Cell::get) {
         return max;
     }
-    rustgis_data::raster::SAMPLES_FLOOR
+    rustgis_data::raster::samples_floor()
 }
 
 #[cfg(test)]
@@ -263,7 +263,7 @@ pub(crate) fn affordable(need: u64) -> bool {
         return need <= max;
     }
     let budget = memory::share(memory::physical(), memory::held(), memory::available());
-    need <= budget.unwrap_or((rustgis_data::raster::SAMPLES_FLOOR as u64).saturating_mul(4))
+    need <= budget.unwrap_or((rustgis_data::raster::samples_floor() as u64).saturating_mul(4))
 }
 
 #[cfg(test)]

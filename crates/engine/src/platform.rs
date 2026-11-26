@@ -113,6 +113,8 @@ pub enum Event {
     /// Positioning ended without [`Platform::locate`] turning it off (leave refused or taken
     /// away, no way to find a position): the reason comes as an [`Event::Failed`].
     Stopped,
+    /// The system is short of memory: what can be made again is to be dropped.
+    LowMemory,
     /// Something went wrong: the text is for the user.
     Failed(String),
 }
@@ -120,9 +122,9 @@ pub enum Event {
 impl Event {
     /// Reads an event a shell passed as one line of tab-separated fields (`picked`, `cancelled`,
     /// `ended`, `saved`, `project-saved`, `project-save-failed`, `project-document`,
-    /// `write-back-failed`, `photo`,
-    /// `position`, `stopped`, `failed`). A `picked` line may end with the document it can write
-    /// back to. Unrecognized lines become failures that quote the line. A position is
+    /// `write-back-failed`, `photo`, `position`, `stopped`, `low-memory`, `failed`). A `picked`
+    /// line may end with the document it can write back to. Unrecognized lines become failures
+    /// that quote the line. A position is
     /// `position`, longitude, latitude, accuracy (empty when unknown), optionally its time in
     /// milliseconds since 1970, then optionally the monotonic fix time in nanoseconds since boot.
     pub fn parse(line: &str) -> Event {
@@ -148,6 +150,7 @@ impl Event {
             ["ended", purpose] => Event::Ended { purpose: purpose.to_string() },
             ["photo", name, path] if !path.is_empty() => Event::Photo { name: name.to_string(), path: PathBuf::from(path) },
             ["stopped"] => Event::Stopped,
+            ["low-memory"] => Event::LowMemory,
             // A name is the user's own text and may hold a tab: the rest of the line is the name.
             ["saved", name @ ..] if !name.is_empty() => Event::Saved { name: name.join("\t") },
             ["project-saved", name @ ..] if !name.is_empty() => Event::ProjectSave(Ok(name.join("\t"))),
@@ -304,6 +307,7 @@ mod tests {
             Event::Photo { name: "photo-1.jpg".into(), path: PathBuf::from("/data/photos/photo-1.jpg") }
         );
         assert_eq!(Event::parse("stopped"), Event::Stopped);
+        assert_eq!(Event::parse("low-memory"), Event::LowMemory);
         assert_eq!(
             Event::parse("position\t-83.92\t35.96\t4.5"),
             Event::Position(Fix { lon: -83.92, lat: 35.96, accuracy: Some(4.5), time: None, elapsed_realtime_nanos: None })

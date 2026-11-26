@@ -287,10 +287,10 @@ fn with_pictures<R>(f: impl FnOnce(&mut Vec<Kept>) -> R) -> R {
     PICTURES.with_borrow_mut(f)
 }
 
-/// Forgets the pictures kept on this test thread, for a test of what else a frame keeps.
-#[cfg(test)]
-pub(crate) fn clear() {
-    PICTURES.take();
+/// Forgets the pictures kept between frames ([`crate::release_memory`]; in a test, those of its
+/// thread).
+pub(crate) fn release() {
+    with_pictures(|kept| *kept = Vec::new());
 }
 
 /// How a frame draws, from [`plan`].

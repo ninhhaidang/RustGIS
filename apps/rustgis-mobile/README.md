@@ -234,6 +234,7 @@ own was used outside the area) is said, as a later package from the same phone r
 | HTTPS trust | The bundled Mozilla roots, not the device's certificates; the session says so once (`rustgis_data::http`) |
 | Folders | Settings, app data and the cache are in the app's internal storage, set once at start-up (`rustgis_data::dirs::set_root`) |
 | GeoLibre tools, GDAL formats, DuckDB | Not available: a phone can't run their programs. `rustgis_data::RUNS_PROGRAMS` is false on Android and iOS, so no program is looked for, and each place they would appear says so: a file read through GDAL or a DuckDB database is refused with the reason (convert it on a computer), the SQL pane says why it can't query, and the Geoprocessing pane shows a card in place of the GeoLibre tools. Add Data's Database… stays: its PostGIS, MySQL and SQL Server connections need no program. The app is built without the engine's `geolibre` feature |
+| Memory limits | The app tells the engine what Android allows (`rustgis_data::memory::set_phone`): `ActivityManager.MemoryInfo`'s `totalMem` in place of the computer's memory, and `availMem` less `threshold` as what is free, asked again for each job. (`getMemoryClass` bounds only the Java heap; the engine's memory is native.) Where the browser's floor is lower than the desktop's, the phone takes it; the Undo budget is planned from what is free at start, and the threads' scratch memory is the browser's. On a low-memory warning the app drops the tile and drawing caches: `onTrimMemory` and `onLowMemory` through Android 13, and, as Android 14 and later send an app in use neither, `MemoryInfo.lowMemory`, asked every five seconds while the app is in sight (an idle window wakes that often to ask) |
 | Recovery copies | The first foreground edit submits a recovery copy in app-private storage immediately. Edits within two seconds of a submission are grouped into a copy due at the end of that interval. When the exit hook runs, it submits the latest edit immediately and gives the writer up to two seconds to finish. Suspending or destroying the Android activity can skip this hook, so edits still waiting to be submitted can be lost. The next launch offers the last complete copy, if one exists. |
 | Preferences, the keychain | Not wired up yet |
 | Soft keyboard | It opens for a text field, and the touch interface keeps the field above it. `NativeActivity`'s text input is still poor (no suggestions, no composing): a real app moves to `GameActivity` |
@@ -405,12 +406,14 @@ cp parcels.gpkg "$(xcrun simctl get_app_container booted org.rustgis.mobile data
 | Folders | Settings, app data and the cache are in `Library/Application Support` |
 | Picked copies | Kept in `picked/`, as on Android: data and projects open from their copies and are edited there. The folder is left out of the device's backups (`NSURLIsExcludedFromBackupKey`), as the documents are the user's elsewhere. Remove Unused Copies removes those the project doesn't name, as on Android |
 | Plain HTTP | App Transport Security is off for every host (`NSAllowsArbitraryLoads`): a project's tile layers and services may be any `http://` server, not known when the app is built, so a list of exceptions can't name them. The App Review notes say so |
+| Memory limits | What `os_proc_available_memory` says is left stands for the app's limit at start, and is asked again for each job; 1.5 GiB where it says nothing. A memory warning drops the tile and drawing caches, as on Android |
 | Plugins | None can be installed, and the registry isn't fetched: App Review doesn't let an app download code that adds to what it does (guideline 2.5.2), and a plugin, from the registry or a file, is such code. Each way of installing one says so (`rustgis_plugins::INSTALLS`). A later build could carry plugins reviewed with the app |
 
 `src/ios.rs` is the one module of the app with `unsafe` code beyond Android's `no_mangle`, an
 exception to the workspace's rule allowed by `#![expect(unsafe_code)]` on the module: UIKit's
 delegates are Objective-C classes made with `objc2`'s `define_class!`, which needs `unsafe impl`,
-and a few of UIKit's calls are unsafe in `objc2`. Each block says why it holds.
+a few of UIKit's calls are unsafe in `objc2`, and libSystem's `os_proc_available_memory` is
+declared there. Each block says why it holds.
 
 Two things winit 0.30 doesn't do on iOS 27 are done in `src/ios.rs`:
 

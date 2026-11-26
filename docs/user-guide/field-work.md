@@ -61,6 +61,18 @@ Formats read through GDAL, DuckDB databases and the GeoLibre tools need programs
 run: the app says so where they would appear. Convert such data on a computer first. Database
 connections (PostGIS, MySQL, SQL Server) work on a phone too, as they need no program.
 
+## Memory
+
+A phone gives an app much less memory than a computer, and ends one that takes too much. RustGIS
+plans each job from what the system allows and has free at the time (see
+[the limits](analysis.md#analysis-workflows)), so a raster that opens whole on a computer can open
+at a lower resolution on a phone, and a tool's output can be refused there. RustGIS says so either
+way; a refused tool says what to change, such as giving a larger cell size or a smaller extent.
+
+When the system warns that memory is short, RustGIS drops the map tiles and drawings it keeps to
+draw faster, and says so once. Layers, results and Undo history are kept. Tiles from the web are
+downloaded again when the map needs them, so offline they stay blank until there is a network.
+
 ## Capturing features
 
 **Capture** adds features to one of the map's point, line or polygon layers. A cross marks the

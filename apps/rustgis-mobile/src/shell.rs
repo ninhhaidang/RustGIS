@@ -15,6 +15,15 @@ use std::sync::{Arc, Mutex};
 /// it: long enough for the keyboard to finish closing.
 const KEYBOARD_SETTLES: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// The memory the limits plan with where a phone's system doesn't say what it allows: 1.5 GiB,
+/// what a small phone can give an app.
+pub const MEMORY_UNSAID: u64 = 1536 << 20;
+
+/// Says, in the window, that the limits plan with [`MEMORY_UNSAID`].
+pub fn say_memory_unsaid(app: &mut RustGisApp) {
+    app.session.warn(tl!("This device didn't say how much memory RustGIS may use, so its limits plan for 1.5 GiB."));
+}
+
 /// What the shell asks of a phone beyond [`Platform`].
 pub trait Phone: Platform {
     /// The room the system's bars, a camera cutout and the soft keyboard take at the window's
@@ -34,6 +43,13 @@ pub trait Phone: Platform {
     /// is for a phone that can't tell.
     fn picking(&self) -> bool {
         self.busy()
+    }
+
+    /// How often (milliseconds) a window with nothing else to look for looks again, for a phone
+    /// that reports only when asked and can't wake the window (Android's memory). `None`, the
+    /// default: the phone wakes it.
+    fn idle_look(&self) -> Option<u64> {
+        None
     }
 
     /// Whether the soft keyboard's Return was pressed since the last frame, where the system
@@ -236,6 +252,7 @@ impl<P: Phone> App<P> {
                     self.locating = false;
                     self.app.position = None;
                 }
+                Event::LowMemory => self.app.release_memory(),
                 Event::Failed(text) => self.app.session.notify(text, true),
             }
         }
@@ -298,7 +315,7 @@ impl<P: Phone> App<P> {
         } else if self.locating {
             Some(1000)
         } else {
-            None
+            phone.idle_look()
         };
     }
 
@@ -628,7 +645,7 @@ impl<P: Phone> eframe::App for App<P> {
         }
         // Something of the phone's is still to arrive (a picked file, a position): look again.
         // A picker or a save asked for in this frame counts too: the poll was set before it.
-        if self.poll.is_none() && self.phone.as_ref().is_some_and(|phone| phone.busy()) {
+        if self.poll.is_none_or(|wait| wait > 250) && self.phone.as_ref().is_some_and(|phone| phone.busy()) {
             self.poll = Some(250);
         }
         if let Some(wait) = self.poll {
@@ -855,8 +872,9 @@ mod tests {
     use serde_json::{Value, json};
     use std::cell::Cell;
 
+    /// A phone that is busy once asked for a file, and reports the events put in it.
     #[derive(Default)]
-    struct FakePhone(Cell<bool>);
+    struct FakePhone(Cell<bool>, RefCell<Vec<Event>>);
     impl Platform for FakePhone {
         fn pick_files(&self, _: &str) -> Result<(), String> {
             self.0.set(true);
@@ -875,7 +893,7 @@ mod tests {
             Ok(())
         }
         fn take_events(&self) -> Vec<Event> {
-            Vec::new()
+            self.1.take()
         }
     }
     impl Phone for FakePhone {
@@ -886,6 +904,56 @@ mod tests {
         fn busy(&self) -> bool {
             self.0.get()
         }
+        fn idle_look(&self) -> Option<u64> {
+            Some(5000)
+        }
+    }
+
+    /// The phone's low-memory warnings reach the front end: the tile cache and the drawing copy
+    /// of a layer switched off go (a drawn layer's stays), it is said once however often it
+    /// comes, and an idle window looks again as often as the phone asks.
+    #[test]
+    fn a_low_memory_warning_drops_caches_and_is_said_once() {
+        use rustgis_engine::render::rustgis_tiles::cache;
+
+        let mut app = RustGisApp::with_sample();
+        let layers = &mut app.session.map_mut().layers;
+        assert!(layers.len() >= 2);
+        layers[0].visible = false;
+        layers[1].visible = true;
+        for layer in layers.iter_mut().take(2) {
+            layer.projected();
+            assert!(layer.is_cached("mercator"));
+        }
+        let (clears, mark) = (cache::clears(), app.session.notice_mark());
+        let phone = Rc::new(FakePhone::default());
+        phone.1.borrow_mut().extend([Event::LowMemory, Event::LowMemory]);
+        let mut window = App {
+            app,
+            pushed: Vec::new(),
+            poll: None,
+            locating: false,
+            keeping: false,
+            keyboard: None,
+            typing: None,
+            bars_light: None,
+            phone: Some(phone),
+            inbox: Inbox::default(),
+            refusals: Refusals::default(),
+            asked: Asked::default(),
+            kept: Rc::default(),
+            refused_picker: Rc::default(),
+            waiting: Vec::new(),
+            problems: Problems::default(),
+            reading: Arc::default(),
+        };
+        window.take_phone_events(&egui::Context::default(), &mut egui::RawInput::default());
+        assert!(cache::clears() > clears);
+        let layers = &window.app.session.map().layers;
+        assert_eq!([layers[0].is_cached("mercator"), layers[1].is_cached("mercator")], [false, true]);
+        let said = window.app.session.notices_since(mark).iter().filter(|n| n.text.contains("low on memory")).count();
+        assert_eq!(said, 1);
+        assert_eq!(window.poll, Some(5000));
     }
 
     #[test]
