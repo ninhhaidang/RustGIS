@@ -709,6 +709,9 @@ fn shown_layout(app: &mut RustGisApp, li: usize) -> Option<std::rc::Rc<Layout>> 
     }
 }
 
+/// The layout view: the active layout's page with its elements, rulers and guides, drawn from a
+/// texture rendered at screen resolution and redrawn when the layout changes. Clicks, drags and
+/// keys go through `interact`; the selected element's right-click menu is `element_menu`.
 pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     let Some(li) = app.session.active_layout else { return };
     let Some(layout) = shown_layout(app, li) else { return };
@@ -736,8 +739,16 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     painter.rect_filled(area, 0.0, if t.dark { Color32::from_gray(38) } else { Color32::from_rgb(0xD9, 0xDD, 0xE3) });
     let (page, s) = page_rect(&app.layout, area, &layout);
     interact(app, ui, &resp, &layout, li, page, s);
-    // The properties or a drag may have just changed the layout: draw the page as it is now,
-    // or the texture would be keyed to the new revision but show the old layout (#325).
+    // The right-click menu of the selected element: a right-click on empty page cleared the
+    // selection, so none opens there, nor while a drawing tool is picked. Before the page is
+    // drawn, as its rows change the layout.
+    if app.layout.tool.is_none()
+        && let Some(id) = app.layout.selected.filter(|&id| layout.element(id).is_some())
+    {
+        resp.context_menu(|ui| element_menu(app, ui, &layout, li, id));
+    }
+    // The properties, a drag or the menu may have just changed the layout: draw the page as it is
+    // now, or the texture would be keyed to the new revision but show the old layout (#325).
     let Some(layout) = shown_layout(app, li) else { return };
     let (page, s) = page_rect(&app.layout, area, &layout);
 
@@ -1024,6 +1035,9 @@ fn locked(layout: &Layout, id: u32) -> bool {
     layout.element(id).is_some_and(|e| e.locked)
 }
 
+/// What the pointer does on the page `resp` covers: the wheel zooms the page or a map frame's map,
+/// a click or right-click selects the element under it, a drag moves, resizes, rotates or pans
+/// one (or drags a guide out of a ruler), and a tool picked from the ribbon draws a frame.
 fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, layout: &Layout, li: usize, page: Rect, s: f32) {
     // A map frame's wheel zoom is applied once the wheel has stopped.
     let now = ui.input(|i| i.time);
@@ -1163,7 +1177,7 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, layout: &L
     // A click on a ruler, or on the selected element's handle (which can stick out over another
     // element), keeps the selection: where the click started, as the pointer may have moved a
     // little by the release. A press serves one click or drag, never a later one.
-    let pressed = if resp.clicked() || resp.drag_started() { app.layout.pressed.take() } else { None };
+    let pressed = if resp.clicked() || resp.secondary_clicked() || resp.drag_started() { app.layout.pressed.take() } else { None };
     if resp.clicked()
         && let Some(p) = pointer_mm
         && pressed.or(resp.interact_pointer_pos()).is_none_or(|pos| {
@@ -1176,6 +1190,23 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, layout: &L
         // A click on the element already selected brings back the pane closed over it.
         if app.layout.selected.is_some_and(|id| app.layout.formatted == Some((li, id))) {
             app.ui.open_right(crate::RightPane::Format);
+        }
+    }
+    // A right-click selects what is under it, unless that is selected already, and so opens the
+    // element's menu (see `show`); on empty page it clears the selection, as a click does. Pressed
+    // on a ruler, or on the selected element's handle or rotation knob, it keeps the selection, as
+    // a click does there.
+    if resp.secondary_clicked()
+        && let Some(p) = pointer_mm
+        && pressed.or(resp.interact_pointer_pos()).is_none_or(|pos| {
+            ruler_at(&app.layout, resp.rect, pos).is_none()
+                && handle_at(app, layout, page, s, pos).is_none()
+                && rotate_at(app, layout, page, s, pos).is_none()
+        })
+    {
+        let hit = layout.hit(p.0, p.1);
+        if hit != app.layout.selected {
+            app.layout.selected = hit;
         }
     }
     if resp.double_clicked()
@@ -2881,10 +2912,8 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
 fn element_actions(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize, id: u32) {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
-        if ui.button(tl!("Duplicate")).on_hover_text(tl!("Copy this element (Ctrl+D, ⌘D on a Mac)")).clicked()
-            && let Ok(v) = app.run("layout.duplicateElement", json!({"layout": li, "element": id}))
-        {
-            app.layout.selected = v["element"].as_u64().and_then(|v| u32::try_from(v).ok());
+        if ui.button(tl!("Duplicate")).on_hover_text(tl!("Copy this element (Ctrl+D, ⌘D on a Mac)")).clicked() {
+            duplicate_element(app, li, id);
         }
         if ui
             .add_enabled(layout.locked_in_removal(id).is_none(), egui::Button::new(tl!("Delete Element")))
@@ -2892,31 +2921,94 @@ fn element_actions(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize
             .on_disabled_hover_text(locked_delete())
             .clicked()
         {
-            let _ = app.run("layout.removeElement", json!({"layout": li, "element": id}));
-            app.layout.selected = None;
+            delete_element(app, li, id);
         }
     });
     // The drawing order: a legend brought to the front is drawn over the map frame under it.
-    // A step it can't take (already on top, or at the bottom) is greyed, as is a locked element.
-    let Some((at, n)) = layout.draw_order(id) else { return };
-    let locked = layout.element(id).is_some_and(|e| e.locked);
     ui.horizontal_wrapped(|ui| {
         for to in Arrange::ALL {
-            let can = match to {
-                Arrange::Front | Arrange::Forward => at + 1 < n,
-                Arrange::Backward | Arrange::Back => at > 0,
-            };
-            let tip = match to {
-                Arrange::Front => "Draw it over every other element",
-                Arrange::Forward => "Draw it over the element above it",
-                Arrange::Backward => "Draw it under the element below it",
-                Arrange::Back => "Draw it under every other element",
-            };
-            if ui.add_enabled(can && !locked, egui::Button::new(tl!(to.label()))).on_hover_text(tl!(tip)).clicked() {
-                let _ = app.run("layout.arrange", json!({"layout": li, "element": id, "to": to.code()}));
+            if ui.add_enabled(can_arrange(layout, id, to), egui::Button::new(tl!(to.label()))).on_hover_text(tl!(arrange_tip(to))).clicked()
+            {
+                arrange_element(app, li, id, to);
             }
         }
     });
+}
+
+/// Copies an element and selects the copy (the Format pane's Duplicate and the right-click menu's).
+fn duplicate_element(app: &mut RustGisApp, li: usize, id: u32) {
+    if let Ok(v) = app.run("layout.duplicateElement", json!({"layout": li, "element": id})) {
+        app.layout.selected = v["element"].as_u64().and_then(|v| u32::try_from(v).ok());
+    }
+}
+
+/// Deletes an element (the Format pane's Delete Element and the right-click menu's). The caller
+/// offers it only where [`Layout::locked_in_removal`] allows it; the command refuses otherwise.
+fn delete_element(app: &mut RustGisApp, li: usize, id: u32) {
+    let _ = app.run("layout.removeElement", json!({"layout": li, "element": id}));
+    app.layout.selected = None;
+}
+
+/// Moves an element in the drawing order (the Format pane's buttons and the right-click menu's).
+fn arrange_element(app: &mut RustGisApp, li: usize, id: u32, to: Arrange) {
+    let _ = app.run("layout.arrange", json!({"layout": li, "element": id, "to": to.code()}));
+}
+
+/// Whether the step `to` in the drawing order moves element `id`: not one it can't take (already
+/// on top, or at the bottom), and not a locked element's.
+fn can_arrange(layout: &Layout, id: u32, to: Arrange) -> bool {
+    let Some((at, n)) = layout.draw_order(id) else { return false };
+    let locked = layout.element(id).is_some_and(|e| e.locked);
+    let step = match to {
+        Arrange::Front | Arrange::Forward => at + 1 < n,
+        Arrange::Backward | Arrange::Back => at > 0,
+    };
+    step && !locked
+}
+
+/// What an arrange step does, for its tooltip.
+fn arrange_tip(to: Arrange) -> &'static str {
+    match to {
+        Arrange::Front => "Draw it over every other element",
+        Arrange::Forward => "Draw it over the element above it",
+        Arrange::Backward => "Draw it under the element below it",
+        Arrange::Back => "Draw it under every other element",
+    }
+}
+
+/// The menu right-clicking element `id` opens: Duplicate and Delete (with their keys), the four
+/// drawing-order steps, and for a map frame Zoom Frame. The rules are the Format pane's: a locked
+/// element can be duplicated but not deleted, and an arrange step it can't take is greyed. Each
+/// row runs the command the pane's button runs, so one Undo takes it back.
+fn element_menu(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize, id: u32) {
+    use crate::widgets::{menu_row, shortcut_text};
+    let duplicate = shortcut_text(ui.ctx(), app, "layout.duplicateElement");
+    if menu_row(ui, "", tl!("Duplicate"), &duplicate, true).on_hover_text(tl!("Copy this element")).clicked() {
+        duplicate_element(app, li, id);
+        ui.close();
+    }
+    let delete = shortcut_text(ui.ctx(), app, "edit.delete");
+    let can_delete = layout.locked_in_removal(id).is_none();
+    if menu_row(ui, "", tl!("Delete Element"), &delete, can_delete).on_disabled_hover_text(locked_delete()).clicked() {
+        delete_element(app, li, id);
+        ui.close();
+    }
+    ui.separator();
+    for to in Arrange::ALL {
+        if menu_row(ui, "", tl!(to.label()), "", can_arrange(layout, id, to)).on_hover_text(tl!(arrange_tip(to))).clicked() {
+            arrange_element(app, li, id, to);
+            ui.close();
+        }
+    }
+    if layout.element(id).is_some_and(|e| matches!(e.kind, ElementKind::MapFrame { .. })) {
+        ui.separator();
+        // As double-clicking the frame does: its map follows the map view.
+        let tip = tl!("Show the map view's extent in this frame");
+        if menu_row(ui, "", tl!("Zoom Frame"), "", true).on_hover_text(tip).clicked() {
+            let _ = app.run("layout.frameZoom", json!({"layout": li, "element": id, "to": "view"}));
+            ui.close();
+        }
+    }
 }
 
 /// The dash pattern of a layout line or outline `width` points wide, picked from the Symbology
@@ -3804,6 +3896,165 @@ mod tests {
         assert_eq!(layout.elements.len(), n, "Backspace deleted the copy");
         assert!(layout.element(copy).is_none() && layout.element(title.id).is_some());
         assert_eq!(app.layout.selected, None);
+    }
+
+    /// A right-click on the selected element's handle, where it sticks out over another element,
+    /// keeps the selection and opens the menu of the element the handle belongs to, as a click
+    /// there keeps it, also when the pointer moves off the handle before the release.
+    #[test]
+    fn right_clicking_a_handle_keeps_the_selection() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.run("layout.new", json!({"name": "Handles"})).unwrap();
+        let li = app.session.active_layout.unwrap();
+        let start = app.session.project.layouts[li].clone();
+        let title = start.elements.iter().find(|e| e.name == "Title").unwrap().id;
+        let frame = start.first_frame().unwrap();
+        let top = start.element(frame).unwrap().y;
+        let h_mm = start.element(title).unwrap().h;
+        // The title's lower edge on the frame's upper one, so its lower handles stick out over the map.
+        app.run("layout.update", json!({"layout": li, "element": title, "y": top - h_mm})).unwrap();
+        app.layout.selected = Some(title);
+        let layout = app.session.project.layouts[li].clone();
+        let area = Rc::new(Cell::new(Rect::NOTHING));
+        let shown = area.clone();
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1000.0, 760.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                shown.set(ui.available_rect_before_wrap());
+                super::show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let (page, s) = page_rect(&h.state().layout, area.get(), &layout);
+        let e = layout.element(title).unwrap();
+        // Just below the lower middle handle: on the map frame, off the title, within the handle's reach.
+        let at = to_screen(page, s, (e.x + e.w / 2.0, e.y + e.h)) + vec2(0.0, 4.0);
+        let (x, y) = super::to_mm(page, s, at);
+        assert_eq!(layout.hit(x, y), Some(frame), "the point is on the map frame");
+        assert!(handle_at(h.state(), &layout, page, s, at).is_some(), "and on the title's handle");
+        let secondary =
+            |pos: Pos2, pressed| Event::PointerButton { pos, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE };
+        h.event(Event::PointerMoved(at));
+        h.step();
+        h.event(secondary(at, true));
+        h.step();
+        h.event(secondary(at, false));
+        h.run_steps(3);
+        assert_eq!(h.state().layout.selected, Some(title), "the title stays selected");
+        assert!(h.query_by_label_contains("Duplicate").is_some(), "its menu opens");
+        assert!(h.query_by_label("Zoom Frame").is_none(), "the title's menu, not the frame's");
+
+        // Pressed on the handle, released a little off it (still a click): where it was pressed
+        // decides, as for a click.
+        h.event(Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+        h.run_steps(2);
+        let handle = to_screen(page, s, (e.x + e.w / 2.0, e.y + e.h));
+        let (press, release) = (handle + vec2(0.0, 10.0), handle + vec2(0.0, 15.0));
+        assert!(handle_at(h.state(), &layout, page, s, press).is_some(), "pressed on the handle");
+        assert!(handle_at(h.state(), &layout, page, s, release).is_none(), "released off it");
+        let (x, y) = super::to_mm(page, s, release);
+        assert_eq!(layout.hit(x, y), Some(frame), "on the map frame");
+        h.event(Event::PointerMoved(press));
+        h.step();
+        h.event(secondary(press, true));
+        h.step();
+        h.event(Event::PointerMoved(release));
+        h.step();
+        h.event(secondary(release, false));
+        h.run_steps(3);
+        assert_eq!(h.state().layout.selected, Some(title), "the title stays selected after the drift");
+    }
+
+    /// Right-clicking an element selects it and opens its menu: Send Backward moves it down the
+    /// drawing order in one Undo step, a locked element's Delete row is greyed, and a right-click
+    /// on empty page opens no menu.
+    #[test]
+    fn right_clicking_an_element_opens_its_menu() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let mut app = RustGisApp::with_sample();
+        app.run("layout.new", json!({"name": "Menu"})).unwrap();
+        let li = app.session.active_layout.unwrap();
+        let layout = app.session.project.layouts[li].clone();
+        let title = layout.elements.iter().find(|e| e.name == "Title").unwrap().clone();
+        let frame = layout.first_frame().unwrap();
+        app.layout.selected = Some(frame);
+        let area = Rc::new(Cell::new(Rect::NOTHING));
+        let shown = area.clone();
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1000.0, 760.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                shown.set(ui.available_rect_before_wrap());
+                super::show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let (page, s) = page_rect(&h.state().layout, area.get(), &layout);
+        let (cx, cy) = (title.x + title.w / 2.0, title.y + title.h / 2.0);
+        assert_eq!(layout.hit(cx, cy), Some(title.id), "the point is on the title");
+        let at = to_screen(page, s, (cx, cy));
+        let secondary =
+            |pos: Pos2, pressed| Event::PointerButton { pos, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE };
+        let order = |h: &egui_kittest::Harness<'_, RustGisApp>| h.state().session.project.layouts[li].draw_order(title.id).unwrap().0;
+        let right_click = |h: &mut egui_kittest::Harness<'_, RustGisApp>, pos: Pos2| {
+            h.event(Event::PointerMoved(pos));
+            h.step();
+            h.event(secondary(pos, true));
+            h.step();
+            h.event(secondary(pos, false));
+            h.run_steps(3);
+        };
+
+        right_click(&mut h, at);
+        assert_eq!(h.state().layout.selected, Some(title.id), "the right-click selected the title");
+        let before = order(&h);
+        assert!(before > 0, "the title has an element under it to go behind");
+        for row in ["Duplicate", "Delete Element", "Bring to Front", "Bring Forward", "Send Backward", "Send to Back"] {
+            assert!(h.query_by_label_contains(row).is_some(), "{row} is in the menu");
+        }
+        assert!(h.query_by_label("Zoom Frame").is_none(), "Zoom Frame is for a map frame");
+        assert!(!h.get_by_label_contains("Delete Element").accesskit_node().is_disabled());
+        h.get_by_label("Send Backward").click();
+        h.step();
+        // The page is drawn, in the frame the row changed the layout, from the layout as it is
+        // now: a snapshot taken before would be keyed to the new revision but show the old order.
+        assert_eq!(
+            h.state().layout.shown.as_ref().map(|(_, rev, _)| *rev),
+            Some(h.state().session.revision),
+            "the page drawn after the menu's change is the changed layout"
+        );
+        h.run_steps(2);
+        assert_eq!(order(&h), before - 1, "Send Backward moved it one step down");
+        assert!(h.query_by_label("Send Backward").is_none(), "choosing a row closes the menu");
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(order(&h), before, "one Undo restores the order");
+
+        // A locked element can be copied but not deleted.
+        h.state_mut().run("layout.update", json!({"layout": li, "element": title.id, "locked": true})).unwrap();
+        h.run_steps(2);
+        right_click(&mut h, at);
+        assert!(h.get_by_label_contains("Delete Element").accesskit_node().is_disabled(), "a locked element isn't deleted");
+        assert!(!h.get_by_label_contains("Duplicate").accesskit_node().is_disabled());
+        assert!(h.get_by_label("Send Backward").accesskit_node().is_disabled(), "nor moved in the order");
+
+        // On empty page, the selection is cleared and no menu opens.
+        let bare = to_screen(page, s, (layout.width - 1.0, layout.height - 1.0));
+        assert_eq!(layout.hit(layout.width - 1.0, layout.height - 1.0), None, "the corner is empty page");
+        right_click(&mut h, bare);
+        assert_eq!(h.state().layout.selected, None);
+        assert!(h.query_by_label_contains("Duplicate").is_none(), "no menu on empty page");
     }
 
     /// A locked element is selected, but a drag from inside it or from where its corner handle

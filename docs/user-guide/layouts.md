@@ -543,6 +543,8 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   Mac) deletes the selected element, and **Ctrl+D** (**⌘D** on a Mac) duplicates it: the copy is
   placed 5 mm down and to the right, on top, and selected. The **arrow keys** nudge it 1 mm, or
   10 mm with **Shift**, and keep it moving while held; a run of nudges is one step to undo.
+  **Right-click** an element to select it and open a menu of Duplicate, Delete, the four Arrange
+  steps and, on a map frame, **Zoom Frame** (the map view's extent, as a double-click does).
 - **Arrange**: elements later in the layout are drawn over earlier ones, and a click picks the one
   on top. Under Duplicate and Delete, **Bring to Front** and **Send to Back** put the selected
   element over or under every other, and **Bring Forward** and **Send Backward** move it one
