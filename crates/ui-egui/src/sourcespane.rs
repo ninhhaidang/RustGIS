@@ -148,6 +148,16 @@ pub fn open(app: &mut RustGisApp, s: &Source) -> Result<(), String> {
             if let Some(l) = text(x, "layer") {
                 p["layer"] = json!(l);
             }
+            for flag in rustgis_engine::sources::URL_FLAGS {
+                if s.flag(flag) {
+                    p[flag] = json!(true);
+                }
+            }
+            if s.flag("coverage")
+                && let Some(crs) = text(x, "coverageCrs")
+            {
+                p["coverageCrs"] = json!(crs);
+            }
             app.run("ui.addUrl", p).map(|_| ())
         }
         "tiles" => {
@@ -515,4 +525,58 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             });
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustgis_engine::render::rustgis_tiles::{
+        address::{Origin, Reach},
+        cache,
+    };
+
+    /// A service's features added by address are read page by page when added again from Recent,
+    /// as they were the first time.
+    #[test]
+    fn a_service_read_by_address_is_read_in_pages_again_from_recent() {
+        let first = "https://recent-pages.example/collections/parcels/items";
+        let next = "https://recent-pages.example/collections/parcels/items?page=2";
+        let _turn = crate::fetching::turn();
+        cache::set_fetcher_with_origin(move |url, ceiling, done, _| {
+            let clean = cache::split_download_limit(&url).0.to_string();
+            let links = if clean == first { json!([{"rel":"next","type":"application/geo+json","href":next}]) } else { json!([]) };
+            let body = json!({"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{}}],"links":links});
+            let origin = Origin::with_observed_reach(&clean, Reach::Public.min(ceiling)).unwrap();
+            done(Ok(cache::Fetched { bytes: body.to_string().into_bytes(), origin }));
+        });
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let read = |app: &mut RustGisApp| {
+            for _ in 0..4 {
+                crate::serviceui::poll_pages(app, &egui::Context::default());
+            }
+            app.session.map().layers.last().map(|l| l.dataset.features.len())
+        };
+        app.run("ui.addUrl", json!({"url": first, "name": "Parcels", "service": true})).unwrap();
+        assert_eq!(read(&mut app), Some(2), "{:?}", app.dialogs.error);
+        let recent = app.session.sources.recent.first().cloned().unwrap();
+        assert_eq!((recent.kind.as_str(), recent.address.as_str()), ("url", first));
+        open(&mut app, &recent).unwrap();
+        assert_eq!(read(&mut app), Some(2), "{:?}", app.dialogs.error);
+        assert_eq!(app.session.map().layers.len(), 2);
+    }
+
+    /// A WCS coverage added by address is asked for again from Recent as a coverage, in the system
+    /// it was asked in the first time.
+    #[test]
+    fn a_coverage_is_added_again_from_recent_in_the_system_it_was_asked_in() {
+        let _turn = crate::fetching::turn();
+        cache::set_fetcher(|_, _| {});
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let url = "https://wcs-recent.invalid/wcs?SERVICE=WCS&VERSION=2.0.1&REQUEST=GetCoverage&COVERAGEID=dem";
+        let added = json!({"id": 1, "url": url, "name": "Terrain", "coverage": true, "coverageCrs": "EPSG:2056"});
+        let recent = rustgis_engine::sources::clean(rustgis_engine::sources::added_by("layer.addDownload", &added).unwrap()).unwrap();
+        open(&mut app, &recent).unwrap();
+        let asked = app.ui.downloads.last().map(|d| (d.params["coverage"].clone(), d.params["coverageCrs"].clone()));
+        assert_eq!(asked, Some((json!(true), json!("EPSG:2056"))));
+    }
 }

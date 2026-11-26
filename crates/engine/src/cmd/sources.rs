@@ -5,14 +5,14 @@
 use serde_json::{Value, json};
 
 use super::ps;
-use crate::sources::{KINDS, Source, library};
+use crate::sources::{KINDS, Source, URL_FLAGS, library};
 use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
         C::new("sources.list", "List Data Sources", "Home › Add › Data Sources", list).roles(&[]).effects(crate::policy::Effects::NONE).view(),
         C::new("sources.save", "Save Data Source", "Home › Add › Data Sources", |s, p| keep(s, p, "saved")).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).view().params(
-            r#"{"kind": "service"|"database"|"stac"|"file"|"url"|"tiles"|"zarr"|"s3", "address": "its path, web address or connection (never with a password)", "name"?: text, "extra"?: {"type"?: service type, "layer"?: text}}"#,
+            r#"{"kind": "service"|"database"|"stac"|"file"|"url"|"tiles"|"zarr"|"s3", "address": "its path, web address or connection (never with a password)", "name"?: text, "extra"?: {"type"?: service type, "layer"?: text, "service"?: "true" (a url source: a web service's features, read in pages), "coverage"?: "true" (a url source: a WCS coverage's GetCoverage address), "coverageCrs"?: "EPSG:<code>" (with coverage: the system it was asked in)}}"#,
         ),
         C::new("sources.favourite", "Favourite Data Source", "Home › Add › Data Sources", favourite).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
@@ -39,9 +39,21 @@ fn adds_with(kind: &str) -> &'static str {
     }
 }
 
+/// How this source is added: [`adds_with`] its kind, with the flags a `url` source's add had.
+fn add_with(s: &Source) -> String {
+    let mut keys = vec!["url".to_string()];
+    if s.kind == "url" {
+        keys.extend(URL_FLAGS.iter().filter(|f| s.flag(f)).map(|f| format!("{f}: true")));
+        if s.flag("coverage") && s.extra.get("coverageCrs").is_some() {
+            keys.push("coverageCrs".into());
+        }
+    }
+    if keys.len() == 1 { adds_with(&s.kind).to_string() } else { format!("layer.addUrl {{{}}}", keys.join(", ")) }
+}
+
 fn shown(s: &Source) -> Value {
     let mut v = serde_json::to_value(s).unwrap_or(Value::Null);
-    v["addWith"] = json!(adds_with(&s.kind));
+    v["addWith"] = json!(add_with(s));
     v
 }
 

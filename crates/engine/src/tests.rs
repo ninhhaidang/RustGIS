@@ -27199,6 +27199,10 @@ fn a_service_query_added_by_address_is_read_in_pages_without_the_app() {
     assert_eq!((sym.marker, sym.fill), (rustgis_map::symbology::Marker::Square, rustgis_map::Rgba::rgb(230, 0, 0)));
     let texts: Vec<_> = s.notices.iter().map(|n| n.text.as_str()).collect();
     assert!(!texts.iter().any(|t| t.contains("record limit") || t.contains("aren't read")), "{texts:?}");
+    // Recent keeps that it was read as a service, so adding it again reads every page too.
+    let recent = &s.run("sources.list", &Value::Null).unwrap()["recent"][0];
+    assert_eq!((&recent["kind"], &recent["extra"]), (&json!("url"), &json!({"service": "true"})));
+    assert_eq!(recent["addWith"], "layer.addUrl {url, service: true}");
     // Bounds that aren't a geographic rectangle are refused before anything is fetched, as when the
     // app adds the download.
     let e = s.run("layer.addUrl", &json!({"url": url, "name": "Bad", "service": true, "bounds": [10, 0, 5, 1]})).unwrap_err();
