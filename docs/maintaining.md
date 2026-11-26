@@ -311,6 +311,21 @@ page requires it as well. A translucent page colour, which only a hand-edited fi
 as it looks on white paper (a clear one is the white page) and counted with the page settings the
 project says it repaired.
 
+Projects with a layout text that holds a layer statistic (`{count:Layer}`, `{sum:Layer:field}`,
+`{mean:…}`, `{min:…}` or `{max:…}`, #2853) require `layout-text-statistics`, so an older reader
+refuses them by name instead of printing the token as written. A saved `layout.addElement` or
+`layout.update` whose `text` holds one requires it too, as does a saved `layout.publication` whose
+`title`, `subtitle`, `note`, `sources`, `reference`, `author` or `headings` do, and a saved
+`layout.import` whose `text` has such a text, or a saved `report.existingTemplate` that reads one.
+A presentation's map page draws its title over its map frame, where a statistic is filled in, so a
+saved presentation with one in a map page's title requires it too, and so does a saved
+`presentation.mapPage` or `presentation.updatePage` whose `title` holds one, or a saved
+`presentation.import` whose `text` has such a map page (a blank page's text is drawn with no map
+frame, so no figure fills in there). Other braces (`{scale}`, `{foo}`, `{count:}`) need nothing.
+Files read by `path` or `data` are not looked into, as for every other layout capability, and a
+presentation file (`.rgispres`) has no header to list a capability in, so an older reader opens one
+with the token printed as written.
+
 Projects, map files and layer files with a layer or table held in a coordinate system of its own
 (`Dataset::held_in`: a file's system, kept since #2580) save its features in that system, exactly,
 with `held_in` beside them, and require `native-coordinates`: an older reader would read those

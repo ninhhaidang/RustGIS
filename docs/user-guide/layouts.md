@@ -487,13 +487,32 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   by the export and the layout view.
 - **Text** and **Dynamic Text**: `{date}`, `{time}`, `{scale}`, `{map}`, `{crs}`, `{page}`,
   `{pages}`, `{pageName}` and `{layout}` fill in when the page is drawn; the Format pane's
-  **Insert Dynamic Text** menu, under the text, lists each with what it shows. The text, its
-  size (2 to 400 points, as text graphics on the map), colour, bold, **Italic** (slanted, as water
-  and ocean names are; the built-in fonts have no italic face, so the letters are slanted 12°),
-  **Alignment** (left, center or right within the element) and **Letter spacing** in points
-  (spaced-out names such as O C E A N O, or a negative value to tighten) are the same form a text
-  on the map has in the pane; Enter ends the text and Shift+Enter starts a new line. Scripts set them with `italic`, `align` and
-  `letterSpacing` on `layout.addElement` and `layout.update`. A layout's text also takes a **Font**:
+  **Insert Dynamic Text** menu, under the text, lists each with what it shows. A layer's figures
+  fill in too (#2853): `{count:Cities}` is how many features the layer has, and `{sum:Cities:pop}`,
+  `{mean:Cities:pop}`, `{min:Cities:pop}` and `{max:Cities:pop}` add up, average or pick the least
+  or greatest number of a field, read as a chart reads its values. They follow the layer's
+  definition query (one that no longer compiles keeps every feature, as the map draws it), take the
+  map of the layout's first map frame (in a series, the whole layer, not the page's part of it, so
+  a definition query that reads the series page's values keeps nothing there), and are written as a
+  chart writes its values: thousands apart, up to two decimals with the zeros at the end dropped,
+  and the decimal comma when the layout uses one. Renaming the layer renames it in these tokens, as
+  it does for a chart's or table's layer (in the layouts whose first map frame shows its map, and
+  in a presentation's map pages of it); a text that a longer name would take past the characters a
+  text holds, or that a name with a brace (which a token can't hold) would break, keeps the old
+  name, and the rename says so; deleting it leaves them as written. A layer read in place covers
+  what is loaded, as a chart does, and a warning says so. A token with no figure (no such layer or
+  field, a field with no numbers, a raster layer, or a sum, mean, least or greatest written without
+  its field) stays as written, and a warning names what is missing. Both warnings come when the
+  text is added or changed, or its layout is made or imported, or when another map frame becomes
+  the first (it is given another map, the one before it is deleted or drawn over it, or its map is
+  deleted), not when the page is exported. The text, its size (2 to 400 points, as text graphics on
+  the map), colour, bold, **Italic** (slanted, as water and ocean names are; the built-in fonts
+  have no italic face, so the letters are slanted 12°), **Alignment** (left, center or right within
+  the element) and **Letter spacing** in points (spaced-out names such as O C E A N O, or a
+  negative value to tighten) are the same form a text on the map has in the pane; Enter ends the
+  text and Shift+Enter starts a new line. Scripts set them with `italic`, `align` and
+  `letterSpacing` on `layout.addElement` and `layout.update`.
+  A layout's text also takes a **Font**:
   Sans-serif (the default) or Serif, for a title or a classic atlas look. The serif is one installed
   on the computer (Georgia or Times New Roman on Windows and macOS, Noto, DejaVu or Liberation Serif
   on Linux), with its own bold and italic faces, so italic there is a true italic rather than

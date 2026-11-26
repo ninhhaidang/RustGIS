@@ -124,6 +124,7 @@ pub const CAPABILITIES: &[&str] = &[
     "label-duplicates",
     "tile-resampling",
     "layout-page-color",
+    "layout-text-statistics",
 ];
 /// An offline area keeping the versions that lost a sync or a Bring Back
 /// (`OfflineArea::conflicts`, #2468): an older reader would save it again without them.

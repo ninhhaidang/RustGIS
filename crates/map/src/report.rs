@@ -152,6 +152,17 @@ pub enum StatKind {
 }
 
 impl StatKind {
+    /// The code a layout text writes it as (`{sum:…}`): the name [`StatKind::from_code`] reads back.
+    pub fn code(self) -> &'static str {
+        match self {
+            StatKind::Count => "count",
+            StatKind::Sum => "sum",
+            StatKind::Mean => "mean",
+            StatKind::Min => "min",
+            StatKind::Max => "max",
+        }
+    }
+
     pub fn from_code(s: &str) -> Option<StatKind> {
         Some(match s.to_ascii_lowercase().as_str() {
             "count" => StatKind::Count,

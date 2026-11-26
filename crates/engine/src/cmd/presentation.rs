@@ -98,7 +98,7 @@ pub fn commands() -> Vec<C> {
             add_page(s, p, title, PageKind::Map { map: name, center, width_m })
         }).inputs(map_page_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_presentation)
-        .params(r#"{"presentation"?, "map"?: name (default: the active map, at its current view), "lon"?, "lat"?, "widthM"?: ground width shown (m), "title"?, "at"?: page index}"#),
+        .params(r#"{"presentation"?, "map"?: name (default: the active map, at its current view), "lon"?, "lat"?, "widthM"?: ground width shown (m), "title"? (a layer's figure may be written in it: {count:Layer}, {sum:Layer:field}, {mean:…}, {min:…}, {max:…}, filled in when the page is drawn), "at"?: page index}"#),
         C::new("presentation.blankPage", "Blank Page", "Publish › Page", |s, p| {
             let background = super::layout::color(p, "background", Rgba::rgb(0xFF, 0xFF, 0xFF))?;
             let text = super::within("text", "a page's text", ps(p, "text").unwrap_or(""), MAX_TEXT)?;
@@ -138,7 +138,7 @@ pub fn commands() -> Vec<C> {
         .when(need_presentation)
         .params(r#"{"presentation"?, "source": video file or URL, "poster"?: PNG/JPEG file, "posterImage"?: base64, "title"?, "caption"?, "at"?}"#),
         C::new("presentation.updatePage", "Page Properties", "Presentation", update_page).inputs(page_inputs).roles(&[]).effects(crate::policy::Effects::NONE).when(need_presentation).params(
-            r##"{"presentation"?, "page": index, "title"?, "text"?, "caption"?, "notes"?, "seconds"?, "background"?: "#RRGGBB"|"#RRGGBBAA", "moveTo"?: index}"##,
+            r##"{"presentation"?, "page": index, "title"? (a map page's title may hold a layer's figure, as mapPage's), "text"?, "caption"?, "notes"?, "seconds"?, "background"?: "#RRGGBB"|"#RRGGBBAA", "moveTo"?: index}"##,
         ),
         C::new("presentation.removePage", "Delete Page", "Presentation", |s, p| {
             let (i, k) = page_of(s, p)?;

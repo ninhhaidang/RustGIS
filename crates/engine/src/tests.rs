@@ -13560,6 +13560,11 @@ fn publication_layouts_fit_their_pages() {
     s.project.layouts.pop();
     assert_eq!(capitals("Fontes, {date} e {pageName}"), "FONTES, {date} E {pageName}");
     assert_eq!(capitals("Dados {2024 e {só} }"), "DADOS {2024 E {SÓ} }", "a lone or odd brace is text");
+    assert_eq!(
+        capitals("Cidades {count:New York} e {sum:Cities:pop}, {max:Cities:pop} ({min:a:b"),
+        "CIDADES {count:New York} E {sum:Cities:pop}, {max:Cities:pop} ({MIN:A:B",
+        "a layer statistic (#2853) is a token the layout fills in its own case"
+    );
     assert_eq!(grid_step(&rustgis_geom::Extent::new(10.0, 45.0, 11.0, 46.0)), 0.25);
     assert_eq!(grid_step(&rustgis_geom::Extent::new(-180.0, -90.0, 180.0, 90.0)), 30.0);
     assert_eq!((step_text(2.0), step_text(0.25), step_text(0.02)), ("2°".to_string(), "15′".to_string(), "1′12″".to_string()));
@@ -40255,6 +40260,318 @@ fn layout_element_inks_from_commands() {
     for p in [json!({"element": legend, "color": "#000000"}), json!({"element": legend, "color": null})] {
         assert!(s.run("layout.update", &p).is_err_and(|e| e.contains("locked")), "{p}");
     }
+}
+
+/// A layout text's layer statistics (#2853) are said when the text is added or its text changed
+/// with a token that has no figure, each with what it misses; one with a figure, or another
+/// change to the text's element, says nothing.
+#[test]
+fn layout_text_statistics_without_a_figure_are_said() {
+    let mut s = world();
+    s.run("layout.new", &json!({"name": "L"})).unwrap();
+    let run = |s: &mut Session, id: &str, p: Value| {
+        let mark = s.notice_mark();
+        let out = s.run(id, &p).unwrap();
+        let said: Vec<String> =
+            s.notices_since(mark).iter().map(|n| n.text.as_str().to_string()).filter(|t| t.contains("shows as written")).collect();
+        (out, said)
+    };
+    let (out, said) = run(&mut s, "layout.addElement", json!({"kind": "text", "text": "{count:Countries} countries", "x": 10, "y": 10}));
+    assert_eq!(said, Vec::<String>::new());
+    let text = out["element"].clone();
+    let (_, said) = run(&mut s, "layout.update", json!({"element": text, "text": "{count:Countries} of {sum:Nowhere:pop}"}));
+    assert_eq!(said, ["{sum:Nowhere:pop} shows as written: the map of the layout's first frame has no layer named 'Nowhere'"]);
+    let (_, said) = run(&mut s, "layout.update", json!({"element": text, "x": 20}));
+    assert_eq!(said, Vec::<String>::new(), "a move doesn't say it again");
+    let (_, said) = run(&mut s, "layout.addElement", json!({"kind": "text", "text": "{max:Countries:nosuch}", "x": 10, "y": 40}));
+    assert_eq!(said, ["{max:Countries:nosuch} shows as written: 'Countries' has no field named 'nosuch'"]);
+    // A publication layout's texts are checked as an added text is.
+    let (_, said) = run(
+        &mut s,
+        "layout.publication",
+        json!({"extent": [-46.8, -11.6, -38.5, -2.2], "title": "{count:Nowhere}", "sources": ["{count:Countries}"]}),
+    );
+    assert_eq!(said, ["{count:Nowhere} shows as written: the map of the layout's first frame has no layer named 'Nowhere'"]);
+    // The first frame's map decides every text's figures: another map, which lacks the layer, says
+    // what the layout's texts lose, and another change to the frame says nothing.
+    s.run("map.new", &json!({"name": "Empty"})).unwrap();
+    s.active_layout = Some(0);
+    let frame = s.project.layouts[0].first_frame().unwrap();
+    let rustgis_map::layout::ElementKind::MapFrame { map: home, .. } = s.project.layouts[0].element(frame).unwrap().kind.clone() else {
+        panic!("the first frame is a map frame")
+    };
+    let (_, said) = run(&mut s, "layout.update", json!({"element": frame, "x": 12}));
+    assert_eq!(said, Vec::<String>::new());
+    let (_, said) = run(&mut s, "layout.update", json!({"element": frame, "map": "Empty"}));
+    assert_eq!(
+        said,
+        [
+            "{count:Countries} shows as written: the map of the layout's first frame has no layer named 'Countries'",
+            "{sum:Nowhere:pop} shows as written: the map of the layout's first frame has no layer named 'Nowhere'",
+            "{max:Countries:nosuch} shows as written: the map of the layout's first frame has no layer named 'Countries'",
+        ]
+    );
+    let (_, said) = run(&mut s, "layout.update", json!({"element": frame, "map": "Empty"}));
+    assert_eq!(said, Vec::<String>::new(), "the same map again says nothing");
+    let (_, said) = run(&mut s, "layout.update", json!({"element": frame, "map": home}));
+    assert_eq!(
+        said,
+        [
+            "{sum:Nowhere:pop} shows as written: the map of the layout's first frame has no layer named 'Nowhere'",
+            "{max:Countries:nosuch} shows as written: 'Countries' has no field named 'nosuch'",
+        ],
+        "the texts' figures are back, but the two tokens that never had one are said again"
+    );
+    // So are those of an imported layout, a copy of the first one here.
+    let copy = serde_json::to_string(&s.project.layouts[0]).unwrap();
+    let (_, said) = run(&mut s, "layout.import", json!({"text": copy}));
+    assert_eq!(
+        said,
+        [
+            "{sum:Nowhere:pop} shows as written: the map of the layout's first frame has no layer named 'Nowhere'",
+            "{max:Countries:nosuch} shows as written: 'Countries' has no field named 'nosuch'",
+        ]
+    );
+}
+
+/// The first map frame decides every text's figures (#2853), so what changes which frame is first
+/// says what the texts lose: deleting it, or drawing another frame under it.
+#[test]
+fn layout_text_statistics_are_said_when_the_first_frame_changes() {
+    let mut s = world();
+    s.run("layout.new", &json!({"name": "L"})).unwrap();
+    s.run("layout.addElement", &json!({"kind": "text", "text": "{count:Countries} countries", "x": 10, "y": 10})).unwrap();
+    s.run("map.new", &json!({"name": "Empty"})).unwrap();
+    let li = s.active_layout.unwrap();
+    let first = s.project.layouts[li].first_frame().unwrap();
+    let said = |s: &mut Session, id: &str, p: Value| {
+        let mark = s.notice_mark();
+        s.run(id, &p).unwrap();
+        s.notices_since(mark).iter().map(|n| n.text.as_str().to_string()).filter(|t| t.contains("shows as written")).collect::<Vec<_>>()
+    };
+    // A second frame, of a map with no such layer, drawn first: the first frame is the one that was.
+    let other = s.run("layout.addFrame", &json!({"map": "Empty", "x": 10, "y": 100, "w": 50, "h": 50})).unwrap()["element"]
+        .as_u64()
+        .unwrap() as u32;
+    assert_eq!(s.project.layouts[li].first_frame(), Some(first));
+    assert_eq!(
+        said(&mut s, "layout.arrange", json!({"element": other, "to": "back"})),
+        ["{count:Countries} shows as written: the map of the layout's first frame has no layer named 'Countries'"]
+    );
+    assert_eq!(s.project.layouts[li].first_frame(), Some(other));
+    // Another change of order that leaves the first frame alone says nothing.
+    assert_eq!(said(&mut s, "layout.arrange", json!({"element": first, "to": "front"})), Vec::<String>::new());
+    // The last frame deleted: no map for the figures at all.
+    s.run("layout.removeElement", &json!({"element": other})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layout.removeElement", &json!({"element": first})).unwrap();
+    let told: Vec<String> =
+        s.notices_since(mark).iter().map(|n| n.text.as_str().to_string()).filter(|t| t.contains("shows as written")).collect();
+    assert_eq!(told, ["{count:Countries} shows as written: the layout has no map frame whose map it would read"]);
+}
+
+/// A layout text's layer statistics (#2853) name their layer, so renaming the layer carries them
+/// along as it does a chart's or table's layer, in the layouts whose first frame shows that map;
+/// another layer's token, and the field, stay as they are.
+#[test]
+fn renaming_a_layer_renames_it_in_layout_text_statistics() {
+    let mut s = world();
+    s.run("layout.new", &json!({"name": "L"})).unwrap();
+    let text = |s: &mut Session, t: &str| {
+        s.run("layout.addElement", &json!({"kind": "text", "text": t, "x": 10, "y": 10})).unwrap()["element"].as_u64().unwrap() as u32
+    };
+    let first = text(&mut s, "{count:Countries} in {sum:countries:pop_est}; {count:Rivers} {scale} {count:Countries:pop_est}");
+    let plain = text(&mut s, "Countries");
+    s.run("layer.rename", &json!({"layer": "Countries", "name": "Nations"})).unwrap();
+    let li = s.active_layout.unwrap();
+    let said = |s: &Session, id: u32| match &s.project.layouts[li].element(id).unwrap().kind {
+        rustgis_map::layout::ElementKind::Text { text, .. } => text.clone(),
+        _ => panic!("a text"),
+    };
+    // A count's layer is all that follows its colon, so `Countries:pop_est` is another layer's name.
+    assert_eq!(said(&s, first), "{count:Nations} in {sum:Nations:pop_est}; {count:Rivers} {scale} {count:Countries:pop_est}");
+    assert_eq!(said(&s, plain), "Countries", "a text with no token is left alone");
+}
+
+/// A presentation's map page draws its title over its own map, where a layer statistic is filled
+/// in (#2853), so renaming a layer of that map renames it in the title; a page of another map, or
+/// with no map frame, keeps its title.
+#[test]
+fn renaming_a_layer_renames_it_in_a_presentation_map_page_title() {
+    let mut s = world();
+    s.run("presentation.new", &json!({"name": "P"})).unwrap();
+    s.run("presentation.mapPage", &json!({"title": "{count:Countries} countries"})).unwrap();
+    s.run("presentation.blankPage", &json!({"title": "{count:Countries} on a blank page"})).unwrap();
+    s.run("layer.rename", &json!({"layer": "Countries", "name": "Nations"})).unwrap();
+    let titles: Vec<String> = s.project.presentations[0].pages.iter().map(|p| p.title.clone()).collect();
+    // The first page is the title page a new presentation starts with.
+    assert_eq!(titles, ["World Atlas", "{count:Nations} countries", "{count:Countries} on a blank page"]);
+    // A title that the new name would take past what a title holds keeps the old name.
+    let long = format!("{}{{count:Nations}}", "x".repeat(480));
+    s.run("presentation.mapPage", &json!({"title": long})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layer.rename", &json!({"layer": "Nations", "name": "The Nations of the whole wide world"})).unwrap();
+    let titles: Vec<String> = s.project.presentations[0].pages.iter().map(|p| p.title.clone()).collect();
+    assert_eq!(titles[1], "{count:The Nations of the whole wide world} countries");
+    assert_eq!(titles[3], long, "past the limit it keeps the old name");
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.as_str().to_string()).collect();
+    assert!(said.iter().any(|n| n.contains("1 presentation title(s) keep the old layer name") && n.contains("500")), "{said:?}");
+}
+
+/// The map of a layout's first frame decides its texts' figures (#2853), so a map deleted that a
+/// layout's first frame shows says what its texts lose, as it does for `{map}`; a map no first
+/// frame shows says nothing.
+#[test]
+fn layout_text_statistics_are_said_when_the_first_frames_map_is_deleted() {
+    let mut s = world();
+    s.run("map.new", &json!({"name": "Detail"})).unwrap();
+    s.run("map.new", &json!({"name": "Spare"})).unwrap();
+    s.run("map.activate", &json!({"name": "Detail"})).unwrap();
+    s.run("layout.new", &json!({"name": "L"})).unwrap();
+    s.run("layout.addElement", &json!({"kind": "text", "text": "{count:Countries} countries", "x": 10, "y": 10})).unwrap();
+    let said = |s: &mut Session, name: &str| {
+        let mark = s.notice_mark();
+        s.run("map.remove", &json!({"name": name})).unwrap();
+        s.notices_since(mark).iter().map(|n| n.text.as_str().to_string()).filter(|t| t.contains("shows as written")).collect::<Vec<_>>()
+    };
+    assert_eq!(said(&mut s, "Spare"), Vec::<String>::new());
+    assert_eq!(said(&mut s, "Detail"), ["{count:Countries} shows as written: the map of the layout's first frame is not in the project"]);
+}
+
+/// A publication's texts are stored with the line breaks the sheet draws them in, but a layer
+/// statistic (#2853) whose layer has a space in its name must not be broken at it: a text too wide
+/// for its box is kept whole and wrapped when it is drawn, as a `{map}` one is, so every token
+/// stays one and the page fills it in.
+#[test]
+fn a_publications_wrapped_text_keeps_its_statistic_tokens_whole() {
+    use rustgis_map::layout::ElementKind;
+    let mut s = world();
+    let extent = json!([-46.8, -11.6, -38.5, -2.2]);
+    let title = "{count:World Countries} ".repeat(12);
+    s.run("layout.publication", &json!({"profile": "a4-portrait", "extent": extent, "title": title.trim()})).unwrap();
+    let li = s.active_layout.unwrap();
+    let Some(ElementKind::Text { text, wrap, .. }) =
+        s.project.layouts[li].elements.iter().find(|e| e.name == "Title").map(|e| e.kind.clone())
+    else {
+        panic!("a title text")
+    };
+    assert_eq!(text.matches("{count:World Countries}").count(), 12, "{text:?}");
+    assert!(wrap, "the page wraps it when it draws");
+}
+
+/// A figure's width is only known when the page is drawn, so a publication text with a statistic is
+/// always kept whole and wrapped by the page, even one that fits its box as measured (#2853).
+#[test]
+fn a_publications_text_with_a_statistic_is_wrapped_by_the_page() {
+    use rustgis_map::layout::ElementKind;
+    let mut s = world();
+    let extent = json!([-46.8, -11.6, -38.5, -2.2]);
+    s.run("layout.publication", &json!({"profile": "a4-portrait", "extent": extent, "title": "Area {sum:Countries:pop_est}"})).unwrap();
+    let li = s.active_layout.unwrap();
+    let Some(ElementKind::Text { text, wrap, .. }) =
+        s.project.layouts[li].elements.iter().find(|e| e.name == "Title").map(|e| e.kind.clone())
+    else {
+        panic!("a title text")
+    };
+    assert_eq!(text, "Area {sum:Countries:pop_est}");
+    assert!(wrap, "its figure is as wide as its data makes it, so the page wraps it");
+}
+
+/// A publication measures its texts as the page draws them (#2853): a layer statistic by the figure it
+/// will show, as `{map}` is by the map's name, so the box is the one a text with that figure written
+/// out gets, whatever the token's length.
+#[test]
+fn a_publication_measures_a_statistic_as_its_figure() {
+    let mut s = world();
+    let extent = json!([-46.8, -11.6, -38.5, -2.2]);
+    let token = "{count:Countries}";
+    let figure = crate::render::layout::statistic_figures(s.map(), false, &[token]).remove(0).1;
+    let height = |s: &mut Session, title: &str| {
+        s.run("layout.publication", &json!({"profile": "a4-portrait", "extent": extent, "title": title, "style": "banner"})).unwrap();
+        let li = s.active_layout.unwrap();
+        s.project.layouts[li].elements.iter().find(|e| e.name == "Title").map(|e| e.h).unwrap()
+    };
+    // A line of many figures, so what each is measured as decides how many lines the title takes.
+    let words = "population of the countries ";
+    let with_token = height(&mut s, &format!("{}{token} total", format!("{words}{token} ").repeat(6)));
+    let literal = height(&mut s, &format!("{}{figure} total", format!("{words}{figure} ").repeat(6)));
+    assert_eq!(with_token, literal, "a token is measured as the {figure} it draws");
+}
+
+/// A layer renamed to a longer name must not take a text past the characters a text holds
+/// (#2853): the file would cut its tail when read again, so that text keeps the old name and the
+/// rename says so; a text that stays within the limit follows.
+#[test]
+fn renaming_a_layer_leaves_a_statistic_text_that_would_outgrow_its_limit() {
+    let mut s = world();
+    s.run("layout.new", &json!({"name": "L"})).unwrap();
+    let add = |s: &mut Session, text: String| {
+        s.run("layout.addElement", &json!({"kind": "text", "text": text, "x": 10, "y": 10})).unwrap()["element"].as_u64().unwrap() as u32
+    };
+    let full = format!("{}{{count:Countries}}", "x".repeat(4980));
+    let small = add(&mut s, "{count:Countries}".into());
+    let near = add(&mut s, full.clone());
+    let mark = s.notice_mark();
+    s.run("layer.rename", &json!({"layer": "Countries", "name": "The Countries of the whole wide world"})).unwrap();
+    let li = s.active_layout.unwrap();
+    let text = |s: &Session, id: u32| match &s.project.layouts[li].element(id).unwrap().kind {
+        rustgis_map::layout::ElementKind::Text { text, .. } => text.clone(),
+        _ => panic!("a text"),
+    };
+    assert_eq!(text(&s, small), "{count:The Countries of the whole wide world}");
+    assert_eq!(text(&s, near), full, "past the limit it keeps the old name");
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.as_str().to_string()).collect();
+    assert!(said.iter().any(|n| n.contains("1 layout text(s) keep the old layer name") && n.contains("5000")), "{said:?}");
+}
+
+/// A layout with no map frame has its texts' figures drawn as written; the first frame added is the
+/// map they read from, so what it lacks is said (#2853).
+#[test]
+fn layout_text_statistics_are_said_when_a_first_frame_is_added() {
+    let mut s = world();
+    s.run("layout.new", &json!({"name": "L"})).unwrap();
+    s.run("layout.addElement", &json!({"kind": "text", "text": "{count:Nowhere} places", "x": 10, "y": 10})).unwrap();
+    let li = s.active_layout.unwrap();
+    let frame = s.project.layouts[li].first_frame().unwrap();
+    s.run("layout.removeElement", &json!({"element": frame})).unwrap();
+    let said = |s: &mut Session, id: &str, p: Value| {
+        let mark = s.notice_mark();
+        s.run(id, &p).unwrap();
+        s.notices_since(mark).iter().map(|n| n.text.as_str().to_string()).filter(|t| t.contains("shows as written")).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        said(&mut s, "layout.addFrame", json!({})),
+        ["{count:Nowhere} shows as written: the map of the layout's first frame has no layer named 'Nowhere'"]
+    );
+    // A second frame is not the first: nothing changes for the texts.
+    assert_eq!(said(&mut s, "layout.addFrame", json!({})), Vec::<String>::new());
+}
+
+/// A layer renamed to a name a token can't hold (a brace ends it) must not be written into the
+/// statistics that name it: they would read another layer, or none (#2853).
+#[test]
+fn renaming_a_layer_to_a_name_with_braces_leaves_its_statistics() {
+    let mut s = world();
+    s.run("layout.new", &json!({"name": "L"})).unwrap();
+    let id = s
+        .run("layout.addElement", &json!({"kind": "text", "text": "{count:Countries} {sum:Countries:pop_est}", "x": 10, "y": 10}))
+        .unwrap()["element"]
+        .as_u64()
+        .unwrap() as u32;
+    s.run("presentation.new", &json!({"name": "P"})).unwrap();
+    s.run("presentation.mapPage", &json!({"title": "{count:Countries} places"})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layer.rename", &json!({"layer": "Countries", "name": "Cities}"})).unwrap();
+    let li = s.active_layout.unwrap();
+    let text = match &s.project.layouts[li].element(id).unwrap().kind {
+        rustgis_map::layout::ElementKind::Text { text, .. } => text.clone(),
+        _ => panic!("a text"),
+    };
+    assert_eq!(text, "{count:Countries} {sum:Countries:pop_est}");
+    assert_eq!(s.project.presentations[0].pages[1].title, "{count:Countries} places");
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.as_str().to_string()).collect();
+    assert!(said.iter().any(|n| n.contains("1 layout text(s) keep the old layer name") && n.contains("brace")), "{said:?}");
+    assert!(said.iter().any(|n| n.contains("1 presentation title(s) keep the old layer name") && n.contains("brace")), "{said:?}");
 }
 
 #[test]

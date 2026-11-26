@@ -1285,7 +1285,8 @@
           "svg-markers",
           "label-duplicates",
           "tile-resampling",
-          "layout-page-color"
+          "layout-page-color",
+          "layout-text-statistics"
         ],
         "type": "string"
       },
@@ -1399,7 +1400,8 @@
     "svg-markers",
     "label-duplicates",
     "tile-resampling",
-    "layout-page-color"
+    "layout-page-color",
+    "layout-text-statistics"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2

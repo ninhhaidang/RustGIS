@@ -1,0 +1,25 @@
+{
+  "format": 2,
+  "name": "Text statistics",
+  "requires": ["layout-text-statistics"],
+  "active_map": 0,
+  "maps": [
+    {
+      "name": "Map",
+      "layers": [],
+      "basemap": "Paper",
+      "camera": {"center": {"x": 0, "y": 0}, "res": 30000}
+    }
+  ],
+  "layouts": [
+    {
+      "name": "Cities",
+      "width": 297,
+      "height": 210,
+      "elements": [
+        {"id": 1, "name": "Map", "x": 10, "y": 10, "w": 277, "h": 190, "kind": {"MapFrame": {"map": "Map", "center": {"x": 0, "y": 0}, "scale": 1000000}}},
+        {"id": 2, "name": "Count", "x": 10, "y": 200, "w": 100, "h": 8, "kind": {"Text": {"text": "{count:Cities} cities", "size": 12, "color": [0, 0, 0, 255]}}}
+      ]
+    }
+  ]
+}
