@@ -1048,12 +1048,7 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
         // The layers it lists are read whole; a layout drawn in it draws the others' views, and
         // one whose source fails there is said, as Export Layout says it.
         // What reading the layers lost keeps its code: said with the export's notes.
-        let (coded, said): (Vec<_>, Vec<_>) =
-            super::exports::copy_notices_coded(&mut copy, &path).into_iter().partition(|(_, note)| note.loss.is_some());
-        let said = said.into_iter().map(|(severity, note)| (severity, note.text)).collect();
-        let mut wrote = super::exports::drawn(&copy.project.maps, said, written, path)?;
-        wrote.notes.extend(coded.into_iter().map(|(_, note)| note));
-        Ok(wrote)
+        super::exports::drawn_on(&mut copy, written, path)
     }))
 }
 

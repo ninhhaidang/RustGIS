@@ -150,8 +150,7 @@ const MAX_SERVICE_DOCUMENTS: usize = 32;
 /// this byte budget applies only to the linked dataset documents.
 pub(crate) const MAX_DATASET_BYTES: usize = if cfg!(test) { 64 << 10 } else { 64 << 20 };
 /// A notice for legend pictures the layer cannot keep because of their addresses.
-const LEGENDS_LEFT_OUT_NOTICE: &str =
-    "{n} legend picture(s) the service listed were left out: their addresses are too long or do not use HTTP or HTTPS";
+const LEGENDS_LEFT_OUT_NOTICE: &str = "{n} legend picture(s) the service listed were left out: their addresses are too long or do not use HTTP or HTTPS, or the pictures aren't PNG or JPEG";
 
 /// Most bytes of document addresses a listing repeats: each listed layer's `source_url` is its
 /// document's address, which nothing bounds (a landing page links to any collections address).
@@ -1496,7 +1495,9 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
             s.notify_counted(
                 Some(rustgis_data::loss::LossCode::DroppedLegend),
                 LEGENDS_LEFT_OUT_NOTICE,
-                u32::try_from(offered.saturating_sub(legends.len())).unwrap_or(u32::MAX),
+                // Those its address checks refused, and those the service offered that RustGIS
+                // can't show (another format, or an `ftp:` address).
+                u32::try_from(offered.saturating_sub(legends.len()).saturating_add(layer.legends_left_out)).unwrap_or(u32::MAX),
             );
             if !legends.is_empty() {
                 add["legend"] = json!(legends);
@@ -2421,6 +2422,7 @@ mod tests {
                 time: None,
                 feature_info: None,
                 legends: Vec::new(),
+                legends_left_out: 0,
                 zooms: None,
             }],
             ..Service::default()

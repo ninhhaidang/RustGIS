@@ -1499,6 +1499,28 @@ fn editing_features_and_fields() {
     assert_eq!(s.map().layer_by_name("Cities").unwrap().dataset.features.len(), n - 1);
 }
 
+/// A value written into a whole-number field says what it lost, with its code: a fraction cut, a
+/// value that isn't a number written as null, one past the 64-bit range clamped; a whole number
+/// and an empty value lose nothing.
+#[test]
+fn set_value_says_what_a_whole_number_field_took_with_its_code() {
+    use rustgis_data::loss::LossCode::*;
+    let mut s = world();
+    s.run("edit.addField", &json!({"layer": "Cities", "name": "count", "type": "integer"})).unwrap();
+    for (value, code) in [
+        (json!(2.5), Some(ChangedTruncated)),
+        (json!("many"), Some(DroppedValue)),
+        (json!(1e30), Some(DroppedValue)),
+        (json!(7), None),
+        (json!(""), None),
+    ] {
+        let mark = s.notice_mark();
+        s.run("edit.setValue", &json!({"layer": "Cities", "row": 0, "field": "count", "value": value})).unwrap();
+        let said: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("field 'count'")).map(|n| n.loss()).collect();
+        assert_eq!(said, code.into_iter().map(Some).collect::<Vec<_>>(), "{value}");
+    }
+}
+
 /// A date field is added, edited as ISO text, compared in a where clause, calculated, offered to
 /// the time slider, and kept as dates through a project save; arithmetic on it is an error, and
 /// text that isn't a date is reported, not quietly stored as null.
@@ -1548,8 +1570,10 @@ fn date_fields_work_from_adding_to_saving() {
         let mark = s.notice_mark();
         let row =
             s.run("edit.addFeature", &json!({"layer": "Cities", "geometry": here, "template": "Old"})).unwrap()["row"].as_u64().unwrap();
-        let notices: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
-        assert_eq!(notices.iter().any(|n| n.contains("field 'founded'") && n.contains("kept only its day")), said, "{when}: {notices:?}");
+        let notices: Vec<_> = s.notices_since(mark).iter().map(|n| (n.text.clone(), n.loss())).collect();
+        let hits: Vec<_> = notices.iter().filter(|(n, _)| n.contains("field 'founded'") && n.contains("kept only its day")).collect();
+        assert_eq!(!hits.is_empty(), said, "{when}: {notices:?}");
+        assert!(hits.iter().all(|(_, loss)| *loss == Some(rustgis_data::loss::LossCode::DroppedTime)), "{when}: {notices:?}");
         assert_eq!(cell(&s, "Cities", row as usize, "founded"), "2026-03-07");
         s.run("edit.undo", &Value::Null).unwrap();
     }
@@ -1586,7 +1610,8 @@ fn date_fields_work_from_adding_to_saving() {
     let mark = s.notice_mark();
     s.run("edit.paste", &json!({"layer": "Moments"})).unwrap();
     assert!(
-        s.notices_since(mark).iter().any(|n| n.text == "Paste: 'seen' holds dates, so 1 result kept only its day"),
+        s.notices_since(mark).iter().any(|n| n.text == "Paste: 'seen' holds dates, so 1 result kept only its day"
+            && n.loss() == Some(rustgis_data::loss::LossCode::DroppedTime)),
         "{:?}",
         s.notices_since(mark)
     );
@@ -1722,8 +1747,14 @@ fn text_fields_convert_to_dates() {
     assert_eq!((out["converted"].as_u64(), out["null"].as_u64()), (Some(2), Some(1)));
     let day = |d| V::parse(d, FieldType::Date);
     assert_eq!(column(&s, "founded"), (FieldType::Date, vec![day("2026-03-05"), day("1999-12-31"), V::Null, V::Null]));
-    let notices: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
-    assert_eq!(notices, ["Convert Field: 'founded' holds dates now, and is null in 1 row whose text isn't a date: 'n/a'"]);
+    let notices: Vec<_> = s.notices_since(mark).iter().map(|n| (n.text.clone(), n.loss())).collect();
+    assert_eq!(
+        notices,
+        [(
+            "Convert Field: 'founded' holds dates now, and is null in 1 row whose text isn't a date: 'n/a'".to_string(),
+            Some(rustgis_data::loss::LossCode::DroppedValue)
+        )]
+    );
     s.run("edit.undo", &Value::Null).unwrap();
     assert_eq!(column(&s, "founded"), before);
 
@@ -1761,8 +1792,14 @@ fn text_fields_convert_to_dates() {
     let mark = s.notice_mark();
     let out = s.run("edit.convertField", &json!({"layer": "Cities", "field": "fine", "type": "datetime"})).unwrap();
     assert_eq!((out["converted"].as_u64(), out["null"].as_u64()), (Some(3), Some(0)));
-    let notices: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
-    assert_eq!(notices, ["Convert Field: 2 values were rounded to the microsecond in 'fine', as more digits than that aren't kept"]);
+    let notices: Vec<_> = s.notices_since(mark).iter().map(|n| (n.text.clone(), n.loss())).collect();
+    assert_eq!(
+        notices,
+        [(
+            "Convert Field: 2 values were rounded to the microsecond in 'fine', as more digits than that aren't kept".to_string(),
+            Some(rustgis_data::loss::LossCode::ChangedRounded)
+        )]
+    );
     assert_eq!(column(&s, "fine").1[0], at("2026-03-05T14:30:00.123457Z"));
 
     let err = s.run("edit.convertField", &json!({"layer": "Cities", "field": "founded", "type": "date"})).unwrap_err();
@@ -26217,7 +26254,10 @@ fn service_legends_left_out_are_reported() {
 <Layer><CRS>EPSG:3857</CRS><Layer><Name>roads</Name><Title>Roads</Title>
 <Style><Name>default</Name><LegendURL><Format>image/png</Format><OnlineResource xlink:href="LEGEND"/></LegendURL></Style></Layer></Layer></Capability></WMS_Capabilities>"#;
     let long = format!("https://maps.example.com/legends/{}.png", "a".repeat(rustgis_map::tiles::MAX_LEGEND_URL));
-    for (legend, left_out) in [(long.as_str(), true), ("https://maps.example.com/legends/roads.png", false)] {
+    // Too long, on ftp (which the parse leaves out, counted for this notice), and kept.
+    for (legend, left_out) in
+        [(long.as_str(), true), ("ftp://maps.example.com/legends/roads.png", true), ("https://maps.example.com/legends/roads.png", false)]
+    {
         let mut s = Session::new(Project::default());
         let mark = s.notice_mark();
         s.run("service.add", &json!({"url": "https://maps.example.com/wms", "layer": "roads", "text": WMS.replace("LEGEND", legend)}))
@@ -54387,6 +54427,11 @@ fn stl_leaves_out_lines_and_skips_flat_triangles_and_says_so() {
         mesh_feature(json!({"type": "LineString", "coordinates": [[0.0, 0.02], [0.01, 0.02]]}), 5.0),
         mesh_feature(json!({"type": "Point", "coordinates": [0.03, 0.02]}), 20.0),
         mesh_feature(json!({"type": "Point", "coordinates": [0.05, 0.02]}), 0.0),
+        // Flat, and with no area to lose (two vertices, and three on one line): not counted among
+        // those left out.
+        mesh_feature(json!({"type": "Polygon", "coordinates": [[[0.08, 0.0], [0.09, 0.0], [0.08, 0.0]]]}), 0.0),
+        mesh_feature(json!({"type": "Polygon", "coordinates": [[[0.08, 0.03], [0.09, 0.03], [0.1, 0.03], [0.08, 0.03]]]}), 0.0),
+        mesh_feature(json!({"type": "Polygon", "coordinates": [[[0.0, 0.05], [0.01, 0.08], [0.02, 0.11], [0.0, 0.05]]]}), 0.0),
         mesh_feature(
             json!({"type": "Polygon", "coordinates": [[[0.06, 0.0], [0.07, 0.0], [0.070_000_000_01, 0.0], [0.07, 0.01], [0.06, 0.01], [0.06, 0.0]]]}),
             30.0
@@ -54399,8 +54444,10 @@ fn stl_leaves_out_lines_and_skips_flat_triangles_and_says_so() {
     let tris = stl_triangles(&bytes);
     assert_eq!(tris.len(), 12 + 12);
     let said = |part: &str| s.notices.iter().any(|n| n.text.contains(part));
-    assert!(said("Left out 2 polygon(s) and point(s) of zero height"));
-    assert!(said("left out 1 polyline"));
+    let lost =
+        |part: &str| s.notices.iter().any(|n| n.text.contains(part) && n.loss() == Some(rustgis_data::loss::LossCode::DroppedFeature));
+    assert!(lost("Left out 2 polygon(s) and point(s) of zero height"));
+    assert!(lost("left out 1 polyline"));
     assert!(said("zero-area"));
     assert!(said("no units"));
     // A layer of squares gives neither the line nor the zero-area notices.
@@ -54604,7 +54651,8 @@ fn web_scene_fans_caps_it_cannot_triangulate_and_says_so() {
     let mut s = mesh_session(json!([mesh_feature(far, 30.0), mesh_feature(far_line, 30.0), mesh_feature(square(0.0, false), 30.0)]));
     s.run("share.webScene", &json!({"path": path})).unwrap();
     assert!(
-        s.notices.iter().any(|n| n.text == "2 feature(s) left out of the scene: a coordinate is too far from the map's centre"),
+        s.notices.iter().any(|n| n.text == "2 feature(s) left out of the scene: a coordinate is too far from the map's centre"
+            && n.loss() == Some(rustgis_data::loss::LossCode::DroppedFeature)),
         "{:?}",
         s.notices
     );

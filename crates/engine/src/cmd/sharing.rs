@@ -322,7 +322,7 @@ fn share_bytes_inner(s: &mut Session, kind: &str, p: &Value) -> Result<(String, 
             m.layers.iter_mut().filter(|l| shared_layer("webScene", l)).try_for_each(|l| load_whole(s, l))?;
             let scene = gltf(&m, s.view_size)?;
             for note in scene.notes() {
-                s.notify(note, false);
+                s.say(note);
             }
             Ok((m.name.clone(), scene.bytes, m.name.clone()))
         }
@@ -1065,34 +1065,46 @@ struct SceneBytes {
 }
 
 impl SceneBytes {
-    /// The same counted explanations accompany a usable scene and an empty-result error.
-    fn notes(&self) -> Vec<String> {
+    /// The same counted explanations accompany a usable scene and an empty-result error. Features
+    /// left out are losses, with their codes; rings and line parts with too few vertices hold no
+    /// area or length to lose, and fanned caps and held heights say how the scene draws them.
+    fn notes(&self) -> Vec<rustgis_data::loss::Note> {
+        use rustgis_data::loss::{LossCode, Note};
         let mut notes = Vec::new();
         if self.fanned > 0 {
-            notes.push(super::items::fanned_caps_note(self.fanned));
+            notes.push(Note::plain(super::items::fanned_caps_note(self.fanned)));
         }
         if self.out_of_range > 0 {
-            notes.push(format!("{} feature(s) left out of the scene: a coordinate is too far from the map's centre", self.out_of_range));
+            notes.push(Note::loss(
+                LossCode::DroppedFeature,
+                format!("{} feature(s) left out of the scene: a coordinate is too far from the map's centre", self.out_of_range),
+            ));
         }
         if self.limited > 0 {
-            notes.push(format!("{} feature(s) left out of the scene: the {MAX_FEATURES} feature limit was reached", self.limited));
+            notes.push(Note::loss(
+                LossCode::DroppedOverLimit,
+                format!("{} feature(s) left out of the scene: the {MAX_FEATURES} feature limit was reached", self.limited),
+            ));
         }
         if self.unplaced > 0 {
-            notes.push(format!("{} feature(s) left out of the scene: a place can't be given in longitude/latitude", self.unplaced));
+            notes.push(Note::loss(
+                LossCode::DroppedFeature,
+                format!("{} feature(s) left out of the scene: a place can't be given in longitude/latitude", self.unplaced),
+            ));
         }
         if self.skipped_outer > 0 {
-            notes.push(format!("Skipped {} polygon(s) whose outer ring has fewer than 3 vertices", self.skipped_outer));
+            notes.push(Note::plain(format!("Skipped {} polygon(s) whose outer ring has fewer than 3 vertices", self.skipped_outer)));
         }
         if self.holes_dropped > 0 {
-            notes.push(format!("Dropped {} hole(s) with fewer than 3 vertices", self.holes_dropped));
+            notes.push(Note::plain(format!("Dropped {} hole(s) with fewer than 3 vertices", self.holes_dropped)));
         }
         if self.single_vertex_lines > 0 {
-            notes.push(format!("Skipped {} line part(s) with a single vertex", self.single_vertex_lines));
+            notes.push(Note::plain(format!("Skipped {} line part(s) with a single vertex", self.single_vertex_lines)));
         }
         for (layer, n) in &self.held {
-            notes.push(format!(
+            notes.push(Note::plain(format!(
                 "{n} feature(s) of '{layer}' had their extrusion base or height held to the web scene's limit: base plus height stays within 1,000 km"
-            ));
+            )));
         }
         notes
     }
@@ -1363,7 +1375,8 @@ fn gltf(m: &Map, view: (f64, f64)) -> Result<SceneBytes, String> {
     }
     if nodes.is_empty() {
         let notes = scene.notes();
-        let why = if notes.is_empty() { String::new() } else { format!(": {}", notes.join("; ")) };
+        let why =
+            if notes.is_empty() { String::new() } else { format!(": {}", notes.iter().map(|n| n.as_str()).collect::<Vec<_>>().join("; ")) };
         return Err(format!("the map has no features to put in a scene{why}"));
     }
     // As drawn: a camera set from outside a command may not be clamped yet.

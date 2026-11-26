@@ -254,25 +254,29 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
     l.selection = (first..first + n).collect();
     let name = l.name.clone();
     let features = |n: usize| if n == 1 { "1 feature".to_string() } else { format!("{n} features") };
+    use rustgis_data::loss::{LossCode, Note};
     let mut notices = Vec::new();
     if unplaced > 0 {
         let (have, they) = if unplaced == 1 { ("has", "it wasn't") } else { ("have", "they weren't") };
-        notices.push(format!(
-            "Paste: {} {have} a place that layer {name} ({}) can't hold, so {they} pasted",
-            features(unplaced),
-            own.label()
+        notices.push(Note::loss(
+            LossCode::DroppedFeature,
+            format!("Paste: {} {have} a place that layer {name} ({}) can't hold, so {they} pasted", features(unplaced), own.label()),
         ));
     }
     for (f, (cuts, n)) in l.dataset.fields.iter().zip(unfit) {
-        notices.extend(cuts.notices("Paste", &f.name));
+        notices.extend(cuts.classified("Paste", &f.name).into_iter().map(|(code, text)| Note::loss(code, text)));
+        // A value that asks for null isn't counted: only values the field couldn't hold.
         if n > 0 {
-            notices.push(format!("Paste: '{}' is null in {}, whose value isn't a {} value", f.name, features(n), f.ty.label()));
+            notices.push(Note::loss(
+                LossCode::DroppedValue,
+                format!("Paste: '{}' is null in {}, whose value isn't a {} value", f.name, features(n), f.ty.label()),
+            ));
         }
     }
     super::design::apply(s, id, (first..first + n).map(|r| super::design::Change { before: None, row: Some(r) }).collect())?;
     s.map_mut().layers.iter_mut().filter(|o| o.id != id).for_each(|o| o.selection.clear());
     s.notify(format!("Pasted {n} features into {name}"), false);
-    for notice in said.into_iter().chain(notices.into_iter().map(rustgis_data::loss::Note::plain)) {
+    for notice in said.into_iter().chain(notices) {
         s.say(notice);
     }
     Ok(json!({"pasted": n, "layer": id}))

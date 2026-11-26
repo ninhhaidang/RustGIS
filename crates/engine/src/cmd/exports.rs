@@ -279,15 +279,19 @@ pub(crate) fn drawn(
     })
 }
 
-/// What drawing an export on `copy` (a copy of the session) said, each notice with its severity,
-/// to say again where the export lands; past the notices a session keeps, how many earlier ones
-/// there were. `path` names the file in that count.
-pub(crate) fn copy_notices(copy: &mut Session, path: &str) -> Vec<(rustgis_data::diagnostics::Severity, String)> {
-    copy_notices_coded(copy, path).into_iter().map(|(severity, note)| (severity, note.text)).collect()
+/// [`drawn`] for an export drawn on `copy`, a copy of the session: what drawing it said, a loss
+/// kept with its code and said with the export's notes ([`copy_notices_coded`]).
+pub(crate) fn drawn_on(copy: &mut Session, written: Result<Value, String>, path: String) -> Result<Wrote, String> {
+    let (coded, said): (Vec<_>, Vec<_>) = copy_notices_coded(copy, &path).into_iter().partition(|(_, note)| note.loss.is_some());
+    let said = said.into_iter().map(|(severity, note)| (severity, note.text)).collect();
+    let mut wrote = drawn(&copy.project.maps, said, written, path)?;
+    wrote.notes.extend(coded.into_iter().map(|(_, note)| note));
+    Ok(wrote)
 }
 
-/// [`copy_notices`] with each notice's loss code, for an export that says them itself
-/// ([`say_coded`]).
+/// What drawing an export on `copy` (a copy of the session) said, each notice with its severity
+/// and its loss code, to say again where the export lands; past the notices a session keeps, how
+/// many earlier ones there were. `path` names the file in that count.
 pub(crate) fn copy_notices_coded(copy: &mut Session, path: &str) -> Vec<(rustgis_data::diagnostics::Severity, rustgis_data::loss::Note)> {
     let kept = std::mem::take(&mut copy.notices);
     let earlier = copy.notices_given().saturating_sub(kept.len() as u64);

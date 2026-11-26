@@ -70,7 +70,12 @@ fn web_scene_reports_the_feature_limit_and_does_not_count_filtered_rows() {
     s.map_mut().add_dataset(ds);
     assert_eq!(positions(&scene(&mut s, "limit")), 400_000, "two positions per exported point");
     let expected = "1 feature(s) left out of the scene: the 200000 feature limit was reached";
-    assert_eq!(s.notices.iter().filter(|n| n.text == expected).count(), 1, "{:?}", s.notices);
+    assert_eq!(
+        s.notices.iter().filter(|n| n.text == expected && n.loss() == Some(rustgis_data::loss::LossCode::DroppedOverLimit)).count(),
+        1,
+        "{:?}",
+        s.notices
+    );
     s.run("layer.definitionQuery", &json!({"layer":"Points", "where":"i < 200000"})).unwrap();
     s.notices.clear();
     assert_eq!(positions(&scene(&mut s, "filtered-limit")), 400_000);

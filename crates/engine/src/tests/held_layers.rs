@@ -960,6 +960,13 @@ fn a_web_scene_leaves_out_what_it_cannot_place() {
         said.iter().any(|n| n.contains("1 feature(s) left out of the scene: a place can't be given in longitude/latitude")),
         "{said:?}"
     );
+    assert!(
+        s.notices_since(mark)
+            .iter()
+            .any(|n| n.text.contains("left out of the scene: a place can't")
+                && n.loss() == Some(rustgis_data::loss::LossCode::DroppedFeature)),
+        "{said:?}"
+    );
 }
 
 /// A held layer's feature with a place that can't be given in longitude/latitude is drawn without

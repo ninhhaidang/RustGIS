@@ -6683,8 +6683,7 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
         })();
         // What drawing it said (frames drawn as pictures, fonts it lacks), as the command says it
         // here.
-        let said = super::exports::copy_notices(&mut copy, &path);
-        super::exports::drawn(&copy.project.maps, said, written, path)
+        super::exports::drawn_on(&mut copy, written, path)
     }))
 }
 

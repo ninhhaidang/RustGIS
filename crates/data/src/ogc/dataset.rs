@@ -97,7 +97,18 @@ fn advertised(from: &str, href: &str, withheld: &mut u32) -> Option<String> {
 /// Constructs an offer whose tile template has already been read, so adding it needs no
 /// second tileset fetch and cannot fall back to a guessed template.
 fn layer(name: String, title: String, offer: Offer) -> ServiceLayer {
-    ServiceLayer { name, title, offer, bbox: None, tilesets: None, time: None, feature_info: None, legends: Vec::new(), zooms: None }
+    ServiceLayer {
+        name,
+        title,
+        offer,
+        bbox: None,
+        tilesets: None,
+        time: None,
+        feature_info: None,
+        legends: Vec::new(),
+        legends_left_out: 0,
+        zooms: None,
+    }
 }
 
 impl DatasetDiscovery {

@@ -389,8 +389,11 @@ fn notify_left_out(s: &mut Session, name: &str, left: &LeftOut) {
     }
 }
 
-/// What writing a value took from it, by field: a notice key ([`notify_loss`]).
-type Losses = Vec<(String, &'static str)>;
+/// What writing a value took from it: a notice key ([`notify_loss`]) and the loss's code.
+type CellLoss = (&'static str, LossCode);
+
+/// What writing a row's values took from them, by field.
+type Losses = Vec<(String, CellLoss)>;
 
 /// A new row's values for `fields`: those given (`"attributes"`, [`given_attributes`]), else
 /// `defaults` (a feature template's), each as its field holds it, with what that took from each
@@ -419,13 +422,19 @@ fn new_row(fields: &[Field], p: &Json, defaults: &[(String, Value)]) -> Result<(
             }
             // A date-time (a native caller's template default) keeps only its day in a date field.
             if matches!(value, Value::DateTime(t) if f.ty == FieldType::Date && !t.is_date()) {
-                losses.push((f.name.clone(), "{layer}, field '{field}', row {row}: 1 attribute value kept only its day"));
+                losses.push((
+                    f.name.clone(),
+                    ("{layer}, field '{field}', row {row}: 1 attribute value kept only its day", LossCode::DroppedTime),
+                ));
             }
             // A date (a native caller's template default) is no yes/no value: null, and said.
             if f.ty == FieldType::Boolean && coerced.is_null() && !value.asks_null() {
                 losses.push((
                     f.name.clone(),
-                    "{layer}, field '{field}', row {row}: 1 attribute value was written as null because it isn't a yes/no value",
+                    (
+                        "{layer}, field '{field}', row {row}: 1 attribute value was written as null because it isn't a yes/no value",
+                        LossCode::DroppedValue,
+                    ),
                 ));
             }
             Ok(coerced)
@@ -435,13 +444,13 @@ fn new_row(fields: &[Field], p: &Json, defaults: &[(String, Value)]) -> Result<(
 }
 
 /// Says what writing a value of `field`, in row `row` of layer or table `name`, took from it.
-fn notify_loss(s: &mut Session, key: &'static str, name: &str, field: String, row: usize) {
-    s.notify_text(
+fn notify_loss(s: &mut Session, (key, code): CellLoss, name: &str, field: String, row: usize) {
+    s.notify_loss(
+        code,
         crate::notice_text::NoticeText::format(
             key,
             [("layer", name.to_string().into()), ("field", field.into()), ("row", row.saturating_add(1).to_string().into())],
         ),
-        false,
     );
 }
 
@@ -537,12 +546,13 @@ impl Cuts {
 
     /// The notices for what writing the whole-number or date field `field` cut, each starting with `by`
     /// (the command or rule that wrote it). Empty when nothing was cut.
+    #[cfg(test)]
     pub(crate) fn notices(&self, by: &str, field: &str) -> Vec<String> {
         self.classified(by, field).into_iter().map(|(_, text)| text).collect()
     }
 
     /// Pairs each coercion message with its cause at the point the loss is counted.
-    fn classified(&self, by: &str, field: &str) -> Vec<(LossCode, String)> {
+    pub(crate) fn classified(&self, by: &str, field: &str) -> Vec<(LossCode, String)> {
         let results = |n: usize| if n == 1 { "1 result".to_string() } else { format!("{n} results") };
         let mut out = Vec::new();
         if self.fractions > 0 {
@@ -876,15 +886,24 @@ fn delete(s: &mut Session, _: &Json) -> CmdResult {
 }
 
 /// A numeric conversion's loss, shared by edits and feature creation. Null entered explicitly is quiet.
-fn numeric_loss(input: &Value, v: &Value, ty: FieldType) -> Option<&'static str> {
+fn numeric_loss(input: &Value, v: &Value, ty: FieldType) -> Option<CellLoss> {
     if ty.is_numeric() && v.is_null() && !input.asks_null() {
-        Some("{layer}, field '{field}', row {row}: 1 attribute value was written as null because it isn't a number")
+        Some((
+            "{layer}, field '{field}', row {row}: 1 attribute value was written as null because it isn't a number",
+            LossCode::DroppedValue,
+        ))
     } else if ty == FieldType::Integer {
         let (exact, cut) = coerce_cut(input.clone(), ty);
         match cut {
-            Cut::Fraction => Some("{layer}, field '{field}', row {row}: 1 attribute value lost its fraction"),
-            Cut::Range => Some("{layer}, field '{field}', row {row}: 1 attribute value was clamped to the 64-bit integer range"),
-            Cut::None if &exact != v => Some("{layer}, field '{field}', row {row}: 1 attribute value lost integer precision"),
+            Cut::Fraction => Some(("{layer}, field '{field}', row {row}: 1 attribute value lost its fraction", LossCode::ChangedTruncated)),
+            // The value given is gone: the range's limit stands in its place.
+            Cut::Range => Some((
+                "{layer}, field '{field}', row {row}: 1 attribute value was clamped to the 64-bit integer range",
+                LossCode::DroppedValue,
+            )),
+            Cut::None if &exact != v => {
+                Some(("{layer}, field '{field}', row {row}: 1 attribute value lost integer precision", LossCode::ChangedRounded))
+            }
             _ => None,
         }
     } else {
@@ -1056,14 +1075,18 @@ fn convert_field(s: &mut Session, p: &Json) -> CmdResult {
     let (kind, one) = if ty == FieldType::Date { ("dates", "a date") } else { ("date-times", "a date-time") };
     if nulled > 0 {
         let rows = if nulled == 1 { "1 row".to_string() } else { format!("{nulled} rows") };
-        s.notify(
+        // Text that asks for null isn't counted (`to_dates`): only text that isn't a date.
+        s.say(rustgis_data::loss::Note::loss(
+            LossCode::DroppedValue,
             format!("Convert Field: '{name}' holds {kind} now, and is null in {rows} whose text isn't {one}: {}", examples.join(", ")),
-            false,
-        );
+        ));
     }
     if rounded > 0 {
         let values = if rounded == 1 { "1 value was".to_string() } else { format!("{rounded} values were") };
-        s.notify(format!("Convert Field: {values} rounded to the microsecond in '{name}', as more digits than that aren't kept"), false);
+        s.say(rustgis_data::loss::Note::loss(
+            LossCode::ChangedRounded,
+            format!("Convert Field: {values} rounded to the microsecond in '{name}', as more digits than that aren't kept"),
+        ));
     }
     Ok(json!({"converted": converted, "null": nulled}))
 }
@@ -1673,8 +1696,9 @@ fn land_layer_dates(s: &mut Session, p: &Json) -> Option<CmdResult> {
         check_layer_dates(s, id, fi, ty)?;
         let layer = s.map_mut().layer_mut(id).ok_or("no layer")?;
         (layer.dataset.fields, layer.dataset.features) = (output.fields, output.features);
+        // Each with its code, as a table's edit lands.
         for notice in notices {
-            s.notify(notice.text, notice.error);
+            s.relay_notice(notice);
         }
         Ok(answer)
     })())

@@ -1298,8 +1298,12 @@ struct Mesh {
     skipped: usize,
     /// Holes left out because they have fewer than 3 vertices, so their areas stay solid.
     holes_dropped: usize,
-    /// Polygons and points of zero height left out of STL, which holds solids, not flat sheets.
+    /// Polygons and points of zero height left out of STL, which holds solids, not flat sheets,
+    /// that had an area or a point to lose.
     flat: usize,
+    /// Every feature of zero height STL left out, with an area or not: what a layer of them alone
+    /// is refused for.
+    flat_seen: usize,
     /// Features whose height field isn't a finite number, so they took the default height.
     default_heights: usize,
     /// Features left out, as a place of each can't be given in longitude/latitude.
@@ -1308,6 +1312,9 @@ struct Mesh {
     layer: String,
     /// Line parts left out because they have a single vertex.
     short_lines: usize,
+    /// Every line part of two vertices or more, with a length or not: what a layer of lines alone
+    /// is refused for in STL.
+    lines_seen: usize,
 }
 
 impl Orient {
@@ -1439,8 +1446,34 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
         let below = h < 0.0;
         let orient = |o: Orient| if below { o.reversed() } else { o };
         // A solid of zero height would be two coincident caps facing apart: STL leaves it out.
+        // Counted as lost only when it had an area or a point to give: a polygon whose every outer
+        // ring encloses nothing (fewer than 3 vertices, or all on one line) has neither.
         if !mesh.keep_lines && h == 0.0 && !matches!(&*g, Geometry::Line(_)) {
-            mesh.flat += 1;
+            let shaped = match &*g {
+                Geometry::Polygon(polys) => polys.iter().any(|rings| {
+                    rings.first().is_some_and(|r| {
+                        // Twice the ring's signed area (the shoelace sum), taken from its first
+                        // vertex so that coordinates far from the origin don't cancel a small
+                        // area out; a closing vertex adds nothing. Against the rounding its terms
+                        // can carry (a few ulps each), so rounding on a ring along a slanted line
+                        // isn't taken for an area, and a real one past it is.
+                        let Some(o) = r.first() else { return false };
+                        let (mut twice, mut terms) = (0.0f64, 0.0f64);
+                        for (a, b) in r.iter().zip(r.iter().cycle().skip(1)) {
+                            let (ax, ay, bx, by) = (a.x - o.x, a.y - o.y, b.x - o.x, b.y - o.y);
+                            twice += ax * by - bx * ay;
+                            terms += (ax * by).abs() + (bx * ay).abs();
+                        }
+                        // A coordinate that isn't finite gives no sum, but a place to lose all the same.
+                        let rounding = 4.0 * f64::EPSILON * terms * r.len() as f64;
+                        !twice.is_finite() || twice.abs() > rounding
+                    })
+                }),
+                Geometry::MultiPoint(points) => !points.is_empty(),
+                _ => true,
+            };
+            mesh.flat += usize::from(shaped);
+            mesh.flat_seen += 1;
             continue;
         }
         let before = mesh.vertices;
@@ -1517,7 +1550,10 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
                         mesh.short_lines += usize::from(n == 1);
                         continue;
                     }
-                    mesh.lines += 1;
+                    // A part with all its vertices in one place has no length to lose.
+                    let long = part.first().is_some_and(|f| part.iter().any(|c| c != f));
+                    mesh.lines += usize::from(long);
+                    mesh.lines_seen += 1;
                     if !mesh.keep_lines {
                         continue;
                     }
@@ -1558,10 +1594,10 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
         }
     }
     if mesh.vertices == 0 {
-        if mesh.flat > 0 && !mesh.keep_lines {
+        if mesh.flat_seen > 0 && !mesh.keep_lines {
             return Err("nothing to export: every polygon and point has zero height, and STL holds solids, not flat sheets".into());
         }
-        if mesh.lines + mesh.short_lines > 0 && !mesh.keep_lines {
+        if mesh.lines_seen + mesh.short_lines > 0 && !mesh.keep_lines {
             return Err("nothing to export: STL holds polygons and points, not lines".into());
         }
         return Err("nothing to export".into());
@@ -1678,10 +1714,16 @@ fn stl_bytes(s: &mut Session, p: &Value) -> Result<(Vec<u8>, StlReport, Vec<Stri
     let (bytes, report) = mesh_stl(&mesh, MAX_STL_TRIANGLES)?;
     mesh_notices(s, &mesh);
     if mesh.flat > 0 {
-        s.notify(format!("Left out {} polygon(s) and point(s) of zero height: STL holds solids, not flat sheets", mesh.flat), false);
+        s.say(rustgis_data::loss::Note::loss(
+            rustgis_data::loss::LossCode::DroppedFeature,
+            format!("Left out {} polygon(s) and point(s) of zero height: STL holds solids, not flat sheets", mesh.flat),
+        ));
     }
     if report.lines > 0 {
-        s.notify(format!("STL holds triangles only: left out {} polyline(s)", report.lines), false);
+        s.say(rustgis_data::loss::Note::loss(
+            rustgis_data::loss::LossCode::DroppedFeature,
+            format!("STL holds triangles only: left out {} polyline(s)", report.lines),
+        ));
     }
     if report.degenerate > 0 {
         s.notify(
