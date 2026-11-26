@@ -40,9 +40,10 @@ pub struct Spectral {
     pub bands: Vec<String>,
     /// Each band's wavelength in nanometres; empty when the file gives none.
     pub wavelengths: Vec<Option<f64>>,
-    /// The map (its place in the project) and layer the points were read on: a raster of the
-    /// same name on another map, or added again, isn't the same one.
-    pub source: Option<(usize, u32)>,
+    /// The map (`Map::instance_id`, whatever its place among the project's maps) and layer the
+    /// points were read on: a raster of the same name on another map, or added again, isn't the
+    /// same one.
+    pub source: Option<(u64, u32)>,
     /// The pixels the points were read from: a raster edited in place (Pixel Editor, say) keeps
     /// its layer and name but not these, so its points are no longer what it holds.
     read_on: std::sync::Weak<rustgis_engine::data::raster::Raster>,
@@ -118,9 +119,10 @@ pub fn colour(t: &Tokens, slot: usize) -> Color32 {
     colours.get(slot % colours.len()).copied().unwrap_or(t.accent)
 }
 
-/// The map (its place in the project) and layer the commands read as `layer`.
-fn source_of(app: &RustGisApp, layer: &str) -> Option<(usize, u32)> {
-    app.session.map().layer_by_name(layer).map(|l| (app.session.project.active_map, l.id))
+/// The map (by identity) and layer the commands read as `layer`.
+fn source_of(app: &RustGisApp, layer: &str) -> Option<(u64, u32)> {
+    let map = app.session.map();
+    map.layer_by_name(layer).map(|l| (map.instance_id(), l.id))
 }
 
 /// The pixels of the raster `layer` names now, for [`Spectral::read_on`] (none when it has none).
@@ -133,7 +135,7 @@ fn data_of(app: &RustGisApp, layer: &str) -> std::sync::Weak<rustgis_engine::dat
 /// commands find it by that name), so its points stay.
 pub fn follow_rename(app: &mut RustGisApp) {
     let Some((map, id)) = app.workflow.spectral.source else { return };
-    if map != app.session.project.active_map {
+    if map != app.session.map().instance_id() {
         return;
     }
     let Some(name) = app.session.map().layer(id).map(|l| l.name.clone()) else { return };
@@ -284,7 +286,7 @@ pub fn section(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     follow_rename(app);
     let sp = &app.workflow.spectral;
     if !sp.samples.is_empty() && !fresh(app) {
-        let other_map = sp.source.is_some_and(|(map, _)| map != app.session.project.active_map);
+        let other_map = sp.source.is_some_and(|(map, _)| map != app.session.map().instance_id());
         app.workflow.spectral.restart(if other_map { Restart::OtherMap } else { Restart::Gone });
     }
     let Rasters { names: rasters, shadowed, unread } = multiband(app);
@@ -860,6 +862,30 @@ mod tests {
         let sp = &h.state().workflow.spectral;
         assert!(sp.samples.is_empty());
         assert_eq!(sp.message, Some(("1 point(s) taken off: they were read on scene on another map.".to_string(), false)));
+    }
+
+    /// The map the points were read on moves (its tab, Move Up, `map.move`) and stays in view: it is
+    /// the same map, so its points stay (#2959).
+    #[test]
+    fn moving_the_map_keeps_the_points() {
+        let mut app = app_with_scene(false);
+        add_point(&mut app, "scene", rustgis_engine::geom::Coord::new(10.005, 44.995));
+        let first = app.session.map().name.clone();
+        app.run("map.new", json!({"name": "Second"})).unwrap();
+        app.run("map.activate", json!({"name": first})).unwrap();
+        app.run("map.move", json!({"name": first, "to": 1})).unwrap();
+        assert_eq!(app.session.project.active_map, 1, "the map in view moved to the end");
+        let mut h = egui_kittest::Harness::builder().allow_missing_glyphs().with_size(egui::vec2(420.0, 320.0)).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let t = crate::theme::Tokens::get(ui.ctx());
+                section(app, ui, &t);
+            },
+            app,
+        );
+        h.run_steps(1);
+        let sp = &h.state().workflow.spectral;
+        assert_eq!(sp.samples.len(), 1, "{:?}", sp.message);
+        assert!(fresh(h.state()));
     }
 
     /// With no raster of two bands or more, the section says so and ends a pick left on.

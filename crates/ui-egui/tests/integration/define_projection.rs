@@ -134,6 +134,30 @@ fn dialog_rejects_a_different_map_with_the_same_layer_id() {
     assert_eq!(original.features[0].geometry.as_ref().unwrap().label_point().unwrap().x, 451_219.33);
 }
 
+/// The dialog is for the map it opened on, wherever that map goes: moving it (its tab, Move Up,
+/// `map.move`) is not another map, so Apply still works (#2959).
+#[test]
+fn dialog_applies_after_its_map_is_moved() {
+    let mut h = harness();
+    let first = h.state().session.map().name.clone();
+    h.state_mut().run("map.new", json!({"name": "Second Map"})).unwrap();
+    h.state_mut().run("map.activate", json!({"name": first})).unwrap();
+    h.state_mut().run("map.move", json!({"name": first, "to": 1})).unwrap();
+    assert_eq!(h.state().session.project.active_map, 1, "the map in view moved to the end");
+    h.run_steps(3);
+    enter_crs(&mut h, "EPSG:32631");
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Apply").click();
+    h.run_steps(3);
+    assert!(h.state().dialogs.error.is_none(), "{:?}", h.state().dialogs.error);
+    let point = h.state().session.map().layer_by_name("Parcels").unwrap().dataset.in_lonlat().unwrap().features[0]
+        .geometry
+        .as_ref()
+        .unwrap()
+        .label_point()
+        .unwrap();
+    assert!((point.x - 2.335).abs() < 1e-6, "{point:?}");
+}
+
 #[test]
 fn dialog_rejects_a_replacement_project_with_the_same_map_and_layer() {
     let mut h = harness();

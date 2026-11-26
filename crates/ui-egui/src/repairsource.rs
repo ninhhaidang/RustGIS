@@ -17,8 +17,7 @@ pub enum Target {
 #[cfg_attr(target_arch = "wasm32", expect(dead_code, reason = "the browser can't pick a replacement file, so it reads less of the form"))]
 pub struct Form {
     target: Target,
-    opened: u64,
-    map: (usize, String),
+    owner: crate::dialogs::MapOwner,
     /// An index is not an identity: closing on a different archive prevents accidental retargeting.
     archive: Option<(String, rustgis_engine::map::TileKind)>,
     name: String,
@@ -57,8 +56,7 @@ impl Form {
         };
         Ok(Self {
             target,
-            opened: s.opened,
-            map: (s.project.active_map, s.map().name.clone()),
+            owner: crate::dialogs::MapOwner::of(s),
             archive: match target {
                 Target::Layer(_) => None,
                 Target::Tiles(index) => s.map().tiles.get(index).map(|t| (t.id.clone(), t.kind)),
@@ -132,22 +130,25 @@ impl Form {
     }
 }
 
-/// Shows the captured source and runs the appropriate undoable repair command.
-pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
-    let Some(f) = app.dialogs.repair.take() else {
-        app.dialogs.open = None;
-        return;
-    };
-    if app.session.opened != f.opened
-        || app.session.project.active_map != f.map.0
-        || app.session.map().name != f.map.1
+/// The form's item is no longer where it was opened on: another project or map (a moved map is the
+/// same one), or its layer or tile layer gone or replaced.
+fn gone(app: &RustGisApp, f: &Form) -> bool {
+    !f.owner.holds(&app.session)
         || match f.target {
             Target::Layer(id) => app.session.map().layer(id).is_none(),
             Target::Tiles(index) => app.session.map().tiles.get(index).is_none_or(|t| {
                 t.archive_file() != Some(f.saved.as_str()) || f.archive.as_ref().is_none_or(|(id, kind)| t.id != *id || t.kind != *kind)
             }),
         }
-    {
+}
+
+/// Shows the captured source and runs the appropriate undoable repair command.
+pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
+    let Some(f) = app.dialogs.repair.take() else {
+        app.dialogs.open = None;
+        return;
+    };
+    if gone(app, &f) {
         app.dialogs.open = None;
         return;
     }
@@ -283,8 +284,7 @@ mod tests {
     fn form() -> Form {
         Form {
             target: Target::Layer(1),
-            opened: 0,
-            map: (0, String::new()),
+            owner: crate::dialogs::MapOwner::of(&rustgis_engine::Session::new(rustgis_engine::Project::default())),
             archive: None,
             name: "Cities".into(),
             saved: "old.gpkg".into(),
@@ -302,6 +302,27 @@ mod tests {
         let slot = crate::Slot::default();
         f.listing = Some((f.path.clone(), slot.clone()));
         slot
+    }
+
+    /// The form stays for its map when that map moves among the maps; another map, or a layer that
+    /// is gone, closes it (#2959).
+    #[test]
+    fn the_form_follows_its_map_when_the_map_moves() {
+        let mut app = RustGisApp::with_sample();
+        let layer = app.session.map().layers[0].id;
+        let first = app.session.map().name.clone();
+        let mut f = form();
+        f.target = Target::Layer(layer);
+        f.owner = crate::dialogs::MapOwner::of(&app.session);
+        assert!(!gone(&app, &f));
+        app.run("map.new", json!({"name": "Second"})).unwrap();
+        assert!(gone(&app, &f), "another map is in view");
+        app.run("map.activate", json!({"name": first})).unwrap();
+        app.run("map.move", json!({"name": first, "to": 1})).unwrap();
+        assert_eq!(app.session.project.active_map, 1, "the map in view moved to the end");
+        assert!(!gone(&app, &f), "the same map, moved");
+        app.run("project.new", json!({})).unwrap();
+        assert!(gone(&app, &f), "another project");
     }
 
     #[test]

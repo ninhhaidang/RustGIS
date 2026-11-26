@@ -10,9 +10,9 @@ use rustgis_engine::map::graphics;
 use crate::RustGisApp;
 use crate::theme::Tokens;
 
-/// A text graphic, by map (its index in the project), layer id and row: layer ids and rows are a
-/// map's own.
-type Key = (usize, u32, usize);
+/// A text graphic, by map (`Map::instance_id`, whatever its place among the project's maps), layer
+/// id and row: layer ids and rows are a map's own.
+type Key = (u64, u32, usize);
 
 #[derive(Default)]
 pub struct GraphicFormat {
@@ -40,7 +40,7 @@ pub(crate) fn selected(app: &RustGisApp) -> Option<(u32, usize)> {
 }
 
 fn key(app: &RustGisApp, (layer, row): (u32, usize)) -> Key {
-    (app.session.project.active_map, layer, row)
+    (app.session.map().instance_id(), layer, row)
 }
 
 /// Opens the Format pane when another text is selected on the map (run each frame the map shows).
@@ -179,7 +179,7 @@ pub(crate) fn save_draft(app: &mut RustGisApp) {
         return;
     }
     let (map, layer, row) = k;
-    let here = opened == app.session.opened && map == app.session.project.active_map;
+    let here = opened == app.session.opened && map == app.session.map().instance_id();
     let current = app.session.map().layer(layer).and_then(|l| graphics::label(&l.dataset, row)).map(str::to_string);
     // A blank text goes to `graphics.edit` too, which refuses it and says so, as when Enter ends it.
     if here && current.is_some_and(|c| c != text) {
@@ -268,6 +268,34 @@ mod tests {
         edit(h.state_mut(), layer, row).unwrap();
         assert_eq!(h.state().ui.right, Some(Format));
         assert!(edit(h.state_mut(), layer, row + 99).is_err());
+    }
+
+    /// The map with the text being typed moves (its tab, Move Up, `map.move`) and stays in view: the
+    /// pane keeps the text and saves it when it ends, instead of dropping it for "another map" (#2959).
+    #[test]
+    fn moving_the_map_keeps_the_text_being_typed() {
+        let mut app = RustGisApp::with_sample();
+        let added = app.run("graphics.add", json!({"shape": "text", "points": [[10, 50]], "text": "Old"})).unwrap();
+        let (layer, row) = (added["layer"].as_u64().unwrap() as u32, added["row"].as_u64().unwrap() as usize);
+        let first = app.session.map().name.clone();
+        let mut h = harness(app);
+        h.run_steps(2);
+        h.state_mut().run("select.rows", json!({"layer": layer, "rows": [row]})).unwrap();
+        h.run_steps(3);
+        h.query_all_by_role(Role::MultilineTextInput).find(|n| n.value().as_deref() == Some("Old")).unwrap().focus();
+        h.run_steps(2);
+        h.query_all_by_role(Role::MultilineTextInput).find(|n| n.is_focused()).unwrap().type_text("New");
+        h.run_steps(2);
+        h.state_mut().run("map.new", json!({"name": "Second"})).unwrap();
+        h.state_mut().run("map.activate", json!({"name": first})).unwrap();
+        h.state_mut().run("map.move", json!({"name": first, "to": 1})).unwrap();
+        assert_eq!(h.state().session.project.active_map, 1, "the map in view moved to the end");
+        h.state_mut().run("select.rows", json!({"layer": layer, "rows": [row]})).unwrap();
+        h.run_steps(3);
+        h.state_mut().run("ui.pane.format", json!({})).unwrap();
+        h.run_steps(2);
+        let label = h.state().session.map().layer(layer).and_then(|l| graphics::label(&l.dataset, row)).map(str::to_string);
+        assert!(label.as_deref().is_some_and(|t| t.contains("New")), "{label:?}");
     }
 
     /// A text cleared in the pane is refused, as `graphics.edit` refuses one: when Enter ends it and

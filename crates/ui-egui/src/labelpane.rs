@@ -142,10 +142,13 @@ fn shown(c: &Class) -> String {
 }
 
 /// `l` as a layer of this map of this project: another map, or another project, may reuse its id.
-/// A map goes by its place and its name, as Define Projection's does: deleting a map moves the
-/// next one into its place, and a copy keeps its layer ids.
+/// A map goes by what it is (`Map::instance_id`) and its name, as Define Projection's does: moving
+/// it keeps its typed text, a map deleted before it doesn't hand its state to the next one, and a
+/// copy keeps its layer ids and is another map. Renaming the map starts its layers' state afresh,
+/// as it always did.
 pub(crate) fn layer_key(app: &RustGisApp, l: &Layer) -> egui::Id {
-    egui::Id::unique((app.session.opened, app.session.project.active_map, app.session.map().name.as_str(), l.id))
+    let map = app.session.map();
+    egui::Id::unique((app.session.opened, map.instance_id(), map.name.as_str(), l.id))
 }
 
 /// Where the class chosen on a layer is kept.
@@ -1431,6 +1434,28 @@ mod tests {
 
     fn layer_id(app: &RustGisApp, name: &str) -> u32 {
         app.session.map().layers.iter().find(|l| l.name == name).unwrap().id
+    }
+
+    /// What the pane and the Unique Values box keep for a layer (the class chosen, a search, the
+    /// typed expression) is found again when its map moves among the maps; another map's layer of the
+    /// same id is another key (#2959).
+    #[test]
+    fn a_layers_state_follows_its_map_when_the_map_moves() {
+        let mut app = with_cities();
+        let id = layer_id(&app, "Cities");
+        let first = app.session.map().name.clone();
+        let key = |app: &RustGisApp| super::layer_key(app, app.session.map().layer(id).unwrap());
+        let before = key(&app);
+        app.run("map.new", json!({"name": "Second"})).unwrap();
+        app.run("map.activate", json!({"name": first})).unwrap();
+        app.run("map.move", json!({"name": first, "to": 1})).unwrap();
+        assert_eq!(app.session.project.active_map, 1, "the map in view moved to the end");
+        assert_eq!(key(&app), before, "the same map, moved");
+        let original = app.session.map().instance_id();
+        app.run("map.duplicate", json!({"name": first})).unwrap();
+        // The copy is named "<map> copy", which the key tells apart anyway: it is the identity that
+        // `map.duplicate` renews, and the key is built from it.
+        assert_ne!(app.session.map().instance_id(), original, "a copy keeps the layer ids and is another map");
     }
 
     fn with_cities() -> RustGisApp {

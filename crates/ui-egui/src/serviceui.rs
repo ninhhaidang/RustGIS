@@ -74,9 +74,9 @@ pub struct Import {
     /// The saved web-service connection to record on imported layers, not a group-plan parameter.
     connection: Option<Value>,
     token: u64,
-    /// The originating map: its index and name (names are unique among a project's maps), so a
-    /// deleted or replaced map at that index cancels the import.
-    map: (usize, String),
+    /// The originating map (`dialogs::map_key`), so a deleted, replaced or renamed map cancels the
+    /// import and a moved one doesn't.
+    map: crate::dialogs::MapKey,
     slot: Slot<Result<Vec<u8>, String>>,
     document: Option<String>,
     current: Option<String>,
@@ -342,7 +342,7 @@ pub fn start(app: &mut RustGisApp, p: &Value, refresh: bool) -> Result<(), Strin
         refresh,
         connection,
         token: app.session.download_started(),
-        map: active_map(app),
+        map: crate::dialogs::map_key(&app.session),
         slot: Slot::default(),
         document: None,
         current: None,
@@ -464,14 +464,9 @@ impl Import {
     }
 }
 
-fn active_map(app: &RustGisApp) -> (usize, String) {
-    let i = app.session.project.active_map;
-    (i, app.session.project.maps.get(i).map(|m| m.name.clone()).unwrap_or_default())
-}
-
 pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     let Some(mut task) = app.ui.service_import.take() else { return };
-    if !app.session.download_is_pending(task.token) || active_map(app) != task.map {
+    if !app.session.download_is_pending(task.token) || crate::dialogs::map_key(&app.session) != task.map {
         app.session.download_failed(task.token);
         return;
     }
@@ -686,6 +681,56 @@ fn noted(app: &mut RustGisApp, landed: &Landed, note: Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An import in flight goes on when its map moves among the maps, and is given up when another
+    /// map is in view (#2959).
+    #[test]
+    fn an_import_in_flight_goes_on_when_its_map_moves() {
+        let mut app = RustGisApp::with_sample();
+        let first = app.session.map().name.clone();
+        let token = app.session.download_started();
+        app.ui.service_import = Some(Import {
+            params: json!({}),
+            refresh: false,
+            connection: None,
+            token,
+            map: crate::dialogs::map_key(&app.session),
+            slot: Slot::default(),
+            document: Some("https://example.test/capabilities".into()),
+            current: None,
+            remaining: VecDeque::new(),
+            responses: Vec::new(),
+            bytes: 0,
+        });
+        let ctx = egui::Context::default();
+        app.run("map.new", json!({"name": "Second"})).unwrap();
+        app.run("map.activate", json!({"name": first})).unwrap();
+        app.run("map.move", json!({"name": first, "to": 1})).unwrap();
+        assert_eq!(app.session.project.active_map, 1, "the map in view moved to the end");
+        poll(&mut app, &ctx);
+        assert!(app.ui.service_import.is_some() && app.session.download_is_pending(token), "the same map, moved");
+        app.run("map.activate", json!({"name": "Second"})).unwrap();
+        poll(&mut app, &ctx);
+        assert!(app.ui.service_import.is_none() && !app.session.download_is_pending(token), "another map is in view");
+    }
+
+    /// The map an import started on is told by what it is, not by its place among the maps: the same
+    /// map moved is the same, another map (even a copy under its place) isn't (#2959).
+    #[test]
+    fn an_import_follows_its_map_when_it_moves() {
+        let mut app = RustGisApp::with_sample();
+        let first = app.session.map().name.clone();
+        app.run("map.new", json!({"name": "Second"})).unwrap();
+        let second = crate::dialogs::map_key(&app.session);
+        app.run("map.activate", json!({"name": first})).unwrap();
+        let before = crate::dialogs::map_key(&app.session);
+        assert_ne!(before, second);
+        app.run("map.move", json!({"name": first, "to": 1})).unwrap();
+        assert_eq!(app.session.project.active_map, 1, "the map in view moved to the end");
+        assert_eq!(crate::dialogs::map_key(&app.session), before, "the same map, moved");
+        app.run("map.activate", json!({"name": "Second"})).unwrap();
+        assert_eq!(crate::dialogs::map_key(&app.session), second, "the other map, now first");
+    }
 
     /// Add From Service records a document it read from the internet: the document it links to
     /// is fetched only from there, and a layer listed there is added restricted to it, however

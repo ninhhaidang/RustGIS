@@ -12,6 +12,36 @@ use std::hash::{Hash, Hasher};
 use crate::theme::{Tokens, semibold};
 use crate::{RustGisApp, i18n};
 
+/// A live map by what it is (`Map::instance_id`, whatever its place among the project's maps, so
+/// moving it is not another map) and its name, which a rename changes.
+pub(crate) type MapKey = (u64, String);
+
+/// The map in view, as a dialog, an import or a form remembers it to find it again.
+pub(crate) fn map_key(s: &Session) -> MapKey {
+    let map = s.map();
+    (map.instance_id(), map.name.clone())
+}
+
+/// The project (`Session::opened`) and the map in view a dialog or a form was opened on: layer ids
+/// are a map's own, so what it captured is only good while both are still in view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapOwner {
+    project: u64,
+    map: MapKey,
+}
+
+impl MapOwner {
+    pub(crate) fn of(s: &Session) -> Self {
+        Self { project: s.opened, map: map_key(s) }
+    }
+
+    /// Whether `s` still has that project open with that map in view (a moved map is the same one).
+    pub(crate) fn holds(&self, s: &Session) -> bool {
+        let map = s.map();
+        self.project == s.opened && self.map.0 == map.instance_id() && self.map.1 == map.name
+    }
+}
+
 #[derive(Default)]
 pub struct Dialogs {
     /// Project Properties: the system text last read, and what was said of it (and whether that is
@@ -20,7 +50,7 @@ pub struct Dialogs {
     /// The layer captured when Define Projection opens; changing selection must not retarget it.
     pub projection_layer: Option<u32>,
     /// Map-local layer IDs require the dialog to retain its original project and map as well.
-    pub projection_map: Option<(u64, usize, String)>,
+    pub projection_map: Option<MapOwner>,
     pub geometry: Option<crate::geometrycalc::Form>,
     /// Publication Layout Wizard: what it has asked so far (#2850).
     pub publication: Option<crate::publicationwizard::Draft>,
@@ -39,7 +69,7 @@ pub struct Dialogs {
     /// The live instance captured with the map-local ID; Undo can make that ID reusable.
     pub gpkg_instance: Option<u64>,
     /// Layer IDs are map-local; source writes must stay in the captured project and map.
-    pub gpkg_map: Option<(u64, usize, String)>,
+    pub gpkg_map: Option<MapOwner>,
     /// The source-backed layer last counted: its name for PostGIS, numeric ID for GeoPackage.
     pub counted: String,
     /// Revision after the last count command, which itself advances the session revision.
@@ -217,7 +247,7 @@ impl Dialogs {
         match name {
             "defineProjection" => {
                 self.projection_layer = active.map(|l| l.id);
-                self.projection_map = Some((s.opened, s.project.active_map, s.map().name.clone()));
+                self.projection_map = Some(MapOwner::of(s));
                 self.text = active.and_then(|l| l.dataset.crs).map(|c| c.definition_text()).unwrap_or_else(|| "EPSG:4326".into());
             }
             "coordinateSystem" => {
@@ -276,7 +306,7 @@ impl Dialogs {
                 let layer = active.filter(gpkg).or_else(|| s.map().layers.iter().find(gpkg));
                 self.gpkg_layer = layer.map(|l| l.id);
                 self.gpkg_instance = layer.map(|l| l.instance_id());
-                self.gpkg_map = Some((s.opened, s.project.active_map, s.map().name.clone()));
+                self.gpkg_map = Some(MapOwner::of(s));
             }
             // A table of addresses is what's usually geocoded: picked by its id (`flag` says the
             // choice is a table), since names can repeat.
@@ -291,11 +321,7 @@ impl Dialogs {
     }
 
     fn gpkg_owner(&self, s: &Session) -> Result<(), String> {
-        if !self
-            .gpkg_map
-            .as_ref()
-            .is_some_and(|(project, index, name)| *project == s.opened && *index == s.project.active_map && *name == s.map().name)
-        {
+        if !self.gpkg_map.as_ref().is_some_and(|owner| owner.holds(s)) {
             return Err(tl!("The active project or map changed; reopen the GeoPackage dialog for the intended layer.").into());
         }
         Ok(())
@@ -618,9 +644,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                     }
                 }
                 close = buttons(app, ui, "Apply", |app| {
-                    if !app.dialogs.projection_map.as_ref().is_some_and(|(project, index, name)| {
-                        *project == app.session.opened && *index == app.session.project.active_map && *name == app.session.map().name
-                    }) {
+                    if !app.dialogs.projection_map.as_ref().is_some_and(|owner| owner.holds(&app.session)) {
                         return Err(tl!("The active project or map changed; reopen Define Projection for the intended layer.").into());
                     }
                     let id = app.dialogs.projection_layer.ok_or(tl!("No layer selected"))?;
@@ -3472,6 +3496,22 @@ fn calculation_preview(rows: &[rustgis_engine::cmd::edit::CalculationPreview]) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The GeoPackage prompt belongs to the map it opened on, wherever that map goes among the maps;
+    /// another map or project refuses it (#2959).
+    #[test]
+    fn the_gpkg_prompt_follows_its_map_when_the_map_moves() {
+        let mut app = RustGisApp::with_sample();
+        let first = app.session.map().name.clone();
+        let dialogs = Dialogs { gpkg_map: Some(MapOwner::of(&app.session)), ..Dialogs::default() };
+        assert!(dialogs.gpkg_owner(&app.session).is_ok());
+        app.run("map.new", json!({"name": "Second"})).unwrap();
+        assert!(dialogs.gpkg_owner(&app.session).is_err(), "another map is in view");
+        app.run("map.activate", json!({"name": first})).unwrap();
+        app.run("map.move", json!({"name": first, "to": 1})).unwrap();
+        assert_eq!(app.session.project.active_map, 1, "the map in view moved to the end");
+        assert!(dialogs.gpkg_owner(&app.session).is_ok(), "the same map, moved");
+    }
 
     #[test]
     fn narrow_desktop_dialog_remembers_its_dragged_position() {
