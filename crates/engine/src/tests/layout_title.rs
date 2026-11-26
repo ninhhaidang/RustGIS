@@ -158,7 +158,13 @@ fn a_wrapped_map_title_is_sized_for_its_drawn_lines() {
     for (li, (style, pad, name)) in cases.into_iter().enumerate() {
         s.run("map.rename", &json!({"name": name})).unwrap();
         s.run("layout.publication", &json!({"profile": "a4-portrait", "extent": extent, "title": "{map}", "style": style})).unwrap();
-        assert!(wraps(&s, li, "Title"), "{style}");
+        // The names wrap in the Linux interface fonts; macOS and Windows fonts may fit one on a
+        // line, which leaves nothing to size.
+        if cfg!(target_os = "linux") {
+            assert!(wraps(&s, li, "Title"), "{style}");
+        } else if !wraps(&s, li, "Title") {
+            continue;
+        }
         let lines = drawn_lines(&s, li, "Title");
         assert_eq!(sized_lines(&s, li, "Title", pad), lines.len(), "{style}: {lines:?}");
     }
