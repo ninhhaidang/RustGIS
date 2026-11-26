@@ -839,9 +839,17 @@ extent (or `"bbox"`), reading one AlphaEarth tile's window by range, all 64 band
 no value.
 
 - `embeddings.similarity` (`"point"`: [longitude, latitude], or `"points"`: up to 1000 of them,
-  averaged; `"year"`, 2024 by default): each cell's cosine similarity to the reference's embedding,
-  from −1 to 1. 1 is a place like the reference. Reference points outside the area read, or on no
-  data, are left out and said.
+  averaged, or a point layer's name or id; `"year"`, 2024 by default): each cell's cosine similarity
+  to the reference's embedding, from −1 to 1. 1 is a place like the reference. Reference points
+  outside the area read, or on no data, are left out and said. Of a layer, the points are its
+  selected features', or all of them when none is selected, that its definition query keeps (as for
+  the geoprocessing tools; the time slider and display filters don't apply), with each point of a
+  multipoint counted: more than 1000 are refused. It says when they are only some of the layer's
+  features, and how many have no geometry, aren't points or have a place that can't be given in
+  longitude/latitude, and that a definition query it can't read isn't applied; the answer's
+  `reference` names the layer, how many features gave points and whether they were selected or filtered.
+  A layer read in place holds only the features in view: select the ones to use, or load them all
+  first. The area is the map's extent or `"bbox"`, as with a list, not the layer's extent.
 - `embeddings.change` (`"from"`, 2017 by default, and `"to"`, 2025): how far each cell's embedding
   moved between the two years, 1 − their cosine, from 0 (unchanged) to 2.
 
@@ -853,6 +861,7 @@ saves its values as a GeoTIFF, and `share.exportMap` a PNG preview of the map:
 
 ```sh
 rustgis-cli run --cmd 'embeddings.similarity={"dataset":"alphaearth","year":2024,"point":[-42.88,-20.75],"bbox":[-42.91,-20.78,-42.85,-20.735]}' --cmd 'share.exportRaster={"layer":"AlphaEarth 2024 similarity","path":"aef_similarity.tif"}' --cmd 'share.exportMap={"path":"aef_similarity.png"}'
+rustgis-cli run --cmd 'layer.addData={"path":"samples.geojson"}' --cmd 'embeddings.similarity={"dataset":"alphaearth","year":2024,"points":"samples","bbox":[-42.91,-20.78,-42.85,-20.735]}' --cmd 'share.exportRaster={"layer":"AlphaEarth 2024 similarity","path":"aef_like_samples.tif"}'
 rustgis-cli run --cmd 'embeddings.change={"dataset":"alphaearth","from":2017,"to":2025,"bbox":[-42.91,-20.78,-42.85,-20.735]}' --cmd 'share.exportRaster={"layer":"AlphaEarth change 2017–2025","path":"aef_change.tif"}' --cmd 'share.exportMap={"path":"aef_change.png"}'
 ```
 

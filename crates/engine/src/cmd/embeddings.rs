@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use rustgis_data::raster;
+use rustgis_data::{Geometry, GeometryType, raster};
 use rustgis_map::raster::RasterLayer;
 use serde_json::{Value, json};
 
@@ -35,8 +35,8 @@ pub fn commands() -> Vec<C> {
             r#"{"dataset": "alphaearth", "bbox"?: [west, south, east, north] | "view" (the area searched, default the map's extent), "start"?: year (default 2017), "end"?: year (default 2025), "bands"?: [red, green, blue] (bands from 1, default [2, 17, 10]), "stretch"?: number (dequantised values shown over ±stretch, default 0.3), "name"?: text, "found"?: (internal: the tiles the app found, each {years: {year: address}}), "complete"?: (internal: false when the app's search read only part of the index), "unusable"?: (internal: the rows of the index the app's search left out, as they can't be read)} → a tile layer per AlphaEarth tile, a file per year, following the time slider (turned on over the years when it is off)"#,
         ),
         // Each makes a raster; on another thread from the app (workflows::IN_BACKGROUND).
-        C::new("embeddings.similarity", "Satellite Embedding Similarity", "Home › Add › Web Data", similarity).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r#"{"dataset": "alphaearth", "point"?: [longitude, latitude] (the reference: the embedding of the cell there), "points"?: [[longitude, latitude], …] (the reference: the mean of their cells' embeddings, at most 1000; give point or points, inside the area), "year"?: number (2017–2025, default 2024), "bbox"?: [west, south, east, north] | "view" (the area read, default the map's extent; at most about 1000 × 1000 cells), "cellSize"?: metres (an overview with cells at most this size, for a larger area), "name"?: text, "ran"?: (internal: a raster the app has worked out)} → a raster of each cell's cosine similarity to the reference's embedding, from −1 to 1, in the tile's coordinate system (UTM)"#,
+        C::new("embeddings.similarity", "Satellite Embedding Similarity", "Home › Add › Web Data", similarity).inputs(similarity_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
+            r#"{"dataset": "alphaearth", "point"?: [longitude, latitude] (the reference: the embedding of the cell there), "points"?: [[longitude, latitude], …] | a point layer's name or id (the reference: the mean of their cells' embeddings, at most 1000 points; of a layer, its selected features, or all of them when none is selected, that its definition query keeps, each point of a multipoint; give point or points, inside the area), "year"?: number (2017–2025, default 2024), "bbox"?: [west, south, east, north] | "view" (the area read, default the map's extent; at most about 1000 × 1000 cells), "cellSize"?: metres (an overview with cells at most this size, for a larger area), "name"?: text, "ran"?: (internal: a raster the app has worked out)} → a raster of each cell's cosine similarity to the reference's embedding, from −1 to 1, in the tile's coordinate system (UTM)"#,
         ),
         C::new("embeddings.change", "Satellite Embedding Change", "Home › Add › Web Data", change).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"dataset": "alphaearth", "from"?: year (default 2017), "to"?: year after from (default 2025), "bbox"?: [west, south, east, north] | "view" (the area read, default the map's extent; at most about 1000 × 1000 cells), "cellSize"?: metres (an overview with cells at most this size, for a larger area), "name"?: text, "ran"?: (internal: a raster the app has worked out)} → a raster of how far each cell's embedding moved between the two years, 1 − their cosine, from 0 (the same) to 2 (opposite), in the tile's coordinate system (UTM)"#,
@@ -583,8 +583,11 @@ const AEF_BANDS: usize = 64;
 /// works on its caller's thread, waiting for AlphaEarth's index and the window: the command line
 /// and Python have no window to hold, and the app's workflows start it on a thread
 /// ([`super::workflows::raster_start`]) and add what it made with `ran`. The app's assistant runs
-/// its tools on the frame, so there the window waits, as it does for `raster.change` and the other
-/// commands that read the network; a plugin's command in the app is refused ([`analysis`]).
+/// its tools on the frame, as it needs a command's answer before its next one, so there the window
+/// waits, without Cancel, as it does for `raster.change` and the other commands of
+/// [`super::workflows::IN_BACKGROUND`]: for the network, and for a point layer's reference
+/// ([`layer_points`]), whose definition query reads every feature, and whose points end at the
+/// limit. A plugin's command in the app is refused ([`analysis`]).
 fn similarity(s: &mut Session, p: &Value) -> CmdResult {
     super::workflows::made_or_ran(s, p, "embeddings.similarity")
 }
@@ -632,26 +635,174 @@ fn year_param(d: &emb::EmbeddingDataset, p: &Value, k: &str, default: i32) -> Re
     }
 }
 
-/// `embeddings.similarity`'s reference: `point`, or the `points` whose embeddings are averaged.
-fn reference_points(p: &Value) -> Result<Vec<(f64, f64)>, String> {
-    const POINTS: &str = "points is a list of [longitude, latitude] in degrees";
+/// The layer `embeddings.similarity` takes its reference from, when `points` names one, as the
+/// `layer` parameter [`Session::layer_id`] reads.
+fn points_layer(p: &Value) -> Option<Value> {
+    let layer = p.get("points").filter(|v| v.is_string() || v.is_number())?;
+    Some(json!({"layer": layer}))
+}
+
+/// The layer `points` names, shared with exact approval; a list of points reads none.
+fn similarity_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    match points_layer(p) {
+        Some(named) => super::Inputs::single_layer(input, &named),
+        None => Ok(super::Inputs::layers(std::iter::empty())),
+    }
+}
+
+/// The points of a similarity's reference (longitude, latitude), what its answer says of the
+/// layer they are from, and what to say of it.
+type Taken = (Vec<(f64, f64)>, Option<Value>, Vec<String>);
+
+/// `embeddings.similarity`'s reference: `point`, or the `points` whose embeddings are averaged (a
+/// list, or a layer's). What it reads of the session is read now; a layer's points are taken
+/// where the work runs ([`layer_points`]).
+fn reference_points(s: &Session, p: &Value) -> Result<Box<dyn FnOnce() -> Result<Taken, String> + Send>, String> {
+    const POINTS: &str = "points is a list of [longitude, latitude] in degrees, or a point layer's name or id";
     let pair = |v: &Value| {
         v.as_array()
             .filter(|a| a.len() == 2)
             .and_then(|a| Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?)))
             .filter(|(x, y)| (-180.0..=180.0).contains(x) && (-90.0..=90.0).contains(y))
     };
-    match (p.get("point").filter(|v| !v.is_null()), p.get("points").filter(|v| !v.is_null())) {
-        (Some(_), Some(_)) => Err("give point or points, not both".into()),
-        (Some(v), None) => Ok(vec![pair(v).ok_or("point is [longitude, latitude] in degrees")?]),
-        (None, Some(Value::Array(list))) if list.is_empty() => Err("points is empty: give at least one [longitude, latitude]".into()),
-        (None, Some(Value::Array(list))) if list.len() > MAX_REFERENCE_POINTS => {
-            Err(format!("{} points given: at most {MAX_REFERENCE_POINTS} make a reference", list.len()))
+    let points: Vec<(f64, f64)> = match (p.get("point").filter(|v| !v.is_null()), p.get("points").filter(|v| !v.is_null())) {
+        (Some(_), Some(_)) => return Err("give point or points, not both".into()),
+        (Some(v), None) => vec![pair(v).ok_or("point is [longitude, latitude] in degrees")?],
+        (None, Some(Value::Array(list))) if list.is_empty() => {
+            return Err("points is empty: give at least one [longitude, latitude]".into());
         }
-        (None, Some(Value::Array(list))) => list.iter().map(|v| pair(v).ok_or_else(|| POINTS.to_string())).collect(),
-        (None, Some(_)) => Err(POINTS.into()),
-        (None, None) => Err("the reference is required: point [longitude, latitude], or points [[longitude, latitude], …]".into()),
+        (None, Some(Value::Array(list))) if list.len() > MAX_REFERENCE_POINTS => {
+            return Err(format!("{} points given: at most {MAX_REFERENCE_POINTS} make a reference", list.len()));
+        }
+        (None, Some(Value::Array(list))) => list.iter().map(|v| pair(v).ok_or_else(|| POINTS.to_string())).collect::<Result<_, _>>()?,
+        (None, Some(_)) => {
+            let l = reference_layer(s, &points_layer(p).ok_or(POINTS)?)?;
+            return Ok(Box::new(move || layer_points(l)));
+        }
+        (None, None) => {
+            return Err(
+                "the reference is required: point [longitude, latitude], or points [[longitude, latitude], …] or a point layer".into()
+            );
+        }
+    };
+    Ok(Box::new(move || Ok((points, None, Vec::new()))))
+}
+
+/// `error`, with what a reference layer had to say (`notes`): it may be why.
+fn with_notes(error: String, notes: &[String]) -> String {
+    if notes.is_empty() { error } else { format!("{error} ({})", notes.join("; ")) }
+}
+
+/// The point layer `p` names, for [`layer_points`]: what that reads of it (its rows shared, not
+/// copied, its selection and its definition query). One read in place holds only the features of
+/// the last view, so only its selection is taken.
+fn reference_layer(s: &Session, p: &Value) -> Result<rustgis_map::Layer, String> {
+    let l = s.map().layer(s.layer_id(p)?).ok_or("no such layer")?;
+    if l.is_raster() || l.geometry_type() != GeometryType::Point {
+        let kind = if l.is_raster() { "raster" } else { l.geometry_type().label() };
+        return Err(format!("{}: points is a point layer, and it is a {} layer", l.name, kind.to_lowercase()));
     }
+    if l.is_streamed() && l.selection.is_empty() {
+        return Err(format!(
+            "{}: it is read in place, a view at a time: select the features to use, or load all its features first (Layers › Load All Features)",
+            l.name
+        ));
+    }
+    let mut read = rustgis_map::Layer::new(l.id, l.dataset.clone());
+    read.name = l.name.clone();
+    read.definition_query = l.definition_query.clone();
+    read.selection = l.selection.clone();
+    Ok(read)
+}
+
+/// The points of layer `l`, in longitude/latitude, each of a multipoint's: of its selected
+/// features, or all of them without a selection, that its definition query keeps, as the tools
+/// take a layer. What is left out is said, by kind with a count; the first point past
+/// [`MAX_REFERENCE_POINTS`] refuses the layer, the rest of it not read. Cancel is looked at every
+/// few thousand features; the definition query is one pass that doesn't
+/// ([`rustgis_map::Layer::resolve_rows`]).
+fn layer_points(mut l: rustgis_map::Layer) -> Result<Taken, String> {
+    use rustgis_map::rows::{Policy, Rows};
+    l.selection.sort_unstable();
+    l.selection.dedup();
+    let (name, ds, selected) = (&l.name, &l.dataset, !l.selection.is_empty());
+    let total = ds.features.len();
+    if total == 0 {
+        return Err(format!("{name} has no features to take reference points from"));
+    }
+    let resolved = l.resolve_rows(ds, Policy::SelectionAndQuery, None)?;
+    let filtered = resolved.query_error.is_none() && l.definition_query.as_deref().is_some_and(|q| !q.trim().is_empty());
+    let mut notes = Vec::new();
+    if let Some(e) = resolved.query_error {
+        notes.push(format!("{name}: its definition query can't be read, so it isn't applied: {e}"));
+    }
+    let (rows, taken): (Box<dyn Iterator<Item = usize>>, usize) = match resolved.rows {
+        Rows::All => (Box::new(0..total), total),
+        Rows::Subset(rows) if rows.is_empty() => {
+            let of = if selected { "selected feature" } else { "feature" };
+            return Err(format!("{name}: its definition query hides every {of}, so it has no reference points"));
+        }
+        Rows::Subset(rows) => {
+            let taken = rows.len();
+            (Box::new(rows.into_iter()), taken)
+        }
+    };
+    if taken < total {
+        let how = match (selected, filtered) {
+            (true, true) => "its selection, within its definition query",
+            (true, false) => "its selection",
+            (false, _) => "its definition query",
+        };
+        let of = if ds.windowed { "features read for the view" } else { "features" };
+        notes.push(format!("{name}: reference points taken from {taken} of its {total} {of} ({how})"));
+    }
+    let to = ds.lonlat_conversion().map_err(|e| format!("{name}: {e}"))?;
+    let (mut points, mut used) = (Vec::new(), 0usize);
+    let (mut without, mut others, mut unplaced) = (0usize, 0usize, 0usize);
+    for (k, row) in rows.enumerate() {
+        if k.is_multiple_of(4096) {
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+        }
+        let coords: &[_] = match ds.features.geometry(row) {
+            Some(Geometry::Point(c)) => std::slice::from_ref(c),
+            Some(Geometry::MultiPoint(c)) => c,
+            Some(_) => {
+                others += 1;
+                continue;
+            }
+            None => &[],
+        };
+        // An empty point's coordinates are missing (NaN).
+        if !coords.iter().any(|c| c.is_finite()) {
+            without += 1;
+            continue;
+        }
+        let before = points.len();
+        for c in coords {
+            match to.point(*c).filter(|c| (-180.0..=180.0).contains(&c.x) && (-90.0..=90.0).contains(&c.y)) {
+                Some(_) if points.len() == MAX_REFERENCE_POINTS => {
+                    let e = format!(
+                        "{name} has more than {MAX_REFERENCE_POINTS} points, the most that make a reference: select the ones to use"
+                    );
+                    return Err(with_notes(e, &notes));
+                }
+                Some(c) => points.push((c.x, c.y)),
+                None => unplaced += 1,
+            }
+        }
+        used += usize::from(points.len() > before);
+    }
+    let left_out = [
+        (without, "features without geometry"),
+        (others, "features that aren't points"),
+        (unplaced, "points that can't be given in longitude/latitude"),
+    ];
+    notes.extend(left_out.iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{name}: {what}, left out of the reference: {n}")));
+    if points.is_empty() {
+        return Err(with_notes(format!("{name} has no reference points"), &notes));
+    }
+    let from = json!({"layer": name, "features": used, "selected": selected, "filtered": filtered});
+    Ok((points, Some(from), notes))
 }
 
 /// What `embeddings.similarity` reads of the session, and the work that reads the tile and
@@ -659,7 +810,7 @@ fn reference_points(p: &Value) -> Result<Vec<(f64, f64)>, String> {
 pub(crate) fn similarity_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
     let (d, area, cell, name) = analysis(s, p)?;
     let year = year(d, p)?;
-    let points = reference_points(p)?;
+    let points = reference_points(s, p)?;
     #[cfg(target_arch = "wasm32")]
     {
         let _ = (area, cell, name, year, points);
@@ -668,17 +819,25 @@ pub(crate) fn similarity_work(s: &Session, p: &Value) -> Result<super::workflows
     #[cfg(not(target_arch = "wasm32"))]
     Ok(Box::new(move || {
         rustgis_data::progress::check().map_err(|e| e.to_string())?;
+        // Before anything is asked of the network: a layer that can't be the reference is refused.
+        let (points, from, taken) = points()?;
         let (files, place, mut notes) = tile_files(area, &[year])?;
         let file = files.first().ok_or("AlphaEarth has no file there")?;
         let w = read_window(file, area, cell)?;
         notes.extend(w.notes());
         let r = &w.raster;
-        let (reference, missed) = reference(r, &points)?;
+        // A reference with no embedding fails with what its layer said.
+        let (reference, missed) = reference(r, &points).map_err(|e| with_notes(e, &taken))?;
+        notes.extend(taken);
         notes.extend(missed_points(missed, points.len()));
         let band = similarity_band(r, &reference)?;
         let name = name.unwrap_or_else(|| format!("AlphaEarth {year} similarity"));
         let raster = rustgis_analysis::rasterops::derive(r, &name, vec![band])?;
-        made_saying(raster, notes, json!({"year": year, "tile": place, "points": points.len() - missed}))
+        let mut answer = json!({"year": year, "tile": place, "points": points.len() - missed});
+        if let Some(from) = from {
+            answer["reference"] = from;
+        }
+        made_saying(raster, notes, answer)
     }))
 }
 
@@ -1377,5 +1536,168 @@ mod tests {
         let mark = s.notice_mark();
         super::super::workflows::add_made(&mut s, made("Clean", Vec::new())).unwrap();
         assert!(!s.notices_since(mark).iter().any(|n| n.text.starts_with("Clean: ")));
+    }
+
+    /// A session whose only layer is `Samples`: a field `n` from 1, and a feature a geometry.
+    fn samples(geometries: Vec<Option<Geometry>>) -> Session {
+        use rustgis_data::{Dataset, Field, FieldType, Value as Cell};
+        let mut ds = Dataset::new("Samples", GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+        for (i, g) in geometries.into_iter().enumerate() {
+            ds.push(g, vec![Cell::Int(i as i64 + 1)]);
+        }
+        let mut s = Session::new(Project::default());
+        s.map_mut().add_dataset(ds);
+        s
+    }
+
+    fn at(lon: f64, lat: f64) -> Option<Geometry> {
+        Some(Geometry::Point(rustgis_geom::Coord::new(lon, lat)))
+    }
+
+    fn taken(s: &Session) -> Result<Taken, String> {
+        reference_points(s, &json!({"points": "Samples"}))?()
+    }
+
+    #[test]
+    fn a_point_layers_reference_is_its_points_lists() {
+        use rustgis_data::raster::Crs;
+        let list = json!([[10.5, 45.5], [11.5, 44.5], [10.5, 44.5]]);
+        let (given, from, notes) = reference_points(&Session::new(Project::default()), &json!({"points": list})).unwrap()().unwrap();
+        assert_eq!((from, notes.len()), (None, 0));
+        let multi = Geometry::MultiPoint(vec![rustgis_geom::Coord::new(11.5, 44.5), rustgis_geom::Coord::new(10.5, 44.5)]);
+        // In longitude/latitude, and in a projected system (UTM 32N): a point and a multipoint.
+        for crs in [Crs::LonLat, Crs::Epsg(32632)] {
+            let mut s = samples(vec![at(10.5, 45.5), Some(multi.clone())]);
+            let l = s.map_mut().layers.first_mut().unwrap();
+            l.dataset.hold_in(crs).unwrap();
+            let id = l.id;
+            for points in [json!("Samples"), json!(id), json!(id.to_string())] {
+                let (points, from, notes) = reference_points(&s, &json!({"points": points})).unwrap()().unwrap();
+                assert!(points.iter().zip(&given).all(|(a, b)| (a.0 - b.0).abs() < 1e-8 && (a.1 - b.1).abs() < 1e-8), "{points:?}");
+                assert_eq!(points.len(), given.len());
+                assert_eq!(from, Some(json!({"layer": "Samples", "features": 2, "selected": false, "filtered": false})));
+                // Every feature taken: nothing to say.
+                assert!(notes.is_empty(), "{notes:?}");
+                let r = quantised([[100.0, -50.0, 20.0], [1.0, 2.0, 3.0], [9.0, -128.0, 1.0], [30.0, 60.0, -90.0]]);
+                assert_eq!(reference(&r, &points).unwrap(), reference(&r, &given).unwrap());
+            }
+            // The layer is what exact approval binds; a list binds none.
+            let bound = |p: Value| similarity_inputs(&super::super::InputSource::input_context(&s), &p).unwrap();
+            assert_eq!(bound(json!({"points": "Samples"})).layers, [(s.map().instance_id(), id)]);
+            assert_eq!(bound(json!({"points": "Later"})).future_layers, ["Later"]);
+            assert!(bound(json!({"points": list})).layers.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_point_layers_selection_and_definition_query_are_its_reference() {
+        let mut s = samples(vec![at(10.1, 45.0), at(10.2, 45.0), at(10.3, 45.0), at(10.4, 45.0)]);
+        let mut with = |query: Option<&str>, selection: &[usize]| {
+            let l = s.map_mut().layers.first_mut().unwrap();
+            l.definition_query = query.map(String::from);
+            l.selection = selection.to_vec();
+            taken(&s).map(|(points, from, notes)| (points.iter().map(|p| p.0).collect::<Vec<_>>(), from.unwrap(), notes))
+        };
+        // A selection as it is clicked, a feature twice: each once.
+        let (lon, from, notes) = with(None, &[3, 1, 3]).unwrap();
+        assert_eq!(lon, [10.2, 10.4]);
+        assert_eq!(from, json!({"layer": "Samples", "features": 2, "selected": true, "filtered": false}));
+        assert_eq!(notes, ["Samples: reference points taken from 2 of its 4 features (its selection)"]);
+        let (lon, from, notes) = with(Some("n > 1"), &[]).unwrap();
+        assert_eq!(lon, [10.2, 10.3, 10.4]);
+        assert_eq!(from, json!({"layer": "Samples", "features": 3, "selected": false, "filtered": true}));
+        assert_eq!(notes, ["Samples: reference points taken from 3 of its 4 features (its definition query)"]);
+        let (lon, _, notes) = with(Some("n > 1"), &[0, 1]).unwrap();
+        assert_eq!(lon, [10.2]);
+        assert_eq!(notes, ["Samples: reference points taken from 1 of its 4 features (its selection, within its definition query)"]);
+        // A query that hides none leaves none out; one that hides all is refused.
+        assert!(with(Some("n > 0"), &[]).unwrap().2.is_empty());
+        assert_eq!(
+            with(Some("n > 9"), &[]).unwrap_err(),
+            "Samples: its definition query hides every feature, so it has no reference points"
+        );
+        assert!(with(Some("n > 1"), &[0]).unwrap_err().contains("hides every selected feature"));
+        // One that can't be read isn't applied, and is said.
+        let (lon, from, notes) = with(Some("n = = 1"), &[]).unwrap();
+        assert_eq!((lon.len(), from["filtered"].as_bool()), (4, Some(false)));
+        assert!(
+            notes.len() == 1 && notes[0].starts_with("Samples: its definition query can't be read, so it isn't applied: "),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_point_layer_says_what_its_reference_leaves_out() {
+        use rustgis_geom::Coord;
+        let nan = Coord::new(f64::NAN, f64::NAN);
+        let line = Geometry::Line(vec![vec![Coord::new(10.0, 45.0), Coord::new(10.1, 45.0)]]);
+        let s = samples(vec![
+            at(10.1, 45.0),
+            None,
+            Some(Geometry::Point(nan)),
+            Some(Geometry::MultiPoint(Vec::new())),
+            Some(line.clone()),
+            Some(Geometry::MultiPoint(vec![Coord::new(10.2, 45.0), Coord::new(200.0, 45.0), Coord::new(10.0, 95.0)])),
+        ]);
+        let (points, from, notes) = taken(&s).unwrap();
+        assert_eq!(points, [(10.1, 45.0), (10.2, 45.0)]);
+        assert_eq!(from.unwrap()["features"], 2);
+        assert_eq!(
+            notes,
+            [
+                "Samples: features without geometry, left out of the reference: 3",
+                "Samples: features that aren't points, left out of the reference: 1",
+                "Samples: points that can't be given in longitude/latitude, left out of the reference: 2",
+            ]
+        );
+        // All of them left out, an empty layer, and more points than a reference takes: refused.
+        let none = taken(&samples(vec![None, at(200.0, 45.0)])).unwrap_err();
+        assert_eq!(
+            none,
+            "Samples has no reference points (Samples: features without geometry, left out of the reference: 1; \
+             Samples: points that can't be given in longitude/latitude, left out of the reference: 1)"
+        );
+        assert_eq!(taken(&samples(Vec::new())).unwrap_err(), "Samples has no features to take reference points from");
+        let many = |n: usize| taken(&samples(vec![Some(Geometry::MultiPoint(vec![Coord::new(10.0, 45.0); n])), at(10.1, 45.0)]));
+        assert_eq!(many(MAX_REFERENCE_POINTS - 1).unwrap().0.len(), MAX_REFERENCE_POINTS);
+        assert_eq!(
+            many(MAX_REFERENCE_POINTS).unwrap_err(),
+            "Samples has more than 1000 points, the most that make a reference: select the ones to use"
+        );
+        // The refusal says what narrowed the layer, or failed to: a definition query that can't be read.
+        let mut s = samples(vec![Some(Geometry::MultiPoint(vec![Coord::new(10.0, 45.0); MAX_REFERENCE_POINTS + 1]))]);
+        s.map_mut().layers.first_mut().unwrap().definition_query = Some("n = = 1".into());
+        assert!(taken(&s).unwrap_err().contains("(Samples: its definition query can't be read, so it isn't applied: "));
+    }
+
+    #[test]
+    fn a_reference_layer_that_isnt_one_is_refused() {
+        let area = json!([10.0, 45.0, 10.1, 45.1]);
+        let mut s = samples(vec![at(10.05, 45.05)]);
+        let mut lines = rustgis_data::Dataset::new("Roads", GeometryType::Polyline, Vec::new());
+        lines.push(None, Vec::new());
+        s.map_mut().add_dataset(lines);
+        let grid = quantised([[1.0; 3]; 4]);
+        let raster = rustgis_analysis::rasterops::derive(&grid, "Grid", vec![vec![0.5; 4]]).unwrap();
+        super::super::workflows::add_made(&mut s, made_saying(raster, Vec::new(), json!({})).unwrap()).unwrap();
+        let mut refused = |points: Value| {
+            let before = s.map().layers.len();
+            let e = s.run("embeddings.similarity", &json!({"dataset": "alphaearth", "points": points, "bbox": area})).unwrap_err();
+            assert_eq!(s.map().layers.len(), before);
+            e
+        };
+        assert_eq!(refused(json!("Roads")), "Roads: points is a point layer, and it is a polyline layer");
+        assert_eq!(refused(json!("Grid")), "Grid: points is a point layer, and it is a raster layer");
+        assert_eq!(refused(json!("Nowhere")), "no layer named 'Nowhere'");
+        assert_eq!(refused(json!(99)), "no layer with id 99");
+        for other in [json!(true), json!({"layer": "Samples"})] {
+            assert!(refused(other).contains("or a point layer's name or id"));
+        }
+        // Read in place: only a selection is taken, as what it holds is the last view's features.
+        let l = s.map_mut().layers.iter_mut().find(|l| l.name == "Samples").unwrap();
+        l.source = Some(rustgis_map::source::SourceLayer::default());
+        assert!(taken(&s).unwrap_err().contains("load all its features first"));
+        s.map_mut().layers.iter_mut().find(|l| l.name == "Samples").unwrap().selection = vec![0];
+        assert_eq!(taken(&s).unwrap().0, [(10.05, 45.05)]);
     }
 }
