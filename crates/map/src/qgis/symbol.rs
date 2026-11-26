@@ -663,7 +663,7 @@ fn along(l: Node, p: &[(String, String)], hash: bool, reference: Option<f64>, la
         let stroke = if hash {
             hash_mark(class, &sp, p, base, reference, layer, report)
         } else {
-            marker_mark(class, &sp, base, reference, layer, report)
+            marker_mark(class, &sp, class == "RasterMarker" && name_from_expression(sub), base, reference, layer, report)
         };
         if let Some(mut st) = stroke {
             // An image mark is drawn at the layer's opacity alone.
@@ -710,10 +710,12 @@ fn placements(p: &[(String, String)], layer: &str, report: &mut Report) -> Place
 }
 
 /// A marker line's marker layer `class` (its settings `p`) as a stroke of markers at `base`'s
-/// places, or `None` for one RustGIS has no match for (noted).
+/// places, or `None` for one RustGIS has no match for (noted). `from_expression`: its image path is
+/// set by a field or an expression.
 fn marker_mark(
     class: &str,
     p: &[(String, String)],
+    from_expression: bool,
     base: LineMarkers,
     reference: Option<f64>,
     layer: &str,
@@ -728,7 +730,7 @@ fn marker_mark(
             })
         }
         "FontMarker" => font_char(p, layer, report)?,
-        "RasterMarker" => raster_image(p, layer, report).map_or(Marker::Circle, |(picture, _)| Marker::Picture(picture)),
+        "RasterMarker" => raster_image(p, from_expression, layer, report).map_or(Marker::Circle, |(picture, _)| Marker::Picture(picture)),
         "SvgMarker" | "EllipseMarker" | "FilledMarker" => {
             report.approximated(layer, format!("{} markers, drawn as circles in their colour", marker_name(class)));
             Marker::Circle
@@ -833,7 +835,7 @@ fn marker(layers: &[(Node, Props)], reference: Option<f64>, still: bool, layer: 
                 Some(m) => m,
                 None => continue,
             },
-            "RasterMarker" => match raster_image(p, layer, report) {
+            "RasterMarker" => match raster_image(p, name_from_expression(*l), layer, report) {
                 Some((picture, a)) => {
                     aspect = a;
                     Marker::Picture(picture)
@@ -889,11 +891,26 @@ fn marker(layers: &[(Node, Props)], reference: Option<f64>, still: bool, layer: 
     Converted { symbol, strokes, rotation: None, by: SymbolBy::default(), fills: Vec::new() }
 }
 
+/// Whether `path` starts from a root (`/…`, `\\…`) or names a drive (`C:\…`, or `C:x`, as `is_relative` counts
+/// it), not from the project's folder.
+fn rooted(path: &str) -> bool {
+    let b = path.as_bytes();
+    path.starts_with(['/', '\\']) || (b.first().is_some_and(u8::is_ascii_alphabetic) && b.get(1) == Some(&b':'))
+}
+
+/// Whether image path `file` names a network share (`\\host\share`, `//host/share`), which isn't
+/// opened: looking one up can sign in to the host, and a project may be opened on Windows, where
+/// `//` is one (as `paths::is_absolute_local` refuses it on every platform).
+fn network_share(file: &str) -> bool {
+    file.len() > 1 && file.chars().take(2).all(|c| c == '\\' || c == '/')
+}
+
 /// Reads the images of the raster image markers under `root` (a project or a style), each
 /// `imageFile` once (a file once for each spelling of its path from the folder: a leading `./` is
 /// dropped, so `./a.png` and `a.png` are one), into the report for [`raster_image`]: a `base64:`
-/// one as it is, a file's through `read` (relative to `dir`). One at a web address isn't fetched,
-/// nor one on a network share (`\\host\share`, `//host/share`), nor one kept inside a `.qgz`
+/// one as it is, a file's through `read` (relative to `dir`; a `file:` address is the file it names).
+/// One at a web address isn't fetched, nor one on a network share (`\\host\share`, `//host/share`,
+/// `file://host/share`), nor one kept inside a `.qgz`
 /// (`attachment:`); one relative to no folder (or to a drive's working folder) isn't looked
 /// for, and those past the pictures a run keeps ([`MAX_PICTURES`],
 /// [`MAX_PICTURES_BYTES`]) aren't read. An image is kept when read, before its symbol is: one
@@ -910,22 +927,44 @@ pub(super) fn read_images(root: Node, dir: &str, read: &mut ReadImage, report: &
         if report.images.contains_key(file) {
             continue;
         }
+        // A `file:` address is the file it names, decoded as a tile archive's address is; one with
+        // a host is a network share.
+        let address = file.starts_with("file:");
+        let (path, share) = if address {
+            match super::source::file_address_path(file) {
+                Some(path) => (path, false),
+                None => (file.to_string(), true),
+            }
+        } else {
+            (file.to_string(), false)
+        };
         let source = if file.starts_with("base64:") {
             Ok(None)
         } else if file.starts_with("attachment:") {
             Err("whose image is kept inside the .qgz project, which RustGIS doesn't read it from")
-        } else if file.contains("://") {
+        } else if path.contains("://") && (!address || file.trim_start_matches("file:").trim_start_matches('/').contains("://")) {
             Err("whose image is at a web address, which RustGIS doesn't fetch")
-        } else if file.len() > 1 && file.chars().take(2).all(|c| c == '\\' || c == '/') {
+        } else if share || network_share(&path) {
             // Looking a share up can sign in to the host the file names, which a style or
             // project chose (as an archive on one isn't opened either).
             Err("whose image is on a network share, which RustGIS doesn't open")
-        } else if super::is_drive_relative(file) {
+        } else if address && !rooted(&path) && path.contains("://") {
+            // `%3A%2F%2F` in a name is a name, but `absolute` would leave one from the project's folder to
+            // the working folder.
+            Err("whose image is a relative file name with `://` in it, which RustGIS doesn't read")
+        } else if super::is_drive_relative(&path) {
             Err("whose image file is relative to a drive's working folder, which no project folder tells")
-        } else if super::is_relative(file) && dir.is_empty() {
+        } else if super::is_relative(&path) && dir.is_empty() {
             Err("whose image file is relative to a folder the import wasn't given")
         } else {
-            Ok(Some(super::source::absolute(file, dir)))
+            let joined = super::source::absolute(&path, dir);
+            // `.//host/share` from a project at a drive's root (`/`) is `//host/share` once joined; a project
+            // that is itself on a share reads its own images.
+            if network_share(&joined) && !network_share(dir) {
+                Err("whose image is on a network share, which RustGIS doesn't open")
+            } else {
+                Ok(Some(joined))
+            }
         };
         if let Ok(Some(path)) = &source
             && let Some(got) = files.get(path)
@@ -964,10 +1003,15 @@ const SEE_THROUGH_IMAGES: &str = "see-through raster image markers, drawn opaque
 
 /// A raster image marker's image (read before the symbols: [`read_images`]) and its height over
 /// its width, or `None` (noted, with why) for it to be drawn as a circle. What QGIS draws
-/// otherwise than RustGIS is noted: a ratio of its own, see-through.
-fn raster_image(p: &[(String, String)], layer: &str, report: &mut Report) -> Option<(Picture, f32)> {
+/// otherwise than RustGIS is noted: a ratio of its own, see-through. `from_expression`: its image
+/// path is set by a field or an expression.
+fn raster_image(p: &[(String, String)], from_expression: bool, layer: &str, report: &mut Report) -> Option<(Picture, f32)> {
     let file = prop(p, "imageFile").map(str::trim).unwrap_or_default();
     let why = match report.images.get(file) {
+        // QGIS's image path as a field or an expression (`name`) has nothing in `imageFile` to read.
+        _ if file.is_empty() && from_expression => {
+            "whose image comes from a field or an expression, which RustGIS doesn't evaluate".to_string()
+        }
         _ if file.is_empty() => "with no image".to_string(),
         Some(Ok(got)) => {
             let got = *got;
@@ -1019,6 +1063,11 @@ fn point_offset(
         _ => {}
     }
     (x, y)
+}
+
+/// Whether `node`'s image path (`name`) is set by a field or an expression.
+fn name_from_expression(node: Node) -> bool {
+    active_properties(node).iter().any(|(name, _)| *name == "name")
 }
 
 /// The data-defined properties switched on in `node`'s own `data_defined_properties`, by name.

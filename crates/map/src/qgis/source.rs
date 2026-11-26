@@ -595,13 +595,24 @@ fn file_url_path(url: &str) -> Option<&str> {
     Some(if drive { path.get(1..).unwrap_or(path) } else { path })
 }
 
+/// A `file:` address's path (see [`file_url_path`]) decoded as any address's parts are; `None` for any
+/// other address and for one with a host.
+pub(super) fn file_address_path(url: &str) -> Option<String> {
+    // Trimmed: what `absolute` trims after the checks must not decide them (`%20%2F%2Fhost` is `//host`).
+    let path = rustgis_data::address::percent_decode(file_url_path(url)?).trim().to_string();
+    // A drive's colon may be encoded (`/C%3A/x`): the drive form is recognized once decoded.
+    let b = path.as_bytes();
+    let drive = b.first() == Some(&b'/') && b.get(1).is_some_and(u8::is_ascii_alphabetic) && b.get(2) == Some(&b':');
+    Some(if drive { path.get(1..).unwrap_or_default().to_string() } else { path })
+}
+
 /// A tile archive's path: a `file://` address (`file:../x` when relative) as its path, a relative
 /// one from the project's folder; a web address as it is.
 fn archive_path(url: &str, dir: &str) -> String {
     let url = url.trim();
-    match file_url_path(url) {
+    match file_address_path(url) {
         // (Its parts are encoded as in any address.)
-        Some(path) => absolute(&rustgis_data::address::percent_decode(path), dir),
+        Some(path) => absolute(&path, dir),
         None if url.contains("://") => url.to_string(),
         None => absolute(url, dir),
     }
@@ -887,16 +898,11 @@ fn select_all(query: &str) -> Option<(String, Option<String>)> {
 fn csv(datasource: &str, dir: &str) -> Source {
     let (path, q) = datasource.split_once('?').unwrap_or((datasource, ""));
     // file:///absolute/path, or a relative one as file:./path.
-    let path = file_url_path(path).unwrap_or(path);
+    // A `file:` address is its path decoded, a drive's colon encoded or not; anything else is decoded as it is.
+    let path = file_address_path(path).unwrap_or_else(|| rustgis_data::address::percent_decode(path));
     let q = query(q);
     let get = |k: &str| q.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
-    Source::Csv {
-        path: absolute(&rustgis_data::address::percent_decode(path), dir),
-        x: get("xField"),
-        y: get("yField"),
-        wkt: get("wktField"),
-        crs: get("crs"),
-    }
+    Source::Csv { path: absolute(&path, dir), x: get("xField"), y: get("yField"), wkt: get("wktField"), crs: get("crs") }
 }
 
 /// The most `&`-joined parts of a web source, or of an address's query, read; the rest are
@@ -1386,6 +1392,9 @@ mod tests {
         );
         let Source::Csv { path, .. } = read("delimitedtext", "file:///C:/maps/p.csv?xField=x", dir) else { panic!() };
         assert_eq!(path, "C:/maps/p.csv");
+        // A drive's colon may be encoded, as an image's and an archive's is.
+        let Source::Csv { path, .. } = read("delimitedtext", "file:///C%3A/maps/p.csv?xField=x", dir) else { panic!() };
+        assert_eq!(path, "C:/maps/p.csv");
         // An encoded file address is decoded once (QGIS encodes the address again as a parameter).
         assert_eq!(
             read("mbtilesvectortiles", "type=mbtiles&url=file:///maps/my%2520tiles.mbtiles", dir),
@@ -1816,5 +1825,18 @@ mod tests {
         );
         assert_eq!(filtered("").as_deref(), Some(r#""kind" = 'a'"#));
         assert!(matches!(unnamed("pts"), Some(VirtualFrom::Missing(_))));
+    }
+
+    /// A tile archive at a `file:` address whose drive's colon is encoded is on that drive, as a
+    /// picture marker's image is (`file:///C%3A/…` is `C:/…`, not `/C:/…`).
+    #[test]
+    fn a_tile_archive_with_an_encoded_drive_colon_is_on_that_drive() {
+        for (url, path) in [
+            ("file:///C%3A/maps/t.mbtiles", "C:/maps/t.mbtiles"),
+            ("file:///C:/maps/t.mbtiles", "C:/maps/t.mbtiles"),
+            ("file:///maps/t.mbtiles", "/maps/t.mbtiles"),
+        ] {
+            assert_eq!(archive_path(url, "/p"), path, "{url}");
+        }
     }
 }

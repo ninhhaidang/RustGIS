@@ -491,26 +491,46 @@ fn symbol(s: &Value, g: GeometryType, picture: Option<Rgba>, pictures: &mut Pict
                 // Sized by its width, as a picture marker is: its height follows the image's own
                 // proportion, which a service draws its symbol at. Without a width above 0, its
                 // height stands in as its width, said, since an image that isn't square is then
-                // drawn that wide, not that tall; with neither, RustGIS's size does.
+                // drawn that wide, not that tall; with neither (a height of 0 is none), RustGIS's
+                // size does. A height of 0 beside a width is said: the width alone draws it.
                 Ok(p) => {
+                    // A side that isn't a number is said as the circle says it, whether this uses it or not.
+                    say_unreadable_sizes(s, notes);
                     let wide = s.get("width").and_then(Value::as_f64).is_some_and(|w| w.is_finite() && w > 0.0);
-                    if !wide {
-                        notes.add(if s.get("height").is_some_and(|h| !h.is_null()) {
-                            "picture markers with no width, drawn with their height as their width"
-                        } else {
-                            "picture markers with no size, drawn at RustGIS's"
-                        });
-                    }
-                    let size = size(s.get(if wide { "width" } else { "height" }), base.size, notes);
+                    let height = s.get("height").filter(|h| !h.is_null());
+                    let no_height = height.and_then(Value::as_f64).is_some_and(|h| h <= 0.0);
+                    let sized_by = if wide {
+                        if no_height {
+                            notes.add("picture markers of no height, drawn as tall as their image is");
+                        }
+                        s.get("width")
+                    } else if height.and_then(Value::as_f64).is_some_and(|h| h > 0.0) {
+                        notes.add("picture markers with no width, drawn with their height as their width");
+                        height
+                    } else {
+                        notes.add("picture markers with no size, drawn at RustGIS's");
+                        None
+                    };
+                    let size = size(sized_by, base.size, notes);
                     return Some((Symbol { fill, size, marker: Marker::Picture(p), ..base }, None));
                 }
                 Err(why) => notes.add(why),
             }
             // As a circle, the larger of its width and height, so that one past the largest is
-            // said once.
-            let points = |k: &str| s.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(f64::NEG_INFINITY);
-            let larger = if points("height") > points("width") { s.get("height") } else { s.get("width") };
-            let size = size(larger, base.size, notes);
+            // said once; each side that isn't a number is said, as `size()` says one it can't read.
+            let num = |k: &str| s.get(k).and_then(Value::as_f64).filter(|v| v.is_finite());
+            say_unreadable_sizes(s, notes);
+            let top = match (num("height"), num("width")) {
+                (Some(h), Some(w)) => Some(h.max(w)),
+                (h, w) => h.or(w),
+            };
+            let larger = if num("height") > num("width") { s.get("height") } else { s.get("width") };
+            // With no size above 0 (a size of 0 isn't shown), or none given, RustGIS's, said as the drawn one is.
+            let none = top.is_none_or(|t| t <= 0.0);
+            if none {
+                notes.add("picture markers with no size, drawn at RustGIS's");
+            }
+            let size = size(if none { None } else { larger }, base.size, notes);
             Some((Symbol { fill, size, ..base }, None))
         }
         ("esriPFS", GeometryType::Polygon) => {
@@ -619,6 +639,14 @@ fn size(v: Option<&Value>, default: f32, notes: &mut Notes) -> f32 {
         }
         (s as f32).clamp(0.0, MAX_MARKER_SIZE)
     })
+}
+
+/// Says a picture marker's `width` or `height` that is given but isn't a number, once for either or both.
+fn say_unreadable_sizes(s: &Value, notes: &mut Notes) {
+    let unreadable = |k: &str| s.get(k).is_some_and(|v| !v.is_null()) && !s.get(k).and_then(Value::as_f64).is_some_and(f64::is_finite);
+    if unreadable("width") || unreadable("height") {
+        notes.add("marker sizes RustGIS can't read, left out");
+    }
 }
 
 /// A symbol's style (`style`), `None` when it names none; one that isn't text is noted and taken as
@@ -782,6 +810,58 @@ mod tests {
         assert_eq!(notes.text(), "markers' angles and offsets, left out");
     }
 
+    /// A picture marker with a height of 0 isn't drawn at 0 (not shown) under a note saying it is
+    /// drawn as wide as its height: a height of 0 is no height.
+    #[test]
+    fn a_picture_marker_of_no_height_is_said_so() {
+        let image = "iVBORw0KGgoSIMPLE=";
+        let styled_pms = |width: Value, height: Value| {
+            let info = json!({"renderer": {"type": "simple", "symbol": {"type": "esriPMS", "imageData": image, "width": width, "height": height}}});
+            let (l, notes) = styled(GeometryType::Point, info);
+            let Renderer::Single(s) = l.renderer else { panic!("a single symbol") };
+            (s, notes.text())
+        };
+        let Renderer::Single(base) = layer(GeometryType::Point).renderer else { panic!("a single symbol") };
+        // With no width above 0 either, it has no size: RustGIS's.
+        let cases = [(json!(null), json!(0)), (json!(0), json!(0)), (json!(0), json!(-4))];
+        for (width, height) in cases {
+            let (s, text) = styled_pms(width.clone(), height.clone());
+            assert_eq!(s.size, base.size, "width {width}, height {height}");
+            assert_eq!(text, "picture markers with no size, drawn at RustGIS's", "width {width}, height {height}");
+        }
+        // A side that isn't a number can't size it either, and is said, as the circle says it.
+        for (width, height) in [(json!(null), json!("18")), (json!(0), json!("abc"))] {
+            let (s, text) = styled_pms(width.clone(), height.clone());
+            assert_eq!(s.size, base.size, "width {width}, height {height}");
+            assert_eq!(
+                text, "marker sizes RustGIS can't read, left out; picture markers with no size, drawn at RustGIS's",
+                "width {width}, height {height}"
+            );
+        }
+        // So is one a width makes no use of, and a width that isn't a number beside a height that is.
+        let (s, text) = styled_pms(json!(15), json!("abc"));
+        assert_eq!(s.size, 15.0);
+        assert_eq!(text, "marker sizes RustGIS can't read, left out");
+        let (s, text) = styled_pms(json!("abc"), json!(18));
+        assert_eq!(s.size, 18.0);
+        assert_eq!(
+            text,
+            "marker sizes RustGIS can't read, left out; picture markers with no width, drawn with their height as their width"
+        );
+        // With a width, it is drawn by it, and the height's 0 said.
+        let (s, text) = styled_pms(json!(15), json!(0));
+        assert_eq!(s.size, 15.0);
+        assert_eq!(text, "picture markers of no height, drawn as tall as their image is");
+        // A height below 0 is no height either: the width alone draws it, and the height is said.
+        let (s, text) = styled_pms(json!(15), json!(-4));
+        assert_eq!(s.size, 15.0);
+        assert_eq!(text, "picture markers of no height, drawn as tall as their image is");
+        // A height above 0 says nothing of the kind.
+        let (s, text) = styled_pms(json!(15), json!(18));
+        assert_eq!(s.size, 15.0);
+        assert!(text.is_empty(), "{text}");
+    }
+
     #[test]
     fn a_picture_marker_rustgis_cant_draw_is_a_grey_circle_of_its_size_and_said_why() {
         let circle = |symbol: Value| {
@@ -804,6 +884,75 @@ mod tests {
         // Its image only at its `url`, which RustGIS doesn't fetch.
         let url = json!({"type": "esriPMS", "url": "4d1f6b3c", "width": 15, "height": 18});
         assert_eq!(circle(url), "picture markers whose image is only at a URL, drawn as circles");
+        // A height that isn't a number, with no width, isn't lost silently: size() says it can't read it.
+        let (l, notes) = styled(
+            GeometryType::Point,
+            json!({"renderer": {"type": "simple", "symbol": {"type": "esriPMS", "imageData": gif, "width": null, "height": "18"}}}),
+        );
+        let Renderer::Single(s) = l.renderer else { panic!("a single symbol") };
+        let Renderer::Single(base) = layer(GeometryType::Point).renderer else { panic!("a single symbol") };
+        assert_eq!(s.size, base.size);
+        assert_eq!(
+            notes.text(),
+            "picture markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles; marker sizes RustGIS can't read, left out; picture markers with no size, drawn at RustGIS's"
+        );
+        // Each side that isn't a number is said, whichever one the circle takes its size from.
+        for (width, height, size, text) in [
+            (
+                json!("abc"),
+                json!(18),
+                18.0,
+                "picture markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles; marker sizes RustGIS can't read, left out",
+            ),
+            (
+                json!(0),
+                json!("abc"),
+                0.0,
+                "picture markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles; marker sizes RustGIS can't read, left out; picture markers with no size, drawn at RustGIS's",
+            ),
+            // A size below 0 is no size (not drawn at 0, not shown), as it is for the drawn picture.
+            (
+                json!(-5),
+                json!(null),
+                0.0,
+                "picture markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles; picture markers with no size, drawn at RustGIS's",
+            ),
+            // With neither side given at all, it has no size, as the drawn picture has none.
+            (
+                json!(null),
+                json!(null),
+                0.0,
+                "picture markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles; picture markers with no size, drawn at RustGIS's",
+            ),
+            (
+                json!("abc"),
+                json!("abc"),
+                0.0,
+                "picture markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles; marker sizes RustGIS can't read, left out; picture markers with no size, drawn at RustGIS's",
+            ),
+        ] {
+            let (l, notes) = styled(
+                GeometryType::Point,
+                json!({"renderer": {"type": "simple", "symbol": {"type": "esriPMS", "imageData": gif, "width": width, "height": height}}}),
+            );
+            let Renderer::Single(s) = l.renderer else { panic!("a single symbol") };
+            let Renderer::Single(base) = layer(GeometryType::Point).renderer else { panic!("a single symbol") };
+            let expected = if size == 0.0 { base.size } else { size };
+            assert_eq!(s.size, expected, "width {width}, height {height}");
+            assert_eq!(notes.text(), text, "width {width}, height {height}");
+        }
+        // With no size above 0 either, the circle is RustGIS's size (not 0, not shown), said.
+        let (l, notes) = styled(
+            GeometryType::Point,
+            json!({"renderer": {"type": "simple", "symbol": {"type": "esriPMS", "imageData": gif, "width": 0, "height": 0}}}),
+        );
+        let Renderer::Single(s) = l.renderer else { panic!("a single symbol") };
+        let Renderer::Single(base) = layer(GeometryType::Point).renderer else { panic!("a single symbol") };
+        assert_eq!((s.marker, s.size), (Marker::Circle, base.size));
+        assert_eq!(
+            notes.text(),
+            "picture markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles; picture markers with no size, drawn at RustGIS's"
+        );
         assert_eq!(Picture::kept(gif), None, "an image that isn't drawn isn't kept");
     }
 

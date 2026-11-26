@@ -1473,6 +1473,122 @@ fn raster_image_markers_draw_their_image_read_once_from_the_style_folder() {
     assert_eq!(notes, [("see-through raster image markers, drawn opaque", 1)]);
 }
 
+/// A `file:` address is the file it names, read as a tile archive's address is (decoded, from the
+/// folder when relative); with a host it is a network share.
+#[test]
+fn raster_image_markers_read_a_file_address_as_the_file_it_names() {
+    use crate::symbology::Picture;
+    let asked = std::cell::RefCell::new(Vec::new());
+    let mut read = |source: &str| {
+        asked.borrow_mut().push(source.to_string());
+        Ok(("QUJD".to_string(), 1.0))
+    };
+    let cases = [
+        ("file:///data/my%20pin.png", "/data/my pin.png"),
+        ("file:///C:/data/a.png", "C:/data/a.png"),
+        // A drive's colon may be encoded.
+        ("file:///C%3A/data/a.png", "C:/data/a.png"),
+        ("file://C:/data/a.png", "C:/data/a.png"),
+        ("file:./pins/a.png", "/styles/pins/a.png"),
+        // `://` encoded in a name is a name, not a web address.
+        ("file:///data/a%3A%2F%2Fb.png", "/data/a://b.png"),
+    ];
+    for (file, path) in cases {
+        asked.borrow_mut().clear();
+        let mut report = Report::default();
+        let s = super::read_style(&marker_qml("1", &raster_marker(file, "")), "Pins", "/styles", &mut read, &mut report).unwrap();
+        let Some(Renderer::Single(sym)) = &s.renderer else { panic!("{file}") };
+        assert_eq!(sym.marker, Marker::Picture(Picture::new("QUJD")), "{file}");
+        assert_eq!(*asked.borrow(), [path], "{file}");
+        assert!(report.notes.is_empty(), "{file}: {:?}", report.notes);
+    }
+    // A relative name with `://` encoded in it isn't read from wherever the program runs, though.
+    asked.borrow_mut().clear();
+    let mut report = Report::default();
+    let s = super::read_style(&marker_qml("1", &raster_marker("file:./a%3A%2F%2Fb.png", "")), "Pins", "/styles", &mut read, &mut report)
+        .unwrap();
+    let Some(Renderer::Single(sym)) = &s.renderer else { panic!() };
+    assert_eq!(sym.marker, Marker::Circle);
+    assert!(asked.borrow().is_empty(), "{:?}", asked.borrow());
+    assert_eq!(
+        report.notes.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(),
+        ["raster image markers whose image is a relative file name with `://` in it, which RustGIS doesn't read, drawn as circles"]
+    );
+    // A relative name that starts with a separator isn't joined to a project at a drive's root into a share
+    // (`.//host/share` from `/` is `//host/share`), though a project that is itself on a share reads its own.
+    for (file, dir, refused) in [
+        ("file:.//host/share/a.png", "/", true),
+        ("file:.//host/share/a.png", "\\", true),
+        (".//host/share/a.png", "/", true),
+        ("file:./a.png", "/", false),
+        ("file:./a.png", "//server/proj", false),
+    ] {
+        asked.borrow_mut().clear();
+        let mut report = Report::default();
+        let s = super::read_style(&marker_qml("1", &raster_marker(file, "")), "Pins", dir, &mut read, &mut report).unwrap();
+        let Some(Renderer::Single(sym)) = &s.renderer else { panic!("{file}") };
+        if refused {
+            assert_eq!(sym.marker, Marker::Circle, "{file} from {dir}");
+            assert!(asked.borrow().is_empty(), "{file} from {dir}: {:?}", asked.borrow());
+            assert_eq!(
+                report.notes.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(),
+                ["raster image markers whose image is on a network share, which RustGIS doesn't open, drawn as circles"],
+                "{file} from {dir}"
+            );
+        } else {
+            assert_eq!(sym.marker, Marker::Picture(crate::symbology::Picture::new("QUJD")), "{file} from {dir}");
+            assert_eq!(asked.borrow().len(), 1, "{file} from {dir}");
+        }
+    }
+}
+
+/// A raster image marker whose image a field or an expression gives has no image of its own to
+/// read; the note says that, not that it has none.
+#[test]
+fn a_raster_image_from_an_expression_is_noted_as_one_not_as_no_image() {
+    // A raster image marker layer of `file` whose image path is also set by an expression.
+    let by_expression = |file: &str| {
+        format!(
+            r#"<layer class="RasterMarker" enabled="1"><Option type="Map"><Option name="imageFile" value="{file}"/><Option name="size" value="4"/></Option>
+        <data_defined_properties><Option type="Map"><Option name="name" value="" type="QString"/><Option name="properties" type="Map">
+        <Option name="name" type="Map"><Option name="active" value="true" type="bool"/><Option name="expression" value="'pin_' || &quot;kind&quot; || '.png'" type="QString"/>
+        <Option name="type" value="3" type="int"/></Option></Option></Option></data_defined_properties></layer>"#
+        )
+    };
+    let from = "raster image markers whose image comes from a field or an expression, which RustGIS doesn't evaluate, drawn as circles";
+    let generic = "data-defined symbol settings (from fields or expressions)";
+    let mut read = |_: &str| Ok(("QUJD".to_string(), 1.0));
+    let mut report = Report::default();
+    let s = super::read_style(&marker_qml("1", &by_expression("")), "Pins", "", &mut read, &mut report).unwrap();
+    let Some(Renderer::Single(sym)) = &s.renderer else { panic!() };
+    assert_eq!(sym.marker, Marker::Circle);
+    let notes: Vec<&str> = report.notes.iter().map(|n| n.text.as_str()).collect();
+    assert!(notes.contains(&from), "{notes:?}");
+    assert!(!notes.iter().any(|n| n.contains("no image")), "{notes:?}");
+    // Along a line, the same.
+    let line = format!(
+        r#"<qgis version="4.2.3"><renderer-v2 type="singleSymbol"><symbols><symbol type="line" name="0" alpha="1">
+        <layer class="MarkerLine" enabled="1"><Option type="Map"><Option name="placements" value="Interval"/><Option name="interval" value="5"/></Option>
+        <symbol type="marker" name="@0@0" alpha="1">{}</symbol></layer></symbol></symbols></renderer-v2></qgis>"#,
+        by_expression("")
+    );
+    let mut report = Report::default();
+    super::read_style(&line, "Road", "", &mut read, &mut report).unwrap();
+    let notes: Vec<&str> = report.notes.iter().map(|n| n.text.as_str()).collect();
+    assert!(notes.contains(&from), "{notes:?}");
+    // With an image of its own too, it is drawn, and the expression is said (the generic note).
+    let mut report = Report::default();
+    let s = super::read_style(&marker_qml("1", &by_expression("base64:QUJD")), "Pins", "", &mut read, &mut report).unwrap();
+    let Some(Renderer::Single(sym)) = &s.renderer else { panic!() };
+    assert!(matches!(sym.marker, Marker::Picture(_)), "{:?}", sym.marker);
+    let notes: Vec<&str> = report.notes.iter().map(|n| n.text.as_str()).collect();
+    assert!(notes.contains(&generic) && !notes.contains(&from), "{notes:?}");
+    // With no expression, an empty image is still no image.
+    let mut report = Report::default();
+    super::read_style(&marker_qml("1", &raster_marker("", "")), "Pins", "", &mut read, &mut report).unwrap();
+    assert_eq!(report.notes.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["raster image markers with no image, drawn as circles"]);
+}
+
 #[test]
 fn raster_image_markers_that_cant_be_drawn_are_circles_saying_why() {
     // Each kind of image the reader isn't asked for, or can't give, with what the note says.
@@ -1498,6 +1614,25 @@ fn raster_image_markers_that_cant_be_drawn_are_circles_saying_why() {
         ),
         ("\\\\host\\share\\a.png", "raster image markers whose image is on a network share, which RustGIS doesn't open, drawn as circles"),
         ("//host/share/a.png", "raster image markers whose image is on a network share, which RustGIS doesn't open, drawn as circles"),
+        // A web address written after `file:` is still one, whatever else its form looks like.
+        (
+            "file://https://example.invalid/a.png",
+            "raster image markers whose image is at a web address, which RustGIS doesn't fetch, drawn as circles",
+        ),
+        (
+            "file:https://example.invalid/a.png",
+            "raster image markers whose image is at a web address, which RustGIS doesn't fetch, drawn as circles",
+        ),
+        ("file://host/share/a.png", "raster image markers whose image is on a network share, which RustGIS doesn't open, drawn as circles"),
+        // A share written so that decoding leaves a space before it, which `absolute` would trim.
+        (
+            "file:%20%2F%2Fhost/share/a.png",
+            "raster image markers whose image is on a network share, which RustGIS doesn't open, drawn as circles",
+        ),
+        (
+            "file:%09%5C%5Chost%5Cshare%5Ca.png",
+            "raster image markers whose image is on a network share, which RustGIS doesn't open, drawn as circles",
+        ),
         ("/data/gone.png", "raster image markers whose image file doesn't open, drawn as circles"),
     ];
     for (file, note) in cases {

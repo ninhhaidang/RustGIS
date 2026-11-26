@@ -432,7 +432,7 @@ holding `NULL`, which QGIS takes as unknown and RustGIS skips. What RustGIS does
 near as it can, or left out, and said: the import's notes list, layer by layer, what was
 approximated (vector tile styles, text matched ignoring letter case, a memory layer's fields of kinds RustGIS hasn't as text, gradient and shapeburst fills' offsets left out and colour ramps other than gradients drawn from their first colour to their last, SVG, raster and random fills and dense brushes as a tint of their colour, SVG markers as circles,
 raster image markers whose image RustGIS can't use as circles (one at a web address, which it
-doesn't fetch, or kept inside a `.qgz`; a file that doesn't open or isn't a PNG, JPEG or SVG; one past
+doesn't fetch, on a network share (`\\host\share`, `file://host/share`), a relative name with `://` in it, or kept inside a `.qgz`; one a field or an expression gives, which RustGIS doesn't evaluate; a file that doesn't open or isn't a PNG, JPEG or SVG; one past
 2 MiB of base64, 2048 × 2048 pixels or as much to draw, an SVG with filters, text, images, animation or links to other files, the images it keeps or the pixels or memory of marker images it decodes
 until it restarts), those of a fixed aspect ratio in their image's own,
 see-through ones opaque and those anchored off their centre along lines centred,
