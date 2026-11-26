@@ -94,6 +94,10 @@ impl MarkerImage {
                         "This image can't be a marker: it is longer than {mib} MiB as base64; make it smaller",
                         &[("mib", &(rustgis_engine::map::symbology::MAX_PICTURE_BYTES >> 20).to_string())],
                     ),
+                    MarkerRefusal::SvgTooMuchToRead => tl!(
+                        "This image can't be a marker: it is an SVG whose style sheets, element attributes or entities holding tags take more to read than RustGIS allows"
+                    )
+                    .to_string(),
                     MarkerRefusal::SvgTooNested => tl!(
                         "This image can't be a marker: it is an SVG with more than 40,000 XML nodes or nested deeper than 64 levels"
                     )

@@ -232,7 +232,7 @@ fn close(prefixes: &mut HashMap<&[u8], usize>, prefix: &[u8]) {
 }
 
 /// Whether a DOCTYPE declares an entity whose value holds markup (a `<`).
-fn entity_with_markup(decl: &[u8]) -> bool {
+pub fn entity_with_markup(decl: &[u8]) -> bool {
     let mut at = 0;
     while let Some(p) = decl.get(at..).and_then(|r| r.windows(8).position(|w| w == b"<!ENTITY")) {
         let start = at + p + 8;

@@ -81,6 +81,10 @@ pub enum MarkerRefusal {
     /// It is an SVG with more to draw than [`MARKER_PIXELS`] (in the units of the renderer's SVG
     /// count, `svg::work`), or more elements than `svg::ELEMENTS` (10,000).
     TooMuchToDraw,
+    /// It is an SVG whose style sheets and `style` attributes, or whose elements' attributes, take
+    /// more to read than `svg::STYLE_UNITS` and `svg::ATTRIBUTE_PAIRS` allow, or whose entities
+    /// hold tags, which no count sees.
+    SvgTooMuchToRead,
     /// It is an SVG with more XML nodes than `svg::XML_NODES` (40,000) or nested deeper than
     /// `svg::DEPTH` (64).
     SvgTooNested,
@@ -136,6 +140,7 @@ refusal_phrases! {
     TooManyBytes => "is longer than 2 MiB as base64",
     TooManyPixels => "has more pixels than 2048 × 2048",
     TooMuchToDraw => "is an SVG with more to draw than a 2048 × 2048 image",
+    SvgTooMuchToRead => "is an SVG whose style sheets, element attributes or entities holding tags take more to read than RustGIS allows",
     SvgTooNested => "is an SVG with more than 40,000 XML nodes or nested deeper than 64 levels",
     SvgUnknownRadius => "is an SVG with a radius whose size RustGIS can't know (in em or ex, or in % of a size in em or ex, or of a nested size in % over 100%)",
     SvgTooSmall => "is an SVG too small to draw",
@@ -371,6 +376,7 @@ impl From<svg::Refusal> for MarkerRefusal {
             svg::Refusal::NotSvg => MarkerRefusal::NotAnImage,
             svg::Refusal::TooMuch => MarkerRefusal::TooMuchToDraw,
             svg::Refusal::PastRun => MarkerRefusal::PastRunPixels,
+            svg::Refusal::TooMuchToRead => MarkerRefusal::SvgTooMuchToRead,
             svg::Refusal::TooNested => MarkerRefusal::SvgTooNested,
             svg::Refusal::UnknownRadius => MarkerRefusal::SvgUnknownRadius,
             svg::Refusal::Undrawn => MarkerRefusal::SvgUndrawn,
@@ -776,6 +782,7 @@ mod tests {
                 TooManyBytes,
                 TooManyPixels,
                 TooMuchToDraw,
+                SvgTooMuchToRead,
                 SvgTooNested,
                 SvgUnknownRadius,
                 SvgTooSmall,
@@ -784,7 +791,7 @@ mod tests {
                 PastRunPixels
             ]
             .map(MarkerRefusal::lasts),
-            [true, true, true, true, true, true, true, true, true, false]
+            [true, true, true, true, true, true, true, true, true, true, false]
         );
         // A kept image the run's spent budget refuses is kept as it is; one refused for itself
         // isn't; one that draws is.
@@ -903,6 +910,8 @@ mod tests {
             (long_png, TooManyBytes),
             (svg(&deep), SvgTooNested),
             (svg(&nodes), SvgTooNested),
+            // Its own cause (#2800), not "more to draw": 20,000 declarations in a `style` take too long to read.
+            (svg(&format!(r#"<rect width="1" height="1" style="{}"/>"#, "fill: red; ".repeat(20_000))), SvgTooMuchToRead),
             (svg(r#"<circle r="1em"/>"#), SvgUnknownRadius),
             (svg(r#"<rect width="9" height="9" rx="2ex"/>"#), SvgUnknownRadius),
             // A radius in % of a size in em or ex with no view box, or of a nested one past 100%.
