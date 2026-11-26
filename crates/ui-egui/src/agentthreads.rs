@@ -169,7 +169,7 @@ fn deliver(app: &mut RustGisApp, ctx: &egui::Context) {
     let step = agent.deliver(&app.session);
     app.assistant.agent = Some(agent);
     if let Some(step) = step {
-        crate::assistantpane::follow(app, step, ctx);
+        crate::assistant::follow(app, step, ctx);
     }
 }
 

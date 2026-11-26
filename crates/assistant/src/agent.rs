@@ -451,6 +451,10 @@ impl Agent {
     /// most [`crate::attach::MAX_PER_MESSAGE`] (more are left out, and said). The transcript says
     /// each picture, and the size it went at when it was drawn smaller; a model known not to read
     /// images gets their captions, which is said too.
+    ///
+    /// While the agent is [`busy`](Self::busy) the message is not taken: this returns
+    /// [`Step::Done`] and records nothing, text and pictures alike. The caller checks `busy()`
+    /// first and tells the user, keeping their draft.
     pub fn ask_with(&mut self, text: &str, pictures: Vec<Picture>, s: &Session) -> Step {
         self.guard(|a| a.ask_unguarded(text, pictures, s))
     }
