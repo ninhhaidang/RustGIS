@@ -64,6 +64,8 @@ pub struct Workflow {
     script_asking: bool,
     /// When the last Script pane run landed: one waiting behind it started then, not when asked.
     script_landed: Option<web_time::Instant>,
+    /// The Script box's find and replace bar.
+    pub(crate) script_find: crate::scriptfind::Bar,
     /// The project the Script pane's script, results and count are for
     /// ([`rustgis_engine::Session::opened`]); `None` until the pane first shows.
     script_project: Option<u64>,
@@ -2006,6 +2008,8 @@ fn start_over_in_another_project(app: &mut RustGisApp) {
     let opened = app.session.opened;
     if app.workflow.script_project.is_some_and(|p| p != opened) {
         clear_script(app);
+        // The find bar too: its query and replacement were typed for what was closed.
+        app.workflow.script_find = Default::default();
     }
     app.workflow.script_project = Some(opened);
 }
@@ -2022,11 +2026,16 @@ fn clear_keeping_undo(app: &mut RustGisApp, ui: &Ui, box_id: egui::Id) {
 /// The Script box's script kept as an undo step of the box, its cursor at the start, before
 /// something else replaces it (Clear, Open in Script Pane).
 fn keep_for_undo(app: &RustGisApp, ctx: &egui::Context, box_id: egui::Id) {
+    keep_for_undo_of(ctx, box_id, &app.workflow.script);
+}
+
+/// [`keep_for_undo`] for the script `script` (what the find bar replaces in).
+pub(crate) fn keep_for_undo_of(ctx: &egui::Context, box_id: egui::Id, script: &str) {
     use egui::text::{CCursor, CCursorRange};
     let mut state = egui::widgets::text_edit::TextEditState::load(ctx, box_id).unwrap_or_default();
     let mut undoer = state.undoer();
-    let end = CCursorRange::one(CCursor::new(app.workflow.script.chars().count()));
-    undoer.add_undo(&(state.cursor.char_range().unwrap_or(end), app.workflow.script.clone()));
+    let end = CCursorRange::one(CCursor::new(script.chars().count()));
+    undoer.add_undo(&(state.cursor.char_range().unwrap_or(end), script.to_string()));
     state.set_undoer(undoer);
     state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(0))));
     state.store(ctx, box_id);
@@ -2277,18 +2286,25 @@ fn script(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, fit: bool) {
     }
     // Braces, brackets and quotes closing themselves (#662): what the box does with the keys,
     // followed through after it.
-    let before = crate::completion::before(ui, box_id, &app.workflow.script);
     let stopped = stopped_at(app);
+    // The find bar (#2996), above the box: Ctrl+F opens it; a replace changes the script here.
+    let running = script_running(app);
+    crate::scriptfind::keys(ui, box_id, &app.workflow.script, &mut app.workflow.script_find);
+    let before = crate::completion::before(ui, box_id, &app.workflow.script);
+    // With the find bar open the box keeps Escape too, to close it, rather than drop the focus.
+    let mut filter = crate::scriptcomplete::filter(ui, box_id);
+    filter.escape |= app.workflow.script_find.is_open();
     let out = egui::ScrollArea::vertical().id_salt("script_box").max_height(room).auto_shrink([false, true]).show(ui, |ui| {
         let out = egui::TextEdit::multiline(&mut app.workflow.script)
             .id(box_id)
             .code_editor()
-            .event_filter(crate::scriptcomplete::filter(ui, box_id))
+            .event_filter(filter)
             .layouter(&mut layouter)
             .desired_rows(SCRIPT_MIN_ROWS)
             .desired_width(f32::INFINITY)
             .hint_text("map.goToXY {\"lon\": 2.35, \"lat\": 48.85, \"scale\": 5000000}\nselect.byAttributes {\"layer\": \"Cities\", \"where\": \"pop_max > 1000000\"}")
             .show(ui);
+        crate::scriptfind::paint(ui, &out, &app.workflow.script, &mut app.workflow.script_find);
         // Asked by a click on the error, taken every frame: one that doesn't show the stop (a key
         // typed) drops it, rather than leaving it for a later stop.
         let go = ui.data_mut(|d| d.remove_temp::<bool>(box_id.with("go_to_stopped"))).is_some();
@@ -2298,7 +2314,7 @@ fn script(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, fit: bool) {
             // Once, inside this scroll, which takes it as it ends. The box scrolls to its cursor
             // only when the cursor moves within it.
             if go {
-                let origin = (out.galley_pos - vec2(out.galley.rect.left(), 0.0)).to_vec2();
+                let origin = crate::widgets::text_origin(&out);
                 let cursor = out.galley.pos_from_cursor(stopped_cursor(at.index)).translate(origin);
                 ui.scroll_to_rect(cursor, Some(egui::Align::Center));
             }
@@ -2313,6 +2329,12 @@ fn script(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, fit: bool) {
         crate::scriptcomplete::accept(ui, box_id, &mut app.workflow.script, &offer, &item, &app.session);
     } else {
         crate::scriptcomplete::braces(ui, before, &out.inner, &mut app.workflow.script);
+    }
+    // Over the box's top right, once it is laid out; a replace it makes comes after the box's own
+    // keys, so it is not read as what a key did.
+    let w = &mut app.workflow;
+    for cut in crate::scriptfind::show(ui, box_id, &mut w.script, running, out.inner_rect, &mut w.script_find) {
+        app.session.notify(cut, false);
     }
     // Where the box's cursor is (#2831), focused or not, on the right of a row of its own: the
     // row of buttons has no room for it in a narrow pane. The row is there before the box has a
@@ -2447,7 +2469,7 @@ fn line_col(script: &str, index: usize) -> (usize, usize) {
 /// paints its own background over anything drawn before it.
 fn paint_stopped(ui: &Ui, out: &egui::text_edit::TextEditOutput, at: StoppedAt) {
     let galley = &out.galley;
-    let origin = (out.galley_pos - vec2(galley.rect.left(), 0.0)).to_vec2();
+    let origin = crate::widgets::text_origin(out);
     let clip = out.text_clip_rect;
     let painter = ui.painter().with_clip_rect(clip.intersect(ui.clip_rect()));
     let mut line = 1;
@@ -3193,6 +3215,680 @@ mod tests {
         h.get_by_label(&e).click();
         h.run();
         assert_eq!(cursor(&h), before);
+    }
+
+    /// Ctrl+F opens the find bar on the box's selection (#2996): it counts the matches, Enter and
+    /// Shift+Enter go round them, and Escape closes it with the cursor on the current one.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn ctrl_f_finds_in_the_script_and_escape_leaves_the_cursor_on_the_match() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let script = "layer.rename {\"layer\": \"Cities\"}\nmap.zoomFull\n# Cities again";
+        let mut h = find_harness(script);
+        let box_id = egui::Id::unique("script_text");
+        let cursor = |h: &egui_kittest::Harness<'_, RustGisApp>| {
+            crate::widgets::cursor_range(&h.ctx, box_id).map(|r| (r.secondary.index.0, r.primary.index.0))
+        };
+        let first = script.find("Cities").unwrap();
+        let second = script.rfind("Cities").unwrap();
+        // Ctrl+F in the box with nothing selected: a bar with an empty field, and no count.
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        assert!(h.query_by_label("Close (Esc)").is_none(), "closed until asked");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        h.get_by_label("Close (Esc)");
+        h.event(Event::Text("cities".into()));
+        h.run();
+        h.get_by_label("1 of 2");
+        // Enter goes on, Shift+Enter back; both round.
+        h.key_press(Key::Enter);
+        h.run();
+        h.get_by_label("2 of 2");
+        h.key_press(Key::Enter);
+        h.run();
+        h.get_by_label("1 of 2");
+        h.key_press_modifiers(Modifiers::SHIFT, Key::Enter);
+        h.run();
+        h.get_by_label("2 of 2");
+        // Escape closes the bar, the box has the focus and the current match selected.
+        h.key_press(Key::Escape);
+        h.run();
+        assert!(h.query_by_label("Close (Esc)").is_none(), "closed");
+        assert_eq!(cursor(&h), Some((second, second + "Cities".len())));
+        assert!(h.ctx.memory(|m| m.has_focus(box_id)));
+        assert_eq!(h.state().workflow.script, script, "finding changes nothing");
+        // Opened on a selection, it looks for it, and the first match from there is current.
+        crate::widgets::set_cursor_range(
+            &h.ctx,
+            box_id,
+            egui::text::CCursorRange::two(egui::text::CCursor::new(first), egui::text::CCursor::new(first + 6)),
+        );
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        h.get_by_label("1 of 2");
+        // Match Whole Word: "Citi" is in both places as a prefix, and in neither as a word.
+        h.event(Event::Text("Citi".into()));
+        h.run();
+        h.get_by_label("1 of 2");
+        h.get_by_label("Match Whole Word").click();
+        h.run();
+        h.get_by_label("No results");
+        h.get_by_label("Match Whole Word").click();
+        h.run();
+        h.get_by_label("1 of 2");
+        // Typing goes on in the field after a toggle was clicked ("Citix" is nowhere).
+        h.event(Event::Text("x".into()));
+        h.run();
+        h.get_by_label("No results");
+        h.key_press(Key::Backspace);
+        h.run();
+        h.get_by_label("1 of 2");
+        // Text typed in the box, with the bar open, ahead of the current match: the matches shift,
+        // so the current one is the first from the cursor, not the one that now holds its index.
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        crate::widgets::set_cursor_range(&h.ctx, box_id, egui::text::CCursorRange::one(egui::text::CCursor::new(0)));
+        h.event(Event::Text("cities cities ".into()));
+        h.run();
+        h.get_by_label("3 of 4");
+    }
+
+    /// The query has a length limit, so a pasted one cannot make each change of the script cost its
+    /// length times the script's (#2996): the field takes 200 characters and no more.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_find_query_is_limited_in_length() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let mut h = find_harness(&"a".repeat(400));
+        let box_id = egui::Id::unique("script_text");
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        h.event(Event::Text("a".repeat(400)));
+        h.run();
+        // 200 characters in a script of 400: two matches. All 400 would be one.
+        h.get_by_label("1 of 2");
+        // What was left out is said, under the fields and in Messages.
+        let cut = "The Find field takes 200 characters: 200 left out";
+        h.get_by_label(cut);
+        assert!(h.state().session.notices.iter().any(|n| n.text == cut), "{:?}", h.state().session.notices);
+        // The Replace field takes no more either: Replace All writes it once per match, so a long
+        // paste would make the script the matches times its length.
+        h.get_by_label("Toggle Replace").click();
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(box_id.with("find_replace")));
+        h.run();
+        h.event(Event::Text("b".repeat(400)));
+        h.run();
+        let cut = "The Replace field takes 200 characters: 200 left out";
+        h.get_by_label(cut);
+        // Each field keeps its own note: the Find one stays while its text stays cut, whatever
+        // the Replace field is given.
+        h.get_by_label("The Find field takes 200 characters: 200 left out");
+        assert!(h.state().session.notices.iter().any(|n| n.text == cut), "{:?}", h.state().session.notices);
+        h.get_by_label("Replace All").click();
+        h.run();
+        assert_eq!(h.state().workflow.script, "b".repeat(400), "200 characters for each of the two matches");
+        // A change that fits takes that field's note away, and only that one.
+        h.ctx.memory_mut(|m| m.request_focus(box_id.with("find_replace")));
+        h.run();
+        h.key_press(Key::Backspace);
+        h.run();
+        assert!(h.query_by_label(cut).is_none(), "the Replace note went");
+        let found = "The Find field takes 200 characters: 200 left out";
+        h.get_by_label(found);
+        // Reopened with nothing picked, the query and its note stay; opened on a selection, the
+        // query is the selection's and the note about the cut text goes with the old one.
+        h.key_press(Key::Escape);
+        h.run();
+        let range = |a, b| egui::text::CCursorRange::two(egui::text::CCursor::new(a), egui::text::CCursor::new(b));
+        crate::widgets::set_cursor_range(&h.ctx, box_id, range(0, 0));
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        h.get_by_label(found);
+        h.key_press(Key::Escape);
+        h.run();
+        crate::widgets::set_cursor_range(&h.ctx, box_id, range(0, 3));
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        assert!(h.query_by_label(found).is_none(), "the note was about the old query");
+    }
+
+    /// In a browser the find shortcuts are kept from the browser's own (#2996): while the box or a
+    /// field of the bar has the focus, and no longer.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_find_chords_are_taken_from_the_browser_while_the_box_or_bar_has_the_focus() {
+        use egui::{Key, Modifiers};
+        let mut h = find_harness("map.zoomFull");
+        let box_id = egui::Id::unique("script_text");
+        let pressed = |h: &egui_kittest::Harness<'_, RustGisApp>, key: &str, code: &str, alt: bool| {
+            h.state().script_find_keys(&h.ctx).takes(key, code, true, alt, false)
+        };
+        let taken = |h: &egui_kittest::Harness<'_, RustGisApp>, key: &str, code: &str| pressed(h, key, code, false);
+        h.ctx.memory_mut(|m| m.surrender_focus(box_id));
+        h.run();
+        assert!(!taken(&h, "f", "KeyF"), "the browser keeps them with the focus elsewhere");
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        assert!(taken(&h, "f", "KeyF") && taken(&h, "h", "KeyH"), "taken in the box");
+        assert!(!taken(&h, "d", "KeyD"), "and only these");
+        // With Alt they are the browser's: the box takes neither.
+        assert!(!pressed(&h, "f", "KeyF", true) && !pressed(&h, "h", "KeyH", true), "Ctrl+Alt is not ours");
+        // On a Mac ⌘H hides the app and the box doesn't take it: only ⌘F (⌥⌘F with it).
+        let os = h.ctx.os();
+        h.ctx.set_os(egui::os::OperatingSystem::Mac);
+        assert!(taken(&h, "f", "KeyF") && !taken(&h, "h", "KeyH"), "⌘H is not ours");
+        assert!(pressed(&h, "f", "KeyF", true), "⌥⌘F opens the Replace row");
+        h.ctx.set_os(os);
+        let f3 = |h: &egui_kittest::Harness<'_, RustGisApp>| {
+            let taken = h.state().script_find_keys(&h.ctx);
+            // Shift+F3 too, and with Ctrl neither: that one stays the browser's.
+            assert!(!taken.takes("F3", "F3", true, false, false));
+            taken.takes("F3", "F3", false, false, false) && taken.takes("F3", "F3", false, false, true)
+        };
+        assert!(!f3(&h), "F3 is the browser's while the bar is closed");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        assert!(f3(&h), "and the bar's once open");
+        assert!(h.ctx.memory(|m| m.has_focus(box_id.with("find_query"))));
+        assert!(taken(&h, "f", "KeyF") && taken(&h, "h", "KeyH"), "and in the bar");
+        h.ctx.memory_mut(|m| m.surrender_focus(box_id.with("find_query")));
+        h.run();
+        assert!(!taken(&h, "f", "KeyF"), "given back when the focus leaves");
+    }
+
+    /// What fits the fields is neither cut nor said (#2996).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_find_query_that_fits_says_nothing() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let mut h = find_harness(&"a".repeat(400));
+        h.ctx.memory_mut(|m| m.request_focus(egui::Id::unique("script_text")));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        h.event(Event::Text("a".repeat(200)));
+        h.run();
+        h.get_by_label("1 of 2");
+        assert!(h.query_by_label_contains("left out").is_none());
+        assert!(!h.state().session.notices.iter().any(|n| n.text.contains("left out")));
+    }
+
+    /// A click on one of the bar's buttons leaves the keyboard in the bar, as in a code editor, so
+    /// Enter, F3 and the shortcuts go on working (#2996).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_find_buttons_leave_the_keyboard_in_the_bar() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let mut h = find_harness("cities cities cities");
+        let box_id = egui::Id::unique("script_text");
+        let (query_id, replace_id) = (box_id.with("find_query"), box_id.with("find_replace"));
+        let focused = |h: &egui_kittest::Harness<'_, RustGisApp>, id| h.ctx.memory(|m| m.has_focus(id));
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        h.event(Event::Text("cities".into()));
+        h.run();
+        for button in ["Match Case", "Match Whole Word", "Next match (Enter)", "Previous match (Shift+Enter)", "Toggle Replace"] {
+            h.get_by_label(button).click();
+            h.run();
+            assert!(focused(&h, query_id), "{button}");
+        }
+        h.key_press(Key::Enter);
+        h.run();
+        assert!(focused(&h, query_id), "Enter in the query");
+        h.ctx.memory_mut(|m| m.request_focus(replace_id));
+        h.run();
+        h.event(Event::Text("towns".into()));
+        h.run();
+        h.key_press(Key::Enter);
+        h.run();
+        assert!(focused(&h, replace_id), "Enter in the replacement");
+        for button in ["Replace (Enter)", "Replace All"] {
+            h.get_by_label(button).click();
+            h.run();
+            assert!(focused(&h, replace_id), "{button}");
+        }
+        // With nothing left to replace, Enter keeps the field too; Close gives the keyboard to the box.
+        h.key_press(Key::Enter);
+        h.run();
+        assert!(focused(&h, replace_id), "Enter with nothing to replace");
+        h.get_by_label("Close (Esc)").click();
+        h.run();
+        assert!(focused(&h, box_id), "Close");
+    }
+
+    /// Replace All that would make the script larger than a script file may be is refused, and
+    /// said (#2996): each run could add up to the matches times the replacement.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn replace_all_does_not_grow_the_script_past_its_limit() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let script = "a ".repeat(6000);
+        let mut h = find_harness(&script);
+        let box_id = egui::Id::unique("script_text");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::H);
+        h.run();
+        h.event(Event::Text("a".into()));
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(box_id.with("find_replace")));
+        h.run();
+        h.event(Event::Text("b".repeat(200)));
+        h.run();
+        h.get_by_label("Replace All").click();
+        h.run();
+        assert!(h.state().workflow.script == script, "6000 × 200 characters is over 1 MB");
+        let said = "Replace All would make the script larger than 1 MB: nothing was replaced";
+        assert!(h.state().session.notices.iter().any(|n| n.text == said), "{:?}", h.state().session.notices);
+    }
+
+    /// In a narrow pane the query field keeps room to read what is typed: the buttons wrap below
+    /// it rather than squeeze it (#2996).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_narrow_pane_keeps_the_find_query_readable() {
+        use egui::{Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let mut h = find_harness("map.zoomFull");
+        h.set_size(vec2(240.0, 600.0));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::H);
+        h.run();
+        h.run();
+        let box_id = egui::Id::unique("script_text");
+        for field in ["find_query", "find_replace"] {
+            let width = h.ctx.read_response(box_id.with(field)).map(|r| r.rect.width());
+            assert!(width.is_some_and(|w| w >= 100.0), "{field}: {width:?}");
+        }
+        h.get_by_label("Close (Esc)");
+    }
+
+    /// The Replace field's note is shown with its row, not while the row is hidden (#2996).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_replace_note_shows_with_its_row() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let mut h = find_harness("a");
+        let replace_id = egui::Id::unique("script_text").with("find_replace");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::H);
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(replace_id));
+        h.run();
+        h.event(Event::Text("b".repeat(300)));
+        h.run();
+        let cut = "The Replace field takes 200 characters: 100 left out";
+        h.get_by_label(cut);
+        h.get_by_label("Toggle Replace").click();
+        h.run();
+        assert!(h.query_by_label(cut).is_none(), "the row is hidden");
+        h.get_by_label("Toggle Replace").click();
+        h.run();
+        h.get_by_label(cut);
+    }
+
+    /// Another project starts the bar over, as it starts the pane over: no query, replacement or
+    /// note of the old one (#2996).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn another_project_starts_the_find_bar_over() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let mut h = find_harness("map.zoomFull");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        h.event(Event::Text("map".into()));
+        h.run();
+        h.get_by_label("1 of 1");
+        h.state_mut().run("project.new", Value::Null).unwrap();
+        h.run();
+        assert!(h.query_by_label("Close (Esc)").is_none(), "closed");
+        h.ctx.memory_mut(|m| m.request_focus(egui::Id::unique("script_text")));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        assert!(h.query_by_label("1 of 1").is_none() && h.query_by_label("No results").is_none(), "an empty field");
+        // And through Open in Script Pane, which starts the pane over before it is next drawn.
+        h.event(Event::Text("zoom".into()));
+        h.run();
+        h.state_mut().run("project.new", Value::Null).unwrap();
+        let ctx = h.ctx.clone();
+        open_script(h.state_mut(), &ctx, "map.zoomFull".into());
+        h.run();
+        assert!(h.query_by_label("Close (Esc)").is_none(), "closed again");
+    }
+
+    /// Escape in the box closes the bar, after the list open over the box has taken its own; the box
+    /// keeps the focus and its cursor (#2996).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn escape_in_the_box_closes_the_find_bar_after_the_list() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let mut h = find_harness("");
+        let box_id = egui::Id::unique("script_text");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        // Typing a command opens the list: the first Escape is its own.
+        h.event(Event::Text("map.zo".into()));
+        h.run();
+        h.run();
+        h.key_press(Key::Escape);
+        h.run();
+        h.get_by_label("Close (Esc)");
+        assert!(h.ctx.memory(|m| m.has_focus(box_id)));
+        let cursor = crate::widgets::cursor_range(&h.ctx, box_id);
+        h.key_press(Key::Escape);
+        h.run();
+        assert!(h.query_by_label("Close (Esc)").is_none(), "closed");
+        assert!(h.ctx.memory(|m| m.has_focus(box_id)), "the box keeps the focus");
+        assert_eq!(crate::widgets::cursor_range(&h.ctx, box_id), cursor);
+    }
+
+    /// The bar's keys work wherever the keyboard is in it, its buttons and toggles too, reached with
+    /// Tab: Escape closes it back to the box, F3 steps, Ctrl+F returns to the query (#2996).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_find_keys_work_on_every_button_of_the_bar() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let box_id = egui::Id::unique("script_text");
+        let (query_id, replace_id) = (box_id.with("find_query"), box_id.with("find_replace"));
+        // Tab stops after each field: the toggles and buttons.
+        for (field, tabs) in [(query_id, 1..=5), (replace_id, 1..=2)] {
+            for n in tabs {
+                let on_button = || {
+                    let mut h = find_harness("a Cities b\nCities c\nCities d");
+                    h.key_press_modifiers(Modifiers::COMMAND, Key::H);
+                    h.run();
+                    h.event(Event::Text("Cities".into()));
+                    h.run();
+                    h.ctx.memory_mut(|m| m.request_focus(field));
+                    h.run();
+                    for _ in 0..n {
+                        h.key_press(Key::Tab);
+                        h.run();
+                    }
+                    let focus = h.ctx.memory(|m| m.focused());
+                    assert!(focus.is_some_and(|f| ![box_id, query_id, replace_id].contains(&f)), "{n}: on a button");
+                    h
+                };
+                let mut h = on_button();
+                assert!(h.state().script_find_keys(&h.ctx).takes("f", "KeyF", true, false, false), "{n}: the browser's Find");
+                h.key_press(Key::F3);
+                h.run();
+                h.get_by_label("2 of 3");
+                h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+                h.run();
+                assert!(h.ctx.memory(|m| m.has_focus(query_id)), "{n}: Ctrl+F");
+                let mut h = on_button();
+                h.key_press(Key::Escape);
+                h.run();
+                assert!(h.query_by_label("Close (Esc)").is_none(), "{n}: Escape closes");
+                assert!(h.ctx.memory(|m| m.has_focus(box_id)), "{n}: back in the box");
+            }
+        }
+    }
+
+    /// In the whole app, where Escape also picks the Pan tool, the Escape pressed in the find bar
+    /// is the bar's: it closes, and the tool stays (#2996).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn in_the_app_escape_in_the_find_bar_is_not_the_tool_shortcut() {
+        use egui::{Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let box_id = egui::Id::unique("script_text");
+        for tabs in [0, 3] {
+            let mut app = RustGisApp::with_sample();
+            app.run("ui.pane.script", serde_json::json!({})).unwrap();
+            app.session.tool = rustgis_engine::Tool::Measure;
+            let mut fonts = false;
+            let builder = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).with_max_steps(100);
+            let mut h = builder.build_ui_state(
+                move |ui, app: &mut RustGisApp| {
+                    if !fonts {
+                        crate::theme::install_fonts(ui.ctx(), &[], None);
+                        fonts = true;
+                        return;
+                    }
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    app.ui(ui);
+                },
+                app,
+            );
+            h.run();
+            h.ctx.memory_mut(|m| m.request_focus(box_id));
+            h.run();
+            h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+            h.run();
+            for _ in 0..tabs {
+                h.key_press(Key::Tab);
+                h.run();
+            }
+            h.get_by_label("Close (Esc)");
+            h.key_press(Key::Escape);
+            h.run();
+            assert!(h.query_by_label("Close (Esc)").is_none(), "{tabs}: closed");
+            assert_eq!(h.state().session.tool, rustgis_engine::Tool::Measure, "{tabs}: the tool stays");
+        }
+    }
+
+    /// What a huge paste into a field leaves out is counted whole, with what the field already held
+    /// (#2996).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_huge_paste_into_a_find_field_is_counted_whole() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let mut h = find_harness("a");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        h.event(Event::Text("a".repeat(150)));
+        h.run();
+        h.event(Event::Paste("b".repeat(300_000)));
+        h.run();
+        // 150 held and 300,000 pasted, 200 kept.
+        h.get_by_label("The Find field takes 200 characters: 299950 left out");
+    }
+
+    /// The pane with `script` in it, its fonts installed first (the icons draw letters), and the
+    /// focus in the box.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn find_harness(script: &str) -> egui_kittest::Harness<'static, RustGisApp> {
+        let mut app = RustGisApp::with_sample();
+        app.workflow.script = script.to_string();
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 800.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                script_pane(app, ui, &Tokens::light());
+            },
+            app,
+        );
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(egui::Id::unique("script_text")));
+        h.run();
+        h
+    }
+
+    /// The editor shortcuts around the find bar (#2996): Ctrl+H opens it with the Replace row, F3 and
+    /// Shift+F3 go to the next and the previous match.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_find_shortcuts_of_a_code_editor_work_in_the_script_box() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::Queryable;
+        let script = "alpha\nbeta cities\ngamma\ncities delta\ncities";
+        let mut h = find_harness(script);
+        let box_id = egui::Id::unique("script_text");
+        // Ctrl+Alt+F is AltGr+F on many layouts, a letter to type, outside a Mac, where it is ⌥⌘F: it
+        // opens nothing (the key event has `command` set as a platform's has).
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        h.key_press_modifiers(Modifiers { ctrl: true, alt: true, command: true, ..Default::default() }, Key::F);
+        h.run();
+        assert!(h.query_by_label("Close (Esc)").is_none(), "AltGr+F opens no bar");
+        // Ctrl+H: the bar with its Replace row open. Typed text is the query, the first match from the cursor current; F3 and Shift+F3 step.
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::H);
+        h.run();
+        h.get_by_label("Replace All");
+        h.event(Event::Text("cities".into()));
+        h.run();
+        h.get_by_label("1 of 3");
+        // Three matches, so that backwards is not the same place as forwards: 1 → 2 → 1 → 3 (round).
+        h.key_press(Key::F3);
+        h.run();
+        h.get_by_label("2 of 3");
+        h.key_press_modifiers(Modifiers::SHIFT, Key::F3);
+        h.run();
+        h.get_by_label("1 of 3");
+        h.key_press_modifiers(Modifiers::SHIFT, Key::F3);
+        h.run();
+        h.get_by_label("3 of 3");
+        // The same with Enter in the field, which has the focus again after the shortcuts.
+        h.ctx.memory_mut(|m| m.request_focus(box_id.with("find_query")));
+        h.run();
+        h.key_press(Key::Enter);
+        h.run();
+        h.get_by_label("1 of 3");
+        h.key_press_modifiers(Modifiers::SHIFT, Key::Enter);
+        h.run();
+        h.get_by_label("3 of 3");
+        h.key_press_modifiers(Modifiers::SHIFT, Key::Enter);
+        h.run();
+        h.get_by_label("2 of 3");
+    }
+
+    /// Replace All changes every match as one step of the box's Undo, Replace the current one, and
+    /// neither while a run is under way (#2996).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn replacing_in_the_script_is_one_undo_step_and_waits_for_a_run() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let script = "a Cities b\nCities c";
+        let mut h = find_harness(script);
+        let box_id = egui::Id::unique("script_text");
+        let replace_id = box_id.with("find_replace");
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        h.event(Event::Text("Cities".into()));
+        h.run();
+        // The Replace row opens from the arrow at the bar's left.
+        h.get_by_label("Toggle Replace").click();
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(replace_id));
+        h.run();
+        h.event(Event::Text("Towns".into()));
+        h.run();
+        // Waiting for a run: nothing to press.
+        let opened = h.state().session.opened;
+        h.state_mut().workflow.script_started.push_back(ScriptStart {
+            at: 0,
+            asked: web_time::Instant::now(),
+            opened,
+            script: script.into(),
+        });
+        h.run();
+        assert!(h.get_by_label("Replace All").accesskit_node().is_disabled());
+        assert!(h.get_by_label("Replace (Enter)").accesskit_node().is_disabled());
+        // Enter in the Replace field then does nothing, and keeps the focus there.
+        h.ctx.memory_mut(|m| m.request_focus(replace_id));
+        h.run();
+        h.key_press(Key::Enter);
+        h.run();
+        assert!(h.ctx.memory(|m| m.has_focus(replace_id)), "the field keeps the focus");
+        assert_eq!(h.state().workflow.script, script, "and nothing was replaced");
+        h.state_mut().workflow.script_started.clear();
+        h.run();
+        // The current match, the first; the cursor goes after it, the next is current.
+        h.get_by_label("Replace (Enter)").click();
+        h.run();
+        assert_eq!(h.state().workflow.script, "a Towns b\nCities c");
+        h.get_by_label("1 of 1");
+        // Undo brings it back, then Replace All does both and Undo brings both back.
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        h.run();
+        assert_eq!(h.state().workflow.script, script, "one undo step");
+        h.get_by_label("Replace All").click();
+        h.run();
+        assert_eq!(h.state().workflow.script, "a Towns b\nTowns c");
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        h.run();
+        assert_eq!(h.state().workflow.script, script, "Replace All is one undo step");
+        // Replacing a match with the same text records no step: one Undo still goes back past it.
+        h.get_by_label("Replace All").click();
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(replace_id));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.event(Event::Text("Towns".into()));
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(box_id.with("find_query")));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.event(Event::Text("Towns".into()));
+        h.run();
+        h.get_by_label("Replace (Enter)").click();
+        h.run();
+        h.get_by_label("Replace All").click();
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        h.run();
+        assert_eq!(h.state().workflow.script, script, "no step that changes nothing");
+    }
+
+    /// The highlight goes over every row of a script that wraps, and a find with nothing in it, a
+    /// query that is a letter and a script past the cap do no harm (#2996).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn finding_in_a_wrapped_long_script_holds() {
+        use egui::{Event, Key, Modifiers};
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let mut h = find_harness(&format!("# {}\n", "ab ".repeat(40)).repeat(600));
+        h.set_size(vec2(260.0, 600.0));
+        h.run();
+        let box_id = egui::Id::unique("script_text");
+        h.ctx.memory_mut(|m| m.request_focus(box_id));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        h.event(Event::Text("a".into()));
+        h.run();
+        // More matches than the bar keeps: the count says so, and Replace All is off.
+        h.get_by_label("1 of 10000+");
+        h.key_press(Key::Enter);
+        h.run();
+        h.get_by_label("2 of 10000+");
+        h.get_by_label("Toggle Replace").click();
+        h.run();
+        assert!(h.get_by_label("Replace All").accesskit_node().is_disabled());
+        h.key_press(Key::Escape);
+        h.run();
     }
 
     /// A stop's column at the start of a wrapped row belongs to that row, not to the end of the one

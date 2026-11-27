@@ -1823,9 +1823,10 @@ browser's file picker. A file that isn't UTF-8 text, or is over 1 MB, is refused
 naming it, and the script stays. Opening a
 project (New, Open, the sample, a template, or the same one again), from the app, a script, the
 assistant or an agent, starts the pane blank: the script, its results, the count and the Details
-window go with the old project. A script that opens a project itself stays, with its results, as
-the new project's Run #1. On the desktop, a script's tools, models and batches, with selections, layer
-renames and definition queries, the environment, the projection and spectral zones between them, are worked out
+window go with the old project, and the find bar closes, forgetting what was in it. A script that
+opens a project itself stays, with its results, as the new project's Run #1. On the desktop, a
+script's tools, models and batches, with selections, layer renames and definition queries, the
+environment, the projection and spectral zones between them, are worked out
 in the background first, so the map and the rest of the window stay in use: the status bar shows
 **Run Script** and **Cancel**, and the results say **Running…** until the run is added. From the
 first line of any other kind (an edit, Add Data, a save, an export, a style or a zoom, a plugin
@@ -1900,6 +1901,23 @@ so does a `"` where a string can start (after a space, `{`, `[`, `,` or `:`). A 
 before the same one steps over it, as does a `"` typed before the quote that ends its string, and
 Backspace in an empty `{}`, `[]` or `""` deletes both. The lists open in a quote that closed
 itself, and accepting keeps that quote. Pasting adds nothing.
+
+Ctrl+F (⌘+F on macOS) in the Script box opens a find bar over the box's top right, as a code editor
+does, with the selected text, if it is one line of up to 200 characters (the most each field takes:
+a longer paste is cut, and the bar and Messages say how many characters were left out), in its
+field. Every match is highlighted in the box, the current one stronger and outlined, and the bar
+says which it is (`3 of 12`, or `No results`). Enter and Shift+Enter (or F3 and Shift+F3), or the up
+and down arrows, go to the next and the previous match, round the ends, and scroll it into view. Two
+toggles inside the field make capitals count (**Aa**) and match only whole words (**ab** under a
+bracket: no letter, digit or `_` against the match); the search is plain text, without patterns. The
+arrow at the bar's left (or Ctrl+H, ⌥⌘F on macOS) shows a second field, for what to replace with,
+and two buttons: Replace changes the current match and Replace All every one, each as one step of
+the box's Undo (Ctrl+Z); both are off while a run is under way, and Replace All is off too when
+there are more matches than the bar keeps (10,000); one that would make the script larger than 1 MB
+replaces nothing and says so in Messages. The bar's shortcuts work from its fields, its buttons and
+the box. Escape in the bar, or the close button, closes it and leaves the current match selected in
+the box. Escape in the box closes it too, once no list or help is open over the box, and the cursor
+stays where it is.
 
 ## ModelBuilder
 

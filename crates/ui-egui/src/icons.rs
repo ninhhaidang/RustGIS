@@ -878,6 +878,25 @@ pub fn paint(painter: &Painter, r: Rect, name: &str, ink: Color32, accent: Color
             p.line(&[(12.0, 8.0), (12.0, 15.0)], 1.8, p.acc);
             p.line(&[(9.2, 12.4), (12.0, 15.2), (14.8, 12.4)], 1.8, p.acc);
         }
+        "replace" | "replace_all" => {
+            // The word and what takes its place: the old one as a bare letter, the new one in a box of the
+            // accent, as the other icons draw a thing (a box, its outline), and the action in green, as Export and Add
+            // draw theirs. The arrow alone for Replace (this match), with an asterisk for Replace All.
+            // Regular weight, not the semibold the other icons' letters take: it is the plain word.
+            painter.text(p.pt(6.0, 5.5), egui::Align2::CENTER_CENTER, "a", egui::FontId::proportional(14.0 * p.s()), ink);
+            if name == "replace_all" {
+                // An asterisk in the free corner: every match, as a code editor's pattern marks it.
+                for deg in [90.0_f32, 30.0, 150.0] {
+                    let (s, c) = deg.to_radians().sin_cos();
+                    p.line(&[(19.0 - 3.4 * c, 6.0 - 3.4 * s), (19.0 + 3.4 * c, 6.0 + 3.4 * s)], 1.7, green);
+                }
+            }
+            p.rect(9.5, 11.5, 14.0, 11.0, Some(accent), Some((1.3, ink)), 1.5);
+            p.text(16.5, 17.0, "b", 10.0, Color32::WHITE);
+            // From the old word down and over to the new one.
+            p.line(&[(6.0, 10.0), (6.0, 17.0), (7.2, 17.0)], 1.7, green);
+            p.fill(&[(6.8, 15.0), (9.3, 17.0), (6.8, 19.0)], green);
+        }
         "up" => p.line(&[(6.0, 15.0), (12.0, 9.0), (18.0, 15.0)], 1.8, ink),
         "down" => p.line(&[(6.0, 9.0), (12.0, 15.0), (18.0, 9.0)], 1.8, ink),
         "logo" => {
@@ -1398,6 +1417,8 @@ pub const ALL: &[&str] = &[
     "run",
     "up",
     "down",
+    "replace",
+    "replace_all",
     "logo",
     "point_layer",
     "line_layer",

@@ -115,6 +115,8 @@ mod s3ui;
 mod saveprompt;
 mod scriptcolor;
 mod scriptcomplete;
+mod scriptfind;
+pub use scriptfind::FindChords;
 mod searchbox;
 mod serviceui;
 mod sessionlog;
@@ -1686,6 +1688,12 @@ impl RustGisApp {
         keys.sort_by_key(|k| (k.0, k.1, k.2 as u32));
         keys.dedup();
         keys
+    }
+
+    /// The chords the Script box and its find bar take now, none while neither has the focus: with
+    /// [`Self::command_keys`], what the web app keeps from the browser's own shortcuts.
+    pub fn script_find_keys(&self, ctx: &egui::Context) -> FindChords {
+        scriptfind::browser_keys(ctx, &self.workflow.script_find)
     }
 
     /// The keyboard shortcuts of a command run without parameters, in the keymap's order, for a

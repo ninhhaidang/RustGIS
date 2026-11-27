@@ -212,6 +212,31 @@ pub(crate) fn set_cursor_range(ctx: &egui::Context, id: egui::Id, range: egui::t
     state.store(ctx, id);
 }
 
+/// Where a text box's laid-out text is drawn from: add its galley's own coordinates to this to get
+/// screen ones (the Script box's marks and highlights are painted over its rows with it).
+pub(crate) fn text_origin(out: &egui::text_edit::TextEditOutput) -> egui::Vec2 {
+    (out.galley_pos - egui::vec2(out.galley.rect.left(), 0.0)).to_vec2()
+}
+
+/// A flat icon button for a code editor's own bars (find, and what comes next): [`FLAT_BUTTON`] square, no
+/// border, its icon drawn in code and a hover fill. `label` is what a screen
+/// reader says; `hover` the tooltip. Off, it takes no click.
+pub(crate) fn flat_icon_button(ui: &mut Ui, icon: &str, label: &str, hover: &str, enabled: bool) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (r, resp) = ui.allocate_exact_size(vec2(FLAT_BUTTON, FLAT_BUTTON), sense);
+    if enabled && resp.hovered() {
+        ui.painter().rect_filled(r, CornerRadius::same(4), t.hover);
+    }
+    let ink = if enabled { t.text } else { t.text_dim.gamma_multiply(0.6) };
+    icons::paint(ui.painter(), r.shrink(2.0), icon, ink, t.accent);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
+    resp.on_hover_text(hover)
+}
+
+/// The side of a [`flat_icon_button`].
+pub(crate) const FLAT_BUTTON: f32 = 22.0;
+
 pub fn text_w(ui: &Ui, s: &str, font: egui::FontId) -> f32 {
     ui.ctx().fonts_mut(|f| f.layout_no_wrap(s.to_string(), font, egui::Color32::WHITE).size().x)
 }

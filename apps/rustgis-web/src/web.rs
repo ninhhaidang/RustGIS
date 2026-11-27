@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use rustgis_ui_egui::rustgis_engine::{data::diagnostics::Capture, sources::message_with_address};
-use rustgis_ui_egui::{Inbox, RustGisApp, Services, Slot};
+use rustgis_ui_egui::{FindChords, Inbox, RustGisApp, Services, Slot};
 
 use crate::parts::Notes;
 use wasm_bindgen::JsCast as _;
@@ -344,13 +344,14 @@ struct WebShell {
     embed: Option<Embed>,
     /// The app's Ctrl (⌘) shortcuts, kept current for [`keep_app_shortcuts`].
     taken: TakenKeys,
-    /// [`RustGisApp::shortcuts_fingerprint`] when `taken` was last filled.
-    taken_print: Option<u64>,
+    /// [`RustGisApp::shortcuts_fingerprint`] and [`RustGisApp::script_find_keys`] when `taken`
+    /// was last filled.
+    taken_print: Option<(u64, FindChords)>,
 }
 
-/// The app's Ctrl (⌘) shortcuts as (Alt, Shift, key): [`RustGisApp::command_keys`], shared with
-/// the page's key listener.
-type TakenKeys = Rc<RefCell<Vec<(bool, bool, egui::Key)>>>;
+/// The app's Ctrl (⌘) shortcuts as (Alt, Shift, key), [`RustGisApp::command_keys`], and the Script
+/// box's find chords, [`RustGisApp::script_find_keys`], shared with the page's key listener.
+type TakenKeys = Rc<RefCell<(Vec<(bool, bool, egui::Key)>, FindChords)>>;
 
 /// The link to the page that embeds the app (`?embed`; see `embed.rs`).
 struct Embed {
@@ -451,6 +452,20 @@ impl Embed {
     }
 }
 
+impl WebShell {
+    /// Keeps the key listener's shortcuts current: the shortcuts can be changed in the app, and
+    /// the Script box takes its find chords only while it has the focus. Rebuilt only when one of
+    /// them changed.
+    fn follow_keys(&mut self, ctx: &egui::Context) {
+        let find = self.app.script_find_keys(ctx);
+        let print = (self.app.shortcuts_fingerprint(), find);
+        if self.taken_print.as_ref() != Some(&print) {
+            *self.taken.borrow_mut() = (self.app.command_keys(), print.1.clone());
+            self.taken_print = Some(print);
+        }
+    }
+}
+
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // The GPU map backend draws inside egui's wgpu pass; hand over the render state.
@@ -482,17 +497,14 @@ impl eframe::App for WebShell {
         }
         self.app.logic(ctx);
         self.dirty.set(self.app.session.dirty());
-        // The shortcuts can be changed in the app: the key listener follows, rebuilt only when
-        // the keymap changed.
-        let print = self.app.shortcuts_fingerprint();
-        if self.taken_print != Some(print) {
-            self.taken_print = Some(print);
-            *self.taken.borrow_mut() = self.app.command_keys();
-        }
+        self.follow_keys(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.app.ui(ui);
+        // The pass may have moved the focus into the Script box, or out of it: a key pressed
+        // before the next frame's `logic` is judged by where the focus is now.
+        self.follow_keys(ui.ctx());
     }
 }
 
@@ -1504,7 +1516,10 @@ fn keep_app_shortcuts(taken: TakenKeys) -> Result<(), String> {
         // As eframe reads it, Ctrl or ⌘ is egui's command on every platform, so the app's
         // shortcut runs on either and the browser's is kept from both.
         let command = e.ctrl_key() || e.meta_key();
-        if RustGisApp::takes_browser_key(&taken.borrow(), &e.key(), &e.code(), command, e.alt_key(), e.shift_key()) {
+        let (keys, find) = &*taken.borrow();
+        if RustGisApp::takes_browser_key(keys, &e.key(), &e.code(), command, e.alt_key(), e.shift_key())
+            || find.takes(&e.key(), &e.code(), command, e.alt_key(), e.shift_key())
+        {
             e.prevent_default();
         }
     });
