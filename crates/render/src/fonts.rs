@@ -374,20 +374,39 @@ fn serif_font_roots(roots: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
 /// ([`serif_font_roots`]). Found by its name's start, whatever axes it lists; its bold is the
 /// same file (kept once), drawn at the bold weight.
 fn variable_noto_serif<P: AsRef<std::path::Path>>(roots: &[P]) -> Option<SerifFonts> {
+    // Shared budgets across all roots so adding Flatpak/XDG roots keeps worst-case UI-thread
+    // directory work bounded near the original 3-root × 1,000-folder limit.
+    const MAX_DIRS: usize = 3_000;
+    const MAX_ENTRIES_PER_DIR: usize = 10_000;
+    const MAX_TOTAL_ENTRIES: usize = 100_000;
     let named = |files: &[std::path::PathBuf], stem: &str| {
         files.iter().find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(stem) && n.ends_with(".ttf"))).cloned()
     };
+    let mut entries_remaining = MAX_TOTAL_ENTRIES;
     // Folders and files in name order, so the same one is picked on every machine whatever order
     // the system lists them in; loose files don't count against the folders taken.
-    let listed = |dir: &std::path::Path| {
+    let listed = |dir: &std::path::Path, entries_remaining: &mut usize| -> Vec<std::path::PathBuf> {
+        let limit = (*entries_remaining).min(MAX_ENTRIES_PER_DIR);
+        if limit == 0 {
+            return Vec::new();
+        }
         let mut paths: Vec<std::path::PathBuf> =
-            std::fs::read_dir(dir).map(|e| e.flatten().take(10_000).map(|e| e.path()).collect()).unwrap_or_default();
+            std::fs::read_dir(dir).map(|e| e.flatten().take(limit).map(|e| e.path()).collect()).unwrap_or_default();
+        *entries_remaining = entries_remaining.saturating_sub(paths.len());
         paths.sort();
         paths
     };
+    let mut dirs_visited = 0usize;
     for root in roots {
-        for dir in listed(root.as_ref()).into_iter().filter(|p| p.is_dir()).take(1000) {
-            let files = listed(&dir);
+        if dirs_visited >= MAX_DIRS || entries_remaining == 0 {
+            break;
+        }
+        for dir in listed(root.as_ref(), &mut entries_remaining).into_iter().filter(|p| p.is_dir()) {
+            if dirs_visited >= MAX_DIRS || entries_remaining == 0 {
+                break;
+            }
+            dirs_visited += 1;
+            let files = listed(&dir, &mut entries_remaining);
             let Some(r) = named(&files, "NotoSerif[") else { continue };
             let Some(regular) = read_path(&r) else { continue };
             let italic = named(&files, "NotoSerif-Italic[").as_deref().and_then(read_path);

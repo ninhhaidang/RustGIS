@@ -7758,7 +7758,13 @@ impl RustGisApp {
         }
         // Missing text first drawn this frame needs a next logic pass even without input.
         // Handled requests (or CJK misses waiting on an in-flight Linux folder scan) wait for
-        // their result instead of keeping an idle window repainting every frame.
+        // their result instead of keeping an idle window repainting every frame; if a scan
+        // started (or completed) during `ui`, schedule the poll or immediate reconciliation.
+        if self.cjk_roots_pending() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        } else if !self.cjk_roots_applied && self.cjk_roots_ready() {
+            ctx.request_repaint();
+        }
         if (!self.cjk_scan_in_flight()
             && rustgis_engine::render::fonts::peek_missing_cjk().iter().any(|s| !self.cjk_scripts_handled.contains(s)))
             || rustgis_engine::render::fonts::peek_missing_text()
@@ -8343,6 +8349,10 @@ mod language_coverage_tests {
 
     #[test]
     fn cjk_language_waits_for_async_cjk_root_scan_before_reporting_unavailable() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::isolate_account_test("language_coverage_tests::cjk_language_waits_for_async_cjk_root_scan_before_reporting_unavailable") {
+            return;
+        }
         let (mut app, ctx) = without_script_font("ja");
         // Keep `fonts_requested` populated so host macOS/Windows fonts are not pulled in, while
         // clearing `fonts_failed` so `can_draw` behaves as an in-flight Linux CJK scan.
@@ -8382,6 +8392,55 @@ mod language_coverage_tests {
         let mut output = dl_ctx.run_ui(egui::RawInput::default(), |ui| dl_app.ensure_data_cjk_font(ui.ctx()));
         output.textures_delta.clear();
         assert!(asked.lock().unwrap().is_empty(), "must not start font download while CJK folder scan is in flight");
+
+        // A scan started during `ui` (after `logic` already ran) must still schedule a delayed
+        // repaint poll without busy-spinning, and completing during `ui` must wake immediately.
+        let immediate = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let delayed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (imm_sink, del_sink) = (immediate.clone(), delayed.clone());
+        dl_ctx.set_repaint_observer(move |req| {
+            if req.delay.is_zero() {
+                imm_sink.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            } else if req.delay <= std::time::Duration::from_millis(50) {
+                del_sink.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        dl_app.fonts_frames = 2;
+        dl_app.label_fonts_indexed = true;
+        dl_app.chrome = Some(|_, _| {});
+        dl_app.test_cjk_roots_state = Some((false, false));
+        let _ = rustgis_engine::render::fonts::take_missing_cjk();
+        let raw_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 240.0))),
+            ..Default::default()
+        };
+        for _ in 0..8 {
+            let mut output = dl_ctx.run_ui(raw_input.clone(), |ui| {
+                dl_app.logic(ui.ctx());
+                dl_app.ui(ui);
+            });
+            output.textures_delta.clear();
+        }
+        dl_app.cjk_roots_applied = false;
+        dl_app.test_cjk_roots_state = Some((true, false));
+        rustgis_engine::render::fonts::note_missing_cjk('か');
+        let mut output = dl_ctx.run_ui(raw_input.clone(), |ui| {
+            immediate.store(0, std::sync::atomic::Ordering::SeqCst);
+            delayed.store(0, std::sync::atomic::Ordering::SeqCst);
+            dl_app.ui(ui);
+        });
+        output.textures_delta.clear();
+        assert_eq!(immediate.load(std::sync::atomic::Ordering::SeqCst), 0, "in-flight scan must not busy-spin immediate repaints");
+        assert!(delayed.load(std::sync::atomic::Ordering::SeqCst) > 0, "in-flight scan must schedule a delayed poll at end of ui");
+
+        dl_app.test_cjk_roots_state = Some((false, true));
+        let mut output = dl_ctx.run_ui(raw_input, |ui| {
+            immediate.store(0, std::sync::atomic::Ordering::SeqCst);
+            dl_app.ui(ui);
+        });
+        output.textures_delta.clear();
+        assert!(immediate.load(std::sync::atomic::Ordering::SeqCst) > 0, "completed scan during ui must wake immediately");
+
         // Drain missing CJK bit cleanly so other tests start clean.
         let _ = rustgis_engine::render::fonts::take_missing_cjk();
     }
