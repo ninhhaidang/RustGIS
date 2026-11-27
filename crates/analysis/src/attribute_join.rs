@@ -204,29 +204,49 @@ fn written(v: &Value) -> String {
     JoinKey::from_value(v).map(|k| k.display()).unwrap_or_default()
 }
 
-/// Validates windowed flags and key-field compatibility and returns the progress work units
-/// (`source_len` + optional `NumberAsText` scan + `target_len`) that [`join_field`] will advance.
-pub(crate) fn join_field_work(
-    target: &Dataset,
-    target_len: usize,
-    source: &Dataset,
-    source_len: usize,
-    target_field: &str,
-    join_field: &str,
-) -> Result<usize, String> {
-    if target.windowed {
-        return Err("the target layer is streamed; load all features first".into());
+/// Validated key-field indices and comparison mode shared between progress sizing and execution
+/// so both always agree on the work units [`join_field`] advances.
+#[derive(Clone, Copy)]
+pub(crate) struct ResolvedKeys {
+    target_key_idx: usize,
+    source_key_idx: usize,
+    comparison: KeyComparison,
+}
+
+impl ResolvedKeys {
+    /// Validates `windowed` flags, resolves key field indices case-insensitively, and checks key
+    /// type compatibility once for both progress sizing and join execution.
+    pub(crate) fn resolve(target: &Dataset, source: &Dataset, target_field: &str, join_field: &str) -> Result<Self, String> {
+        if target.windowed {
+            return Err("the target layer is streamed; load all features first".into());
+        }
+        if source.windowed {
+            return Err("the source layer is streamed; load all features first".into());
+        }
+        let target_key_idx = crate::tools::find_field_case_insensitive(target, target_field)?;
+        let source_key_idx = crate::tools::find_field_case_insensitive(source, join_field)?;
+        let target_key_field = target.fields.get(target_key_idx).ok_or_else(|| "target key field missing".to_string())?;
+        let source_key_field = source.fields.get(source_key_idx).ok_or_else(|| "source key field missing".to_string())?;
+        let comparison = key_comparison(target_key_field, source_key_field)?;
+        Ok(Self { target_key_idx, source_key_idx, comparison })
     }
-    if source.windowed {
-        return Err("the source layer is streamed; load all features first".into());
+
+    /// Progress work units (`source_len` + optional `NumberAsText` scan + `target_len`) that
+    /// [`join_field_prepared`] advances for datasets of these row counts.
+    pub(crate) fn work(self, target_len: usize, source_len: usize) -> usize {
+        let extra_scan = if self.comparison == KeyComparison::NumberAsText { source_len } else { 0 };
+        source_len.saturating_add(extra_scan).saturating_add(target_len)
     }
-    let target_key_idx = crate::tools::find_field_case_insensitive(target, target_field)?;
-    let source_key_idx = crate::tools::find_field_case_insensitive(source, join_field)?;
-    let target_key_field = target.fields.get(target_key_idx).ok_or_else(|| "target key field missing".to_string())?;
-    let source_key_field = source.fields.get(source_key_idx).ok_or_else(|| "source key field missing".to_string())?;
-    let comparison = key_comparison(target_key_field, source_key_field)?;
-    let extra_scan = if comparison == KeyComparison::NumberAsText { source_len } else { 0 };
-    Ok(source_len.saturating_add(extra_scan).saturating_add(target_len))
+}
+
+/// Whether [`join_field_prepared`] starts its own `control::begin` step or advances within an
+/// active caller step (used by `joinField` to share one monotonic bar across subsetting and join).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JoinProgress {
+    /// Start a new `control::begin` step with the join's own work total.
+    Start,
+    /// Continue the caller's active `control::begin` step without resetting it.
+    Continue,
 }
 
 /// Executes a non-spatial attribute join from `source` onto `target`.
@@ -235,36 +255,22 @@ pub(crate) fn join_field_work(
 /// provided target dataset (when invoked through the tool, row selections are applied beforehand).
 /// Appends selected attributes from `source` based on matching key values.
 pub fn join_field(target: &Dataset, source: &Dataset, opts: &JoinFieldOptions<'_>) -> Result<(Dataset, JoinFieldReport), String> {
-    join_field_with_progress(target, source, opts, false)
+    let keys = ResolvedKeys::resolve(target, source, opts.target_field, opts.join_field)?;
+    join_field_prepared(target, source, opts, keys, JoinProgress::Start)
 }
 
-/// Executes [`join_field`], optionally continuing an active `control::begin` step started by the
-/// caller (used by `joinField` when partial selections copy rows beforehand so progress climbs
-/// monotonically across subsetting and joining).
-pub(crate) fn join_field_with_progress(
+/// Executes [`join_field`] using pre-validated [`ResolvedKeys`] and explicit [`JoinProgress`]
+/// ownership.
+pub(crate) fn join_field_prepared(
     target: &Dataset,
     source: &Dataset,
     opts: &JoinFieldOptions<'_>,
-    progress_started: bool,
+    keys: ResolvedKeys,
+    progress: JoinProgress,
 ) -> Result<(Dataset, JoinFieldReport), String> {
-    if target.windowed {
-        return Err("the target layer is streamed; load all features first".into());
-    }
-    if source.windowed {
-        return Err("the source layer is streamed; load all features first".into());
-    }
+    let ResolvedKeys { target_key_idx, source_key_idx, comparison } = keys;
 
-    // 1. Resolve key field indices
-    let target_key_idx = crate::tools::find_field_case_insensitive(target, opts.target_field)?;
-    let source_key_idx = crate::tools::find_field_case_insensitive(source, opts.join_field)?;
-
-    let target_key_field = target.fields.get(target_key_idx).ok_or_else(|| "target key field missing".to_string())?;
-    let source_key_field = source.fields.get(source_key_idx).ok_or_else(|| "source key field missing".to_string())?;
-
-    // 2. Validate key type compatibility
-    let comparison = key_comparison(target_key_field, source_key_field)?;
-
-    // 3. Resolve which source fields to transfer
+    // 1. Resolve which source fields to transfer
     let transfer_indices: Vec<usize> = match opts.fields_to_transfer {
         Some(explicit) => {
             let mut indices = Vec::with_capacity(explicit.len());
@@ -286,7 +292,7 @@ pub(crate) fn join_field_with_progress(
         }
     };
 
-    // 4. Build output schema with deterministic collision handling
+    // 2. Build output schema with deterministic collision handling
     let mut out = Dataset::new(opts.output_name.clone(), target.geometry_type, target.fields.clone());
     out.crs = target.crs;
     out.crs_incomplete = target.crs_incomplete;
@@ -314,10 +320,9 @@ pub(crate) fn join_field_with_progress(
         out.fields.push(Field { name: unique_name, ty: src_field.ty, alias });
     }
 
-    // 5. Index source records: Map JoinKey -> source feature index
-    let extra_scan = if comparison == KeyComparison::NumberAsText { source.features.len() } else { 0 };
-    if !progress_started {
-        crate::control::begin(source.features.len().saturating_add(extra_scan).saturating_add(target.features.len()));
+    // 3. Index source records: Map JoinKey -> source feature index
+    if progress == JoinProgress::Start {
+        crate::control::begin(keys.work(target.features.len(), source.features.len()));
     }
     crate::control::check()?;
     let mut source_index: HashMap<JoinKey, usize> = HashMap::with_capacity(source.features.len());

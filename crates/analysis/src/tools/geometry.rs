@@ -32,14 +32,17 @@ pub(super) fn convert(inp: &dyn Inputs, p: &Json, mode: Conversion) -> Result<To
     finish(out, skipped, tool)
 }
 
-const RING_COPY_CHUNK: usize = 65_536;
+const COORD_PACE_CHUNK: usize = 65_536;
+const PART_PACE_WORK: usize = crate::control::PACE_WORK / 65_536;
 
-/// Copies `ring` (closing it if needed) in [`RING_COPY_CHUNK`]-vertex slices so a single huge ring
-/// still checks Cancel via `pace` mid-copy.
-fn copy_ring_paced(ring: &[Coord], pace: &mut crate::control::Pace) -> Result<Vec<Coord>, String> {
+/// Copies `ring` (closing it if needed) in [`COORD_PACE_CHUNK`]-vertex slices with fallible
+/// reservation so a single huge ring checks Cancel via `pace` mid-copy.
+fn copy_ring_paced(ring: &[Coord], tool: &str, pace: &mut crate::control::Pace) -> Result<Vec<Coord>, String> {
     let closed = ring.first() == ring.last();
-    let mut line = Vec::with_capacity(ring.len() + usize::from(!closed));
-    for chunk in ring.chunks(RING_COPY_CHUNK) {
+    let needed = ring.len().checked_add(usize::from(!closed)).ok_or_else(|| format!("{tool}: ring has too many vertices"))?;
+    let mut line = Vec::new();
+    line.try_reserve_exact(needed).map_err(|e| format!("{tool}: not enough memory for {needed} vertices: {e}"))?;
+    for chunk in ring.chunks(COORD_PACE_CHUNK) {
         if pace.stop(chunk.len()) {
             return Err(crate::control::Cancelled.into());
         }
@@ -66,9 +69,9 @@ fn convert_row(
         *skipped += 1;
         return Ok(());
     };
-    require_finite(g)?;
     match (mode, g) {
         (Conversion::PolygonToLine, Geometry::Polygon(polys)) => {
+            require_finite_paced(g, pace)?;
             let mut parts = Vec::new();
             if polys.is_empty() {
                 *skipped += 1;
@@ -85,7 +88,7 @@ fn convert_row(
                         *skipped += 1;
                         continue;
                     }
-                    parts.push(copy_ring_paced(ring, pace)?);
+                    parts.push(copy_ring_paced(ring, tool, pace)?);
                 }
             }
             if !parts.is_empty() {
@@ -93,10 +96,11 @@ fn convert_row(
             }
         }
         (Conversion::PolygonToLine, _) => {
+            require_finite_paced(g, pace)?;
             return Err(format!("{tool}: feature {} has an incompatible geometry", f.id));
         }
         _ => {
-            let e = g.extent();
+            let e = finite_extent_paced(g, pace)?;
             if e.is_empty() || e.width() == 0.0 || e.height() == 0.0 {
                 *skipped += 1;
                 return Ok(());
@@ -138,7 +142,7 @@ fn size_segments<'a>(
             skipped += 1;
             continue;
         };
-        require_finite(g)?;
+        require_finite_paced(g, &mut pace)?;
         let Geometry::Line(parts) = g else { return Err(format!("Split Line At Vertices: feature {} is not a line", f.id)) };
         if parts.is_empty() {
             skipped += 1;
@@ -249,11 +253,58 @@ fn require_schema(f: &Feature, width: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Rejects invalid coordinates before extent calculation or endpoint hashing can hide them.
-fn require_finite(g: &Geometry) -> Result<(), String> {
-    let mut finite = true;
-    g.for_each_coord(|c| finite &= c.is_finite());
-    if finite { Ok(()) } else { Err("Geometry conversion requires finite coordinates".into()) }
+/// Walks `g` in [`COORD_PACE_CHUNK`]-coordinate slices, rejecting non-finite coordinates and
+/// computing its bounding [`Extent`] while checking Cancel via `pace`.
+fn finite_extent_paced(g: &Geometry, pace: &mut crate::control::Pace) -> Result<Extent, String> {
+    fn visit_slice(coords: &[Coord], extent: &mut Extent, pace: &mut crate::control::Pace) -> Result<(), String> {
+        if pace.stop(PART_PACE_WORK) {
+            return Err(crate::control::Cancelled.into());
+        }
+        for chunk in coords.chunks(COORD_PACE_CHUNK) {
+            if pace.stop(chunk.len()) {
+                return Err(crate::control::Cancelled.into());
+            }
+            for &c in chunk {
+                if !c.is_finite() {
+                    return Err("Geometry conversion requires finite coordinates".into());
+                }
+                extent.expand(c);
+            }
+        }
+        Ok(())
+    }
+    let mut extent = Extent::EMPTY;
+    match g {
+        Geometry::Point(c) => {
+            if !c.is_finite() {
+                return Err("Geometry conversion requires finite coordinates".into());
+            }
+            extent.expand(*c);
+        }
+        Geometry::MultiPoint(pts) => visit_slice(pts, &mut extent, pace)?,
+        Geometry::Line(parts) => {
+            for part in parts {
+                visit_slice(part, &mut extent, pace)?;
+            }
+        }
+        Geometry::Polygon(polys) => {
+            for rings in polys {
+                if rings.is_empty() && pace.stop(PART_PACE_WORK) {
+                    return Err(crate::control::Cancelled.into());
+                }
+                for ring in rings {
+                    visit_slice(ring, &mut extent, pace)?;
+                }
+            }
+        }
+    }
+    Ok(extent)
+}
+
+/// Rejects invalid coordinates before extent calculation or endpoint hashing can hide them,
+/// checking Cancel via `pace` inside large geometries.
+fn require_finite_paced(g: &Geometry, pace: &mut crate::control::Pace) -> Result<(), String> {
+    finite_extent_paced(g, pace).map(|_| ())
 }
 
 /// Returns counted loss notices, refusing a result in which every usable geometry was lost.
@@ -271,6 +322,64 @@ fn endpoint(c: &Coord) -> (u64, u64) {
     (bits(c.x), bits(c.y))
 }
 
+/// Pre-counts valid line parts (`len >= 2`) across `row_ids` so [`unsplit`] reports one monotonic
+/// progress total (`rows + edges`) across both edge collection and chain walking.
+fn count_unsplit_edges(ds: &Dataset, row_ids: &[usize], pace: &mut crate::control::Pace) -> Result<usize, String> {
+    let mut edges = 0usize;
+    for &row in row_ids {
+        if pace.stop(PART_PACE_WORK) {
+            return Err(crate::control::Cancelled.into());
+        }
+        let Some(f) = ds.features.row(row) else { continue };
+        let Some(Geometry::Line(parts)) = f.geometry() else { continue };
+        for part in parts {
+            if pace.stop(PART_PACE_WORK) {
+                return Err(crate::control::Cancelled.into());
+            }
+            if part.len() >= 2 {
+                edges = edges.saturating_add(1);
+            }
+        }
+    }
+    Ok(edges)
+}
+
+/// Appends `part` (forward or reversed, optionally skipping the shared junction vertex) in
+/// [`COORD_PACE_CHUNK`]-vertex slices with fallible reservation so a single huge edge checks
+/// Cancel via `pace` mid-copy.
+fn extend_part_paced(
+    line: &mut Vec<Coord>,
+    part: &[Coord],
+    reverse: bool,
+    skip_first: bool,
+    pace: &mut crate::control::Pace,
+) -> Result<(), String> {
+    let slice = if !skip_first {
+        part
+    } else if reverse {
+        part.get(..part.len().saturating_sub(1)).unwrap_or(&[])
+    } else {
+        part.get(1..).unwrap_or(&[])
+    };
+    line.try_reserve(slice.len()).map_err(|e| format!("Unsplit Line: not enough memory for vertices: {e}"))?;
+    if reverse {
+        for chunk in slice.rchunks(COORD_PACE_CHUNK) {
+            if pace.stop(chunk.len()) {
+                return Err(crate::control::Cancelled.into());
+            }
+            line.extend(chunk.iter().rev().copied());
+        }
+    } else {
+        for chunk in slice.chunks(COORD_PACE_CHUNK) {
+            if pace.stop(chunk.len()) {
+                return Err(crate::control::Cancelled.into());
+            }
+            line.extend_from_slice(chunk);
+        }
+    }
+    Ok(())
+}
+
 /// Joins endpoint-connected parts only through degree-two nodes with identical attributes.
 /// Crossings without endpoint vertices are untouched. Two passes start open chains before cycles.
 pub(super) fn unsplit(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
@@ -283,9 +392,10 @@ pub(super) fn unsplit(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
     let mut nodes: HashMap<_, Vec<(usize, bool)>> = HashMap::new();
     let mut skipped = 0;
     let row_ids = rows(inp, p, "input", ds);
-    crate::control::begin(row_ids.len());
-    crate::control::check()?;
     let mut pace = crate::control::Pace::default();
+    let edge_count = count_unsplit_edges(ds, &row_ids, &mut pace)?;
+    crate::control::begin(row_ids.len().saturating_add(edge_count));
+    crate::control::check()?;
     for row in row_ids {
         crate::control::check()?;
         unsplit_collect_row(ds, row, &mut edges, &mut nodes, &mut skipped, &mut pace)?;
@@ -299,7 +409,6 @@ pub(super) fn unsplit(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
         (0..ds.fields.len()).all(|i| a.get(i).unwrap_or(&Value::Null) == b.get(i).unwrap_or(&Value::Null)).then_some(incident)
     };
     let mut used = vec![false; edges.len()];
-    crate::control::begin(edges.len());
     for cycles in [false, true] {
         for (seed, (part, attrs)) in edges.iter().enumerate() {
             if pace.stop(crate::control::PACE_WORK / 1024) {
@@ -327,12 +436,8 @@ pub(super) fn unsplit(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
                 }
                 crate::control::check()?;
                 *seen = true;
-                let skip = usize::from(!line.is_empty());
-                if reverse {
-                    line.extend(part.iter().rev().skip(skip).copied());
-                } else {
-                    line.extend(part.iter().skip(skip).copied());
-                }
+                let skip_first = !line.is_empty();
+                extend_part_paced(&mut line, part, reverse, skip_first, &mut pace)?;
                 crate::control::advance(1);
                 let next = line.last().and_then(joins).and_then(|incident| incident.iter().find(|(other, _)| *other != id));
                 let Some(&(other, at_end)) = next else { break };
@@ -361,7 +466,7 @@ fn unsplit_collect_row<'a>(
         *skipped += 1;
         return Ok(());
     };
-    require_finite(g)?;
+    require_finite_paced(g, pace)?;
     let Geometry::Line(parts) = g else {
         return Err(format!("Unsplit Line: feature {} is not a line", f.id));
     };
@@ -506,15 +611,15 @@ mod tests {
     fn copy_ring_paced_cancels_mid_ring_across_chunks() {
         use crate::control::{Control, PACE_WORK, Pace};
 
-        let verts = RING_COPY_CHUNK + 4_464;
+        let verts = COORD_PACE_CHUNK + 4_464;
         let big_ring: Vec<Coord> = (0..verts).map(|i| Coord::new(i as f64, 0.0)).collect();
 
-        // Prime Pace so chunk 1 (RING_COPY_CHUNK) stays below PACE_WORK and chunk 2 crosses it mid-ring.
+        // Prime Pace so chunk 1 (COORD_PACE_CHUNK) stays below PACE_WORK and chunk 2 crosses it mid-ring.
         let cancel_mid = Control::cancelled_at_look(1);
         let err = crate::run_under("copy_ring_paced", &cancel_mid, || {
             let mut pace = Pace::default();
             assert!(!pace.stop(PACE_WORK - verts));
-            copy_ring_paced(&big_ring, &mut pace)
+            copy_ring_paced(&big_ring, "Polygon To Line", &mut pace)
         })
         .unwrap_err();
         assert!(err.contains("cancelled"), "{err}");
@@ -524,12 +629,89 @@ mod tests {
         let copied = crate::run_under("copy_ring_paced", &counting, || {
             let mut pace = Pace::default();
             assert!(!pace.stop(PACE_WORK - verts));
-            copy_ring_paced(&big_ring, &mut pace)
+            copy_ring_paced(&big_ring, "Polygon To Line", &mut pace)
         })
         .unwrap();
         assert_eq!(counting.looked(), 1);
         assert_eq!(copied.len(), verts + 1);
         assert_eq!(copied.first(), copied.last());
+    }
+
+    #[test]
+    fn finite_extent_paced_cancels_mid_ring_and_rejects_non_finite() {
+        use crate::control::{Control, PACE_WORK, Pace};
+
+        let verts = COORD_PACE_CHUNK + 1_024;
+        let big_ring: Vec<Coord> = (0..verts).map(|i| Coord::new(i as f64, -(i as f64))).collect();
+        let geom = Geometry::Polygon(vec![vec![big_ring]]);
+
+        // Prime Pace so chunk 1 stays below PACE_WORK and chunk 2 triggers Cancel mid-scan.
+        let cancel_mid = Control::cancelled_at_look(1);
+        let err = crate::run_under("finite_extent_paced", &cancel_mid, || {
+            let mut pace = Pace::default();
+            assert!(!pace.stop(PACE_WORK - PART_PACE_WORK - verts));
+            finite_extent_paced(&geom, &mut pace)
+        })
+        .unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_mid.looked(), 1);
+
+        let counting = Control::cancelled_at_look(u64::MAX);
+        let ext = crate::run_under("finite_extent_paced", &counting, || {
+            let mut pace = Pace::default();
+            assert!(!pace.stop(PACE_WORK - PART_PACE_WORK - verts));
+            finite_extent_paced(&geom, &mut pace)
+        })
+        .unwrap();
+        assert_eq!(counting.looked(), 1);
+        assert_eq!(ext, geom.extent());
+
+        let bad = Geometry::Line(vec![vec![Coord::new(0.0, 0.0), Coord::new(f64::NAN, 1.0)]]);
+        let mut pace = Pace::default();
+        assert!(finite_extent_paced(&bad, &mut pace).unwrap_err().contains("finite"));
+    }
+
+    #[test]
+    fn extend_part_paced_cancels_mid_part_forward_and_reversed() {
+        use crate::control::{Control, PACE_WORK, Pace};
+
+        let verts = COORD_PACE_CHUNK + 2_048;
+        let part: Vec<Coord> = (0..verts).map(|i| Coord::new(i as f64, 0.0)).collect();
+
+        for reverse in [false, true] {
+            let cancel_mid = Control::cancelled_at_look(1);
+            let err = crate::run_under("extend_part_paced", &cancel_mid, || {
+                let mut pace = Pace::default();
+                let copied = verts - 1;
+                assert!(!pace.stop(PACE_WORK - copied));
+                let mut line = vec![Coord::new(-1.0, 0.0)];
+                extend_part_paced(&mut line, &part, reverse, true, &mut pace)
+            })
+            .unwrap_err();
+            assert!(err.contains("cancelled"), "reverse={reverse}: {err}");
+            assert_eq!(cancel_mid.looked(), 1);
+
+            let counting = Control::cancelled_at_look(u64::MAX);
+            let out = crate::run_under("extend_part_paced", &counting, || {
+                let mut pace = Pace::default();
+                let copied = verts - 1;
+                assert!(!pace.stop(PACE_WORK - copied));
+                let mut line = vec![Coord::new(-1.0, 0.0)];
+                extend_part_paced(&mut line, &part, reverse, true, &mut pace)?;
+                Ok::<_, String>(line)
+            })
+            .unwrap();
+            assert_eq!(counting.looked(), 1);
+            assert_eq!(out.len(), verts);
+            assert_eq!(out[0], Coord::new(-1.0, 0.0));
+            if reverse {
+                assert_eq!(out[1], Coord::new((verts - 2) as f64, 0.0));
+                assert_eq!(out[verts - 1], Coord::new(0.0, 0.0));
+            } else {
+                assert_eq!(out[1], Coord::new(1.0, 0.0));
+                assert_eq!(out[verts - 1], Coord::new((verts - 1) as f64, 0.0));
+            }
+        }
     }
 
     #[test]
@@ -602,23 +784,24 @@ mod tests {
         let inp = One(ds);
         let params = serde_json::json!({"input": "input"});
 
+        // Shared monotonic progress across 4 input rows + 4 collected edges = 8.
         let counting = Control::cancelled_at_look(u64::MAX);
         let res = crate::run_with("unsplitLine", &inp, &params, &counting).unwrap();
         let Output::Layer(out) = res.output else { panic!("expected layer") };
         assert_eq!(out.features.len(), 1);
-        assert_eq!(counting.progress(), Some((4, 4)));
+        assert_eq!(counting.progress(), Some((8, 8)));
         assert_eq!(counting.looked(), 9);
 
         let cancel_input = Control::cancelled_at_look(3);
         let err = crate::run_with("unsplitLine", &inp, &params, &cancel_input).unwrap_err();
         assert!(err.contains("cancelled"), "{err}");
         assert_eq!(cancel_input.looked(), 3);
-        assert_eq!(cancel_input.progress(), Some((1, 4)));
+        assert_eq!(cancel_input.progress(), Some((1, 8)));
 
         let cancel_chain = Control::cancelled_at_look(7);
         let err = crate::run_with("unsplitLine", &inp, &params, &cancel_chain).unwrap_err();
         assert!(err.contains("cancelled"), "{err}");
         assert_eq!(cancel_chain.looked(), 7);
-        assert_eq!(cancel_chain.progress(), Some((1, 4)));
+        assert_eq!(cancel_chain.progress(), Some((5, 8)));
     }
 }

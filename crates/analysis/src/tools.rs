@@ -8774,39 +8774,71 @@ fn zonal_stats_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<
     Ok(ToolResult { losses, output: Output::Layer(out), messages })
 }
 
-/// Sorts, deduplicates, and bounds-filters `selected_rows` against `ds` so table order wins.
-fn normalize_selected_rows(ds: &Dataset, selected_rows: &[usize]) -> Vec<usize> {
-    let mut rows: Vec<usize> = selected_rows.iter().copied().filter(|&r| r < ds.features.len()).collect();
-    rows.sort_unstable();
-    rows.dedup();
-    rows
+/// Normalized row selection for `joinField`: either the full dataset (no index buffer or sort)
+/// or a sorted, deduplicated list of in-bounds row indices.
+enum SelectedSubset {
+    All(usize),
+    Rows(Vec<usize>),
 }
 
-/// Returns a borrowed dataset when `rows` (sorted, deduplicated, and in bounds) covers the full
-/// dataset, or a new dataset containing only those selected rows with schema, CRS, and windowed
-/// flag preserved.
-///
-/// Advances progress within the caller's active `control::begin` step and returns `Err` when the
-/// run is cancelled before allocating or between cloned rows.
-fn subset<'a>(ds: &'a Dataset, rows: &[usize]) -> Result<Cow<'a, Dataset>, String> {
-    if rows.len() == ds.features.len() {
-        Ok(Cow::Borrowed(ds))
-    } else {
-        let mut sub = Dataset::new(ds.name.clone(), ds.geometry_type, ds.fields.clone());
-        sub.crs = ds.crs;
-        sub.crs_incomplete = ds.crs_incomplete;
-        sub.windowed = ds.windowed;
-        crate::control::check()?;
-        let mut features = Vec::with_capacity(rows.len());
-        for &r in rows {
-            crate::control::check()?;
-            if let Some(f) = ds.features.get(r) {
-                features.push(f.clone());
-            }
-            crate::control::advance(1);
+impl SelectedSubset {
+    /// Builds a normalized selection for `ds`. Skips allocating and sorting when `sel` is empty
+    /// (full table). For a non-empty selection, sorts and deduplicates in-bounds indices in one
+    /// pass (an uninterruptible `usize` sort, fast even on millions of indices) so table order wins.
+    fn from_selection(ds: &Dataset, sel: &[usize]) -> Self {
+        if sel.is_empty() {
+            return Self::All(ds.features.len());
         }
-        sub.features = features.into();
-        Ok(Cow::Owned(sub))
+        let mut rows: Vec<usize> = sel.iter().copied().filter(|&r| r < ds.features.len()).collect();
+        rows.sort_unstable();
+        rows.dedup();
+        if rows.len() == ds.features.len() { Self::All(ds.features.len()) } else { Self::Rows(rows) }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::All(n) => *n,
+            Self::Rows(rows) => rows.len(),
+        }
+    }
+
+    fn copy_work(&self) -> usize {
+        match self {
+            Self::All(_) => 0,
+            Self::Rows(rows) => rows.len(),
+        }
+    }
+}
+
+/// Returns a borrowed dataset when `selection` covers the full dataset, or a new dataset
+/// containing only the selected rows with schema, CRS, and windowed flag preserved.
+///
+/// Consumes `selection` so its index buffer is released before joining, advances progress within
+/// the caller's active `control::begin` step, reserves fallibly, and returns `Err` when the run is
+/// cancelled before allocating or between cloned rows.
+fn subset<'a>(ds: &'a Dataset, selection: SelectedSubset) -> Result<Cow<'a, Dataset>, String> {
+    match selection {
+        SelectedSubset::All(_) => Ok(Cow::Borrowed(ds)),
+        SelectedSubset::Rows(rows) => {
+            let mut sub = Dataset::new(ds.name.clone(), ds.geometry_type, ds.fields.clone());
+            sub.crs = ds.crs;
+            sub.crs_incomplete = ds.crs_incomplete;
+            sub.windowed = ds.windowed;
+            crate::control::check()?;
+            let mut features = Vec::new();
+            features
+                .try_reserve_exact(rows.len())
+                .map_err(|e| format!("Join Field: not enough memory for {} selected rows: {e}", rows.len()))?;
+            for r in rows {
+                crate::control::check()?;
+                if let Some(row) = ds.features.row(r) {
+                    features.push(row.to_feature());
+                }
+                crate::control::advance(1);
+            }
+            sub.features = features.into();
+            Ok(Cow::Owned(sub))
+        }
     }
 }
 
@@ -8884,18 +8916,18 @@ fn join_field_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let mut messages = Vec::new();
 
     let target_sel = inp.selection(s(p, "target"));
-    let target_rows = rows(inp, p, "target", target);
+    let target_subset = SelectedSubset::from_selection(target, target_sel);
     if !target_sel.is_empty() {
-        if target_rows.is_empty() {
+        if target_subset.len() == 0 {
             messages.push(format!(
                 "Warning: the selection on target '{}' contains only stale indices (0/{} features selected); output is empty",
                 target.name,
                 target.features.len()
             ));
-        } else if target_rows.len() < target.features.len() {
+        } else if target_subset.len() < target.features.len() {
             messages.push(format!(
                 "Processing {} selected feature(s) from target '{}' (out of {})",
-                target_rows.len(),
+                target_subset.len(),
                 target.name,
                 target.features.len()
             ));
@@ -8903,18 +8935,18 @@ fn join_field_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     }
 
     let source_sel = inp.selection(s(p, "joinTable"));
-    let source_rows = rows(inp, p, "joinTable", source);
+    let source_subset = SelectedSubset::from_selection(source, source_sel);
     if !source_sel.is_empty() {
-        if source_rows.is_empty() {
+        if source_subset.len() == 0 {
             messages.push(format!(
                 "Warning: the selection on source '{}' contains only stale indices (0/{} records selected); no attributes will match",
                 source.name,
                 source.features.len()
             ));
-        } else if source_rows.len() < source.features.len() {
+        } else if source_subset.len() < source.features.len() {
             messages.push(format!(
                 "Joining against {} selected record(s) from source '{}' (out of {})",
-                source_rows.len(),
+                source_subset.len(),
                 source.name,
                 source.features.len()
             ));
@@ -8976,18 +9008,15 @@ fn join_field_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         output_name,
     };
 
-    let target_norm = normalize_selected_rows(target, &target_rows);
-    let source_norm = normalize_selected_rows(source, &source_rows);
-    let join_work =
-        crate::attribute_join::join_field_work(target, target_norm.len(), source, source_norm.len(), opts.target_field, opts.join_field)?;
-    let target_copy = if target_norm.len() == target.features.len() { 0 } else { target_norm.len() };
-    let source_copy = if source_norm.len() == source.features.len() { 0 } else { source_norm.len() };
-    crate::control::begin(target_copy.saturating_add(source_copy).saturating_add(join_work));
+    let keys = crate::attribute_join::ResolvedKeys::resolve(target, source, opts.target_field, opts.join_field)?;
+    let join_work = keys.work(target_subset.len(), source_subset.len());
+    crate::control::begin(target_subset.copy_work().saturating_add(source_subset.copy_work()).saturating_add(join_work));
 
-    let target_ref = subset(target, &target_norm)?;
-    let source_ref = subset(source, &source_norm)?;
+    let target_ref = subset(target, target_subset)?;
+    let source_ref = subset(source, source_subset)?;
 
-    let (out, report) = crate::attribute_join::join_field_with_progress(&target_ref, &source_ref, &opts, true)?;
+    let (out, report) =
+        crate::attribute_join::join_field_prepared(&target_ref, &source_ref, &opts, keys, crate::attribute_join::JoinProgress::Continue)?;
     messages.push(report.message(&target.name));
     messages.extend(report.leading_zero_notice());
 
@@ -18155,5 +18184,25 @@ mod tests {
         assert!(err.contains("cancelled"), "{err}");
         assert_eq!(cancel_join.looked(), 10);
         assert_eq!(cancel_join.progress(), Some((6, 10)));
+
+        // Duplicate selection indices deduplicate before reporting counts and copy work.
+        let inp_dup = SelectedInputs {
+            datasets: inp.datasets.clone(),
+            selections: HashMap::from([("target".to_string(), vec![2, 0, 2, 1]), ("source".to_string(), vec![1, 1, 0])]),
+        };
+        let counting_dup = Control::cancelled_at_look(u64::MAX);
+        let res_dup = crate::run_with("joinField", &inp_dup, &params, &counting_dup).unwrap();
+        assert!(res_dup.messages.iter().any(|m| m.contains("Processing 3 selected feature(s) from target 'target' (out of 4)")));
+        assert!(res_dup.messages.iter().any(|m| m.contains("Joining against 2 selected record(s) from source 'source' (out of 4)")));
+        assert_eq!(counting_dup.progress(), Some((10, 10)));
+
+        // Unselected join skips subsetting work completely: progress counts only source (4) + target (4) = 8.
+        let inp_all = SelectedInputs { datasets: inp.datasets, selections: HashMap::new() };
+        let counting_all = Control::cancelled_at_look(u64::MAX);
+        let res_all = crate::run_with("joinField", &inp_all, &params, &counting_all).unwrap();
+        let Output::Table(out_all) = res_all.output else { panic!("expected Output::Table") };
+        assert_eq!(out_all.features.len(), 4);
+        assert_eq!(counting_all.progress(), Some((8, 8)));
+        assert_eq!(counting_all.looked(), 9);
     }
 }

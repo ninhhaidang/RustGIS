@@ -19,10 +19,14 @@ pub(crate) fn run(inputs: &dyn Inputs, params: &Json) -> Result<ToolResult, Stri
     out.crs_incomplete = layers.iter().any(|ds| ds.crs_incomplete);
     let mut original_fields: Vec<Field> = Vec::new();
     let mut mappings = Vec::new();
+    let mut pace = crate::control::Pace::default();
     for ds in &layers {
         let mut mapping = Vec::new();
         if attributes {
             for field in &ds.fields {
+                if pace.stop(original_fields.len().max(1)) {
+                    return Err(crate::control::Cancelled.into());
+                }
                 let index = original_fields
                     .iter()
                     .enumerate()
@@ -70,7 +74,11 @@ pub(crate) fn run(inputs: &dyn Inputs, params: &Json) -> Result<ToolResult, Stri
                     *value = crate::tools::try_clone_value(ds.value(row, source)).map_err(no_memory)?;
                 }
             }
-            let geometry = feature.geometry.as_ref().map(clone_geometry).transpose().map_err(no_memory)?;
+            let geometry = match feature.geometry.as_ref().map(|g| clone_geometry_paced(g, &mut pace)).transpose() {
+                Ok(geometry) => geometry,
+                Err(CloneGeometryError::Cancelled) => return Err(crate::control::Cancelled.into()),
+                Err(CloneGeometryError::Reserve(e)) => return Err(no_memory(e)),
+            };
             out.push_next(geometry, attrs);
             crate::control::advance(1);
         }
@@ -82,7 +90,65 @@ pub(crate) fn run(inputs: &dyn Inputs, params: &Json) -> Result<ToolResult, Stri
     })
 }
 
-/// Fallible geometry copies, so a large merge can return an allocation error.
+const COORD_COPY_CHUNK: usize = 65_536;
+
+enum CloneGeometryError {
+    Cancelled,
+    Reserve(TryReserveError),
+}
+
+impl From<TryReserveError> for CloneGeometryError {
+    fn from(e: TryReserveError) -> Self {
+        Self::Reserve(e)
+    }
+}
+
+/// Fallible, cancel-aware geometry copy: reserves exact capacities and checks `pace` between
+/// parts and every [`COORD_COPY_CHUNK`] coordinates so a single huge feature still observes Cancel.
+fn clone_geometry_paced(g: &Geometry, pace: &mut crate::control::Pace) -> Result<Geometry, CloneGeometryError> {
+    fn coords(source: &[Coord], pace: &mut crate::control::Pace) -> Result<Vec<Coord>, CloneGeometryError> {
+        let mut out = Vec::new();
+        out.try_reserve_exact(source.len())?;
+        for chunk in source.chunks(COORD_COPY_CHUNK) {
+            if pace.stop(chunk.len()) {
+                return Err(CloneGeometryError::Cancelled);
+            }
+            out.extend_from_slice(chunk);
+        }
+        Ok(out)
+    }
+    fn parts(source: &[Vec<Coord>], pace: &mut crate::control::Pace) -> Result<Vec<Vec<Coord>>, CloneGeometryError> {
+        let mut out = Vec::new();
+        out.try_reserve_exact(source.len())?;
+        for part in source {
+            if pace.stop(crate::control::PACE_WORK / 1024) {
+                return Err(CloneGeometryError::Cancelled);
+            }
+            out.push(coords(part, pace)?);
+        }
+        Ok(out)
+    }
+    Ok(match g {
+        Geometry::Point(c) => Geometry::Point(*c),
+        Geometry::MultiPoint(points) => Geometry::MultiPoint(coords(points, pace)?),
+        Geometry::Line(lines) => Geometry::Line(parts(lines, pace)?),
+        Geometry::Polygon(polygons) => {
+            let mut out = Vec::new();
+            out.try_reserve_exact(polygons.len())?;
+            for polygon in polygons {
+                if polygon.is_empty() && pace.stop(crate::control::PACE_WORK / 1024) {
+                    return Err(CloneGeometryError::Cancelled);
+                }
+                out.push(parts(polygon, pace)?);
+            }
+            Geometry::Polygon(out)
+        }
+    })
+}
+
+/// Fallible geometry copies, so a large merge or geometry check can return an allocation error.
+/// Unchecked within one feature; callers check Cancel between features or use
+/// [`clone_geometry_paced`] when copying huge geometries directly.
 pub(crate) fn clone_geometry(g: &Geometry) -> Result<Geometry, TryReserveError> {
     fn coords(source: &[Coord]) -> Result<Vec<Coord>, TryReserveError> {
         let mut out = Vec::new();
@@ -178,5 +244,69 @@ mod tests {
         let Output::Layer(out_sel) = res_sel.output else { panic!("expected layer") };
         assert_eq!(out_sel.features.len(), 5);
         assert_eq!(counting_sel.progress(), Some((5, 5)));
+    }
+
+    #[test]
+    fn clone_geometry_paced_cancels_mid_large_polygon_and_many_rings() {
+        use crate::control::{PACE_WORK, Pace};
+
+        let verts = COORD_COPY_CHUNK + 2_048;
+        let big_ring: Vec<Coord> = (0..verts).map(|i| Coord::new(i as f64, 0.0)).collect();
+        let big_poly = Geometry::Polygon(vec![vec![big_ring]]);
+
+        let map_clone_err = |e: CloneGeometryError| -> String {
+            match e {
+                CloneGeometryError::Cancelled => crate::control::Cancelled.into(),
+                CloneGeometryError::Reserve(err) => err.to_string(),
+            }
+        };
+
+        // Prime Pace so chunk 1 stays below PACE_WORK and chunk 2 cancels mid-ring.
+        let cancel_chunk = Control::cancelled_at_look(1);
+        let err = crate::run_under("clone_geometry_paced", &cancel_chunk, || {
+            let mut pace = Pace::default();
+            assert!(!pace.stop(PACE_WORK - (PACE_WORK / 1024) - verts));
+            clone_geometry_paced(&big_poly, &mut pace).map_err(map_clone_err)
+        })
+        .unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_chunk.looked(), 1);
+
+        let counting_chunk = Control::cancelled_at_look(u64::MAX);
+        let cloned = crate::run_under("clone_geometry_paced", &counting_chunk, || {
+            let mut pace = Pace::default();
+            assert!(!pace.stop(PACE_WORK - (PACE_WORK / 1024) - verts));
+            clone_geometry_paced(&big_poly, &mut pace).map_err(map_clone_err)
+        })
+        .unwrap();
+        assert_eq!(counting_chunk.looked(), 1);
+        assert_eq!(cloned, big_poly);
+
+        // Single multipolygon feature with 1,500 rings cancels mid-feature during merge::run.
+        let ring = vec![Coord::new(0.0, 0.0), Coord::new(1.0, 0.0), Coord::new(1.0, 1.0), Coord::new(0.0, 0.0)];
+        let mut poly_ds = Dataset::new("P", GeometryType::Polygon, vec![]);
+        poly_ds.push_next(Some(Geometry::Polygon(vec![vec![ring; 1500]])), vec![]);
+        let inputs = MergeInputs { data: HashMap::from([("P".to_string(), poly_ds)]), ..Default::default() };
+        let params = serde_json::json!({"inputs": ["P"], "attributes": false});
+
+        let counting_rings = Control::cancelled_at_look(u64::MAX);
+        crate::run_with("merge", &inputs, &params, &counting_rings).unwrap();
+        assert_eq!(counting_rings.looked(), 3);
+
+        let cancel_rings = Control::cancelled_at_look(3);
+        let err = crate::run_with("merge", &inputs, &params, &cancel_rings).unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_rings.looked(), 3);
+
+        // Many distinct fields cancel during schema field-mapping preparation before feature work.
+        let fields: Vec<Field> = (0..3_000).map(|i| Field::new(format!("f{i}"), FieldType::Integer)).collect();
+        let wide_ds = Dataset::new("W", GeometryType::Point, fields);
+        let wide_inputs = MergeInputs { data: HashMap::from([("W".to_string(), wide_ds)]), ..Default::default() };
+        let wide_params = serde_json::json!({"inputs": ["W"], "attributes": true});
+        let cancel_schema = Control::cancelled_at_look(1);
+        let err = crate::run_with("merge", &wide_inputs, &wide_params, &cancel_schema).unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_schema.looked(), 1);
+        assert_eq!(cancel_schema.progress(), None);
     }
 }
