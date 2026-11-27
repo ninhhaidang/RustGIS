@@ -342,6 +342,12 @@ transformation the definition can't hold, or no definition. An older reader refu
 instead of misplacing the layer. Others need nothing: an older reader opens them by the
 definition and, saving them again, drops only the WKT.
 
+A saved `layout.publication` that leaves out or sets up a part of the sheet (`grid` or
+`scaleBar` as `"none"` or an object that gives something, or `northArrow` as any object, #3094)
+requires `layout-publication-parts`, so an older reader refuses it instead of making the default
+sheet or failing on the object. `null`, a `grid` or `scaleBar` of `{}`, and the north arrow given
+as the text `"auto"`, `"always"` or `"none"` need nothing.
+
 ## New dependencies
 
 A proposal for a dependency answers:

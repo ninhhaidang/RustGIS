@@ -144,6 +144,16 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     centred as near it as fits, and a warning says where. With an `extent`, a sheet on the globe
     is laid out as on a flat map. In any frame on the globe, the light space around the globe is
     room for the surrounds, as the blank page is.
+  - **Grid, scale bar and north arrow**: `"grid"`, `"scaleBar"` and `"northArrow"` each take
+    `"none"` to leave that part out, or an object with its options, and a key the part doesn't
+    read is refused. `"grid"` takes a frame grid's options (`{"step": 5}`,
+    `{"type": "measured"}`, `{"edges": ["bottom"]}`; a graticule takes no `crs`, `short` or `mgrs`,
+    and a measured grid no `format` or `hemisphere`); the strips inside the frame follow its
+    labels, edges and `labelSize`, and without a graticule the default reference text names none
+    (a `{grid}` you type reads `—`). `"scaleBar"` takes a scale bar's options
+    (`{"units": "miles", "style": "line"}`), its box growing with a larger `textSize`. A `textSize` or `labelSize` you give is in points
+    as written: unlike the defaults, it isn't scaled with the sheet.
+    `"northArrow"` also takes `{"show": "auto"|"always", "style", "fill", "outline"}`.
   - **Legend box**: over the map, the legend's box is left clear where the map shows nothing under
     it but its light plain paper or water: no layer, label, context layer, basemap shape or graticule
     line, no web tiles, and no veil. Dark basemaps keep a white backing so the dark legend text

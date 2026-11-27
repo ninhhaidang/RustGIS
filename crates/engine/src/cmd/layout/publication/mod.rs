@@ -6,6 +6,8 @@ mod arrangement;
 pub use arrangement::*;
 mod coverage;
 pub(in crate::cmd::layout) use coverage::*;
+mod parts;
+use parts::*;
 mod placement;
 pub(crate) use placement::*;
 mod sheet;
@@ -109,8 +111,7 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
     let one = |k: &str| texts_of(p, k).map(|t| t.map(|t| t.join(" ")).filter(|t| !t.trim().is_empty()));
     let (title, subtitle, note) = (one("title")?, one("subtitle")?, one("note")?);
     let sources = texts_of(p, "sources")?.unwrap_or_default();
-    let reference =
-        texts_of(p, "reference")?.unwrap_or_else(|| vec!["Projection: {projection}".into(), "Datum: {datum} · Graticule: {grid}".into()]);
+    let reference = texts_of(p, "reference")?;
     // An empty author leaves the line out; none given, the default.
     let author = match texts_of(p, "author")? {
         None => Some(PUBLICATION_DEFAULT_CREDIT.to_string()),
@@ -122,7 +123,7 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
     let colorbar = publication_colorbar(p)?;
     let may_veil = publication_veil(p)?;
     let context_in_legend = publication_flag(p, "contextInLegend")?.unwrap_or(false);
-    let north_arrow = publication_north_arrow(p)?;
+    let (north_arrow, mut arrow_kind) = publication_north_arrow(p)?;
     let legend_box_always = publication_legend_box(p)?;
     // A style or an accent that isn't text is refused, as an unknown one is, rather than left out.
     for k in ["style", "accent"] {
@@ -161,8 +162,32 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
     let (page_w, page_h) = (profile.width, profile.height);
     let heading = |i: usize, or: &str| headings.get(i).cloned().unwrap_or_else(|| or.to_string());
     let (projection, datum) = projection_and_datum(s);
-    let step = grid_step(&extent);
-    let fill = |t: &str| t.replace("{projection}", &projection).replace("{datum}", &datum).replace("{grid}", &step_text(step));
+    // A sheet's sizes follow its short side (A4's 210 mm is 1); a figure keeps its texts at their
+    // printed size, whatever its width.
+    let k = if sheet { page_w.min(page_h) / 210.0 } else { 1.0 };
+    // So do its legend's rows, its scale bar's and graticule's labels and the strips those take
+    // inside the frame (#2581): A4's sizes times k, within the 4 to 100 points a text size takes
+    // on every sheet size (k from 0.70 on A5 to 4.0 on A0).
+    let (legend_pt, bar_pt, grid_pt) = (rustgis_map::layout::LEGEND_TEXT_PT * k, SCALE_BAR_TEXT_PT * k, GRID_LABEL_PT * k);
+    // Labels along the left and bottom edges of a figure's frame, along all four of a sheet's,
+    // unless "grid" says otherwise.
+    let edges = GridEdges { top: sheet, bottom: true, left: true, right: sheet };
+    let grid = publication_grid(p, Grid { step: grid_step(&extent), edges, label_size: grid_pt, ..Grid::default() })?;
+    let mut scale_kind = publication_scale_bar(p, bar_pt)?;
+    // The step of the frame's graticule: none without a grid, or with a measured one.
+    let step = grid.as_ref().filter(|g| g.kind == GridKind::Graticule).map(|g| g.step);
+    // The edges that carry labels, and the strips they take inside the frame.
+    let labelled =
+        grid.as_ref().filter(|g| g.labels).map_or(GridEdges { top: false, bottom: false, left: false, right: false }, |g| g.edges);
+    let strip_scale = grid.as_ref().map_or(k, |g| k * (g.label_size / grid_pt));
+    let room_side = if labelled.left || labelled.right { LABEL_ROOM_SIDE * strip_scale } else { 0.0 };
+    let room_end = if labelled.top || labelled.bottom { LABEL_ROOM_END * strip_scale } else { 0.0 };
+    let reference = reference.unwrap_or_else(|| {
+        let line = if step.is_some() { "Datum: {datum} · Graticule: {grid}" } else { "Datum: {datum}" };
+        vec!["Projection: {projection}".into(), line.into()]
+    });
+    let step_said = step.map_or_else(|| "—".to_string(), step_text);
+    let fill = |t: &str| t.replace("{projection}", &projection).replace("{datum}", &datum).replace("{grid}", &step_said);
     // Text is measured as it is drawn: bold as bold, and the tokens the layout fills only when it
     // draws (`{date}`, `{scale}`…) as wide as a typical value of theirs.
     let (map_name, crs) = (s.map().name.clone(), s.map().projection.label());
@@ -237,14 +262,6 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
     // whatever a pass below frees, so never moved: over the map (`true`) or under everything,
     // each before the rest of its side.
     let mut page_wide: Vec<(String, (f64, f64, f64, f64), ElementKind, bool)> = Vec::new();
-    // A sheet's sizes follow its short side (A4's 210 mm is 1); a figure keeps its texts at their
-    // printed size, whatever its width.
-    let k = if sheet { page_w.min(page_h) / 210.0 } else { 1.0 };
-    // So do its legend's rows, its scale bar's and graticule's labels and the strips those take
-    // inside the frame (#2581): A4's sizes times k, within the 4 to 100 points a text size takes
-    // on every sheet size (k from 0.70 on A5 to 4.0 on A0).
-    let (legend_pt, bar_pt, grid_pt) = (rustgis_map::layout::LEGEND_TEXT_PT * k, SCALE_BAR_TEXT_PT * k, GRID_LABEL_PT * k);
-    let (room_side, room_end) = (LABEL_ROOM_SIDE * k, LABEL_ROOM_END * k);
     // The sources and the reference that have something in them, each its heading in `head_pt` and
     // lines in `body_pt`, `tw` wide. Each one's elements keep their names (`Sources`, `Reference`)
     // whatever its heading reads, the heading filled and wrapped like the rest.
@@ -748,13 +765,11 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
     } else {
         (fy, column, h)
     };
-    // The extent fits within the graticule's label strips (drawn inside the frame along its
-    // labelled edges), on both sides so it stays centred, and its labels cover none of it.
-    let edges = GridEdges { top: sheet, bottom: true, left: true, right: sheet };
-    let strip_w = if edges.left || edges.right { 2.0 * room_side } else { 0.0 };
-    let strip_h = if edges.top || edges.bottom { 2.0 * room_end } else { 0.0 };
+    // The extent fits within the grid's label strips (drawn inside the frame along its labelled
+    // edges), on both sides so it stays centred, and its labels cover none of it.
+    let (strip_w, strip_h) = (2.0 * room_side, 2.0 * room_end);
     if fw - strip_w < fw / 2.0 || fh - strip_h < fh / 2.0 {
-        warnings.push("the frame is too small to keep its graticule's labels off the map's edges: they may cover them".into());
+        warnings.push("the frame is too small to keep its grid's labels off the map's edges: they may cover them".into());
     }
     let (inner_w, inner_h) = ((fw - strip_w).max(fw / 2.0), (fh - strip_h).max(fh / 2.0));
     let (center, scale) = if whole_globe {
@@ -776,7 +791,6 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
         fit_scale(s.map(), &extent, inner_w, inner_h).ok_or("the extent can't be drawn on the map's projection")?
     };
     let scale = round_scale(scale);
-    let grid = Grid { step, edges, label_size: grid_pt, ..Grid::default() };
     // A name given past the limit is refused, as layout.new refuses it, not cut (#2639).
     let given = crate::cmd::within("name", "a layout's name", ps(p, "name").unwrap_or("Publication").trim(), crate::cmd::MAX_NAME)?;
     let (name, name_cut) = unique_name(s, "New Publication Layout", "the name given", &given);
@@ -797,7 +811,7 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
             center,
             scale,
             shape: FrameShape::Rectangle,
-            grid: Some(grid),
+            grid: grid.clone(),
             extent_of: None,
             extent_color: rustgis_map::layout::INDICATOR_COLOR,
             extent_width: rustgis_map::layout::INDICATOR_WIDTH,
@@ -807,7 +821,7 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
             pitch: 0.0,
         },
     );
-    // Over the map, clear of the graticule's labels (drawn inside the frame along its labelled
+    // Over the map, clear of the grid's labels (drawn inside the frame along its labelled
     // edges): the north arrow, the legend sized to what it lists, the scale bar with the numeric
     // scale under it, and the locator, each on a pale box. Each takes the corner where it covers
     // the least of what the map draws; by default (and when it makes no difference) the locator at
@@ -824,7 +838,8 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
             room_end
         }
     };
-    let (left, right, top, bottom) = (room(edges.left, true), room(edges.right, true), room(edges.top, false), room(edges.bottom, false));
+    let (left, right, top, bottom) =
+        (room(labelled.left, true), room(labelled.right, true), room(labelled.top, false), room(labelled.bottom, false));
     let (aw, ah) = if sheet { (8.0 * k, 12.0 * k) } else { (5.0, 7.5) };
     // The locator: a globe (a copy of the map's polygon layers on the globe, its diameter nearly
     // the frame's) or the surrounding region on the map itself, the area outlined on either by
@@ -1025,20 +1040,26 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
         sizes = None;
         warnings.push("a WMS or WMTS layer's legend picture is still loading: the legend has a fixed size to fit by hand".into());
     }
-    let (sh, nh) = (if sheet { 8.0 * k } else { 6.0 }, pitch(small_pt) + 0.5);
+    // A scale bar given a larger text than the sheet's gets the height for it.
+    let text_growth = match &scale_kind {
+        Some(ElementKind::ScaleBar { text_size, .. }) => (text_size / bar_pt).max(1.0),
+        _ => 1.0,
+    };
+    let bar_h = if sheet { 8.0 * k } else { 6.0 };
+    let (sh, nh) = (bar_h * text_growth, pitch(small_pt) + 0.5);
     // The scale bar's box at a scale: the size of its bar and labels and of the scale under them,
     // with the padding (#1379). The bar is the one a box 30 % of the frame's width (25 mm at least)
     // would draw, which sets its length and divisions. The box is the narrowest that draws that same
     // bar: the renderer gives a bar at most 85 % of its box, so the box is at least the bar's length
     // over 0.85.
-    let mut scale_bar = ElementKind::scale_bar(frame);
-    if let ElementKind::ScaleBar { text_size, .. } = &mut scale_bar {
-        *text_size = bar_pt;
+    if let Some(ElementKind::ScaleBar { frame: of, .. }) = &mut scale_kind {
+        *of = frame;
     }
+    // Nothing, without a scale bar.
     let scale_box = |ground_per_pt: f64, scale: f64| {
+        let Some(bar) = &scale_kind else { return (0.0, 0.0) };
         let text = ("{scale}", small_pt, false);
-        let w = scale_box_width(ground_per_pt, scale, fw, &scale_bar, comma, text);
-        (w, sh + nh)
+        (scale_box_width(ground_per_pt, scale, fw, bar, comma, text), sh + nh)
     };
     let ground_per_pt = |s: &Session, center: Coord, scale: f64| {
         s.map().ground_res_at(&rustgis_map::layout::frame_camera(s.map(), center, scale, 0.0, 0.0))
@@ -1056,9 +1077,9 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
     if arrow {
         surrounds.push((Surround::Arrow, aw, ah));
     } else if north_arrow.is_none() {
-        warnings.push(format!(
-            "no north arrow: the extent spans {CONTINENTAL_DEG:.0}° or more, where the graticule gives north; \"northArrow\": \"always\" draws one"
-        ));
+        let north = if step.is_some() { "where the graticule gives north" } else { "where one arrow can't point north across the frame" };
+        warnings
+            .push(format!("no north arrow: the extent spans {CONTINENTAL_DEG:.0}° or more, {north}; \"northArrow\": \"always\" draws one"));
     }
     // The topmost visible raster with a colour scale that the legend doesn't list by its classes
     // gets a colorbar, under the legend in its box (a map whose theme is a raster on a ramp has its
@@ -1112,10 +1133,12 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
     // Its width is set once the frame's centre and scale are settled, below; nothing reads it before.
     // A globe seen whole has none: its scale holds at its centre only, falling to nothing at its
     // rim, so a bar would read true nowhere else (#2337).
-    if whole_globe {
-        warnings.push("no scale bar: the map shows the whole globe, whose scale holds at its centre only".into());
-    } else {
-        surrounds.push((Surround::Scale, 0.0, sh + nh));
+    if scale_kind.is_some() {
+        if whole_globe {
+            warnings.push("no scale bar: the map shows the whole globe, whose scale holds at its centre only".into());
+        } else {
+            surrounds.push((Surround::Scale, 0.0, sh + nh));
+        }
     }
     // A corner's rectangle for a surround `w` × `h`.
     let at = |corner: usize, w: f64, h: f64| {
@@ -1708,7 +1731,10 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
     }
     if let Some(r) = spot_of(Surround::Arrow) {
         placed.push(("north arrow", r));
-        l.add("North Arrow", r, ElementKind::north_arrow(frame));
+        if let ElementKind::NorthArrow { frame: of, .. } = &mut arrow_kind {
+            *of = frame;
+        }
+        l.add("North Arrow", r, arrow_kind);
     }
     // In a panel, the legend under the locator, as tall as it needs within what is left.
     let legend_rect = match column {
@@ -1734,7 +1760,10 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
     let legend_bare =
         legend_rect.filter(|_| column.is_none() && !style.cards() && veiled.is_none() && !legend_box_always).is_some_and(|r| {
             covered(r) == 0.0
-                && !graticule_crosses(s, center, scale, (fw, fh), (r.0 - fx, r.1 - fy, r.2, r.3), step)
+                // A measured grid's lines aren't traced, so the box stays under one.
+                && grid.as_ref().is_none_or(|_| {
+                    step.is_some_and(|step| !graticule_crosses(s, center, scale, (fw, fh), (r.0 - fx, r.1 - fy, r.2, r.3), step))
+                })
                 && crate::render::layout::frame_plain_under(s.map_mut(), center, scale, (fw, fh), (r.0 - fx, r.1 - fy, r.2, r.3), 384)
         });
     if let Some(r) = legend_rect {
@@ -1802,10 +1831,11 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
             );
         }
     }
-    if let Some((sx, sy, w, h)) = spot_of(Surround::Scale) {
+    let mut bar_id = None;
+    if let (Some((sx, sy, w, h)), Some(bar)) = (spot_of(Surround::Scale), scale_kind) {
         placed.push(("scale bar", (sx, sy, w, h)));
         l.add("Scale Box", (sx, sy, w, sh + nh), surround_box(paper));
-        l.add("Scale Bar", (sx, sy, w, sh), scale_bar);
+        bar_id = Some(l.add("Scale Bar", (sx, sy, w, sh), bar));
         l.add("Scale", (sx, sy + sh, w, nh), pub_text(Broken::from(vec!["{scale}".to_string()]), small_pt, ink, false, TextAlign::Center));
     }
     // What placing couldn't avoid: a surround over the map's drawing while a clearly freer corner
@@ -1872,6 +1902,15 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
         s.notify(cut, false);
     }
     say_layout_text_statistics(s, i);
+    // What a scale bar or a grid asked for in other than its default look loses or has to say.
+    let asked = |key: &str| p.get(key).is_some_and(Value::is_object);
+    if let Some(bar) = bar_id.filter(|_| asked("scaleBar")) {
+        let losses: Vec<_> = text_fit_loss(s, i, bar).into_iter().collect();
+        warnings.extend(rustgis_render::layout::scale_bar_fit_notices(&losses));
+    }
+    if let Some(crs) = p.get("grid").and_then(|g| g.get("crs")).and_then(Value::as_str) {
+        crate::cmd::say_crs_note(s, crs);
+    }
     let locator = locator_map.map(|(map, ..)| map);
     Ok(
         json!({"layout": i, "name": name, "profile": profile.id, "page": [w, h], "scale": scale, "grid": step, "locator": locator, "style": style.code(), "arrangement": arrangement_used, "legendColumns": legend_cols, "mapShift": [map_shift.0, map_shift.1], "veiled": veiled.is_some(), "legendBox": legend_rect.is_some() && !legend_bare, "elements": elements, "moved": moved, "coverage": coverage_written, "warnings": warnings}),
@@ -1915,20 +1954,6 @@ pub(in crate::cmd::layout) fn publication_flag(p: &Value, key: &str) -> Result<O
     match p.get(key).filter(|v| !v.is_null()) {
         None => Ok(None),
         Some(v) => v.as_bool().map(Some).ok_or_else(|| format!("{key} is true or false")),
-    }
-}
-
-/// A publication's north arrow: `Some(true)` always drawn ("always"), `Some(false)` never ("none"),
-/// `None` left to the extent ("auto", the default: none at a continental span, #1379).
-pub(in crate::cmd::layout) fn publication_north_arrow(p: &Value) -> Result<Option<bool>, String> {
-    match p.get("northArrow").filter(|v| !v.is_null()) {
-        None => Ok(None),
-        Some(v) => match v.as_str().map(str::trim) {
-            Some("auto") => Ok(None),
-            Some("always") => Ok(Some(true)),
-            Some("none") => Ok(Some(false)),
-            _ => Err("northArrow is \"auto\", \"always\" or \"none\"".into()),
-        },
     }
 }
 

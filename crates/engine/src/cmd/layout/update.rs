@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// A scale bar's keys beyond its details ([`SCALE_BAR_KEYS`]).
+pub(in crate::cmd::layout) const SCALE_BAR_LOOK_KEYS: [&str; 7] = ["style", "units", "divisions", "color", "fill", "textSize", "decimals"];
+
 /// A north arrow or scale bar with the options in `p` over `kind`'s; `None` for other elements
 /// or when `p` has none. A bad value is an error, leaving nothing changed.
 pub(in crate::cmd::layout) fn restyle(kind: &ElementKind, p: &Value) -> Result<Option<ElementKind>, String> {
@@ -38,11 +41,7 @@ pub(in crate::cmd::layout) fn restyle(kind: &ElementKind, p: &Value) -> Result<O
             decimals,
             fit,
         } => {
-            if ["style", "units", "divisions", "color", "fill", "textSize", "decimals"]
-                .iter()
-                .chain(SCALE_BAR_KEYS.iter())
-                .all(|k| p.get(k).is_none())
-            {
+            if SCALE_BAR_LOOK_KEYS.iter().chain(SCALE_BAR_KEYS.iter()).all(|k| p.get(k).is_none()) {
                 return Ok(None);
             }
             let style = match ps(p, "style") {

@@ -103,6 +103,9 @@ mod layout_title;
 #[path = "tests/layout_removed_layer.rs"]
 mod layout_removed_layer;
 
+#[path = "tests/layout_publication_parts.rs"]
+mod layout_publication_parts;
+
 #[path = "tests/sde_connections.rs"]
 mod sde_connections;
 
@@ -15647,6 +15650,8 @@ fn a_veil_panel_groups_the_surrounds_by_the_bands_shape() {
     let (l, locator, _, b) = veil_panel((0.0, 0.0, 90.0, 130.0), legend, Some(40.0), arrow, scale, 3.0).unwrap();
     assert!(l.1 >= b.1 + b.3 && locator.unwrap().0 == b.0, "under it: {l:?} {b:?}");
     assert!(veil_panel((0.0, 0.0, 60.0, 60.0), legend, Some(40.0), arrow, scale, 3.0).is_none());
+    // With nothing to group beside it, a legend the size of the band fits it: no gap is kept.
+    assert!(veil_panel((0.0, 0.0, legend.0, legend.1), legend, None, None, (0.0, 0.0), 3.0).is_some());
     assert!(veil_panel((0.0, 0.0, 160.0, 70.0), legend, None, arrow, scale, 3.0).unwrap().1.is_none());
     // With no north arrow (a continental extent, #1379), the locator stands alone over the scale bar.
     let (_, locator, a, b) = veil_panel((0.0, 0.0, 160.0, 70.0), legend, Some(40.0), None, scale, 3.0).unwrap();
