@@ -1799,7 +1799,7 @@ impl RustGisApp {
         // This front end has the Download Datum Grids setting, so a note about a missing grid can
         // point to it.
         s.offers_grid_downloads = true;
-        s.ui_handles_cjk_scan_notice = true;
+        rustgis_engine::claim_ui_cjk_scan_notice();
         if s.active_layer.is_none() {
             s.active_layer = s.map().layers.first().map(|l| l.id);
         }
@@ -8292,11 +8292,7 @@ mod language_coverage_tests {
         use rustgis_engine::render::fonts::CjkRootScanSummary;
 
         let mut app = RustGisApp::with_sample();
-        assert!(app.session.ui_handles_cjk_scan_notice, "UI session reserves scan summary for translated notices");
-        assert!(
-            !rustgis_engine::Session::new(rustgis_engine::Project::default()).ui_handles_cjk_scan_notice,
-            "headless sessions emit scan notices directly"
-        );
+        assert!(rustgis_engine::ui_owns_cjk_scan_notice(), "UI shell claims process-wide ownership of the CJK scan notice");
         app.run("ui.language", json!({"code": "de"})).unwrap();
         app.pending_cjk_scan_notice = Some(CjkRootScanSummary {
             truncated_dirs: 2,

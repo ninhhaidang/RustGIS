@@ -1143,7 +1143,6 @@ pub(crate) fn ahead_on_copy(s: &Session, command: &'static str, p: &Value) -> su
     // The copy follows the extensions turned on or off here (#1752).
     let extensions = s.extensions().clone();
     let (view_size, active_layer, opened, p) = (s.view_size, s.active_layer, s.opened, p.clone());
-    let ui_handles_cjk_scan_notice = s.ui_handles_cjk_scan_notice;
     let selection_intent = s.selection_intent;
     let (selection_sequence, similar_selected) = (s.selection_sequence.clone(), s.similar_selected);
     // Reserve before the worker starts: its inner reads belong to this admission, even when
@@ -1160,7 +1159,6 @@ pub(crate) fn ahead_on_copy(s: &Session, command: &'static str, p: &Value) -> su
         copy.view_size = view_size;
         copy.active_layer = active_layer;
         copy.opened = opened;
-        copy.ui_handles_cjk_scan_notice = ui_handles_cjk_scan_notice;
         copy.selection_intent = selection_intent;
         copy.selection_sequence = selection_sequence;
         copy.selection_admission = Some(selection_admission);

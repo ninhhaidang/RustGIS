@@ -78,19 +78,51 @@ pub fn runs_in_background(command: &str) -> Option<(&'static str, &'static str)>
     IN_BACKGROUND.iter().find(|(c, ..)| *c == command).map(|(c, name, _)| (*c, *name))
 }
 
+/// Background exports that render map, layout, report, or scene text with installed fonts.
+fn uses_fonts(command: &str) -> bool {
+    matches!(command, "share.exportMap" | "layout.export" | "report.export" | "map.exportOrbit" | "map.exportBlock")
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CJK_SCAN_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn cjk_scan_pending() -> bool {
+    #[cfg(test)]
+    if TEST_CJK_SCAN_PENDING.get() {
+        return true;
+    }
+    rustgis_render::fonts::cjk_roots_pending()
+}
+
 /// `command`'s export written here: it says what it wrote.
 pub(crate) fn write_here(s: &mut Session, p: &Value, command: &str) -> CmdResult {
     let &(_, name, start) = IN_BACKGROUND.iter().find(|(c, ..)| *c == command).ok_or_else(|| format!("{command} isn't an export"))?;
+    if uses_fonts(command) && cjk_scan_pending() {
+        return Err("CJK font folder scan is still running; try exporting again in a moment".into());
+    }
     let owner = s.continuation()?;
     owner.check()?;
     let current = owner.clone();
     let still = std::sync::Arc::new(move || current.check().is_ok());
     // The probe keeps authority checks at file commit even when the user cannot cancel this run.
     let control = if s.stoppable { rustgis_analysis::control::Control::stoppable() } else { rustgis_analysis::control::Control::new() };
-    let wrote = crate::render::rustgis_tiles::cache::with_still(still, || {
+    let (mut wrote, pending_cjk) = crate::render::rustgis_tiles::cache::with_still(still, || {
         let work = start(s, p)?;
-        written_under(name, &control, work)
+        if uses_fonts(command) {
+            let (res, hit) = rustgis_render::fonts::track_pending_cjk(|| written_under(name, &control, work));
+            Ok::<_, String>((res?, hit))
+        } else {
+            Ok((written_under(name, &control, work)?, false))
+        }
     })?;
+    if pending_cjk {
+        wrote.diagnostics.push((
+            rustgis_data::diagnostics::Severity::Warning,
+            "CJK font folder scan started during this export; re-run it once the scan finishes if CJK text is missing.".into(),
+        ));
+    }
     s.check_continuation(&owner)
         .map_err(|why| completion_with_notes(command, wrote.written_path.as_deref(), &wrote.completion_notes(), why))?;
     said(s, wrote)
@@ -124,9 +156,7 @@ fn completion_with_notes(command: &str, written_path: Option<&str>, notes: &[Str
 /// placed is written: a Cancel that comes after the last step doesn't turn it into a failure.
 fn written_under(name: &str, control: &std::sync::Arc<rustgis_analysis::control::Control>, work: Work) -> Result<Wrote, String> {
     let mut wrote = None;
-    // Exports run off the UI thread (or headlessly), so wait for any in-flight Linux CJK folder
-    // scan rather than writing a file with missing CJK glyphs.
-    let res = rustgis_analysis::run_under(name, control, || rustgis_render::fonts::with_blocking_cjk_scan(work).map(|w| wrote = Some(w)));
+    let res = rustgis_analysis::run_under(name, control, || work().map(|w| wrote = Some(w)));
     match wrote {
         Some(w) => Ok(w),
         None => Err(res.err().unwrap_or_else(|| format!("{name} wrote nothing"))),
@@ -377,16 +407,27 @@ impl ExportRun {
     /// Writes the file, or stages it if installing it needs the live session. `control` stops the
     /// work and counts its progress (see [`rustgis_analysis::control`]). A cancelled export leaves
     /// no file, or the one there before.
+    ///
+    /// On Linux, font-drawing exports wait for any in-flight background CJK font-folder scan off
+    /// the UI thread so exported files do not omit CJK glyphs; that one-time bounded scan
+    /// (`MAX_DIRS = 2_000`, `MAX_FILES = 20_000`) does not observe `control` Cancel while waiting.
     pub fn run(self, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> Result<Wrote, String> {
         let inputs = self.started.capture_inputs.then(rustgis_data::provenance::Capture::start);
         let ExportRun { name, work, started } = self;
+        let command = started.command;
         let owner = started.owner;
         owner.check()?;
         let current = owner.clone();
         let still = std::sync::Arc::new(move || current.check().is_ok());
         // A bug in a writer must not take the app down.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::render::rustgis_tiles::cache::with_still(still, || written_under(name, control, work))
+            crate::render::rustgis_tiles::cache::with_still(still, || {
+                if uses_fonts(command) {
+                    rustgis_render::fonts::with_blocking_cjk_scan(|| written_under(name, control, work))
+                } else {
+                    written_under(name, control, work)
+                }
+            })
         }))
         .unwrap_or_else(|_| Err(format!("{name} failed unexpectedly")))
         .map(|w| Wrote { owner: Some(owner), crs_used: rustgis_data::raster::crs::take_used(), ..w });
@@ -522,5 +563,28 @@ mod tests {
             Err("cancelled".into())
         });
         assert!(written_under("Export Raster", &control, work).err().unwrap().contains("was cancelled"));
+    }
+
+    #[test]
+    fn write_here_rejects_font_exports_while_cjk_scan_is_pending() {
+        struct PendingGuard;
+        impl Drop for PendingGuard {
+            fn drop(&mut self) {
+                TEST_CJK_SCAN_PENDING.set(false);
+            }
+        }
+
+        let mut s = Session::new(crate::Project::default());
+        TEST_CJK_SCAN_PENDING.set(true);
+        let _guard = PendingGuard;
+
+        // Font-drawing synchronous exports fail fast rather than blocking the UI thread or writing missing glyphs.
+        let err = write_here(&mut s, &serde_json::json!({"path": "out.png"}), "share.exportMap").unwrap_err();
+        assert!(err.contains("CJK font folder scan is still running"), "{err}");
+
+        // Non-font exports (e.g. tables) are unaffected by a pending CJK scan and proceed to normal validation.
+        let table_err =
+            write_here(&mut s, &serde_json::json!({"layer": "NoSuchLayer", "path": "out.csv"}), "share.exportTable").unwrap_err();
+        assert!(!table_err.contains("CJK font folder scan"), "{table_err}");
     }
 }

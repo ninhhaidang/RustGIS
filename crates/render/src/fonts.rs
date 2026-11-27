@@ -618,8 +618,8 @@ struct CjkRootIndex {
 /// In desktop UI sessions (`crate::families::warm_up` enables async fallback), this scan starts
 /// lazily on a background `"cjk-font-scan"` thread only if a CJK lookup misses every fixed path;
 /// `cjk_font` returns `None` without blocking while the walk runs and the UI retries once
-/// [`cjk_roots_ready`] flips true. In CLI/Python/headless runs without `warm_up`, it runs once
-/// synchronously on the caller as a bounded non-cancellable step.
+/// [`cjk_roots_ready`] flips true. Both that background walk and synchronous CLI/Python/headless
+/// runs execute once per process as a bounded non-cancellable step.
 ///
 /// Out of scope for #2313: Arabic, Bengali, Lao, and symbol faces remain on their fixed paths
 /// (`script_paths`) without nested directory fallback search.
@@ -690,6 +690,8 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
                     {
                         continue;
                     }
+                    // Revisited descendants already in `seen` do not consume `dirs_visited`, so cap
+                    // the revisit queue by `max_dirs` rather than the remaining first-visit budget.
                     if queue.len() < max_dirs {
                         queued_depth.insert(child_canonical, next_depth);
                         queue.push_back((child, next_depth));
@@ -960,6 +962,7 @@ impl CjkScanState {
             && self.async_enabled.load(std::sync::atomic::Ordering::Acquire)
             && self.start_async_scan(scan.clone())
         {
+            PENDING_CJK_HIT.set(true);
             return CjkResolveResult::Pending;
         }
         let Some(fallback_slot) = self.fallback.get(slot) else {
@@ -990,6 +993,9 @@ thread_local! {
     /// Set by background export workers ([`with_blocking_cjk_scan`]) so exports wait for any
     /// in-flight Linux CJK folder scan rather than omitting glyphs.
     static BLOCKING_CJK_SCAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set when [`CjkScanState::resolve_region`] returns `Pending` on this thread, so a
+    /// synchronous non-blocking export can warn if a CJK lookup was still waiting on the scan.
+    static PENDING_CJK_HIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Runs `f` with blocking Linux CJK folder resolution on the current thread. Intended for
@@ -1005,6 +1011,22 @@ pub fn with_blocking_cjk_scan<T>(f: impl FnOnce() -> T) -> T {
     let prev = BLOCKING_CJK_SCAN.replace(true);
     let _reset = Reset(prev);
     f()
+}
+
+/// Runs `f` and reports whether any CJK lookup on this thread returned `Pending` while an async
+/// Linux CJK folder scan was running, so synchronous callers never silently emit missing glyphs.
+pub fn track_pending_cjk<T>(f: impl FnOnce() -> T) -> (T, bool) {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            PENDING_CJK_HIT.set(self.0 || PENDING_CJK_HIT.get());
+        }
+    }
+    let prev = PENDING_CJK_HIT.replace(false);
+    let _reset = Reset(prev);
+    let out = f();
+    let hit = PENDING_CJK_HIT.get();
+    (out, hit)
 }
 
 static CJK_SCAN: CjkScanState = CjkScanState::new();
@@ -2244,15 +2266,17 @@ mod tests {
         export_handle.join().unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !ASYNC_STATE.is_ready() {
+        while !ASYNC_STATE.is_ready() || super::font_generation() == gen_before {
             assert!(Instant::now() < deadline, "timed out waiting for async scan completion");
             std::thread::yield_now();
         }
         assert!(!ASYNC_STATE.is_pending());
         assert!(super::font_generation() > gen_before, "completing scan must bump font generation");
 
-        let retried =
-            ASYNC_STATE.resolve_region(super::CjkRegion::SimplifiedChinese, |_| None, true, || super::scan_cjk_roots(&[]), |_| None);
+        let (retried, hit_pending_after) = super::track_pending_cjk(|| {
+            ASYNC_STATE.resolve_region(super::CjkRegion::SimplifiedChinese, |_| None, true, || super::scan_cjk_roots(&[]), |_| None)
+        });
+        assert!(!hit_pending_after, "resolved CJK lookup must not report pending");
         match retried {
             super::CjkResolveResult::Resolved(Some((bytes, idx))) => {
                 assert_eq!(bytes.as_slice(), valid_font);
@@ -2266,19 +2290,23 @@ mod tests {
         static EMPTY_ASYNC_STATE: super::CjkScanState = super::CjkScanState::new();
         EMPTY_ASYNC_STATE.enable_async();
         let empty_gen = super::font_generation();
-        let empty_first = EMPTY_ASYNC_STATE.resolve_region(
-            super::CjkRegion::SimplifiedChinese,
-            |_| None,
-            true,
-            || super::scan_cjk_roots(&[]),
-            |_| Some((valid_font.to_vec(), 0)),
-        );
+        let (empty_first, hit_pending) = super::track_pending_cjk(|| {
+            EMPTY_ASYNC_STATE.resolve_region(
+                super::CjkRegion::SimplifiedChinese,
+                |_| None,
+                true,
+                || super::scan_cjk_roots(&[]),
+                |_| Some((valid_font.to_vec(), 0)),
+            )
+        });
         assert!(matches!(empty_first, super::CjkResolveResult::Pending));
+        assert!(hit_pending, "pending async scan lookup must signal track_pending_cjk");
         let empty_deadline = Instant::now() + Duration::from_secs(5);
-        while !EMPTY_ASYNC_STATE.is_ready() {
+        while !EMPTY_ASYNC_STATE.is_ready() || super::font_generation() == empty_gen {
             assert!(Instant::now() < empty_deadline, "timed out waiting for empty async scan");
             std::thread::yield_now();
         }
+        assert!(EMPTY_ASYNC_STATE.is_ready());
         assert!(super::font_generation() > empty_gen, "empty async scan must still bump font generation");
         let cached_fallback = EMPTY_ASYNC_STATE.resolve_region(
             super::CjkRegion::SimplifiedChinese,

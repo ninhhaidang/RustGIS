@@ -954,10 +954,6 @@ pub struct Session {
     /// Whether this front end has the Download Datum Grids setting (the desktop and web apps), so
     /// a note about a missing grid can point to it; the command line and Python have none.
     pub offers_grid_downloads: bool,
-    /// Whether a UI shell takes and translates the CJK font-scan diagnostic summary itself.
-    /// Headless callers (CLI, Python, scripts, tests) leave this `false` so [`Session::run`]
-    /// emits the English notice directly.
-    pub ui_handles_cjk_scan_notice: bool,
     /// The count of cloud-optimised GeoTIFF headers landed when [`Session::notice_landed_rasters`]
     /// last looked back at the dates a dated series has shown (`cog::landed_count`).
     cog_headers_seen: u64,
@@ -1508,7 +1504,6 @@ impl Session {
             // may have failed before it began.
             rebuild_failures_seen: (0, 0),
             offers_grid_downloads: false,
-            ui_handles_cjk_scan_notice: false,
             cog_headers_seen: 0,
             terrain_blocks_checked: Default::default(),
             table_layer: None,
@@ -1906,7 +1901,7 @@ impl Session {
             // A command may change a map's projection, or add layers to it.
             if s.depth == 0 {
                 s.note_shown_systems();
-                if !s.ui_handles_cjk_scan_notice
+                if !ui_owns_cjk_scan_notice()
                     && let Some(summary) = take_cjk_scan_summary_for_session()
                     && let Some(msg) = summary.notice()
                 {
@@ -4337,12 +4332,35 @@ impl Session {
     }
 }
 
+/// Process-wide ownership of the one-shot CJK font-folder scan summary. Set by a UI front end so
+/// neither the live session nor any temporary `Session::new` copy consumes the summary inside
+/// [`Session::run`] before the UI can translate and emit it.
+static UI_OWNS_CJK_SCAN_NOTICE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Marks this process as having a UI front end that takes and translates the one-shot CJK
+/// font-folder scan summary itself, leaving it untouched in [`Session::run`].
+pub fn claim_ui_cjk_scan_notice() {
+    UI_OWNS_CJK_SCAN_NOTICE.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Whether a UI front end owns taking and translating the process-wide CJK scan summary.
+pub fn ui_owns_cjk_scan_notice() -> bool {
+    #[cfg(test)]
+    if let Some(overridden) = TEST_UI_OWNS_CJK_SCAN_NOTICE.get() {
+        return overridden;
+    }
+    UI_OWNS_CJK_SCAN_NOTICE.load(std::sync::atomic::Ordering::Acquire)
+}
+
 #[cfg(test)]
 thread_local! {
     /// Thread-local override for [`take_cjk_scan_summary_for_session`] so tests can exercise
     /// `Session::run`'s CJK scan notice wiring in parallel without mutating the global font cache.
     static TEST_CJK_SCAN_SUMMARY: std::cell::RefCell<Option<Option<rustgis_render::fonts::CjkRootScanSummary>>> =
         const { std::cell::RefCell::new(None) };
+    /// Thread-local override for [`ui_owns_cjk_scan_notice`] so parallel unit tests can cover
+    /// headless sessions even after another test claims UI ownership.
+    static TEST_UI_OWNS_CJK_SCAN_NOTICE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 fn take_cjk_scan_summary_for_session() -> Option<rustgis_render::fonts::CjkRootScanSummary> {
