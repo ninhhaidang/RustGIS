@@ -606,7 +606,8 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
 
     for root in roots {
         if dirs_visited >= max_dirs || files_seen >= max_files || entries_seen >= max_entries {
-            if root.exists() {
+            // Not `exists()`: it also hides errors other than NotFound, which must count as skipped.
+            if !matches!(std::fs::metadata(root), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) {
                 skipped_dirs.push(root.clone());
             }
             continue;
@@ -1841,10 +1842,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn scan_cjk_roots_reports_metadata_error_on_inaccessible_symlink_target() {
-        use std::os::unix::fs::PermissionsExt;
-
-        // Symlink loop produces a non-NotFound metadata error (ELOOP) even under root.
+    fn scan_cjk_roots_reports_metadata_error_on_symlink_loop() {
+        // Symlink loops produce a non-NotFound metadata error (ELOOP) regardless of user privileges.
         let loop_dir = tempfile::tempdir().unwrap();
         let loop_a = loop_dir.path().join("loop-a");
         let loop_b = loop_dir.path().join("loop-b");
@@ -1855,26 +1854,13 @@ mod tests {
         assert_eq!(loop_scan.summary.entry_errors, 2, "{:?}", loop_scan.summary);
         assert_eq!(loop_scan.summary.sample_path.as_deref(), Some(loop_a.as_path()));
 
-        // Symlink pointing inside an inaccessible (0o000) directory reports a metadata error when non-root.
-        let dir = tempfile::tempdir().unwrap();
-        let locked = dir.path().join("locked");
-        let hidden = locked.join("hidden");
-        std::fs::create_dir_all(&hidden).unwrap();
-        let root = dir.path().join("root");
-        std::fs::create_dir_all(&root).unwrap();
-        let link = root.join("fonts-link");
-        std::os::unix::fs::symlink(&hidden, &link).unwrap();
-
-        let original_mode = std::fs::metadata(&locked).unwrap().permissions().mode();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let can_still_stat = std::fs::metadata(&link).is_ok();
-        let perm_scan = if can_still_stat { None } else { Some(super::scan_cjk_roots(&[root])) };
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(original_mode)).unwrap();
-
-        if let Some(perm_scan) = perm_scan {
-            assert!(!perm_scan.summary.is_clean(), "{:?}", perm_scan.summary);
-            assert_eq!(perm_scan.summary.entry_errors, 1, "{:?}", perm_scan.summary);
-            assert_eq!(perm_scan.summary.sample_path.as_deref(), Some(link.as_path()));
-        }
+        // When scan caps are already exhausted, a later root whose metadata fails with a non-NotFound
+        // error is still counted as skipped rather than silently dropped like NotFound.
+        let first_root = tempfile::tempdir().unwrap();
+        std::fs::write(first_root.path().join("a.ttf"), b"x").unwrap();
+        let missing_root = first_root.path().join("does-not-exist");
+        let capped = super::scan_cjk_roots_bounded(&[first_root.path().to_path_buf(), missing_root, loop_a.clone()], 6, 10, 1);
+        assert_eq!(capped.summary.truncated_dirs, 1, "{:?}", capped.summary);
+        assert_eq!(capped.summary.sample_path.as_deref(), Some(loop_a.as_path()));
     }
 }
