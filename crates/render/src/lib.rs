@@ -4269,7 +4269,7 @@ fn extrusions_tilted(map: &mut Map, view: &View, pm: &mut Pixmap, env: &Env) -> 
         layer.projected_in(&flat, &key);
         let layer: &rustgis_map::Layer = layer;
         let styler = layer.styler_with(env.at_scale(Some(scale)));
-        let geoms: Vec<Option<&Geometry>> = layer.projected_cache().iter().map(Option::as_ref).collect();
+        let geoms: Vec<Option<&Geometry>> = layer.projected_cache().iter().collect();
         let draw = |target: &mut Pixmap| {
             effects::extrude_tilted(
                 target,
@@ -5519,7 +5519,7 @@ fn render_frame(
             } else if display_only {
                 layer.display_cache().map_or(&[][..], |(g, _)| g).iter().map(Option::as_ref).collect()
             } else {
-                layer.projected_cache().iter().map(Option::as_ref).collect()
+                layer.projected_cache().iter().collect()
             };
             // What the features draw from, and their extents for culling (on the flat map, cached).
             // Only the fills and strokes below draw thinned: the selection, labels, aggregation and
@@ -5545,7 +5545,7 @@ fn render_frame(
             } else if complete_source {
                 if thin_complete { chunk_thinned.iter().map(Option::as_ref).collect() } else { geoms.clone() }
             } else {
-                layer.thinned_cache(thin_tol).iter().map(Option::as_ref).collect()
+                layer.thinned_cache(thin_tol).iter().collect()
             };
             let extents = if globe.is_some() {
                 &[][..]
@@ -5590,7 +5590,7 @@ fn render_frame(
                     let level = rustgis_map::lod::level(thin_tol);
                     let drawn_copy = if display_only {
                         layer_meshes::Drawn::Display(level)
-                    } else if std::ptr::eq(layer.thinned_cache(thin_tol), layer.projected_cache()) {
+                    } else if layer.thinned_cache(thin_tol).same(layer.projected_cache()) {
                         layer_meshes::Drawn::Projected
                     } else {
                         layer_meshes::Drawn::Thinned(level)
@@ -7832,7 +7832,7 @@ fn guides_of(
     };
     let drawn = || match layer.is_cached(key) {
         true => Some((layer.thinned_cache(ctx.view.lod_tolerance()), layer.projected_extents())),
-        false => layer.display_cache(),
+        false => layer.display_cache().map(|(g, e)| (rustgis_map::Shapes::Copies(g), e)),
     };
     if let Some((geoms, extents)) = ctx.globe.is_none().then(drawn).flatten() {
         // A point the projection can't show is NaN in the copy, and breaks the line there.

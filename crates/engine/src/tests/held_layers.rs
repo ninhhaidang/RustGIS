@@ -1305,7 +1305,7 @@ fn edits_on_a_map_in_another_datums_system_land_on_what_it_draws() {
     assert_eq!(flat.direct_system(), Some(Crs::Epsg(25832)));
     let id = s.map().layer_by_name("Roads").unwrap().id;
     let stored = s.map().layer(id).unwrap().dataset.features[0].geometry.clone().unwrap();
-    let drawn = s.map_mut().layer_mut(id).unwrap().projected_in(&flat, "test")[0].clone().unwrap();
+    let drawn = s.map_mut().layer_mut(id).unwrap().projected_in(&flat, "test").get(0).cloned().unwrap();
     let (Geometry::Line(stored_parts), Geometry::Line(drawn_parts)) = (&stored, &drawn) else { panic!("a line") };
     let l = s.map().layer(id).unwrap();
     assert_eq!(l.dataset.shown_in, Some(Crs::Epsg(25832)), "the map told its layer its system");
@@ -1343,7 +1343,7 @@ fn a_moved_label_becomes_an_annotation_where_it_was_drawn() {
     let flat = s.map().flat();
     assert_eq!(flat.direct_system(), Some(Crs::Epsg(25832)));
     let id = s.map().layer_by_name("Wells").unwrap().id;
-    let drawn = s.map_mut().layer_mut(id).unwrap().projected_in(&flat, "test")[2].clone().unwrap();
+    let drawn = s.map_mut().layer_mut(id).unwrap().projected_in(&flat, "test").get(2).cloned().unwrap();
     let Geometry::Point(drawn) = drawn else { panic!("a point") };
     let l = s.map().layer(id).unwrap();
     let (moved, target) = (l.dataset.features[1].id, l.dataset.features[2].geometry.clone().unwrap());

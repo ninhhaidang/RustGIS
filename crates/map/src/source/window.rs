@@ -10,6 +10,9 @@ use std::sync::Arc;
 pub(crate) struct Cache {
     pub areas: super::AmbiguousAreas,
     pub projected: Arc<Vec<Option<Geometry>>>,
+    /// Whether the rows are drawn as they are (on a map in the source's own system), with no
+    /// projected copy (`projected` empty, [`crate::Layer::projected_in`]).
+    pub own: bool,
     pub extents: Arc<Vec<Extent>>,
     pub vertices: usize,
     pub key: String,
@@ -22,10 +25,28 @@ pub(crate) struct Cache {
     pub crs: Crs,
 }
 
-fn base_bytes(batch: &Batch, projected: &Vec<Option<Geometry>>) -> usize {
+fn base_bytes(batch: &Batch, projected: &Drawn) -> usize {
     memory::features_bytes(&batch.features)
-        .saturating_add(crate::lod::cache_bytes(projected))
-        .saturating_add(projected.len().saturating_mul(std::mem::size_of::<Extent>()))
+        .saturating_add(projected.as_ref().map_or(0, crate::lod::cache_bytes))
+        .saturating_add(batch.features.len().saturating_mul(std::mem::size_of::<Extent>()))
+}
+
+/// A window's rows as drawn ([`projected_rows`]): `None` when drawn as they are, with no copy.
+type Drawn = Option<Vec<Option<Geometry>>>;
+
+/// The extents, the vertices thinning can drop, and the bytes of a window's rows as drawn.
+fn drawn_stats(features: &[rustgis_data::Feature], projected: &Drawn) -> (Arc<Vec<Extent>>, usize, usize) {
+    // One walk over the rows as drawn, with no list of them beside the window.
+    let mut vertices = 0;
+    let mut extent = |g: Option<&Geometry>| {
+        vertices += g.map_or(0, crate::lod::thinnable);
+        g.map_or(Extent::EMPTY, Geometry::extent)
+    };
+    let extents = Arc::new(match projected {
+        Some(p) => p.iter().map(|g| extent(g.as_ref())).collect(),
+        None => features.iter().map(|f| extent(geometry(f))).collect(),
+    });
+    (extents, vertices, projected.as_ref().map_or(0, crate::lod::cache_bytes))
 }
 
 fn retain_evenly<T>(items: &mut Vec<T>, kept: usize) {
@@ -225,14 +246,16 @@ fn check_areas(expr: &Expr, held: &Dataset, features: &[rustgis_data::Feature], 
 fn whole(batch: Batch, projection: &crate::Projection, crs: Crs) -> (Batch, Cache) {
     let flat = crate::projection::Flat::of(projection);
     let projected = projected_rows(&flat, crs, &batch.features);
+    let (extents, vertices, projected_bytes) = drawn_stats(&batch.features, &projected);
     let cache = Cache {
         areas: super::AmbiguousAreas::from_features_in(&batch.features, crs),
-        extents: Arc::new(projected.iter().map(|g| g.as_ref().map_or(Extent::EMPTY, Geometry::extent)).collect()),
-        vertices: projected.iter().flatten().map(crate::lod::thinnable).sum(),
+        extents,
+        vertices,
         mean_bytes: 0,
         feature_bytes: memory::features_bytes(&batch.features),
-        projected_bytes: crate::lod::cache_bytes(&projected),
-        projected: Arc::new(projected),
+        projected_bytes,
+        own: projected.is_none(),
+        projected: Arc::new(projected.unwrap_or_default()),
         key: projection.code(),
         filtered: false,
         crs,
@@ -243,14 +266,22 @@ fn whole(batch: Batch, projection: &crate::Projection, crs: Crs) -> (Batch, Cach
 /// Each feature's geometry, given in `crs` (the source's own system), in the map's coordinates on
 /// `flat`, as the map draws a layer held there ([`crate::projection::Flat::held`]): none when the
 /// system can't be converted, as the map draws none of such a layer.
-fn projected_rows(flat: &crate::projection::Flat, crs: Crs, features: &[rustgis_data::Feature]) -> Vec<Option<Geometry>> {
+/// A window's rows as `flat` draws them: `None` on a map in the system they are given in, which
+/// draws them as they are, with no copy (#2032 C2f).
+fn projected_rows(flat: &crate::projection::Flat, crs: Crs, features: &[rustgis_data::Feature]) -> Drawn {
     if crs == Crs::LonLat {
-        return features.iter().map(|f| f.geometry.as_ref().map(|g| flat.project(g))).collect();
+        return Some(features.iter().map(|f| geometry(f).map(|g| flat.project(g))).collect());
     }
     match flat.held(crs) {
-        Ok(held) => features.iter().map(|f| f.geometry.as_ref().map(|g| held.geometry(g).0)).collect(),
-        Err(_) => features.iter().map(|_| None).collect(),
+        Ok(held) if held.is_identity() => None,
+        Ok(held) => Some(features.iter().map(|f| geometry(f).map(|g| held.geometry(g).0)).collect()),
+        Err(_) => Some(features.iter().map(|_| None).collect()),
     }
+}
+
+/// A window row's geometry.
+fn geometry(f: &rustgis_data::Feature) -> Option<&Geometry> {
+    f.geometry.as_ref()
 }
 
 #[cfg(test)]
@@ -351,13 +382,7 @@ fn pad(batch: &mut Batch, bytes: usize, fields: Option<usize>) -> Result<()> {
 
 /// Thins the rows and their projection evenly until they fit three quarters of `bytes`, and
 /// builds the window's cache.
-fn trim(
-    mut batch: Batch,
-    mut projected: Vec<Option<Geometry>>,
-    bytes: usize,
-    projection: &crate::Projection,
-    crs: Crs,
-) -> Result<(Batch, Cache)> {
+fn trim(mut batch: Batch, mut projected: Drawn, bytes: usize, projection: &crate::Projection, crs: Crs) -> Result<(Batch, Cache)> {
     let base_budget = bytes.saturating_mul(3) / 4;
     // Keep room for display levels. Actual allocation accounting also handles projections
     // that split at a world seam and create more parts than the original geometry.
@@ -376,20 +401,21 @@ fn trim(
         let kept = batch.features.len().saturating_mul(base_budget) / used.max(1);
         let kept = kept.max(1).min(batch.features.len() - 1);
         retain_evenly(&mut batch.features, kept);
-        retain_evenly(&mut projected, kept);
+        if let Some(p) = &mut projected {
+            retain_evenly(p, kept);
+        }
         batch.complete = false;
     }
-    let extents = Arc::new(projected.iter().map(|g| g.as_ref().map_or(Extent::EMPTY, Geometry::extent)).collect());
-    let vertices = projected.iter().flatten().map(crate::lod::thinnable).sum();
+    let (extents, vertices, projected_bytes) = drawn_stats(&batch.features, &projected);
     let mean_bytes = base_bytes(&batch, &projected).div_ceil(batch.features.len().max(1));
     let feature_bytes = memory::features_bytes(&batch.features);
-    let projected_bytes = crate::lod::cache_bytes(&projected);
     let areas = super::AmbiguousAreas::from_features_in(&batch.features, crs);
     Ok((
         batch,
         Cache {
             areas,
-            projected: Arc::new(projected),
+            own: projected.is_none(),
+            projected: Arc::new(projected.unwrap_or_default()),
             extents,
             vertices,
             key: projection.code(),
@@ -480,6 +506,38 @@ mod tests {
         assert_eq!(source.read(&Request::all()).unwrap().features.len(), 600);
     }
 
+    /// A source in the system its map is drawn in gives a window drawn as its rows are: no copy
+    /// is made or counted against the budget, so more rows fit; one in another system gets a
+    /// converted copy (#2032 C2f).
+    #[test]
+    fn a_window_on_a_map_in_its_sources_system_makes_no_copy() {
+        struct InUtm(Box<dyn FeatureSource>);
+        impl FeatureSource for InUtm {
+            fn info(&self) -> &rustgis_data::source::SourceInfo {
+                self.0.info()
+            }
+            fn read(&self, req: &Request) -> Result<Batch> {
+                self.0.read(req)
+            }
+            fn coord_crs(&self) -> Crs {
+                Crs::Epsg(32632)
+            }
+        }
+        let source = InUtm(source());
+        let budget = 128 * 1024;
+        let own = crate::Projection::Custom("EPSG:32632".into());
+        let (batch, cache) = read(&source, &Request::all(), budget, &own, 0).unwrap();
+        assert!(cache.own && cache.projected.is_empty() && cache.projected_bytes == 0);
+        assert_eq!(cache.extents.len(), batch.features.len());
+        for (row, e) in batch.features.iter().zip(cache.extents.iter()) {
+            assert_eq!(*e, row.geometry.as_ref().unwrap().extent());
+        }
+        let other = crate::Projection::Custom("EPSG:25832".into());
+        let (copied, cache) = read(&source, &Request::all(), budget, &other, 0).unwrap();
+        assert!(!cache.own && cache.projected.len() == copied.features.len());
+        assert!(batch.features.len() > copied.features.len(), "{} vs {}", batch.features.len(), copied.features.len());
+    }
+
     #[test]
     fn installed_windows_share_the_map_budget_and_reuse_prepared_geometry() {
         let mut map = crate::Map::new("budget");
@@ -542,7 +600,7 @@ mod tests {
         let (batch, cache) =
             read_with_fields(source.as_ref(), &Request::all(), bytes, &crate::Projection::WebMercator, 0, Some(200)).unwrap();
         assert!(batch.features.iter().all(|f| f.attrs.len() == 200));
-        assert!(base_bytes(&batch, &cache.projected) <= bytes * 3 / 4);
+        assert!(base_bytes(&batch, &(!cache.own).then(|| cache.projected.to_vec())) <= bytes * 3 / 4);
         assert!(!batch.complete);
         assert!(read_with_fields(source.as_ref(), &Request::all(), bytes, &crate::Projection::WebMercator, 0, Some(usize::MAX)).is_err());
     }
@@ -669,7 +727,7 @@ mod tests {
         let (batch, cache) = read(&source, &Request::all(), 128 * 1024, &crate::Projection::WebMercator, 0).unwrap();
         assert!(!batch.features.is_empty());
         assert_eq!(batch.features.len(), cache.projected.len());
-        assert!(base_bytes(&batch, &cache.projected) <= 96 * 1024);
+        assert!(base_bytes(&batch, &(!cache.own).then(|| cache.projected.to_vec())) <= 96 * 1024);
         assert_eq!(source.read(&Request::all()).unwrap().features.len(), 600);
     }
     #[test]
@@ -679,10 +737,10 @@ mod tests {
         let projection = crate::Projection::WebMercator;
         let (mut full, cache) = read_mode(source.as_ref(), &req, 1, &projection, 0, true, None, None).unwrap();
         full.features.shrink_to_fit();
-        let budget = base_bytes(&full, &cache.projected);
+        let budget = base_bytes(&full, &(!cache.own).then(|| cache.projected.to_vec()));
         let (batch, cache) = read(source.as_ref(), &req, budget, &projection, 0).unwrap();
         assert_eq!(batch.features, full.features);
-        assert!(base_bytes(&batch, &cache.projected) <= budget);
+        assert!(base_bytes(&batch, &(!cache.own).then(|| cache.projected.to_vec())) <= budget);
     }
     #[test]
     fn measured_rows_read_once_and_still_reject_newly_oversized_features() {

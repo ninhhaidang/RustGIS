@@ -30,6 +30,7 @@ pub mod report;
 mod row_boxes;
 pub mod rows;
 pub mod shadow;
+pub mod shapes;
 pub mod slots;
 pub mod source;
 pub use slots::{LayerRole, Slot, SlotPos, TileRole};
@@ -45,6 +46,7 @@ pub use color::{Ramp, RampGroup, Rgba};
 pub use diagram::{DiagramCategory, DiagramKind, DiagramLabel, DiagramSettings, DiagramSize};
 pub use globe::{Globe, Projection};
 pub use raster::{RasterDefaults, RasterLayer, RasterRenderer, RasterStyle, Resampling, Stretch};
+pub use shapes::Shapes;
 pub use symbology::{
     ClassMethod, Classer, FontName, Glyph, LabelBackground, LabelClass, LabelGuide, LabelKey, LabelMatcher, LabelPlacement, Labeling,
     LineCap, LineJoin, LineMark, LineMarkers, LineStroke, Marker, MarkerRotation, Picture, Placements, Renderer, SquareSide, SquareTo,
@@ -305,6 +307,11 @@ pub struct Layer {
     /// Shared, like the features: an undo snapshot or other copy of the layer doesn't copy it.
     #[serde(skip)]
     projected: std::sync::Arc<Vec<Option<Geometry>>>,
+    /// Whether the projected geometry is the layer's own rows, read in place (`projected` then
+    /// empty): on a map in the system it holds them in, which draws every place as it is, so no
+    /// copy is made ([`Layer::projected_in`]).
+    #[serde(skip)]
+    projected_own: bool,
     /// The active Mercator display level; full projection stays lazy for interaction.
     #[serde(skip)]
     display: Option<std::sync::Arc<lod::Display>>,
@@ -557,6 +564,7 @@ impl Layer {
             connection: String::new(),
             anonymous: false,
             projected: Default::default(),
+            projected_own: false,
             display: None,
             display_rejected: Vec::new(),
             display_levels: Vec::new(),
@@ -764,6 +772,7 @@ impl Layer {
         self.touch_geometry();
         if let Some(cache) = self.source.as_mut().and_then(|s| s.ready_cache.take()) {
             self.projected = cache.projected;
+            self.projected_own = cache.own;
             self.projected_extents = cache.extents;
             self.projected_vertices = cache.vertices;
             self.projected_for = cache.key;
@@ -1139,7 +1148,7 @@ impl Layer {
     /// parts and vertices needn't match the source's (a cut feature has more parts, and a point
     /// the projection can't use breaks a line): hit-testing and snapping use the shape, never a
     /// vertex index, which only the source geometry has.
-    pub fn projected_in(&mut self, flat: &projection::Flat, key: &str) -> &[Option<Geometry>] {
+    pub fn projected_in(&mut self, flat: &projection::Flat, key: &str) -> Shapes<'_> {
         if !self.is_cached(key) {
             // Display copies made for another map are of no use on this one.
             if self.display_rows(flat).is_none() {
@@ -1148,7 +1157,7 @@ impl Layer {
             self.fill_projected(key, flat);
         }
         self.drawn.flat = true;
-        &self.projected
+        self.projected_cache()
     }
 
     /// Its geometry in longitude/latitude, for the globe, which draws there: kept in a cache of
@@ -1268,15 +1277,18 @@ impl Layer {
     fn fill_projected(&mut self, key: &str, flat: &projection::Flat) {
         self.display = None;
         let crs = self.dataset.coord_crs();
+        self.projected_own = false;
         let projected: Vec<Option<Geometry>> = if crs == Crs::LonLat {
             self.dataset.features.rows().map(|r| r.geometry().map(|g| flat.project(g))).collect()
         } else {
             match flat.held(crs) {
                 // Every place is drawn as it is, those longitude/latitude can't give too: the
                 // conversion leaves none out (a place a reader kept missing is said by the reader).
+                // Its own rows, read in place: no copy (#2032 C2f).
                 Ok(held) if held.is_identity() => {
                     self.flat_unplaced = Unplaced { rev: self.geometry_rev, crs: Some(crs), count: Ok(0) };
-                    self.dataset.features.rows().map(|r| r.geometry().cloned()).collect()
+                    self.projected_own = true;
+                    Vec::new()
                 }
                 Ok(held) => {
                     let mut lost = 0usize;
@@ -1299,10 +1311,11 @@ impl Layer {
                 }
             }
         };
-        self.projected_extents =
-            std::sync::Arc::new(projected.iter().map(|g| g.as_ref().map_or(Extent::EMPTY, Geometry::extent)).collect());
-        self.projected_vertices = projected.iter().flatten().map(lod::thinnable).sum();
         self.projected = std::sync::Arc::new(projected);
+        let shapes = self.projected_cache();
+        let extents = std::sync::Arc::new(shapes.iter().map(|g| g.map_or(Extent::EMPTY, Geometry::extent)).collect());
+        let vertices = shapes.iter().flatten().map(lod::thinnable).sum();
+        (self.projected_extents, self.projected_vertices) = (extents, vertices);
         self.thinned = Default::default();
         self.projected_rev = self.geometry_rev;
         self.projected_for = key.to_string();
@@ -1311,7 +1324,7 @@ impl Layer {
     }
 
     /// Web Mercator copies of every geometry (see [`Layer::projected_in`]).
-    pub fn projected(&mut self) -> &[Option<Geometry>] {
+    pub fn projected(&mut self) -> Shapes<'_> {
         self.projected_in(&projection::Flat::Mercator, "mercator")
     }
 
@@ -1424,14 +1437,15 @@ impl Layer {
     /// The projected geometry (see [`Layer::projected_in`]) as drawn at a tolerance in projection
     /// units: a thinned copy at the level just under it (see [`lod`]), made on first use, or the
     /// geometry itself for a small layer. Read it back with [`Layer::thinned_cache`].
-    pub fn thinned_in(&mut self, flat: &projection::Flat, key: &str, tol: f64) -> &[Option<Geometry>] {
+    pub fn thinned_in(&mut self, flat: &projection::Flat, key: &str, tol: f64) -> Shapes<'_> {
         self.display = None;
         self.projected_in(flat, key);
         self.trim_display_levels(self.lod_budget());
         let display_bytes: usize = self.display_levels.iter().map(|d| d.bytes).sum();
         let budget = self.lod_budget().saturating_sub(display_bytes);
         self.trim_thinned_levels(budget);
-        let Some(level) = lod::level(tol).filter(|_| self.projected_vertices > lod::THIN_ABOVE) else { return &self.projected };
+        let Some(level) = lod::level(tol).filter(|_| self.projected_vertices > lod::THIN_ABOVE) else { return self.projected_cache() };
+        let shapes = shapes_of(self.projected_own, &self.dataset.features, &self.projected);
         let levels = std::sync::Arc::make_mut(&mut self.thinned);
         match levels.iter().position(|(l, _)| *l == level) {
             Some(i) => {
@@ -1459,10 +1473,10 @@ impl Layer {
                 } else if lonlat_rows {
                     lod::project_budgeted(&self.dataset.features, lod::Rows::LonLat, level, budget)
                 } else {
-                    lod::thin_budgeted(&self.projected, t, budget)
+                    lod::thin_budgeted(shapes, t, budget)
                 };
                 // The saving counts against every vertex the copy holds, points included.
-                let all: usize = self.projected.iter().flatten().map(lod::vertices).sum();
+                let all: usize = shapes.iter().flatten().map(lod::vertices).sum();
                 let copy = copy.filter(|c| {
                     let kept: usize = c.iter().flatten().map(lod::vertices).sum();
                     (kept as f64) <= all as f64 * (1.0 - lod::MIN_SAVING)
@@ -1477,11 +1491,12 @@ impl Layer {
 
     /// The geometry from the last [`Layer::thinned_in`] call at this tolerance, without making
     /// it: the full projected geometry when there is no thinned copy for it.
-    pub fn thinned_cache(&self, tol: f64) -> &[Option<Geometry>] {
+    pub fn thinned_cache(&self, tol: f64) -> Shapes<'_> {
         let level = lod::level(tol).filter(|_| self.projected_vertices > lod::THIN_ABOVE);
+        let shapes = self.projected_cache();
         match level.and_then(|level| self.thinned.iter().find(|(l, _)| *l == level)) {
-            Some((_, Some(g))) if g.len() == self.projected.len() => g,
-            _ => &self.projected,
+            Some((_, Some(g))) if g.len() == shapes.len() => Shapes::Copies(g),
+            _ => shapes,
         }
     }
 
@@ -1490,10 +1505,13 @@ impl Layer {
         &self.projected_extents
     }
 
-    /// The Web Mercator copies from the last [`Layer::projected`] call, without refreshing them:
-    /// call `projected` first (it needs `&mut self`) whenever the geometry may have changed.
-    pub fn projected_cache(&self) -> &[Option<Geometry>] {
-        &self.projected
+    /// The geometry as the last [`Layer::projected_in`] call drew it, without refreshing it: call
+    /// that first (it needs `&mut self`) whenever the geometry or the map may have changed. On a
+    /// map in the layer's own system it is the layer's rows, read in place, row for row with
+    /// [`Layer::projected_extents`]; an edit marked ([`Layer::touch_geometry`]) leaves none until
+    /// it is drawn again, so the rows aren't paired with extents made before it.
+    pub fn projected_cache(&self) -> Shapes<'_> {
+        shapes_of(self.projected_own, &self.dataset.features, &self.projected)
     }
 
     /// Drops the projected geometry cache (the feature cache).
@@ -1502,6 +1520,7 @@ impl Layer {
         self.display_levels.clear();
         self.display_rejected.clear();
         self.projected = Default::default();
+        self.projected_own = false;
         self.projected_extents = Default::default();
         self.projected_vertices = 0;
         self.thinned = Default::default();
@@ -1547,6 +1566,7 @@ impl Layer {
             self.display_levels = other.display_levels.clone();
             if other.is_cached(&other.projected_for) {
                 self.projected = other.projected.clone();
+                self.projected_own = other.projected_own;
                 self.projected_extents = other.projected_extents.clone();
                 self.projected_vertices = other.projected_vertices;
                 self.thinned = other.thinned.clone();
@@ -1567,8 +1587,9 @@ impl Layer {
     /// frame drawn there from display copies alone ([`Layer::prepare_display`]) has no use for it,
     /// and it would stay, a copy of the layer's geometry, until that map came back.
     pub fn release_projected_other_than(&mut self, key: &str) {
-        if !self.projected.is_empty() && self.projected_for != key {
+        if (!self.projected.is_empty() || self.projected_own) && self.projected_for != key {
             self.projected = Default::default();
+            self.projected_own = false;
             self.projected_extents = Default::default();
             self.projected_vertices = 0;
             self.thinned = Default::default();
@@ -1595,7 +1616,8 @@ impl Layer {
     pub fn is_cached(&self, key: &str) -> bool {
         self.projected_for == key
             && self.projected_rev == self.geometry_rev
-            && self.projected.len() == self.dataset.features.len()
+            // Its own rows read in place: their extents still made for as many rows.
+            && (if self.projected_own { self.projected_extents.len() } else { self.projected.len() }) == self.dataset.features.len()
             && self.projected_crs == Some(self.dataset.coord_crs())
     }
 
@@ -1608,6 +1630,10 @@ impl Layer {
     /// Marks geometry as changed.
     pub fn touch_geometry(&mut self) {
         self.geometry_rev = self.geometry_rev.wrapping_add(1);
+        // Its own rows, read in place as the projected geometry, are no longer what its extents
+        // and thinned copies were made from: until drawn again, there is none, as for a copy
+        // made from geometry since changed ([`Layer::projected_cache`]).
+        self.projected_own = false;
     }
 
     /// Puts the selection in range, in order and with each row once: the state selecting leaves
@@ -3780,6 +3806,7 @@ impl Layer {
             anonymous: _,
             instance_id: _,
             projected: _,
+            projected_own: _,
             display: _,
             display_rejected: _,
             display_levels: _,
@@ -3952,6 +3979,12 @@ struct MapView<'a> {
     system: Crs,
     view: Extent,
 }
+/// A layer's projected geometry ([`Layer::projected_cache`]) from its fields: its own rows when
+/// `own`, else the copies.
+fn shapes_of<'a>(own: bool, rows: &'a rustgis_data::Features, copies: &'a [Option<Geometry>]) -> Shapes<'a> {
+    if own { Shapes::Rows(rows) } else { Shapes::Copies(copies) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4469,6 +4502,52 @@ mod tests {
         assert!(!m.layer(id).unwrap().is_cached("mercator"));
     }
 
+    /// On a map in the system a layer is held in, the geometry frames read for exact positions
+    /// (labels, selection: [`Layer::projected_in`]) is its own rows, read in place: no copy is
+    /// made or counted, an edit shows at once, and its thinned copy is made from those rows. A map
+    /// in another system draws a copy, as before (#2032 C2f).
+    #[test]
+    fn a_held_layer_on_a_map_in_its_own_system_shares_its_rows() {
+        let n = lod::THIN_ABOVE + 1000;
+        let mut d = Dataset::new("zigzag", GeometryType::Polyline, vec![]);
+        let run: Vec<Coord> = (0..n)
+            .map(|i| Coord::new(500_000.0 + 100_000.0 * i as f64 / n as f64, 5_316_000.0 + if i % 2 == 0 { 1.0 } else { -1.0 }))
+            .collect();
+        d.push(Some(Geometry::Line(vec![run.clone()])), vec![]);
+        d.held_in = Crs::Epsg(32632);
+        let mut l = Layer::new(1, d);
+        let own = projection::Flat::of(&Projection::Custom("EPSG:32632".into()));
+        let before = l.view_cache_bytes();
+        let stored = l.dataset.features.geometry(0).cloned();
+        let drawn = l.projected_in(&own, "utm");
+        assert!(matches!(drawn, Shapes::Rows(_)), "its own rows");
+        assert_eq!(drawn.get(0), stored.as_ref());
+        assert_eq!(l.projected_extents(), &[l.dataset.features.geometry(0).unwrap().extent()]);
+        assert!(l.projected.is_empty());
+        assert!(l.view_cache_bytes() < before + 64 * 1024, "no copy counted: {} then {}", before, l.view_cache_bytes());
+        assert!(l.is_cached("utm"));
+        // Thinned from its rows, its ends as held.
+        let thinned = l.thinned_in(&own, "utm", 1_000.0).get(0).cloned().unwrap();
+        assert!(lod::vertices(&thinned) < n / 40);
+        let Geometry::Line(parts) = &thinned else { panic!("a line") };
+        assert_eq!((parts[0][0], *parts[0].last().unwrap()), (run[0], *run.last().unwrap()));
+        // An edit: the cache is made again, still its rows.
+        l.dataset.features[0].geometry = Some(Geometry::Line(vec![run[..2].to_vec()]));
+        l.touch_geometry();
+        assert!(!l.is_cached("utm"));
+        assert!(l.projected_cache().is_empty(), "the rows aren't paired with extents made before the edit");
+        assert_eq!(l.projected_in(&own, "utm").get(0), Some(&Geometry::Line(vec![run[..2].to_vec()])));
+        // A copy of the layer (an undo snapshot, a drawing off the UI thread) shares it.
+        let copy = l.clone();
+        assert!(copy.projected_cache().same(l.projected_cache()));
+        // On a map in another system, a copy, converted.
+        let other = projection::Flat::of(&Projection::Custom("EPSG:25832".into()));
+        let drawn = l.projected_in(&other, "etrs");
+        assert!(matches!(drawn, Shapes::Copies(_)));
+        assert_ne!(drawn.get(0), stored.as_ref());
+        assert!(!l.projected.is_empty());
+    }
+
     /// A layer held in the system its map is drawn in gets display copies made from its own rows,
     /// simplified as they are, with nothing converted and no full copy of it on the map; a map in
     /// another system makes none (it draws the projected copy, as before), and a projection made
@@ -4528,7 +4607,7 @@ mod tests {
         // Requesting exact positions remains exact and drops the optional display copy.
         assert_eq!(copy.projected().len(), 1);
         assert!(copy.display_cache().is_none());
-        assert_eq!(lod::vertices(copy.projected_cache()[0].as_ref().unwrap()), lod::THIN_ABOVE + 1000);
+        assert_eq!(lod::vertices(copy.projected_cache().get(0).unwrap()), lod::THIN_ABOVE + 1000);
         l.touch_geometry();
         assert!(l.display_cache().is_none());
         assert!(l.prepare_display(&flat, 24_000.0, false));
@@ -4598,7 +4677,7 @@ mod tests {
         assert!(chunk.display_cache().is_none());
         // Budget exhaustion falls back to the original, fully projected geometry.
         let full = flat.project(chunk.dataset.features[0].geometry.as_ref().unwrap());
-        assert_eq!(chunk.thinned_in(&flat, "mercator", 1e6), &[Some(full)]);
+        assert_eq!(chunk.thinned_in(&flat, "mercator", 1e6), [Some(full)]);
     }
 
     /// #2678: a layer read in place counts its source's features, not the view's: whatever the
@@ -4904,7 +4983,7 @@ mod tests {
             }
         };
         near(&coords(&stored), &[(3513304.512454, 5404737.597295), (3514768.524742, 5406965.390660)]);
-        let on_own = gk.projected_in(&flat("EPSG:31467"), "gk")[0].clone().unwrap();
+        let on_own = gk.projected_in(&flat("EPSG:31467"), "gk").get(0).cloned().unwrap();
         assert_eq!(coords(&on_own), coords(&stored));
         assert_eq!(gk.unplaced(), Some(&Ok(0)), "drawn as it is: none left out");
         // On ETRS89 UTM 32N, the direct operation's result, not the way through WGS 84.
@@ -4912,7 +4991,7 @@ mod tests {
         assert_eq!(utm.direct_system(), Some(Crs::Epsg(25832)));
         let direct = Crs::Epsg(31467).to(Crs::Epsg(25832)).unwrap();
         let to_lonlat = Crs::Epsg(31467).to(Crs::LonLat).unwrap();
-        let drawn = gk.projected_in(&utm, "utm")[0].clone().unwrap();
+        let drawn = gk.projected_in(&utm, "utm").get(0).cloned().unwrap();
         for (d, s) in coords(&drawn).into_iter().zip(coords(&stored)) {
             let want = direct.point(s).unwrap();
             assert!((d.x - want.x).abs() < 1e-6 && (d.y - want.y).abs() < 1e-6, "{d:?} vs {want:?}");
@@ -4925,7 +5004,7 @@ mod tests {
         for (map, key) in [(projection::Flat::Mercator, "mercator"), (flat("ESRI:54030"), "robinson")] {
             assert_eq!(map.direct_system(), None, "{key}");
             let want = map.project(&to_lonlat.geometry(&stored));
-            assert_eq!(gk.projected_in(&map, key)[0].as_ref(), Some(&want), "{key}");
+            assert_eq!(gk.projected_in(&map, key).get(0), Some(&want), "{key}");
         }
         // A place longitude/latitude can't give is counted where drawing goes through it (Web
         // Mercator), and not on a map in the layer's own system, which draws it as it is.
@@ -4954,14 +5033,14 @@ mod tests {
         // A layer held in Web Mercator is drawn on the Web Mercator map as it is.
         let mut merc = held(Crs::WebMercator);
         let stored_merc = merc.dataset.features[0].geometry.clone().unwrap();
-        let on_merc = merc.projected_in(&projection::Flat::Mercator, "mercator")[0].clone().unwrap();
+        let on_merc = merc.projected_in(&projection::Flat::Mercator, "mercator").get(0).cloned().unwrap();
         assert_eq!(coords(&on_merc), coords(&stored_merc));
         // A place far outside UTM 32N isn't drawn there, and isn't one longitude/latitude lacks.
         let mut d = Dataset::new("far", GeometryType::Point, vec![]);
         d.push(Some(Geometry::Point(Coord::new(50.0, 48.8))), vec![]);
         d.hold_in(Crs::Epsg(31467)).unwrap();
         let mut far = Layer::new(2, d);
-        let drawn = far.projected_in(&utm, "utm")[0].clone().unwrap();
+        let drawn = far.projected_in(&utm, "utm").get(0).cloned().unwrap();
         assert!(coords(&drawn).iter().all(|c| !c.is_finite()), "{drawn:?}");
         assert_eq!(far.unplaced(), Some(&Ok(0)));
     }
@@ -4977,7 +5056,7 @@ mod tests {
         // The level the display attempt found saves too little isn't built again: the full
         // projection is drawn, as when it was.
         assert_eq!(lod::LEVEL_BUILDS.get(), levels, "the refused level is built once");
-        assert_eq!(drawn, l.projected_cache());
+        assert_eq!(l.projected_cache(), drawn[..]);
         assert!(!l.prepare_display(&flat, 0.001, false));
         assert_eq!(lod::DISPLAY_BUILDS.get(), built, "thinned_in builds geometry only");
         l.thinned_in(&flat, "mercator", 0.001);
@@ -4996,22 +5075,22 @@ mod tests {
     fn a_detailed_layer_draws_from_a_thinned_copy() {
         let flat = projection::Flat::Mercator;
         let mut l = long_line(lod::THIN_ABOVE + 1000);
-        let full = lod::vertices(l.projected()[0].as_ref().unwrap());
+        let full = lod::vertices(l.projected().get(0).unwrap());
         // Seen whole (about 40 km a pixel), one vertex every 8 km (the level under 12 km) is enough.
-        let thinned = lod::vertices(l.thinned_in(&flat, "mercator", 12_000.0)[0].as_ref().unwrap());
+        let thinned = lod::vertices(l.thinned_in(&flat, "mercator", 12_000.0).get(0).unwrap());
         assert!(thinned < full / 40, "{thinned} of {full} vertices drawn");
-        assert_eq!(lod::vertices(l.thinned_cache(12_000.0)[0].as_ref().unwrap()), thinned);
+        assert_eq!(lod::vertices(l.thinned_cache(12_000.0).get(0).unwrap()), thinned);
         // Zoomed in past its vertex spacing, every vertex draws.
-        assert_eq!(lod::vertices(l.thinned_in(&flat, "mercator", 0.001)[0].as_ref().unwrap()), full);
+        assert_eq!(lod::vertices(l.thinned_in(&flat, "mercator", 0.001).get(0).unwrap()), full);
         // Its extents are cached row for row, and a clone shares the caches.
         assert_eq!(l.projected_extents().len(), 1);
         let copy = l.clone();
-        assert_eq!(copy.projected_cache().as_ptr(), l.projected_cache().as_ptr());
-        assert_eq!(copy.thinned_cache(12_000.0).as_ptr(), l.thinned_cache(12_000.0).as_ptr());
+        assert_eq!(copy.projected_cache().copies().map(<[_]>::as_ptr), l.projected_cache().copies().map(<[_]>::as_ptr));
+        assert_eq!(copy.thinned_cache(12_000.0).copies().map(<[_]>::as_ptr), l.thinned_cache(12_000.0).copies().map(<[_]>::as_ptr));
         // A change of geometry drops the thinned copies with the projection.
         l.touch_geometry();
         l.projected();
-        assert_eq!(l.thinned_cache(12_000.0).as_ptr(), l.projected_cache().as_ptr());
+        assert_eq!(l.thinned_cache(12_000.0).copies().map(<[_]>::as_ptr), l.projected_cache().copies().map(<[_]>::as_ptr));
     }
 
     #[test]
@@ -5020,14 +5099,14 @@ mod tests {
         let flat = projection::Flat::Mercator;
         let mut l = long_line(lod::THIN_ABOVE + 1000);
         l.projected();
-        assert_eq!(l.thinned_in(&flat, "mercator", 1.0).as_ptr(), l.projected_cache().as_ptr());
+        assert_eq!(l.thinned_in(&flat, "mercator", 1.0).copies().map(<[_]>::as_ptr), l.projected_cache().copies().map(<[_]>::as_ptr));
         // Nor for points, however many.
         let mut d = Dataset::new("pts", GeometryType::Point, vec![]);
         let pts = (0..lod::THIN_ABOVE + 10).map(|i| Coord::new(i as f64 * 1e-6, 0.0)).collect();
         d.push(Some(Geometry::MultiPoint(pts)), vec![]);
         let mut p = Layer::new(2, d);
         p.projected();
-        assert_eq!(p.thinned_in(&flat, "mercator", 1e6).as_ptr(), p.projected_cache().as_ptr());
+        assert_eq!(p.thinned_in(&flat, "mercator", 1e6).copies().map(<[_]>::as_ptr), p.projected_cache().copies().map(<[_]>::as_ptr));
     }
 
     #[test]
@@ -5035,7 +5114,7 @@ mod tests {
         let flat = projection::Flat::Mercator;
         let mut l = long_line(1000);
         let full = l.projected().to_vec();
-        assert_eq!(l.thinned_in(&flat, "mercator", 1e6), &full[..]);
+        assert_eq!(l.thinned_in(&flat, "mercator", 1e6), full[..]);
     }
 
     #[test]
@@ -5279,7 +5358,7 @@ mod tests {
         let id = m.add_dataset(d);
         let at = |x: f64, y: f64| lonlat_to_merc(Coord::new(x, y));
         let outside = at(-50.0, 5.0);
-        assert!(m.layers[0].projected()[0].as_ref().unwrap().hit(outside, 1000.0), "the gap lets the inside out");
+        assert!(m.layers[0].projected().get(0).unwrap().hit(outside, 1000.0), "the gap lets the inside out");
         assert_eq!(m.hits_at(outside, 1000.0, 1e6, |_| true, false, 10), vec![]);
         assert_eq!(m.hits_at(at(5.0, 5.0), 1000.0, 1e6, |_| true, false, 10), vec![(id, 0)]);
         assert_eq!(m.hits_at(at(10.0, 5.0), 1000.0, 1e6, |_| true, false, 10), vec![(id, 0)]);

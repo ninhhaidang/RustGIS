@@ -192,11 +192,15 @@ pub(crate) fn cache_bytes(geoms: &Vec<Option<Geometry>>) -> usize {
 
 /// Build one level without first allocating a whole window's extra geometry. Running out of
 /// budget discards only this optional display cache; drawing still uses the full projection.
-pub(crate) fn thin_budgeted(geoms: &[Option<Geometry>], tol: f64, budget: usize) -> Option<Vec<Option<Geometry>>> {
-    map_budgeted(geoms, budget, Option::as_ref, |g| thin(g, tol))
+pub(crate) fn thin_budgeted(geoms: crate::shapes::Shapes<'_>, tol: f64, budget: usize) -> Option<Vec<Option<Geometry>>> {
+    match geoms {
+        // A layer's own rows, read in place: no list of them beside the level.
+        crate::shapes::Shapes::Rows(_) => map_budgeted_at(geoms.len(), budget, |row| geoms.get(row), |g| thin(g, tol)),
+        crate::shapes::Shapes::Copies(c) => map_budgeted(c, budget, Option::as_ref, |g| thin(g, tol)),
+    }
 }
 
-/// `build` of each item's geometry (`geometry`), in order ([`map_budgeted_on`]), on up to the
+/// `build` of each item's geometry (`geometry`), in order ([`map_budgeted_rows`]), on up to the
 /// user's thread count ([`rustgis_data::threads`]): one below [`THREADS_FROM_VERTICES`], and no
 /// more than [`rustgis_data::memory::thread_scratch`] holds, beyond one thread's, with each thread
 /// building the biggest row at once ([`row_scratch`]).
@@ -206,10 +210,20 @@ fn map_budgeted<T: Sync>(
     geometry: impl Fn(&T) -> Option<&Geometry> + Sync,
     build: impl Fn(&Geometry) -> Geometry + Sync,
 ) -> Option<Vec<Option<Geometry>>> {
+    map_budgeted_at(items.len(), budget, |i| geometry(&items[i]), build)
+}
+
+/// [`map_budgeted`] of rows `0..len`, each row's geometry read by `geometry` where it is.
+fn map_budgeted_at<'g>(
+    len: usize,
+    budget: usize,
+    geometry: impl Fn(usize) -> Option<&'g Geometry> + Sync,
+    build: impl Fn(&Geometry) -> Geometry + Sync,
+) -> Option<Vec<Option<Geometry>>> {
     let (total, biggest) =
-        items.iter().filter_map(&geometry).fold((0usize, 0usize), |(t, b), g| (t.saturating_add(vertices(g)), b.max(row_scratch(g))));
-    let threads = threads_for(total, biggest, rustgis_data::threads::for_items(items.len()), rustgis_data::memory::thread_scratch());
-    map_budgeted_on(items, budget, threads, |item| geometry(item).map(&build))
+        (0..len).filter_map(&geometry).fold((0usize, 0usize), |(t, b), g| (t.saturating_add(vertices(g)), b.max(row_scratch(g))));
+    let threads = threads_for(total, biggest, rustgis_data::threads::for_items(len), rustgis_data::memory::thread_scratch());
+    map_budgeted_rows(len, budget, threads, |row| geometry(row).map(&build))
 }
 
 /// The threads to build a level of `total` vertices on, the biggest row taking `biggest` bytes to
@@ -234,33 +248,45 @@ fn row_scratch(g: &Geometry) -> usize {
     vertices(g).saturating_mul(SCRATCH_PER_VERTEX).saturating_add(parts.saturating_mul(SCRATCH_PER_PART))
 }
 
-/// `build` of each item, in order, on up to `threads` threads taking turns at chunks of rows (at
-/// most [`CHUNK_ROWS`], and eight turns a thread where the rows allow);
-/// `None` when the copy (a slot a row, and each geometry's heap) takes more than `budget` bytes,
-/// as one thread would find it. Each row is built on its own, so the copy is the same on any
-/// number of threads. Past the budget the threads stop after the row they are on: at most one row
-/// each beyond it is made, and dropped. A thread the system refuses costs speed: the others, and
-/// this one, take its rows.
+/// [`map_budgeted_rows`] of `items`.
+#[cfg(test)]
 fn map_budgeted_on<T: Sync>(
     items: &[T],
     budget: usize,
     threads: usize,
     build: impl Fn(&T) -> Option<Geometry> + Sync,
 ) -> Option<Vec<Option<Geometry>>> {
-    let slots = items.len().checked_mul(std::mem::size_of::<Option<Geometry>>())?;
+    map_budgeted_rows(items.len(), budget, threads, |i| build(&items[i]))
+}
+
+/// `build` of each row of `0..len`, given its number, in order, on up to `threads` threads
+/// taking turns at chunks of rows (at most [`CHUNK_ROWS`], and eight turns a thread where the
+/// rows allow);
+/// `None` when the copy (a slot a row, and each geometry's heap) takes more than `budget` bytes,
+/// as one thread would find it. Each row is built on its own, so the copy is the same on any
+/// number of threads. Past the budget the threads stop after the row they are on: at most one row
+/// each beyond it is made, and dropped. A thread the system refuses costs speed: the others, and
+/// this one, take its rows.
+fn map_budgeted_rows(
+    len: usize,
+    budget: usize,
+    threads: usize,
+    build: impl Fn(usize) -> Option<Geometry> + Sync,
+) -> Option<Vec<Option<Geometry>>> {
+    let slots = len.checked_mul(std::mem::size_of::<Option<Geometry>>())?;
     let left = budget.checked_sub(slots)?;
-    let mut copy: Vec<Option<Geometry>> = Vec::with_capacity(items.len());
-    copy.resize_with(items.len(), || None);
+    let mut copy: Vec<Option<Geometry>> = Vec::with_capacity(len);
+    copy.resize_with(len, || None);
     let (used, over, next) = (AtomicUsize::new(0), AtomicBool::new(false), AtomicUsize::new(0));
-    type Chunk<'a, T> = Mutex<Option<(&'a [T], &'a mut [Option<Geometry>])>>;
-    let rows = items.len().div_ceil(threads.max(1).saturating_mul(8)).clamp(1, CHUNK_ROWS);
-    let chunks: Vec<Chunk<T>> = items.chunks(rows).zip(copy.chunks_mut(rows)).map(|c| Mutex::new(Some(c))).collect();
+    type Chunk<'a> = Mutex<Option<(usize, &'a mut [Option<Geometry>])>>;
+    let rows = len.div_ceil(threads.max(1).saturating_mul(8)).clamp(1, CHUNK_ROWS);
+    let chunks: Vec<Chunk> = copy.chunks_mut(rows).enumerate().map(|(i, out)| Mutex::new(Some((i * rows, out)))).collect();
     let work = || {
         while !over.load(Ordering::Relaxed) {
             let Some(chunk) = chunks.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
             // Never held while a row is built, so never poisoned; if it were, its rows still are.
-            let Some((rows, out)) = chunk.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else { continue };
-            for (row, out) in rows.iter().zip(out) {
+            let Some((first, out)) = chunk.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else { continue };
+            for (row, out) in (first..).zip(out) {
                 let g = build(row);
                 let bytes = g.as_ref().map_or(0, heap_bytes);
                 // Bytes held in memory: their sum fits.
@@ -712,12 +738,31 @@ mod tests {
             Coord::new(0.0, 0.0),
         ]]]))];
         let before = original.clone();
-        assert!(thin_budgeted(&original, 0.1, 0).is_none());
-        assert!(thin_budgeted(&original, 0.1, std::mem::size_of::<Option<Geometry>>()).is_none());
-        let copy = thin_budgeted(&original, 0.1, 1024).unwrap();
+        assert!(thin_budgeted(crate::Shapes::Copies(&original), 0.1, 0).is_none());
+        assert!(thin_budgeted(crate::Shapes::Copies(&original), 0.1, std::mem::size_of::<Option<Geometry>>()).is_none());
+        let copy = thin_budgeted(crate::Shapes::Copies(&original), 0.1, 1024).unwrap();
         assert!(cache_bytes(&copy) <= 1024);
         assert_eq!(copy, before);
         assert_eq!(original, before);
+    }
+
+    /// A layer's own rows are thinned in place: within the same budget as copies of them, with
+    /// nothing beside the level counted, so a layer thinned from its copies is thinned from its
+    /// rows too, at the smallest budget either takes.
+    #[test]
+    fn a_level_of_a_layers_own_rows_takes_the_budget_its_copies_take() {
+        let square =
+            Geometry::Polygon(vec![vec![vec![Coord::new(0.0, 0.0), Coord::new(10.0, 0.0), Coord::new(10.0, 10.0), Coord::new(0.0, 0.0)]]]);
+        let mut ds = rustgis_data::Dataset::new("squares", rustgis_data::GeometryType::Polygon, vec![]);
+        for _ in 0..3 {
+            ds.push(Some(square.clone()), vec![]);
+        }
+        ds.push(None, vec![]);
+        let copies: Vec<_> = (0..ds.features.len()).map(|row| ds.features.geometry(row).cloned()).collect();
+        let takes = cache_bytes(&thin_budgeted(crate::Shapes::Copies(&copies), 0.1, usize::MAX).unwrap());
+        let rows = crate::Shapes::Rows(&ds.features);
+        assert_eq!(thin_budgeted(rows, 0.1, takes).unwrap(), thin_budgeted(crate::Shapes::Copies(&copies), 0.1, takes).unwrap());
+        assert!(thin_budgeted(rows, 0.1, takes - 1).is_none());
     }
 
     #[test]

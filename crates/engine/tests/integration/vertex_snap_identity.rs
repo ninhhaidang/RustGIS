@@ -194,7 +194,7 @@ fn projection_cuts_do_not_supply_source_addresses_or_bridge_the_world() {
     hit(snap_vertex_except(&mut s, Coord::new(-110., 20.), node), Coord::new(-110., 20.), "vertex");
     assert!(snap_vertex_except(&mut s, Coord::new(-100., 20.), node).is_none());
     assert!(snap_vertex_except(&mut s, Coord::new(90., -20.), node).is_none());
-    let Geometry::Line(parts) = s.map().layer(id).unwrap().projected_cache()[0].as_ref().unwrap() else { panic!("line") };
+    let Geometry::Line(parts) = s.map().layer(id).unwrap().projected_cache().get(0).unwrap() else { panic!("line") };
     assert!(parts.len() > 2, "the fixture must actually split at the world edge");
     s.map_mut().editing.snapping.vertex = false;
     s.map_mut().editing.snapping.edge = true;

@@ -87,6 +87,7 @@ fn bare(layer: &Layer) -> Layer {
         replacement_rev,
         // Caches, emptied below.
         projected,
+        projected_own,
         display,
         display_rejected: _,
         display_levels,
@@ -164,6 +165,7 @@ fn bare(layer: &Layer) -> Layer {
         instance_id: *instance_id,
         replacement_rev: *replacement_rev,
         projected: projected.clone(),
+        projected_own: *projected_own,
         display: display.clone(),
         display_rejected: Vec::new(),
         display_levels: display_levels.clone(),
@@ -262,6 +264,7 @@ impl LayerLook {
             replacement_rev,
             // Caches worked out from the rows, which are compared themselves.
             projected: _,
+            projected_own: _,
             display: _,
             display_rejected: _,
             display_levels: _,

@@ -205,7 +205,9 @@ say), one in another system is drawn by the transformation PROJ picks between th
 two datums, the one for that pair, not one through WGS 84); on a world projection, such a layer
 goes through WGS 84 longitude/latitude. On a map in a coordinate system, Zoom To Layer, Zoom To
 Selection and Full Extent frame a layer in the map's system by its own coordinates, and its
-simplified drawing at small scales is made from them, with nothing converted.
+simplified drawing at small scales is made from them, with nothing converted. Labels, the
+selection and hit-testing read its coordinates too, so the map keeps no second copy of such a
+layer; a layer read in place keeps none of the view it reads either.
 
 Coordinate systems are read and transformed as PROJ 9.9.0 does, through terrio-crs. A few EPSG
 and ESRI codes PROJ 9.9.0 dropped or can't compute (EPSG:3752 and 22700, ESRI:10820 and 65162)
