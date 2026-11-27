@@ -7236,6 +7236,18 @@ fn renamed_statistics(text: &str, limit: usize, braces: bool, replace: &mut impl
     }
 }
 
+/// The ids of `layout`'s map frames showing the map `map`.
+fn frames_showing(layout: &rustgis_map::layout::Layout, map: &str) -> Vec<u32> {
+    layout
+        .elements
+        .iter()
+        .filter_map(|e| match &e.kind {
+            rustgis_map::layout::ElementKind::MapFrame { map: m, .. } if m.eq_ignore_ascii_case(map) => Some(e.id),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Carries typed references to a renamed layer along with it. Map-local references and layout
 /// frames stay in their map. A name still present there keeps its references, as legends do;
 /// project-wide references without a map stay unchanged when another map still has that name.
@@ -7338,14 +7350,7 @@ fn references_follow_layer(s: &mut Session, old: &str, new: &str) {
     // A name with a brace can't be written into a token: the texts keep the old one.
     let braces = new.contains(['{', '}']);
     for layout in &mut s.project.layouts {
-        let frames: Vec<u32> = layout
-            .elements
-            .iter()
-            .filter_map(|e| match &e.kind {
-                ElementKind::MapFrame { map, .. } if map.eq_ignore_ascii_case(&map_name) => Some(e.id),
-                _ => None,
-            })
-            .collect();
+        let frames = frames_showing(layout, &map_name);
         // A text's layer statistics (#2853) read the map of the layout's first frame.
         let texts_read_this_map = layout.first_frame().is_some_and(|f| frames.contains(&f));
         for element in &mut layout.elements {
@@ -7488,11 +7493,66 @@ pub(crate) fn drop_layers(s: &mut Session, ids: &[u32]) {
     // The tile layers drawn over them keep their place.
     m.release_tiles(ids);
     m.layers.retain(|l| !ids.contains(&l.id));
-    terrain_follows_removal(s, &names);
-    square_labels_follow_removal(s, &names);
-    for n in &names {
+    follow_removal(s, &names);
+}
+
+/// What follows the removal of the layers called `names` from the active map.
+fn follow_removal(s: &mut Session, names: &[String]) {
+    terrain_follows_removal(s, names);
+    square_labels_follow_removal(s, names);
+    layouts_follow_removal(s, names);
+    // A legend that left it out forgets it.
+    for n in names {
         legends_follow_layer(s, n, None);
     }
+}
+
+/// After layers called `names` are removed: a table's, chart's or colorbar's layer, and a text's
+/// layer statistics (#2853), keep the name, so a layer of that name brings them back, and are drawn
+/// without it meanwhile: how many elements, said once. Which elements read the active map is as for
+/// a rename (`references_follow_layer`).
+fn layouts_follow_removal(s: &mut Session, names: &[String]) {
+    use rustgis_map::layout::ElementKind;
+
+    let gone: Vec<&String> = names.iter().filter(|n| named_layers(s, n) == 0).collect();
+    let map_name = &s.map().name;
+    // The removed names some element reads, each once.
+    let mut named: Vec<&str> = Vec::new();
+    let mut count = 0usize;
+    for layout in &s.project.layouts {
+        let frames = frames_showing(layout, map_name);
+        let texts_read_this_map = layout.first_frame().is_some_and(|f| frames.contains(&f));
+        for element in &layout.elements {
+            let reads: Vec<&str> = match &element.kind {
+                ElementKind::Table { frame, layer, .. } | ElementKind::Chart { frame, layer, .. } if frames.contains(frame) => {
+                    vec![layer]
+                }
+                ElementKind::Colorbar { frame, layer: Some(layer), .. } if frames.contains(frame) => vec![layer],
+                ElementKind::Text { text, .. } if texts_read_this_map => {
+                    rustgis_map::layout::stat_tokens(text).iter().map(|t| t.layer).collect()
+                }
+                _ => continue,
+            };
+            let mut lost = false;
+            for name in gone.iter().filter(|n| reads.iter().any(|r| r.eq_ignore_ascii_case(n))) {
+                lost = true;
+                if !named.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                    named.push(name.as_str());
+                }
+            }
+            count += usize::from(lost);
+        }
+    }
+    if count == 0 {
+        return;
+    }
+    let key = if named.len() == 1 {
+        "{count} layout element(s) name the removed layer {names}: they are drawn without it until a layer of that name comes back"
+    } else {
+        "{count} layout element(s) name the removed layers {names}: they are drawn without it until a layer of that name comes back"
+    };
+    let names = named.iter().map(|n| format!("'{n}'")).collect::<Vec<_>>().join(", ");
+    s.notify_text(crate::notice_text::NoticeText::format(key, [("count", count.to_string().into()), ("names", names.into())]), false);
 }
 
 /// After layers called `names` are removed: point labels turned square to one of them (#2263),
@@ -7596,12 +7656,7 @@ fn remove(s: &mut Session, p: &Value) -> CmdResult {
     }
     let next = m.layers.get(at.min(m.layers.len().saturating_sub(1))).map(|l| l.id);
     s.set_layer_selection(next.into_iter().collect(), next);
-    terrain_follows_removal(s, &names);
-    square_labels_follow_removal(s, &names);
-    // A legend that left it out forgets it.
-    for name in names {
-        legends_follow_layer(s, &name, None);
-    }
+    follow_removal(s, &names);
     Ok(Value::Null)
 }
 

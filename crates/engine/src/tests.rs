@@ -100,6 +100,9 @@ mod layout_files;
 #[path = "tests/layout_title.rs"]
 mod layout_title;
 
+#[path = "tests/layout_removed_layer.rs"]
+mod layout_removed_layer;
+
 #[path = "tests/sde_connections.rs"]
 mod sde_connections;
 

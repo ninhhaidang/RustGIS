@@ -503,21 +503,22 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   it does for a chart's or table's layer (in the layouts whose first map frame shows its map, and
   in a presentation's map pages of it); a text that a longer name would take past the characters a
   text holds, or that a name with a brace (which a token can't hold) would break, keeps the old
-  name, and the rename says so; deleting it leaves them as written. A layer read in place covers
-  what is loaded, as a chart does, and a warning says so. A token with no figure (no such layer or
-  field, a field with no numbers, a raster layer, or a sum, mean, least or greatest written without
-  its field) stays as written, and a warning names what is missing. Both warnings come when the
-  text is added or changed, or its layout is made or imported, or when another map frame becomes
-  the first (it is given another map, the one before it is deleted or drawn over it, or its map is
-  deleted), not when the page is exported. A presentation map page's title is checked against the
-  page's map when the page is added with it, when it is changed or when the presentation is
-  imported. The text, its size (2 to 400 points, as text graphics on
-  the map), colour, bold, **Italic** (slanted, as water and ocean names are; the built-in fonts
-  have no italic face, so the letters are slanted 12°), **Alignment** (left, center or right within
-  the element) and **Letter spacing** in points (spaced-out names such as O C E A N O, or a
-  negative value to tighten) are the same form a text on the map has in the pane; Enter ends the
-  text and Shift+Enter starts a new line. Scripts set them with `italic`, `align` and
-  `letterSpacing` on `layout.addElement` and `layout.update`.
+  name, and the rename says so; deleting it leaves them as written, and when layout elements still
+  name it (a text's tokens, or a chart's, table's or colorbar's layer), says how many. A layer
+  read in place covers what is loaded, as a chart does, and a warning says so. A token with no
+  figure (no such layer or field, a field with no numbers, a raster layer, or a sum, mean, least
+  or greatest written without its field) stays as written, and a warning names what is missing.
+  Both warnings come when the text is added or changed, or its layout is made or imported, or when
+  another map frame becomes the first (it is given another map, the one before it is deleted or
+  drawn over it, or its map is deleted), not when the page is exported. A presentation map page's
+  title is checked against the page's map when the page is added with it, when it is changed or
+  when the presentation is imported. The text, its size (2 to 400 points, as text graphics on the
+  map), colour, bold, **Italic** (slanted, as water and ocean names are; the built-in fonts have
+  no italic face, so the letters are slanted 12°), **Alignment** (left, center or right within the
+  element) and **Letter spacing** in points (spaced-out names such as O C E A N O, or a negative
+  value to tighten) are the same form a text on the map has in the pane; Enter ends the text and
+  Shift+Enter starts a new line. Scripts set them with `italic`, `align` and `letterSpacing` on
+  `layout.addElement` and `layout.update`.
   A layout's text also takes a **Font**:
   Sans-serif (the default) or Serif, for a title or a classic atlas look. The serif is one installed
   on the computer (Georgia or Times New Roman on Windows and macOS, Noto, DejaVu or Liberation Serif
