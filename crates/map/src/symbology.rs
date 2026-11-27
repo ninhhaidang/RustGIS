@@ -20,7 +20,7 @@ pub enum Marker {
     Star,
     /// A character of a font, as QGIS's font markers draw one: the size is the font's em.
     Char(Glyph),
-    /// A PNG, JPEG or SVG image, as QGIS's raster image markers draw one: the size is its width,
+    /// A PNG, JPEG or SVG image, as QGIS's raster image and SVG markers draw one: the size is its width,
     /// its height as the image's proportions make it. Its fill and outline don't change it.
     Picture(Picture),
 }

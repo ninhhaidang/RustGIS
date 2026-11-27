@@ -129,7 +129,7 @@ vector export keeps a compressed copy of each image it draws, at most about as m
 MiB in all), which counts too and leaves less for new images.
 
 An image marker's size is its width, and it is as tall as its proportions make it, as QGIS draws a
-raster image marker; the symbol's fill and outline don't show. It turns with **Rotation**, is ringed
+raster image or SVG marker; the symbol's fill and outline don't show. It turns with **Rotation**, is ringed
 when selected, and is kept in the project file. A project that has one opens only in a RustGIS that
 draws them. An image that doesn't decode draws a circle, so the point still shows; opening a
 project, map file or layer file, or adding styles, says which layers and styles have such an image,

@@ -58,12 +58,12 @@ fn file_dir(p: &Value) -> Option<String> {
     })
 }
 
-/// The most bytes of base64 of raster marker images one import reads: what a run keeps
+/// The most bytes of base64 of raster and SVG marker images one import reads: what a run keeps
 /// (`MAX_PICTURES_BYTES`), counting those that turn out not to draw too, so a project naming many
 /// files that aren't images reads no more than one of images (in tests, a few small images').
 const MARKER_READ_BYTES: usize = if cfg!(test) { 1 << 10 } else { rustgis_map::symbology::MAX_PICTURES_BYTES };
 
-/// The importer's reader of raster image markers' images ([`qgis::ReadImage`]): [`marker_image`]
+/// The importer's reader of raster image and SVG markers' images ([`qgis::ReadImage`]): [`marker_image`]
 /// within [`MARKER_READ_BYTES`] for the import. On the import's thread, as the rest of it is
 /// (`import_project` says why; `import_style` reads on a thread of its own in the desktop app,
 /// [`style_ahead`]): each read is one file of at most 1.5 MiB, only a regular file is opened (a
@@ -84,7 +84,7 @@ fn marker_images() -> impl FnMut(&str) -> Result<(String, f32), &'static str> {
     }
 }
 
-/// Reads a raster image marker's image for the importer: its `base64:` text, or its file's,
+/// Reads a raster image or SVG marker's image for the importer: its `base64:` text, or its file's,
 /// within what a picture marker keeps (`symbology::MAX_PICTURE_BYTES` of base64, 2 MiB), checked
 /// as `layer.marker` checks an image; with its height over its width. Its base64's length is added
 /// to `read`, or for a file that doesn't read (past the limit, or failing part way) what was read
@@ -113,7 +113,7 @@ fn marker_image(source: &str, read: &mut usize) -> Result<(String, f32), &'stati
                 // doesn't open).
                 *read += e.read().div_ceil(3) * 4;
                 return Err(match e {
-                    PictureFileError::Unopened(_) => "whose image file doesn't open",
+                    PictureFileError::Unopened(_) => qgis::IMAGE_UNOPENED,
                     PictureFileError::TooLarge(_) => TOO_LARGE,
                     PictureFileError::Unread(..) => "whose image file fails as it is read",
                 });
@@ -152,7 +152,7 @@ fn read_file(path: &str) -> Result<Vec<u8>, String> {
 /// wait for its metadata, as Add Data adds one.) Its work is bounded by the project: at most
 /// [`qgis::MAX_LAYERS`] layers, each read once by the command that adds it (a file's layers, and
 /// a virtual layer on one, each read their file), archives added without waiting for their
-/// metadata, annotation pictures within [`MAX_PICTURE_BYTES`], raster image markers' images within
+/// metadata, annotation pictures within [`MAX_PICTURE_BYTES`], raster image and SVG markers' images within
 /// [`MARKER_READ_BYTES`] (each file once, at most 1,024 of them, before any layer is added: see
 /// [`marker_images`]). A local archive's file is looked
 /// for on this thread (`is_file`), which a slow network share can hold up, and a web service's
@@ -2053,7 +2053,7 @@ fn notify_report(s: &mut Session, report: &Report) {
 type StyleRead = Result<(qgis::Style, Report), String>;
 
 /// Reads and parses the style file `p` names (or gives) for the layer called `layer`: its raster
-/// image markers' relative files start from the style file's folder.
+/// and SVG image markers' relative files start from the style file's folder.
 fn read_style_file(p: &Value, layer: &str) -> StyleRead {
     let text = qgis_text(p)?;
     rustgis_data::progress::check().map_err(|e| e.to_string())?;
@@ -2091,7 +2091,7 @@ pub(crate) fn style_ahead(s: &Session, p: &Value) -> Option<super::reads::ReadWo
 /// the style is applied only when they are done, so a cancelled import leaves the layer as it was);
 /// run anywhere else (the command line, a script, the browser) it reads here, on the thread that
 /// runs it. Its work is bounded by the style: one file of at most [`MAX_FILE`] bytes, its XML
-/// parsed within [`MAX_XML`], and its raster image markers' images within [`MARKER_READ_BYTES`],
+/// parsed within [`MAX_XML`], and its raster image and SVG markers' images within [`MARKER_READ_BYTES`],
 /// each file read once and decoded once to check it (see [`marker_images`] and [`marker_image`]).
 /// Cancel is looked at before each image: the file's one read and the XML's one parse don't.
 fn import_style(s: &mut Session, p: &Value) -> CmdResult {

@@ -1,7 +1,7 @@
 //! QGIS symbols (`<symbol type="fill|line|marker">`) as a RustGIS [`Symbol`], and a line's
 //! symbol layers as stacked [`LineStroke`]s. A symbol layer RustGIS has no match for is drawn
-//! as near as it can (a pattern fill as a tint of its colour, an SVG marker as a circle in its
-//! colour) or left out, and noted.
+//! as near as it can (a pattern fill as a tint of its colour, an SVG marker whose colours the style
+//! sets as a circle in its colour) or left out, and noted.
 
 use roxmltree::Node;
 
@@ -663,7 +663,7 @@ fn along(l: Node, p: &[(String, String)], hash: bool, reference: Option<f64>, la
         let stroke = if hash {
             hash_mark(class, &sp, p, base, reference, layer, report)
         } else {
-            marker_mark(class, &sp, class == "RasterMarker" && name_from_expression(sub), base, reference, layer, report)
+            marker_mark(class, &sp, image_file_key(class).is_some() && name_from_expression(sub), base, reference, layer, report)
         };
         if let Some(mut st) = stroke {
             // An image mark is drawn at the layer's opacity alone.
@@ -730,8 +730,10 @@ fn marker_mark(
             })
         }
         "FontMarker" => font_char(p, layer, report)?,
-        "RasterMarker" => raster_image(p, from_expression, layer, report).map_or(Marker::Circle, |(picture, _)| Marker::Picture(picture)),
-        "SvgMarker" | "EllipseMarker" | "FilledMarker" => {
+        "RasterMarker" | "SvgMarker" => {
+            marker_image(class, p, from_expression, layer, report).map_or(Marker::Circle, |image| Marker::Picture(image.picture))
+        }
+        "EllipseMarker" | "FilledMarker" => {
             report.approximated(layer, format!("{} markers, drawn as circles in their colour", marker_name(class)));
             Marker::Circle
         }
@@ -744,7 +746,7 @@ fn marker_mark(
         report.approximated(layer, "font markers anchored off their centre, drawn centred");
     }
     if matches!(shape, Marker::Picture(_)) && anchored(p) {
-        report.approximated(layer, "raster image markers along lines anchored off their centre, drawn centred");
+        report.approximated(layer, "image markers along lines anchored off their centre, drawn centred");
     }
     let fill = prop(p, "color").and_then(color).unwrap_or(Rgba::new(0, 0, 0, 0));
     let outline = if prop(p, "outline_style") == Some("no") { None } else { prop(p, "outline_color").and_then(color) };
@@ -835,14 +837,14 @@ fn marker(layers: &[(Node, Props)], reference: Option<f64>, still: bool, layer: 
                 Some(m) => m,
                 None => continue,
             },
-            "RasterMarker" => match raster_image(p, name_from_expression(*l), layer, report) {
-                Some((picture, a)) => {
-                    aspect = a;
-                    Marker::Picture(picture)
+            "RasterMarker" | "SvgMarker" => match marker_image(class, p, name_from_expression(*l), layer, report) {
+                Some(image) => {
+                    aspect = image.aspect;
+                    Marker::Picture(image.picture)
                 }
                 None => Marker::Circle,
             },
-            "SvgMarker" | "EllipseMarker" | "FilledMarker" => {
+            "EllipseMarker" | "FilledMarker" => {
                 report.approximated(layer, format!("{} markers, drawn as circles in their colour", marker_name(class)));
                 Marker::Circle
             }
@@ -905,10 +907,11 @@ fn network_share(file: &str) -> bool {
     file.len() > 1 && file.chars().take(2).all(|c| c == '\\' || c == '/')
 }
 
-/// Reads the images of the raster image markers under `root` (a project or a style), each
-/// `imageFile` once (a file once for each spelling of its path from the folder: a leading `./` is
-/// dropped, so `./a.png` and `a.png` are one), into the report for [`raster_image`]: a `base64:`
-/// one as it is, a file's through `read` (relative to `dir`; a `file:` address is the file it names).
+/// Reads the images of the raster image and SVG markers under `root` (a project or a style), each
+/// `imageFile` or SVG `name` once (a file once for each spelling of its path from the folder: a
+/// leading `./` is dropped, so `./a.png` and `a.png` are one), into the report for
+/// [`marker_image`]: a `base64:` one as it is, a file's through `read` (relative to `dir`; a
+/// `file:` address is the file it names).
 /// One at a web address isn't fetched, nor one on a network share (`\\host\share`, `//host/share`,
 /// `file://host/share`), nor one kept inside a `.qgz`
 /// (`attachment:`); one relative to no folder (or to a drive's working folder) isn't looked
@@ -919,11 +922,11 @@ fn network_share(file: &str) -> bool {
 pub(super) fn read_images(root: Node, dir: &str, read: &mut ReadImage, report: &mut Report) {
     let (mut bytes, mut reads) = (0, 0);
     // A file's image by its path from the folder (`./a.png` and `a.png` are one).
-    let mut files = std::collections::HashMap::<String, Result<(Picture, f32), String>>::new();
-    let rasters = root.descendants().filter(|n| n.has_tag_name("layer") && n.attribute("class") == Some("RasterMarker"));
-    for l in rasters.filter(|l| l.attribute("enabled") != Some("0")) {
+    let mut files = std::collections::HashMap::<String, Result<MarkerImage, String>>::new();
+    let layers = root.descendants().filter(|n| n.has_tag_name("layer") && n.attribute("enabled") != Some("0"));
+    for (l, key) in layers.filter_map(|l| Some((l, image_file_key(l.attribute("class")?)?))) {
         let p = props(l);
-        let Some(file) = prop(&p, "imageFile").map(str::trim).filter(|f| !f.is_empty()) else { continue };
+        let Some(file) = prop(&p, key).map(str::trim).filter(|f| !f.is_empty()) else { continue };
         if report.images.contains_key(file) {
             continue;
         }
@@ -988,7 +991,7 @@ pub(super) fn read_images(root: Node, dir: &str, read: &mut ReadImage, report: &
                 return Err("past the images RustGIS keeps".to_string());
             }
             bytes += b64.len();
-            Ok((picture, aspect))
+            Ok(MarkerImage { picture, aspect, sets_colours: sets_colours(&b64) })
         });
         if let Ok(Some(path)) = source {
             files.insert(path, kept.clone());
@@ -999,36 +1002,78 @@ pub(super) fn read_images(root: Node, dir: &str, read: &mut ReadImage, report: &
 
 /// The note for image markers drawn opaque where QGIS draws them see-through: once per symbol
 /// ([`read`]).
-const SEE_THROUGH_IMAGES: &str = "see-through raster image markers, drawn opaque";
+const SEE_THROUGH_IMAGES: &str = "see-through image markers, drawn opaque";
 
-/// A raster image marker's image (read before the symbols: [`read_images`]) and its height over
-/// its width, or `None` (noted, with why) for it to be drawn as a circle. What QGIS draws
-/// otherwise than RustGIS is noted: a ratio of its own, see-through. `from_expression`: its image
-/// path is set by a field or an expression.
-fn raster_image(p: &[(String, String)], from_expression: bool, layer: &str, report: &mut Report) -> Option<(Picture, f32)> {
-    let file = prop(p, "imageFile").map(str::trim).unwrap_or_default();
+/// A marker's image as read for the import.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct MarkerImage {
+    picture: Picture,
+    /// Its height over its width.
+    aspect: f32,
+    /// Whether it is an SVG leaving colours to the style (`param(fill)` and the like).
+    sets_colours: bool,
+}
+
+/// The setting naming a marker layer `class`'s image file; none for one that shows no file.
+fn image_file_key(class: &str) -> Option<&'static str> {
+    match class {
+        "RasterMarker" => Some("imageFile"),
+        "SvgMarker" => Some("name"),
+        _ => None,
+    }
+}
+
+/// Whether the image `b64` is an SVG leaving colours to the style: QGIS's `param(…)`, written in
+/// any letter case, in an attribute's value or a `<style>` sheet. One in a comment, a title or other
+/// text sets nothing. A raster image's bytes aren't text, so they aren't parsed.
+fn sets_colours(b64: &str) -> bool {
+    use base64::Engine;
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else { return false };
+    let Ok(text) = std::str::from_utf8(&bytes) else { return false };
+    // As the check that kept the image read it: a DTD's text entities expanded.
+    let opts = roxmltree::ParsingOptions { allow_dtd: true, nodes_limit: super::MAX_NODES, ..Default::default() };
+    let Ok(doc) = rustgis_data::xml::parse(text, opts) else { return false };
+    let param = |s: &str| s.as_bytes().windows(6).any(|w| w.eq_ignore_ascii_case(b"param("));
+    doc.descendants().any(|n| {
+        n.attributes().any(|a| param(a.value())) || n.tag_name().name() == "style" && n.children().any(|c| c.text().is_some_and(param))
+    })
+}
+
+/// The image of a raster image or SVG marker layer `class` (read before the symbols:
+/// [`read_images`]), or `None` for one drawn as a circle (noted).
+fn marker_image(class: &str, p: &[(String, String)], from_expression: bool, layer: &str, report: &mut Report) -> Option<MarkerImage> {
+    let file = image_file_key(class).and_then(|key| prop(p, key)).map(str::trim).unwrap_or_default();
+    let svg = class == "SvgMarker";
+    let kind = if svg { "SVG markers" } else { "raster image markers" };
     let why = match report.images.get(file) {
-        // QGIS's image path as a field or an expression (`name`) has nothing in `imageFile` to read.
+        // QGIS's image path as a field or an expression (`name`) has nothing in its setting to read.
         _ if file.is_empty() && from_expression => {
             "whose image comes from a field or an expression, which RustGIS doesn't evaluate".to_string()
         }
         _ if file.is_empty() => "with no image".to_string(),
-        Some(Ok(got)) => {
-            let got = *got;
+        // Its `param(…)` values aren't set yet, so drawn as it is it would take the wrong colours.
+        Some(Ok(image)) if svg && image.sets_colours => "whose colours the style sets, which RustGIS doesn't apply yet".to_string(),
+        Some(Ok(image)) => {
+            let image = *image;
             // QGIS's `fixedAspectRatio`: 0 keeps the image's own.
             let ratio = prop(p, "fixedAspectRatio").and_then(|r| r.trim().parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0);
-            if ratio.is_some_and(|r| (r - got.1).abs() > 1e-3 * got.1) {
-                report.approximated(layer, "raster image markers of a fixed aspect ratio, drawn in their image's own");
+            if ratio.is_some_and(|r| (r - image.aspect).abs() > 1e-3 * image.aspect) {
+                report.approximated(layer, "image markers of a fixed aspect ratio, drawn in their image's own");
             }
             if prop(p, "alpha").and_then(|a| a.trim().parse::<f32>().ok()).is_some_and(|a| a < 1.0) {
                 report.approximated(layer, SEE_THROUGH_IMAGES);
             }
-            return Some(got);
+            return Some(image);
+        }
+        // QGIS names its own library's SVGs relative to that library, which RustGIS doesn't bring; a
+        // file missing beside the project or style looks the same, so the note covers both.
+        Some(Err(why)) if svg && why == super::IMAGE_UNOPENED && !file.starts_with("file:") && super::is_relative(file) => {
+            "whose file isn't beside the project or style (or is one of QGIS's own SVG library, which RustGIS doesn't include)".to_string()
         }
         Some(Err(why)) => why.clone(),
         None => "past the images an import reads".to_string(),
     };
-    report.approximated(layer, format!("raster image markers {why}, drawn as circles"));
+    report.approximated(layer, format!("{kind} {why}, drawn as circles"));
     None
 }
 
@@ -1247,7 +1292,6 @@ fn pattern_name(class: &str) -> &'static str {
 
 fn marker_name(class: &str) -> &'static str {
     match class {
-        "SvgMarker" => "SVG",
         "EllipseMarker" => "ellipse",
         _ => "filled",
     }

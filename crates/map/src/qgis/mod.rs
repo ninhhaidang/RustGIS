@@ -28,7 +28,7 @@ use serde::Serialize;
 
 use crate::Rgba;
 use crate::effects::Blend;
-use crate::symbology::{Labeling, LineStroke, MarkerRotation, Picture, Renderer};
+use crate::symbology::{Labeling, LineStroke, MarkerRotation, Renderer};
 pub use annotation::{Annotation, MAX_ITEMS as MAX_ANNOTATIONS};
 pub use expr::{reads_measure, to_sql};
 use rustgis_data::loss::LossCode;
@@ -64,18 +64,22 @@ pub struct Report {
     /// Where each closing note is in `notes`, kept in step by [`Report::forget`].
     #[serde(skip)]
     closing: HashMap<(NoteKind, Option<LossCode>), usize>,
-    /// Raster image markers' images by their `imageFile`, read before the symbols showing them
-    /// (`symbol::read_images`): each kept picture with its height over its width, or why it isn't
-    /// drawn. Carried here because every symbol reader already takes the report; passing them
-    /// beside it would add a parameter to each reader and to each of their callers.
+    /// Raster image and SVG markers' images by their path (`imageFile`, `name`), read before the
+    /// symbols showing them (`symbol::read_images`): each kept image, or why it isn't drawn.
+    /// Carried here because every symbol reader already takes the report; passing them beside it
+    /// would add a parameter to each reader and to each of their callers.
     #[serde(skip)]
-    images: HashMap<String, Result<(Picture, f32), String>>,
+    images: HashMap<String, Result<symbol::MarkerImage, String>>,
 }
 
-/// Reads a raster image marker's image for the importer, which opens no file itself: given its
+/// A [`ReadImage`]'s reason for a file that doesn't open.
+pub const IMAGE_UNOPENED: &str = "whose image file doesn't open";
+
+/// Reads a raster image or SVG marker's image for the importer, which opens no file itself: given its
 /// `base64:` text or its file's path (made absolute from the project's folder), the image as
 /// base64 and its height over its width, or why it isn't drawn, as the end of a note's
-/// "raster image markers …, drawn as circles" (such as "whose file doesn't open").
+/// "raster image markers …, drawn as circles" or "SVG markers …, drawn as circles" (such as
+/// [`IMAGE_UNOPENED`]).
 pub type ReadImage<'a> = dyn FnMut(&str) -> Result<(String, f32), &'static str> + 'a;
 
 /// One thing an import couldn't carry over as QGIS has it.
@@ -569,7 +573,7 @@ pub struct ProjectLayer {
 }
 
 /// Reads a QGIS project. `dir` is the folder the project is in, which its relative paths start
-/// from; `images` reads its raster image markers' images. Notes on what can't be carried over go
+/// from; `images` reads its raster image and SVG markers' images. Notes on what can't be carried over go
 /// to `report`.
 pub fn read_project(text: &str, dir: &str, images: &mut ReadImage, report: &mut Report) -> Result<Project, String> {
     let doc = parse(text, "a QGIS project")?;

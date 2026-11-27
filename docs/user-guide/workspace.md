@@ -345,7 +345,7 @@ Each layer keeps its look:
   rendering passes as their levels when the renderer draws in symbol levels; marker and hashed
   lines as strokes of markers or hash marks, at their places (intervals, vertices, the ends, the
   middle), turned with the line, their markers' offsets and angles kept; font markers as
-  characters of their font, on points and along lines; raster image markers as
+  characters of their font, on points and along lines; raster image and SVG markers as
   [image markers](cartography.md#symbology) of their PNG, JPEG or SVG (embedded in the file, or a
   file of their own, relative to the project's folder or, in a style, to the style's), on points
   (anchored where QGIS anchors them) and along lines; a marker symbol of several layers, or one
@@ -430,11 +430,11 @@ filter, read by OGR SQL, ignores ASCII case in `=`, `IN`, `<`, `>` and `BETWEEN`
 apart in `LIKE`. A layer whose filter or rules compare text that way is noted, as is a `NOT IN` list
 holding `NULL`, which QGIS takes as unknown and RustGIS skips. What RustGIS doesn't draw as QGIS does is drawn as
 near as it can, or left out, and said: the import's notes list, layer by layer, what was
-approximated (vector tile styles, text matched ignoring letter case, a memory layer's fields of kinds RustGIS hasn't as text, gradient and shapeburst fills' offsets left out and colour ramps other than gradients drawn from their first colour to their last, SVG, raster and random fills and dense brushes as a tint of their colour, SVG markers as circles,
-raster image markers whose image RustGIS can't use as circles (one at a web address, which it
+approximated (vector tile styles, text matched ignoring letter case, a memory layer's fields of kinds RustGIS hasn't as text, gradient and shapeburst fills' offsets left out and colour ramps other than gradients drawn from their first colour to their last, SVG, raster and random fills and dense brushes as a tint of their colour,
+raster image and SVG markers whose image RustGIS can't use as circles (one at a web address, which it
 doesn't fetch, on a network share (`\\host\share`, `file://host/share`), a relative name with `://` in it, or kept inside a `.qgz`; one a field or an expression gives, which RustGIS doesn't evaluate; a file that doesn't open or isn't a PNG, JPEG or SVG; one past
 2 MiB of base64, 2048 × 2048 pixels or as much to draw, an SVG with filters, text, images, animation or links to other files, the images it keeps or the pixels or memory of marker images it decodes
-until it restarts), those of a fixed aspect ratio in their image's own,
+until it restarts; an SVG whose colours the style sets; an SVG of QGIS's own library, which RustGIS doesn't bring), image markers of a fixed aspect ratio in their image's own,
 see-through ones opaque and those anchored off their centre along lines centred,
 dashed polygon outlines solid, label halos with sharp corners drawn round and blended ones drawn
 over the map, label backgrounds of other shapes drawn as rectangles, label distances from lines
@@ -456,7 +456,7 @@ A QGIS layer style (`.qml`) styles the selected layer the same way, a feature la
 "…/roads.qml"}`). A raster style that reads a band the raster hasn't is noted and leaves the
 raster as it was. On a raster still loading (a remote file), the bands can't be checked yet: the
 style is applied, noted as unchecked, and a band the file hasn't is drawn from its last band.
-In the desktop app the style file and its raster image markers' image files are read in the
+In the desktop app the style file and its raster image and SVG markers' files are read in the
 background, with Cancel: the layer is styled once they are read, and a cancelled import leaves it as it was.
 
 RustGIS works out a map's scale with the OGC's 0.28 mm screen pixel, QGIS at 96 pixels to the

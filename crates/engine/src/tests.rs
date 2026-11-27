@@ -4304,6 +4304,50 @@ fn qgis_raster_image_markers_read_their_files_from_the_style_folder() {
     }
 }
 
+/// A QGIS style's and project's SVG markers draw their file through the importer's one reader, and
+/// saving asks for `svg-markers`; one whose colours the style sets is a circle, noted.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn qgis_svg_markers_draw_their_file_and_saving_requires_svg_markers() {
+    use base64::Engine;
+    use rustgis_map::{Marker, Picture};
+    let dir = std::env::temp_dir().join(format!("rustgis-qgis-svg-markers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 4"><rect width="8" height="4" fill="#c81e1e"/></svg>"##;
+    std::fs::write(dir.join("pin.svg"), svg).unwrap();
+    std::fs::write(dir.join("tinted.svg"), svg.replace("#c81e1e", "param(fill) #c81e1e")).unwrap();
+    let qml = |file: &str| {
+        format!(
+            r#"<qgis version="4.2.3"><renderer-v2 type="singleSymbol"><symbols><symbol type="marker" name="0" alpha="1">
+            <layer class="SvgMarker" enabled="1"><Option type="Map"><Option name="name" value="{file}"/><Option name="size" value="6"/>
+            <Option name="size_unit" value="Point"/></Option></layer></symbol></symbols></renderer-v2></qgis>"#
+        )
+    };
+    let marker = |s: &Session| s.map().layer_by_name("Cities").unwrap().symbol(0).marker;
+    let notes =
+        |r: &serde_json::Value| r["notes"].as_array().unwrap().iter().map(|n| n["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(svg);
+    let path = dir.join("pins.qml");
+    // From its file beside the style, and embedded in the text with no folder.
+    for params in
+        [json!({"layer": "Cities", "path": path.to_string_lossy()}), json!({"layer": "Cities", "text": qml(&format!("base64:{b64}"))})]
+    {
+        std::fs::write(&path, qml("pin.svg")).unwrap();
+        let mut s = world();
+        let r = s.run("style.importQgis", &params).unwrap();
+        assert_eq!(marker(&s), Marker::Picture(Picture::new(&b64)), "{params}");
+        assert!(notes(&r).is_empty(), "{:?}", notes(&r));
+        assert_eq!(serde_json::to_value(&s.project).unwrap()["requires"], json!(["picture-markers", "svg-markers"]));
+    }
+    std::fs::write(&path, qml("tinted.svg")).unwrap();
+    let mut s = world();
+    let r = s.run("style.importQgis", &json!({"layer": "Cities", "path": path.to_string_lossy()})).unwrap();
+    assert_eq!(marker(&s), Marker::Circle);
+    assert_eq!(notes(&r), ["SVG markers whose colours the style sets, which RustGIS doesn't apply yet, drawn as circles"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A QGIS style's file and its raster image markers' images are read on a thread before the
 /// command lands (#2620): the landing needs neither file, says what the inline import says, can be
 /// undone, and a style read for a layer that was renamed meanwhile is refused. A cancelled read
@@ -6450,7 +6494,7 @@ fn a_qgis_project_opens_as_a_map_and_a_qgis_style_styles_a_layer() {
         <maplayer type="raster" hasScaleBasedVisibilityFlag="1" minScale="100000" maxScale="1000"><id>w</id><datasource>url=https://wms.example/wms&amp;layers=a</datasource><layername>Web</layername><provider>wms</provider>
         <pipe><rasterrenderer opacity="0.5" type="singlebandcolordata"/></pipe><blendMode>6</blendMode></maplayer></projectlayers></qgis>"#;
     let mut report = rustgis_map::qgis::Report::default();
-    let project = rustgis_map::qgis::read_project(web, "", &mut |_| Err("whose image file doesn't open"), &mut report).unwrap();
+    let project = rustgis_map::qgis::read_project(web, "", &mut |_| Err(rustgis_map::qgis::IMAGE_UNOPENED), &mut report).unwrap();
     let mut w = world();
     let before = w.active_layer;
     w.active_layer = w.map().layers.iter().map(|l| l.id).find(|id| Some(*id) != before);
