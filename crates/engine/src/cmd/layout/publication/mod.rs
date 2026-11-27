@@ -1905,8 +1905,7 @@ pub(in crate::cmd::layout) fn publication(s: &mut Session, p: &Value) -> CmdResu
     // What a scale bar or a grid asked for in other than its default look loses or has to say.
     let asked = |key: &str| p.get(key).is_some_and(Value::is_object);
     if let Some(bar) = bar_id.filter(|_| asked("scaleBar")) {
-        let losses: Vec<_> = text_fit_loss(s, i, bar).into_iter().collect();
-        warnings.extend(rustgis_render::layout::scale_bar_fit_notices(&losses));
+        say_text_fit(s, i, bar, true);
     }
     if let Some(crs) = p.get("grid").and_then(|g| g.get("crs")).and_then(Value::as_str) {
         crate::cmd::say_crs_note(s, crs);

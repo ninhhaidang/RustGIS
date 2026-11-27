@@ -133,11 +133,12 @@ fn a_publication_scale_bar_takes_its_options_and_its_box_is_sized_for_it() {
 #[test]
 fn a_publication_scale_bar_given_a_larger_text_gets_the_height_for_it() {
     let (default, _) = sheet(json!({}));
-    let (s, r) = sheet(json!({"scaleBar": {"textSize": 14}}));
+    let (s, _) = sheet(json!({"scaleBar": {"textSize": 14}}));
     let bar = find(&s, "Scale Bar").unwrap();
     assert!(matches!(bar.kind, ElementKind::ScaleBar { text_size, .. } if text_size == 14.0), "{:?}", bar.kind);
     assert!(bar.h > find(&default, "Scale Bar").unwrap().h);
-    assert!(!r["warnings"].to_string().contains("scale bar"), "{}", r["warnings"]);
+    let said = s.notices_since(0);
+    assert!(!said.iter().any(|n| n.text.starts_with("Scale bar")), "{said:?}");
 }
 
 #[test]
@@ -235,8 +236,11 @@ fn the_publication_parts_fixture_opens_and_keeps_its_requirement() {
 
 #[test]
 fn a_publication_scale_bar_too_large_for_the_sheet_says_it_does_not_fit() {
-    let (_, r) = sheet(json!({"scaleBar": {"textSize": 100}}));
-    assert!(r["warnings"].to_string().contains("Scale bar \\\"Scale Bar\\\""), "{}", r["warnings"]);
+    let mut s = world();
+    let mark = s.notice_mark();
+    publish(&mut s, json!({"scaleBar": {"textSize": 100}})).unwrap();
+    let said = s.notices_since(mark);
+    assert_eq!(said.iter().filter(|n| n.text.starts_with("Scale bar \"Scale Bar\": its box is too small")).count(), 1, "{said:?}");
 }
 
 #[test]
