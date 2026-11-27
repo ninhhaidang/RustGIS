@@ -48,10 +48,14 @@ fn read_bounded(path: impl AsRef<std::path::Path>, limit: u64) -> Option<Vec<u8>
     (bytes.len() as u64 <= limit).then_some(bytes)
 }
 
-fn read(path: &str) -> Option<Vec<u8>> {
+fn read_path(path: &std::path::Path) -> Option<Vec<u8>> {
     let bytes = read_bounded(path, MAX_FONT_BYTES as u64)?;
     ab_glyph::FontRef::try_from_slice(&bytes).ok()?;
     Some(bytes)
+}
+
+fn read(path: &str) -> Option<Vec<u8>> {
+    read_path(std::path::Path::new(path))
 }
 
 /// The weight the semibold face is drawn at where it is a variable font (#591): macOS's system
@@ -94,6 +98,17 @@ pub fn ui_fonts() -> &'static UiFonts {
                 if let Some(regular) = read(r) {
                     let semibold = read(b).unwrap_or_else(|| regular.clone());
                     return UiFonts { regular, semibold, source: (*r).to_string() };
+                }
+            }
+            for root in extra_linux_roots(&linux_font_roots()) {
+                for (r, b) in CANDIDATES {
+                    if let (Some(r_rel), Some(b_rel)) = (r.strip_prefix(LINUX_SYSTEM_FONTS), b.strip_prefix(LINUX_SYSTEM_FONTS)) {
+                        let r_path = root.join(r_rel);
+                        if let Some(regular) = read_path(&r_path) {
+                            let semibold = read_path(&root.join(b_rel)).unwrap_or_else(|| regular.clone());
+                            return UiFonts { regular, semibold, source: r_path.display().to_string() };
+                        }
+                    }
                 }
             }
         }
@@ -220,23 +235,91 @@ pub fn serif_fonts() -> Option<&'static SerifFonts> {
         if std::env::var_os("RUSTGIS_BUILTIN_FONTS").is_some() {
             return None;
         }
+        let roots = linux_font_roots();
         let family = |[r, b, i, bi]: &[&str; 4]| {
             let regular = read(r)?;
             Some(SerifFonts { regular, bold: read(b), italic: read(i), bold_italic: read(bi), variable: false, source: (*r).to_string() })
         };
-        SERIF_CANDIDATES.iter().find_map(family).or_else(|| variable_noto_serif(&FONT_ROOTS)).or_else(|| SERIF_LAST.iter().find_map(family))
+        let find_fixed = |list: &[[&str; 4]]| {
+            list.iter().find_map(family).or_else(|| {
+                extra_linux_roots(&roots).find_map(|root| {
+                    list.iter().find_map(|[r, b, i, bi]| {
+                        let join = |p: &str| p.strip_prefix(LINUX_SYSTEM_FONTS).map(|rel| root.join(rel));
+                        let r_path = join(r)?;
+                        let regular = read_path(&r_path)?;
+                        Some(SerifFonts {
+                            regular,
+                            bold: join(b).as_deref().and_then(read_path),
+                            italic: join(i).as_deref().and_then(read_path),
+                            bold_italic: join(bi).as_deref().and_then(read_path),
+                            variable: false,
+                            source: r_path.display().to_string(),
+                        })
+                    })
+                })
+            })
+        };
+        find_fixed(SERIF_CANDIDATES).or_else(|| variable_noto_serif(&serif_font_roots(&roots))).or_else(|| find_fixed(SERIF_LAST))
     })
     .as_ref()
 }
 
-/// The folders under which distributions put each font package's own folder.
-const FONT_ROOTS: [&str; 3] = ["/usr/share/fonts", "/usr/share/fonts/truetype", "/usr/share/fonts/opentype"];
+/// System font directory whose relative paths are expanded across Linux, Flatpak host, and XDG roots.
+const LINUX_SYSTEM_FONTS: &str = "/usr/share/fonts/";
+
+/// Flatpak runtime mounts exposing the host system, local, and user font directories (#2313).
+pub(crate) const FLATPAK_FONT_DIRS: &[&str] = &["/run/host/fonts", "/run/host/local-fonts", "/run/host/user-fonts"];
+
+fn push_unique_root(out: &mut Vec<std::path::PathBuf>, path: std::path::PathBuf) {
+    if !path.as_os_str().is_empty() && !out.contains(&path) {
+        out.push(path);
+    }
+}
+
+/// Linux font roots in search order: system, local, Flatpak host mounts, and XDG/user directories.
+fn linux_font_roots_with(xdg_data_home: Option<&std::ffi::OsStr>, home: Option<&std::ffi::OsStr>) -> Vec<std::path::PathBuf> {
+    let mut roots = Vec::new();
+    for dir in ["/usr/share/fonts", "/usr/local/share/fonts"] {
+        push_unique_root(&mut roots, std::path::PathBuf::from(dir));
+    }
+    for dir in FLATPAK_FONT_DIRS {
+        push_unique_root(&mut roots, std::path::PathBuf::from(dir));
+    }
+    if let Some(xdg) = xdg_data_home.filter(|v| !v.is_empty()) {
+        push_unique_root(&mut roots, std::path::PathBuf::from(xdg).join("fonts"));
+    } else if let Some(h) = home.filter(|v| !v.is_empty()) {
+        push_unique_root(&mut roots, std::path::PathBuf::from(h).join(".local").join("share").join("fonts"));
+    }
+    if let Some(h) = home.filter(|v| !v.is_empty()) {
+        push_unique_root(&mut roots, std::path::PathBuf::from(h).join(".fonts"));
+    }
+    roots
+}
+
+fn linux_font_roots() -> Vec<std::path::PathBuf> {
+    linux_font_roots_with(std::env::var_os("XDG_DATA_HOME").as_deref(), std::env::var_os("HOME").as_deref())
+}
+
+fn extra_linux_roots(roots: &[std::path::PathBuf]) -> impl Iterator<Item = &std::path::PathBuf> {
+    roots.iter().filter(|r| *r != std::path::Path::new("/usr/share/fonts"))
+}
+
+/// The folders under each root where distributions put each font package's own folder.
+fn serif_font_roots(roots: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for root in roots {
+        out.push(root.clone());
+        out.push(root.join("truetype"));
+        out.push(root.join("opentype"));
+    }
+    out
+}
 
 /// Noto Serif as recent distributions ship it: a variable font (`NotoSerif[wdth,wght].ttf`, or
-/// `[wght]`), with its italic beside it, in a package folder under one of `roots` ([`FONT_ROOTS`]).
-/// Found by its name's start, whatever axes it lists; its bold is the same file (kept once),
-/// drawn at the bold weight.
-fn variable_noto_serif(roots: &[&str]) -> Option<SerifFonts> {
+/// `[wght]`), with its italic beside it, in a package folder under one of `roots`
+/// ([`serif_font_roots`]). Found by its name's start, whatever axes it lists; its bold is the
+/// same file (kept once), drawn at the bold weight.
+fn variable_noto_serif<P: AsRef<std::path::Path>>(roots: &[P]) -> Option<SerifFonts> {
     let named = |files: &[std::path::PathBuf], stem: &str| {
         files.iter().find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(stem) && n.ends_with(".ttf"))).cloned()
     };
@@ -249,11 +332,11 @@ fn variable_noto_serif(roots: &[&str]) -> Option<SerifFonts> {
         paths
     };
     for root in roots {
-        for dir in listed(std::path::Path::new(root)).into_iter().filter(|p| p.is_dir()).take(1000) {
+        for dir in listed(root.as_ref()).into_iter().filter(|p| p.is_dir()).take(1000) {
             let files = listed(&dir);
             let Some(r) = named(&files, "NotoSerif[") else { continue };
-            let Some(regular) = r.to_str().and_then(read) else { continue };
-            let italic = named(&files, "NotoSerif-Italic[").and_then(|p| p.to_str().and_then(read));
+            let Some(regular) = read_path(&r) else { continue };
+            let italic = named(&files, "NotoSerif-Italic[").as_deref().and_then(read_path);
             let source = r.display().to_string();
             return Some(SerifFonts { regular, bold: None, italic, bold_italic: None, variable: true, source });
         }
@@ -369,17 +452,110 @@ fn android_cjk_files(region: CjkRegion) -> [(&'static str, u32); 3] {
 }
 
 /// Every installed CJK font candidate for `region`, in order of preference: (path, face index).
-/// Windows first, then Apple's (macOS, iOS), Linux's and Android's.
+/// Windows first, then Apple's (macOS, iOS), Linux's (system, Flatpak host, XDG) and Android's.
 fn cjk_paths(region: CjkRegion) -> Vec<(String, u32)> {
+    cjk_paths_with(region, &linux_font_roots())
+}
+
+fn cjk_paths_with(region: CjkRegion, roots: &[std::path::PathBuf]) -> Vec<(String, u32)> {
     let listed = cjk_candidates(region);
     let (windows, rest) = listed.split_at(listed.iter().take_while(|(p, _)| p.starts_with("C:\\")).count());
+    let linux_extra = extra_linux_roots(roots).flat_map(|root| {
+        rest.iter()
+            .filter_map(move |(p, i)| p.strip_prefix(LINUX_SYSTEM_FONTS).map(|rel| (root.join(rel).to_string_lossy().into_owned(), *i)))
+    });
     windows
         .iter()
         .map(|(p, i)| (p.to_string(), *i))
         .chain(in_apple_dirs(apple_cjk_files(region)))
         .chain(rest.iter().map(|(p, i)| (p.to_string(), *i)))
+        .chain(linux_extra)
         .chain(ANDROID_FONT_DIRS.iter().flat_map(|dir| android_cjk_files(region).map(|(file, i)| (format!("{dir}/{file}"), i))))
         .collect()
+}
+
+/// Deduplicated Linux CJK font filenames and face indices in preference order.
+fn cjk_linux_filenames(region: CjkRegion) -> Vec<(&'static str, u32)> {
+    let mut out: Vec<(&'static str, u32)> = Vec::new();
+    for &(path, index) in cjk_candidates(region) {
+        if path.starts_with(LINUX_SYSTEM_FONTS)
+            && let Some(name) = path.rsplit('/').next()
+            && !out.iter().any(|&(n, i)| n == name && i == index)
+        {
+            out.push((name, index));
+        }
+    }
+    out
+}
+
+/// Bounded recursive search under `roots` for known CJK filenames placed in distro-specific
+/// subfolders, returning the first valid face in preference order.
+fn find_cjk_in_roots(roots: &[std::path::PathBuf], region: CjkRegion) -> Option<(Vec<u8>, u32)> {
+    const MAX_DEPTH: usize = 6;
+    const MAX_DIRS: usize = 2_000;
+    const MAX_FILES: usize = 20_000;
+
+    let targets = cjk_linux_filenames(region);
+    if targets.is_empty() {
+        return None;
+    }
+    let mut found_paths: Vec<Vec<std::path::PathBuf>> = vec![Vec::new(); targets.len()];
+    let mut seen: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+    let mut files_seen = 0usize;
+
+    for root in roots {
+        if seen.len() >= MAX_DIRS || files_seen >= MAX_FILES {
+            break;
+        }
+        let mut stack = vec![(root.clone(), 0usize)];
+        while let Some((dir, depth)) = stack.pop() {
+            if depth > MAX_DEPTH || seen.len() >= MAX_DIRS || files_seen >= MAX_FILES {
+                continue;
+            }
+            if !seen.insert(std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone())) {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            let mut children: Vec<std::path::PathBuf> = entries.flatten().map(|e| e.path()).collect();
+            children.sort();
+            let mut subdirs = Vec::new();
+            for path in children {
+                if files_seen >= MAX_FILES {
+                    break;
+                }
+                if path.is_dir() {
+                    if depth < MAX_DEPTH {
+                        subdirs.push(path);
+                    }
+                } else {
+                    files_seen += 1;
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        for (slot, &(target_name, _)) in targets.iter().enumerate() {
+                            if name == target_name
+                                && let Some(bucket) = found_paths.get_mut(slot)
+                            {
+                                bucket.push(path.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            for sub in subdirs.into_iter().rev() {
+                stack.push((sub, depth + 1));
+            }
+        }
+    }
+
+    for (slot, &(_, index)) in targets.iter().enumerate() {
+        if let Some(paths) = found_paths.get(slot) {
+            for path in paths {
+                if let Some(bytes) = read_cjk_path(path).filter(|b| draws_cjk(b, index, region)) {
+                    return Some((bytes, index));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Installed CJK collections whose face is found by family name, not by index: (path, family).
@@ -388,8 +564,12 @@ fn cjk_named_candidates(region: CjkRegion) -> Vec<(String, &'static str)> {
 }
 
 /// A CJK font file's bytes. CJK collections are large; accept up to 128 MiB.
-fn read_cjk(path: &str) -> Option<Vec<u8>> {
+fn read_cjk_path(path: &std::path::Path) -> Option<Vec<u8>> {
     read_bounded(path, 128 << 20)
+}
+
+fn read_cjk(path: &str) -> Option<Vec<u8>> {
+    read_cjk_path(std::path::Path::new(path))
 }
 
 /// The regular face of `family` in a font file or collection: the face whose family name is
@@ -431,6 +611,7 @@ pub fn cjk_font(region: CjkRegion) -> Option<&'static (Vec<u8>, u32)> {
                     Some((bytes, index))
                 })
             })
+            .or_else(|| find_cjk_in_roots(&linux_font_roots(), region))
             .or_else(|| cached_script_font(ScriptFont::Cjk(region)))
     });
     match (found, region) {
@@ -714,9 +895,14 @@ fn covers_lao(bytes: &[u8], index: u32) -> bool {
     outlines(bytes, index, &['\u{0E81}', '\u{0E82}', '\u{0EB2}', '\u{0EC8}'])
 }
 
-/// The existing script candidates in every Apple font folder (iOS uses subfolders), and
-/// Android system candidates in manufacturer folders too. Keep the listed paths first.
+/// The existing script candidates in every Apple font folder (iOS uses subfolders),
+/// Android system candidates in manufacturer folders, and Linux Flatpak/XDG font roots.
+/// Keep the listed paths first.
 fn script_paths(candidates: &[&str]) -> Vec<String> {
+    script_paths_with(candidates, &linux_font_roots())
+}
+
+fn script_paths_with(candidates: &[&str], roots: &[std::path::PathBuf]) -> Vec<String> {
     let mut paths: Vec<String> = candidates.iter().map(|p| (*p).to_string()).collect();
     for path in candidates {
         if let Some(file) = path.strip_prefix("/System/Library/Fonts/Supplemental/").or_else(|| path.strip_prefix("/System/Library/Fonts/"))
@@ -724,6 +910,8 @@ fn script_paths(candidates: &[&str]) -> Vec<String> {
             paths.extend(in_apple_dirs(&[(file, ())]).map(|(p, _)| p));
         } else if let Some(file) = path.strip_prefix("/system/fonts/") {
             paths.extend(ANDROID_FONT_DIRS.iter().map(|dir| format!("{dir}/{file}")));
+        } else if let Some(rel) = path.strip_prefix(LINUX_SYSTEM_FONTS) {
+            paths.extend(extra_linux_roots(roots).map(|root| root.join(rel).to_string_lossy().into_owned()));
         }
     }
     paths
@@ -1213,5 +1401,83 @@ mod tests {
                 assert!(super::covers_arabic(&b, 0), "{p}");
             }
         }
+    }
+
+    #[test]
+    fn flatpak_and_xdg_roots_are_included_in_cjk_and_script_paths() {
+        use std::ffi::OsStr;
+        use std::path::PathBuf;
+
+        let roots_xdg = super::linux_font_roots_with(Some(OsStr::new("/custom/xdg")), Some(OsStr::new("/custom/home")));
+        for expected in [
+            "/usr/share/fonts",
+            "/usr/local/share/fonts",
+            "/run/host/fonts",
+            "/run/host/local-fonts",
+            "/run/host/user-fonts",
+            "/custom/xdg/fonts",
+            "/custom/home/.fonts",
+        ] {
+            assert!(roots_xdg.contains(&PathBuf::from(expected)), "missing {expected} in {roots_xdg:?}");
+        }
+
+        let roots_home = super::linux_font_roots_with(None, Some(OsStr::new("/custom/home")));
+        assert!(roots_home.contains(&PathBuf::from("/custom/home/.local/share/fonts")), "{roots_home:?}");
+
+        for (region, index) in [
+            (super::CjkRegion::Japanese, 0),
+            (super::CjkRegion::Korean, 1),
+            (super::CjkRegion::SimplifiedChinese, 2),
+            (super::CjkRegion::TraditionalChinese, 3),
+        ] {
+            let paths = super::cjk_paths_with(region, &roots_xdg);
+            for root in ["/run/host/fonts", "/run/host/local-fonts", "/run/host/user-fonts", "/custom/xdg/fonts", "/custom/home/.fonts"] {
+                let expected = PathBuf::from(root).join("opentype/noto/NotoSansCJK-Regular.ttc").to_string_lossy().into_owned();
+                assert!(paths.contains(&(expected.clone(), index)), "{region:?}: missing {expected}");
+            }
+        }
+
+        let arabic_paths = super::script_paths_with(super::ARABIC_CANDIDATES, &roots_xdg);
+        for root in ["/run/host/fonts", "/run/host/local-fonts", "/run/host/user-fonts", "/custom/xdg/fonts"] {
+            let expected = PathBuf::from(root).join("truetype/dejavu/DejaVuSans.ttf").to_string_lossy().into_owned();
+            assert!(arabic_paths.contains(&expected), "missing {expected} in {arabic_paths:?}");
+        }
+    }
+
+    #[test]
+    fn find_cjk_in_roots_discovers_nested_distribution_subfolders_in_preference_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_font = include_bytes!("../testdata/test-fallback.otf");
+
+        // Higher-priority filename that is corrupt/unusable must be skipped.
+        let corrupt_dir = dir.path().join("other");
+        std::fs::create_dir_all(&corrupt_dir).unwrap();
+        std::fs::write(corrupt_dir.join("NotoSansCJK-Regular.ttc"), b"not a font").unwrap();
+
+        // Lower-priority valid fallback.
+        let wqy_dir = dir.path().join("alt");
+        std::fs::create_dir_all(&wqy_dir).unwrap();
+        std::fs::write(wqy_dir.join("wqy-microhei.ttc"), valid_font).unwrap();
+
+        // Preferred NotoSansSC-Regular.otf placed inside a non-standard nested subfolder.
+        let nested_dir = dir.path().join("distro-cjk").join("sub");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        std::fs::write(nested_dir.join("NotoSansSC-Regular.otf"), valid_font).unwrap();
+
+        assert!(super::find_cjk_in_roots(&[dir.path().join("missing")], super::CjkRegion::SimplifiedChinese).is_none());
+
+        let found = super::find_cjk_in_roots(&[dir.path().to_path_buf()], super::CjkRegion::SimplifiedChinese)
+            .expect("should discover nested font");
+        assert_eq!(found, (valid_font.to_vec(), 0));
+
+        // Remove NotoSansSC-Regular.otf -> falls back to wqy-microhei.ttc.
+        std::fs::remove_file(nested_dir.join("NotoSansSC-Regular.otf")).unwrap();
+        let fallback = super::find_cjk_in_roots(&[dir.path().to_path_buf()], super::CjkRegion::SimplifiedChinese)
+            .expect("should fall back to wqy-microhei.ttc");
+        assert_eq!(fallback, (valid_font.to_vec(), 0));
+
+        // Corrupt-only directory returns None.
+        std::fs::remove_file(wqy_dir.join("wqy-microhei.ttc")).unwrap();
+        assert!(super::find_cjk_in_roots(&[dir.path().to_path_buf()], super::CjkRegion::SimplifiedChinese).is_none());
     }
 }

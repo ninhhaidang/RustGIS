@@ -181,6 +181,20 @@ pub fn bytes(face: &InstalledFace) -> Option<&'static [u8]> {
     kept.filter(|b| parses(b, face.index))
 }
 
+fn linux_font_dirs(xdg_data_home: Option<&std::ffi::OsStr>, home: Option<&PathBuf>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = ["/usr/share/fonts", "/usr/local/share/fonts"]
+        .into_iter()
+        .chain(crate::fonts::FLATPAK_FONT_DIRS.iter().copied())
+        .map(PathBuf::from)
+        .collect();
+    match xdg_data_home {
+        Some(d) if !d.is_empty() => dirs.push(PathBuf::from(d).join("fonts")),
+        _ => dirs.extend(home.iter().map(|h| h.join(".local").join("share").join("fonts"))),
+    }
+    dirs.extend(home.iter().map(|h| h.join(".fonts")));
+    dirs
+}
+
 /// The folders fonts are installed in on this system, the user's own included.
 fn font_dirs() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -202,12 +216,7 @@ fn font_dirs() -> Vec<PathBuf> {
         // Android's app home has no system fonts; manufacturer faces can live on /product.
         dirs.extend(crate::fonts::ANDROID_FONT_DIRS.iter().map(PathBuf::from));
     } else {
-        dirs.extend(["/usr/share/fonts", "/usr/local/share/fonts"].map(PathBuf::from));
-        match std::env::var_os("XDG_DATA_HOME") {
-            Some(d) => dirs.push(PathBuf::from(d).join("fonts")),
-            None => dirs.extend(home.iter().map(|h| h.join(".local").join("share").join("fonts"))),
-        }
-        dirs.extend(home.iter().map(|h| h.join(".fonts")));
+        dirs = linux_font_dirs(std::env::var_os("XDG_DATA_HOME").as_deref(), home.as_ref());
     }
     dirs
 }
@@ -517,5 +526,25 @@ mod tests {
         // A name table whose records point past its end.
         let table = [0u8, 0, 0, 1, 0, 18, 0, 3, 0, 1, 4, 9, 0, 1, 0xff, 0xff, 0, 0];
         assert_eq!(name(&table, 1), None);
+    }
+
+    #[test]
+    fn linux_font_dirs_include_flatpak_host_and_xdg_roots() {
+        let home = PathBuf::from("/home/alice");
+        let dirs = super::linux_font_dirs(Some(std::ffi::OsStr::new("/xdg/data")), Some(&home));
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/usr/share/fonts"),
+                PathBuf::from("/usr/local/share/fonts"),
+                PathBuf::from("/run/host/fonts"),
+                PathBuf::from("/run/host/local-fonts"),
+                PathBuf::from("/run/host/user-fonts"),
+                PathBuf::from("/xdg/data/fonts"),
+                PathBuf::from("/home/alice/.fonts"),
+            ]
+        );
+        let fallback = super::linux_font_dirs(None, Some(&home));
+        assert!(fallback.contains(&PathBuf::from("/home/alice/.local/share/fonts")));
     }
 }
