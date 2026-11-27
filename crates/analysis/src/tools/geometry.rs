@@ -32,6 +32,25 @@ pub(super) fn convert(inp: &dyn Inputs, p: &Json, mode: Conversion) -> Result<To
     finish(out, skipped, tool)
 }
 
+const RING_COPY_CHUNK: usize = 65_536;
+
+/// Copies `ring` (closing it if needed) in [`RING_COPY_CHUNK`]-vertex slices so a single huge ring
+/// still checks Cancel via `pace` mid-copy.
+fn copy_ring_paced(ring: &[Coord], pace: &mut crate::control::Pace) -> Result<Vec<Coord>, String> {
+    let closed = ring.first() == ring.last();
+    let mut line = Vec::with_capacity(ring.len() + usize::from(!closed));
+    for chunk in ring.chunks(RING_COPY_CHUNK) {
+        if pace.stop(chunk.len()) {
+            return Err(crate::control::Cancelled.into());
+        }
+        line.extend_from_slice(chunk);
+    }
+    if !closed && let Some(first) = line.first().copied() {
+        line.push(first);
+    }
+    Ok(line)
+}
+
 fn convert_row(
     ds: &Dataset,
     row: usize,
@@ -66,18 +85,7 @@ fn convert_row(
                         *skipped += 1;
                         continue;
                     }
-                    let closed = ring.first() == ring.last();
-                    let mut line = Vec::with_capacity(ring.len() + usize::from(!closed));
-                    for chunk in ring.chunks(65_536) {
-                        if pace.stop(chunk.len()) {
-                            return Err(crate::control::Cancelled.into());
-                        }
-                        line.extend_from_slice(chunk);
-                    }
-                    if !closed && let Some(first) = line.first().copied() {
-                        line.push(first);
-                    }
-                    parts.push(line);
+                    parts.push(copy_ring_paced(ring, pace)?);
                 }
             }
             if !parts.is_empty() {
@@ -473,7 +481,7 @@ mod tests {
         assert!(err.contains("cancelled"), "{err}");
         assert_eq!(cancel_ring.looked(), 3);
 
-        // Fewer than 1,024 rings with many vertices also trigger Pace inside the chunked vertex copy.
+        // 800 rings of 1,200 vertices: per-ring and per-chunk units together cross PACE_WORK, so Cancel is looked at inside the ring loop.
         let make_heavy_rings = |verts: usize| {
             let mut ring = Vec::with_capacity(verts);
             for i in 0..verts {
@@ -492,6 +500,36 @@ mod tests {
         let err = crate::run_with("polygonToLine", &make_heavy_rings(1_200), &params, &cancel_verts).unwrap_err();
         assert!(err.contains("cancelled"), "{err}");
         assert_eq!(cancel_verts.looked(), 3);
+    }
+
+    #[test]
+    fn copy_ring_paced_cancels_mid_ring_across_chunks() {
+        use crate::control::{Control, PACE_WORK, Pace};
+
+        let verts = RING_COPY_CHUNK + 4_464;
+        let big_ring: Vec<Coord> = (0..verts).map(|i| Coord::new(i as f64, 0.0)).collect();
+
+        // Prime Pace so chunk 1 (RING_COPY_CHUNK) stays below PACE_WORK and chunk 2 crosses it mid-ring.
+        let cancel_mid = Control::cancelled_at_look(1);
+        let err = crate::run_under("copy_ring_paced", &cancel_mid, || {
+            let mut pace = Pace::default();
+            assert!(!pace.stop(PACE_WORK - verts));
+            copy_ring_paced(&big_ring, &mut pace)
+        })
+        .unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_mid.looked(), 1);
+
+        let counting = Control::cancelled_at_look(u64::MAX);
+        let copied = crate::run_under("copy_ring_paced", &counting, || {
+            let mut pace = Pace::default();
+            assert!(!pace.stop(PACE_WORK - verts));
+            copy_ring_paced(&big_ring, &mut pace)
+        })
+        .unwrap();
+        assert_eq!(counting.looked(), 1);
+        assert_eq!(copied.len(), verts + 1);
+        assert_eq!(copied.first(), copied.last());
     }
 
     #[test]

@@ -204,12 +204,49 @@ fn written(v: &Value) -> String {
     JoinKey::from_value(v).map(|k| k.display()).unwrap_or_default()
 }
 
+/// Validates windowed flags and key-field compatibility and returns the progress work units
+/// (`source_len` + optional `NumberAsText` scan + `target_len`) that [`join_field`] will advance.
+pub(crate) fn join_field_work(
+    target: &Dataset,
+    target_len: usize,
+    source: &Dataset,
+    source_len: usize,
+    target_field: &str,
+    join_field: &str,
+) -> Result<usize, String> {
+    if target.windowed {
+        return Err("the target layer is streamed; load all features first".into());
+    }
+    if source.windowed {
+        return Err("the source layer is streamed; load all features first".into());
+    }
+    let target_key_idx = crate::tools::find_field_case_insensitive(target, target_field)?;
+    let source_key_idx = crate::tools::find_field_case_insensitive(source, join_field)?;
+    let target_key_field = target.fields.get(target_key_idx).ok_or_else(|| "target key field missing".to_string())?;
+    let source_key_field = source.fields.get(source_key_idx).ok_or_else(|| "source key field missing".to_string())?;
+    let comparison = key_comparison(target_key_field, source_key_field)?;
+    let extra_scan = if comparison == KeyComparison::NumberAsText { source_len } else { 0 };
+    Ok(source_len.saturating_add(extra_scan).saturating_add(target_len))
+}
+
 /// Executes a non-spatial attribute join from `source` onto `target`.
 ///
 /// Preserves target order, IDs, geometry, existing attributes, and the record count of the
 /// provided target dataset (when invoked through the tool, row selections are applied beforehand).
 /// Appends selected attributes from `source` based on matching key values.
 pub fn join_field(target: &Dataset, source: &Dataset, opts: &JoinFieldOptions<'_>) -> Result<(Dataset, JoinFieldReport), String> {
+    join_field_with_progress(target, source, opts, false)
+}
+
+/// Executes [`join_field`], optionally continuing an active `control::begin` step started by the
+/// caller (used by `joinField` when partial selections copy rows beforehand so progress climbs
+/// monotonically across subsetting and joining).
+pub(crate) fn join_field_with_progress(
+    target: &Dataset,
+    source: &Dataset,
+    opts: &JoinFieldOptions<'_>,
+    progress_started: bool,
+) -> Result<(Dataset, JoinFieldReport), String> {
     if target.windowed {
         return Err("the target layer is streamed; load all features first".into());
     }
@@ -279,7 +316,9 @@ pub fn join_field(target: &Dataset, source: &Dataset, opts: &JoinFieldOptions<'_
 
     // 5. Index source records: Map JoinKey -> source feature index
     let extra_scan = if comparison == KeyComparison::NumberAsText { source.features.len() } else { 0 };
-    crate::control::begin(source.features.len().saturating_add(extra_scan).saturating_add(target.features.len()));
+    if !progress_started {
+        crate::control::begin(source.features.len().saturating_add(extra_scan).saturating_add(target.features.len()));
+    }
     crate::control::check()?;
     let mut source_index: HashMap<JoinKey, usize> = HashMap::with_capacity(source.features.len());
     let mut duplicate_count = 0usize;
