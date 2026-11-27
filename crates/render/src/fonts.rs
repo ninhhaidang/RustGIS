@@ -517,8 +517,10 @@ fn all_cjk_linux_filenames() -> Vec<&'static str> {
 /// Shared bounded BFS under Linux `roots` indexing known CJK font filenames across all four regions
 /// (`MAX_DEPTH = 6`, `MAX_DIRS = 2_000`, `MAX_FILES = 20_000`).
 ///
-/// Warmed off the UI thread by `crate::families::warm_up`; if reached synchronously before warm-up
-/// finishes (or in CLI/headless exports) it runs once as a bounded non-cancellable step (`OnceLock`).
+/// Warmed off the UI thread by `crate::families::warm_up` (after `installed()` finishes). If
+/// `cjk_font` reaches this fallback while warm-up is running, `cjk_root_index` waits for that
+/// scan to finish; if reached before warm-up starts (or in CLI/headless exports without warm-up),
+/// it runs once on the caller as a bounded non-cancellable step (`OnceLock`).
 ///
 /// Out of scope for #2313: Arabic, Bengali, Lao, and symbol faces remain on their fixed paths
 /// (`script_paths`) without nested directory fallback search.

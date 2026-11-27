@@ -86,8 +86,8 @@ pub fn warm_up() {
     if std::thread::Builder::new()
         .name("font-index".into())
         .spawn(|| {
-            crate::fonts::warm_up_cjk_roots();
             installed();
+            crate::fonts::warm_up_cjk_roots();
         })
         .is_ok()
     {
@@ -516,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn linux_font_dirs_include_flatpak_host_and_xdg_roots() {
+    fn linux_font_roots_include_flatpak_host_and_xdg_roots() {
         use std::ffi::OsStr;
 
         let dirs = crate::fonts::linux_font_roots_with(Some(OsStr::new("/xdg/data")), Some(OsStr::new("/home/alice")));
