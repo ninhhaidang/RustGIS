@@ -509,7 +509,9 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   its field) stays as written, and a warning names what is missing. Both warnings come when the
   text is added or changed, or its layout is made or imported, or when another map frame becomes
   the first (it is given another map, the one before it is deleted or drawn over it, or its map is
-  deleted), not when the page is exported. The text, its size (2 to 400 points, as text graphics on
+  deleted), not when the page is exported. A presentation map page's title is checked against the
+  page's map when the page is added with it, when it is changed or when the presentation is
+  imported. The text, its size (2 to 400 points, as text graphics on
   the map), colour, bold, **Italic** (slanted, as water and ocean names are; the built-in fonts
   have no italic face, so the letters are slanted 12°), **Alignment** (left, center or right within
   the element) and **Letter spacing** in points (spaced-out names such as O C E A N O, or a

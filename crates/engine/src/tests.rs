@@ -40493,6 +40493,67 @@ fn renaming_a_layer_renames_it_in_a_presentation_map_page_title() {
     assert!(said.iter().any(|n| n.contains("1 presentation title(s) keep the old layer name") && n.contains("500")), "{said:?}");
 }
 
+/// A presentation map page's title fills its layer statistics (#2853) from the page's map, so a
+/// title set or imported with one that has no figure says what it misses (#2999); a page with no
+/// map frame, which never fills one in, says nothing.
+#[test]
+fn a_map_page_title_statistic_without_a_figure_is_said() {
+    let mut s = world();
+    let home = s.map().name.clone();
+    s.run("presentation.new", &json!({"name": "P"})).unwrap();
+    let run = |s: &mut Session, id: &str, p: Value| {
+        let mark = s.notice_mark();
+        s.run(id, &p).unwrap();
+        s.notices_since(mark).iter().map(|n| n.text.as_str().to_string()).filter(|t| t.contains("shows as written")).collect::<Vec<_>>()
+    };
+    let nowhere = "{count:Nowhere} shows as written: the page's map has no layer named 'Nowhere'";
+    for title in ["{count:Countries} countries", "{scale} {foo}"] {
+        assert_eq!(run(&mut s, "presentation.mapPage", json!({"title": title})), Vec::<String>::new(), "{title}");
+    }
+    assert_eq!(run(&mut s, "presentation.mapPage", Value::Null), Vec::<String>::new(), "the map's name as the title");
+    assert_eq!(run(&mut s, "presentation.mapPage", json!({"title": "{count:Nowhere} and {count:Nowhere}", "at": 0})), [nowhere]);
+    assert_eq!(
+        run(&mut s, "presentation.mapPage", json!({"title": "{max:Countries:nosuch} {sum:Countries}"})),
+        [
+            "{max:Countries:nosuch} shows as written: 'Countries' has no field named 'nosuch'",
+            "{sum:Countries} shows as written: a sum takes a field: write {sum:Countries:field}",
+        ]
+    );
+    // The page's own map is read, not the active one.
+    s.run("map.new", &json!({"name": "Other"})).unwrap();
+    s.run("map.activate", &json!({"name": home})).unwrap();
+    assert_eq!(
+        run(&mut s, "presentation.mapPage", json!({"map": "Other", "title": "{count:Countries}"})),
+        ["{count:Countries} shows as written: the page's map has no layer named 'Countries'"]
+    );
+    // A new title on a map page says it; another change to the page doesn't.
+    assert_eq!(run(&mut s, "presentation.updatePage", json!({"page": 0, "title": "{count:Nowhere}"})), [nowhere]);
+    for change in [json!({"page": 0, "notes": "n"}), json!({"page": 0, "seconds": 9}), json!({"page": 0, "moveTo": 1})] {
+        assert_eq!(run(&mut s, "presentation.updatePage", change.clone()), Vec::<String>::new(), "{change}");
+    }
+    // A page moved in the same change is still the one read.
+    assert_eq!(run(&mut s, "presentation.updatePage", json!({"page": 1, "title": "{count:Nowhere}", "moveTo": 0})), [nowhere]);
+    assert_eq!(run(&mut s, "edit.undo", Value::Null), Vec::<String>::new(), "undo says nothing");
+    // A blank page draws its title with no map frame.
+    let blank = s.project.presentations[0].pages.len();
+    s.run("presentation.blankPage", &Value::Null).unwrap();
+    assert_eq!(run(&mut s, "presentation.updatePage", json!({"page": blank, "title": "{count:Nowhere}"})), Vec::<String>::new());
+    // An imported presentation says each warning once, with how many map pages it is for when
+    // more than one.
+    s.run("presentation.new", &json!({"name": "Q", "title": "{count:Nowhere}"})).unwrap();
+    for title in ["{count:Nowhere}", "{count:Nowhere} {count:Elsewhere}"] {
+        s.run("presentation.mapPage", &json!({"title": title})).unwrap();
+    }
+    let text = serde_json::to_string(&s.project.presentations[1]).unwrap();
+    assert_eq!(
+        run(&mut s, "presentation.import", json!({"text": text})),
+        [
+            format!("{nowhere} (in 2 map pages)"),
+            "{count:Elsewhere} shows as written: the page's map has no layer named 'Elsewhere'".to_string(),
+        ]
+    );
+}
+
 /// The map of a layout's first frame decides its texts' figures (#2853), so a map deleted that a
 /// layout's first frame shows says what its texts lose, as it does for `{map}`; a map no first
 /// frame shows says nothing.

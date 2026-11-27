@@ -1252,17 +1252,32 @@ pub fn expand(t: &str, layout: &Layout, info: &PageInfo, frame: Option<(&Map, ru
 /// a figure over a layer read in place, which covers only the features loaded, has a line for that
 /// as well.
 pub fn statistic_notices(layout: &Layout, maps: &[Map], text: &str) -> Vec<String> {
-    use rustgis_map::layout::StatMissing;
     let map = layout.first_frame().and_then(|f| match &layout.element(f)?.kind {
         ElementKind::MapFrame { map, .. } => maps.get(map_index(maps, map)?),
         _ => None,
     });
+    let no_map = match layout.first_frame() {
+        Some(_) => "the map of the layout's first frame is not in the project",
+        None => "the layout has no map frame whose map it would read",
+    };
+    notices_over(map.ok_or(no_map), "the map of the layout's first frame", text)
+}
+
+/// [`statistic_notices`] for a text whose figures are read from `map`, which the notices call
+/// `whose`: a presentation map page's title, drawn over that page's own map.
+pub fn map_statistic_notices(map: &Map, whose: &str, text: &str) -> Vec<String> {
+    notices_over(Ok(map), whose, text)
+}
+
+/// The notices of `text`'s figures over `map`, or why there is none to read.
+fn notices_over(map: Result<&Map, &str>, whose: &str, text: &str) -> Vec<String> {
+    use rustgis_map::layout::StatMissing;
     let mut said: Vec<String> = Vec::new();
     let tokens = distinct_stat_tokens(text, true);
     // Each layer's figures in one pass, whatever their number.
     let figures: Vec<Option<Option<(bool, Result<f64, StatMissing>)>>> = match map {
-        Some(m) => figures_of(m, &tokens).into_iter().map(Some).collect(),
-        None => vec![None; tokens.len()],
+        Ok(m) => figures_of(m, &tokens).into_iter().map(Some).collect(),
+        Err(_) => vec![None; tokens.len()],
     };
     for (t, found) in tokens.iter().zip(figures) {
         let (layer, field) = (t.layer, t.field.unwrap_or_default());
@@ -1272,9 +1287,8 @@ pub fn statistic_notices(layout: &Layout, maps: &[Map], text: &str) -> Vec<Strin
             said.push(format!("{} covers only the features of '{layer}' that are loaded: it is read in place", t.token));
         }
         let why = match found.map(|l| l.map(|(_, figure)| figure)) {
-            None if layout.first_frame().is_some() => "the map of the layout's first frame is not in the project".to_string(),
-            None => "the layout has no map frame whose map it would read".to_string(),
-            Some(None) => format!("the map of the layout's first frame has no layer named '{layer}'"),
+            None => map.err().unwrap_or_default().to_string(),
+            Some(None) => format!("{whose} has no layer named '{layer}'"),
             Some(Some(Ok(_))) => continue,
             Some(Some(Err(StatMissing::Raster))) => format!("'{layer}' is a raster layer, which has no features"),
             Some(Some(Err(StatMissing::Field))) if t.field.is_none() => {
@@ -11281,8 +11295,14 @@ Elaboração: RustGIS",
         let kind =
             serde_json::from_value(serde_json::json!({"MapFrame": {"map": "m", "center": {"x": 0, "y": 0}, "scale": 6300000}})).unwrap();
         layout.add("Frame", (0.0, 0.0, 50.0, 50.0), kind);
+        let maps = [map];
         assert_eq!(
-            statistic_notices(&layout, &[map], "{count:Elevation}"),
+            statistic_notices(&layout, &maps, "{count:Elevation}"),
+            vec!["{count:Elevation} shows as written: 'Elevation' is a raster layer, which has no features".to_string()]
+        );
+        // The same figures over a map given directly, as a presentation map page's title is.
+        assert_eq!(
+            map_statistic_notices(&maps[0], "the page's map", "{count:Elevation}"),
             vec!["{count:Elevation} shows as written: 'Elevation' is a raster layer, which has no features".to_string()]
         );
     }

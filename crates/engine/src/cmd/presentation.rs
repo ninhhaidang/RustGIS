@@ -68,6 +68,19 @@ pub fn commands() -> Vec<C> {
             if let Some(cut) = cut {
                 s.notify(cut, false);
             }
+            // Pages often share a title's figure: each warning once, with its count of pages.
+            let mut said: Vec<(String, usize)> = Vec::new();
+            for k in 0..s.project.presentations[i].pages.len() {
+                for w in title_statistic_notices(s, i, k) {
+                    match said.iter_mut().find(|(text, _)| *text == w) {
+                        Some((_, pages)) => *pages += 1,
+                        None => said.push((w, 1)),
+                    }
+                }
+            }
+            for (w, pages) in said {
+                s.warn(if pages > 1 { format!("{w} (in {pages} map pages)") } else { w });
+            }
             Ok(json!({"presentation": i, "name": name}))
         }).roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Presentation) }]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(r#"{"path"?: "*.rgispres", "text"?: presentation JSON, "data"?: base64 file}"#),
@@ -95,10 +108,14 @@ pub fn commands() -> Vec<C> {
             let center = Coord::new(f(p, "lon").unwrap_or(c.x).clamp(-180.0, 180.0), f(p, "lat").unwrap_or(c.y).clamp(-85.0, 85.0));
             let width_m = f(p, "widthM").unwrap_or(s.view_size.0 * map.ground_res()).clamp(10.0, 4e7);
             let title = page_title(ps(p, "title").unwrap_or(&name))?;
-            add_page(s, p, title, PageKind::Map { map: name, center, width_m })
+            let added = add_page(s, p, title, PageKind::Map { map: name, center, width_m })?;
+            if let (Some(i), Some(k)) = (added["presentation"].as_u64(), added["page"].as_u64()) {
+                say_title_statistics(s, i as usize, k as usize);
+            }
+            Ok(added)
         }).inputs(map_page_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_presentation)
-        .params(r#"{"presentation"?, "map"?: name (default: the active map, at its current view), "lon"?, "lat"?, "widthM"?: ground width shown (m), "title"? (a layer's figure may be written in it: {count:Layer}, {sum:Layer:field}, {mean:…}, {min:…}, {max:…}, filled in when the page is drawn), "at"?: page index}"#),
+        .params(r#"{"presentation"?, "map"?: name (default: the active map, at its current view), "lon"?, "lat"?, "widthM"?: ground width shown (m), "title"? (a layer's figure may be written in it: {count:Layer}, {sum:Layer:field}, {mean:…}, {min:…}, {max:…}, filled in when the page is drawn; one with no figure is drawn as written, with a warning), "at"?: page index}"#),
         C::new("presentation.blankPage", "Blank Page", "Publish › Page", |s, p| {
             let background = super::layout::color(p, "background", Rgba::rgb(0xFF, 0xFF, 0xFF))?;
             let text = super::within("text", "a page's text", ps(p, "text").unwrap_or(""), MAX_TEXT)?;
@@ -280,6 +297,7 @@ fn update_page(s: &mut Session, p: &Value) -> CmdResult {
     let new_notes = checked("notes", "a page's notes", MAX_TEXT)?;
     let new_text = checked("text", "a page's text", MAX_TEXT)?;
     let new_caption = checked("caption", "a page's caption", MAX_CAPTION)?;
+    let titled = new_title.is_some();
     let pres = s.project.presentations.get_mut(i).ok_or("no presentation")?;
     let n = pres.pages.len();
     let page = pres.pages.get_mut(k).ok_or("no page")?;
@@ -314,7 +332,27 @@ fn update_page(s: &mut Session, p: &Value) -> CmdResult {
         let page = pres.pages.remove(k);
         pres.pages.insert(at, page);
     }
+    if titled {
+        say_title_statistics(s, i, at);
+    }
     Ok(json!({"page": at}))
+}
+
+/// Which layer statistics (#2853) in the title of the page `k` of the presentation `i` are drawn
+/// as written, and what each misses: only a map page fills them in, from the map [`page_layout`]
+/// draws it over. One pass over each layer the title names, as a layout text's notices make, so an
+/// import makes one per map page that holds a figure.
+fn title_statistic_notices(s: &Session, i: usize, k: usize) -> Vec<String> {
+    let Some(page) = s.project.presentations.get(i).and_then(|p| p.pages.get(k)) else { return Vec::new() };
+    let PageKind::Map { map, .. } = &page.kind else { return Vec::new() };
+    rustgis_render::layout::map_statistic_notices(page_map(s, map), "the page's map", &page.title)
+}
+
+/// Warns with each of [`title_statistic_notices`] for one page.
+fn say_title_statistics(s: &mut Session, i: usize, k: usize) {
+    for w in title_statistic_notices(s, i, k) {
+        s.warn(w);
+    }
 }
 
 /// A presentation file.
