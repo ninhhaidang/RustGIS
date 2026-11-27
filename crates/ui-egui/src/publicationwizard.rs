@@ -2,9 +2,7 @@
 //! then made at once, as the New Layout › Publication Layout menu makes it (#2850).
 use crate::{RustGisApp, i18n, theme::Tokens};
 use rustgis_engine::Session;
-use rustgis_engine::cmd::layout::{
-    MAX_PUBLICATION_TEXT, PUBLICATION_DEFAULT_CREDIT, PUBLICATION_PROFILES, PUBLICATION_STYLES, publication_style_accent,
-};
+use rustgis_engine::cmd::layout::{MAX_PUBLICATION_TEXT, PUBLICATION_PROFILES, PUBLICATION_STYLES, publication_style_accent};
 use rustgis_engine::map::layout::PAGES;
 use serde_json::{Value, json};
 
@@ -183,11 +181,17 @@ fn figure_note(ui: &mut egui::Ui) {
 }
 
 /// The style step: each sheet style, by the name and description the menu gives it.
-fn style_step(ui: &mut egui::Ui, d: &mut Draft) {
+fn style_step(ui: &mut egui::Ui, d: &mut Draft, app_accent: egui::Color32) {
+    let before = d.style.clone();
     for (id, english) in PUBLICATION_STYLES {
         let (name, about) = crate::ribbon::publication_style(id).unwrap_or_else(|| (tl!(*english), ""));
         ui.radio_value(&mut d.style, (*id).to_string(), name);
         ui.indent(*id, |ui| ui.label(egui::RichText::new(about).small().weak()));
+    }
+    // If the swatch was only seeded from the previous style's default (never customised), follow
+    // the newly chosen style's own accent instead of carrying the old style's colour over.
+    if d.style != before && d.picked.is_none() && d.accent == Some(style_accent(&before, app_accent)) {
+        d.accent = Some(style_accent(&d.style, app_accent));
     }
 }
 
@@ -258,16 +262,18 @@ fn accent_step(ui: &mut egui::Ui, d: &mut Draft, app_accent: egui::Color32) {
         ))
         .changed()
     {
-        // Unticked, keep a custom colour for the next tick; leave the style's own unremembered so
-        // switching styles starts from the new style's accent.
+        // Unticked, keep a custom colour for the next tick; leave an untouched style default
+        // unremembered so switching styles starts from the new style's accent.
         let default = style_accent(&d.style, app_accent);
-        if !ticked {
+        if !ticked && d.picked.is_none() {
             d.picked = d.accent.filter(|&c| c != default);
         }
         d.accent = ticked.then(|| d.picked.unwrap_or(default));
     }
     if let Some(c) = &mut d.accent {
-        egui::color_picker::color_edit_button_srgba(ui, c, egui::color_picker::Alpha::Opaque);
+        if egui::color_picker::color_edit_button_srgba(ui, c, egui::color_picker::Alpha::Opaque).changed() {
+            d.picked = Some(*c);
+        }
     } else {
         ui.label(egui::RichText::new(tl!("The style's own colour.")).small().weak());
     }
@@ -315,10 +321,11 @@ fn review_step(ui: &mut egui::Ui, d: &Draft) {
     }
 }
 
-/// How the wizard names the credit line `layout.publication` writes when none is given,
-/// built from the engine's [`PUBLICATION_DEFAULT_CREDIT`] with `{date}` named for display.
+/// How the wizard names the credit line `layout.publication` writes when none is given: kept as a
+/// literal here so catalog extraction sees it, and verified against the engine's
+/// `PUBLICATION_DEFAULT_CREDIT` in tests.
 fn default_credit() -> String {
-    i18n::fmt(PUBLICATION_DEFAULT_CREDIT, &[("date", tl_raw!("today's date"))])
+    i18n::fmt("Made with RustGIS · {date}", &[("date", tl_raw!("today's date"))])
 }
 
 /// A field's width beside its label: 260 points, or what the row leaves once a longer label
@@ -383,7 +390,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                 .auto_shrink([false, false])
                 .show(ui, |ui| match d.step {
                     Step::Size => size_step(ui, &mut d),
-                    Step::Style => style_step(ui, &mut d),
+                    Step::Style => style_step(ui, &mut d, t.accent),
                     Step::Texts => texts_step(ui, &mut d),
                     Step::Accent => accent_step(ui, &mut d, t.accent),
                     Step::Review => review_step(ui, &d),
@@ -787,9 +794,63 @@ mod tests {
         assert!(h.query_by_label(&limit_text).is_some(), "limit notice shown at the cap");
     }
 
-    /// The review's default credit line comes from the engine's `PUBLICATION_DEFAULT_CREDIT`.
+    /// Switching styles while "Pick a colour of your own" is ticked re-seeds an untouched style
+    /// default to the new style's accent (so unticking afterward never remembers the old style's
+    /// colour), while preserving a custom colour the user picked.
+    #[test]
+    fn switching_style_while_accent_is_ticked_re_seeds_untouched_default() {
+        let mut app = app();
+        open(&mut app);
+        let accent_of = |id: &str| {
+            let c = publication_style_accent(id).unwrap();
+            egui::Color32::from_rgb(c.r(), c.g(), c.b())
+        };
+        let (banner, poster, editorial) = (accent_of("banner"), accent_of("poster"), accent_of("editorial"));
+        {
+            let d = app.dialogs.publication.as_mut().unwrap();
+            d.style = "banner".into();
+            d.step = Step::Accent;
+        }
+        let mut h = harness(app);
+        h.get_by_label("Pick a colour of your own").click();
+        h.run_steps(2);
+        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(banner));
+        // Go back to Style while still ticked and switch to Poster: accent follows Poster.
+        click(&mut h, "Back");
+        click(&mut h, "Back");
+        h.get_by_label("Poster").click();
+        h.run_steps(2);
+        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(poster), "re-seeded to Poster");
+        // Unticking on Poster must not remember Banner's or Poster's default as a custom colour.
+        click(&mut h, "Next");
+        click(&mut h, "Next");
+        h.get_by_label("Pick a colour of your own").click();
+        h.run_steps(2);
+        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, None);
+        click(&mut h, "Back");
+        click(&mut h, "Back");
+        h.get_by_label("Editorial").click();
+        h.run_steps(2);
+        click(&mut h, "Next");
+        click(&mut h, "Next");
+        h.get_by_label("Pick a colour of your own").click();
+        h.run_steps(2);
+        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(editorial), "starts from Editorial");
+        // A custom colour is kept when switching styles.
+        let red = egui::Color32::from_rgb(0xC0, 0x30, 0x30);
+        h.state_mut().dialogs.publication.as_mut().unwrap().accent = Some(red);
+        click(&mut h, "Back");
+        click(&mut h, "Back");
+        h.get_by_label("Banner").click();
+        h.run_steps(2);
+        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(red), "custom colour kept");
+    }
+
+    /// The review's default credit line matches the engine's `PUBLICATION_DEFAULT_CREDIT`.
     #[test]
     fn default_credit_matches_the_engines_constant() {
+        use rustgis_engine::cmd::layout::PUBLICATION_DEFAULT_CREDIT;
+        assert_eq!(PUBLICATION_DEFAULT_CREDIT, "Made with RustGIS · {date}");
         assert_eq!(default_credit(), PUBLICATION_DEFAULT_CREDIT.replace("{date}", "today's date"));
     }
 
