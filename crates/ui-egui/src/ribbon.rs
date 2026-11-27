@@ -260,14 +260,14 @@ const COLLAPSE_W: f32 = 24.0;
 const TAB_GAP: f32 = 2.0;
 
 /// The active tool indicator at the right of the tab strip, unless the Explore tool is on: its
-/// label and width.
+/// label, in logical order (its accessible name; painted in display form), and width.
 fn tool_indicator(app: &RustGisApp, ui: &Ui) -> Option<(String, f32)> {
     let tool = app.session.tool;
     if tool == Tool::Explore {
         return None;
     }
-    let label = crate::i18n::fmt("{tool} tool active · Esc to stop", &[("tool", tl_raw!(tool.label()))]);
-    let w = text_w(ui, &label, regular(11.5)) + 18.0;
+    let label = crate::i18n::fmt_raw("{tool} tool active · Esc to stop", &[("tool", tl_raw!(tool.label()))]);
+    let w = text_w(ui, &crate::i18n::display(&label), regular(11.5)) + 18.0;
     Some((label, w))
 }
 
@@ -376,8 +376,9 @@ fn tab_strip(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             }
             if let Some((label, w)) = tool {
                 let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click());
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
                 ui.painter().rect_filled(r, CornerRadius::same(11), t.checked);
-                ui.painter().text(r.center(), Align2::CENTER_CENTER, label, regular(11.5), t.accent_text);
+                ui.painter().text(r.center(), Align2::CENTER_CENTER, crate::i18n::display(&label), regular(11.5), t.accent_text);
                 if resp.clicked() {
                     app.session.tool = Tool::Explore;
                     app.map.cancel_sketch();
@@ -5886,6 +5887,57 @@ mod tests {
         );
         h.run();
         h
+    }
+
+    /// The tab strip's tool indicator is a button named with its text, which stops the tool; with
+    /// the Explore tool there is none.
+    #[test]
+    fn the_tool_indicator_is_a_named_button_that_stops_the_tool() {
+        use egui::accesskit::Role;
+        const LABEL: &str = "Measure Distance tool active · Esc to stop";
+        let strip: fn(&mut RustGisApp, &mut Ui) = |app, ui| tab_strip(app, ui, &Tokens::light());
+        let mut h = tab_harness(RustGisApp::with_sample(), strip);
+        assert_eq!(h.state().session.tool, Tool::Explore);
+        assert!(h.query_by_label_contains("tool active").is_none());
+        h.state_mut().session.tool = Tool::Measure;
+        h.state_mut().map.add_sketch_point_for_tests(Default::default());
+        // The strip scrolls to the active tab again as its room changes, for a few frames.
+        h.run_steps(8);
+        h.get_by_role_and_label(Role::Button, LABEL).click();
+        h.run_steps(8);
+        assert_eq!(h.state().session.tool, Tool::Explore);
+        assert_eq!(h.state().map.sketch_len(), 0);
+        assert!(h.query_by_label(LABEL).is_none());
+    }
+
+    /// In a right-to-left language the indicator is painted in display form, and named in logical
+    /// order, so its Latin runs aren't read backwards.
+    #[test]
+    fn the_tool_indicator_is_named_in_logical_order() {
+        let previous = crate::i18n::current();
+        crate::i18n::set_current(crate::i18n::lang_from_tag("fa").unwrap());
+        let mut app = RustGisApp::with_sample();
+        app.session.tool = Tool::Measure;
+        // This test checks accessibility labels and works on runners without Persian fonts.
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().allow_missing_glyphs().with_size(vec2(2400.0, 300.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                ui.horizontal(|ui| tab_strip(app, ui, &Tokens::light()));
+            },
+            app,
+        );
+        h.run_steps(8);
+        let name = crate::i18n::fmt_raw("{tool} tool active · Esc to stop", &[("tool", tl_raw!(Tool::Measure.label()))]);
+        let shown = crate::i18n::fmt("{tool} tool active · Esc to stop", &[("tool", tl_raw!(Tool::Measure.label()))]);
+        let found = h.query_by_role_and_label(egui::accesskit::Role::Button, &name).is_some();
+        crate::i18n::set_current(previous);
+        assert!(name.contains("Esc to stop") && name != shown, "the display form reverses the Latin run");
+        assert!(found, "no button named {name:?}");
     }
 
     /// View › Display › Graticule: the button shows or hides it, its menu picks the type (and shows

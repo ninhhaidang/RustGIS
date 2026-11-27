@@ -700,6 +700,12 @@ impl MapView {
         }
     }
 
+    /// Adds a point to the unfinished sketch.
+    #[cfg(test)]
+    pub(crate) fn add_sketch_point_for_tests(&mut self, point: Coord) {
+        self.sketch.push(point);
+    }
+
     #[cfg(test)]
     pub(crate) fn label_dragging_for_tests(&self) -> bool {
         self.moving_label.is_some()
