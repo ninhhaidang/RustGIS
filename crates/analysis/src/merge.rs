@@ -49,6 +49,8 @@ pub(crate) fn run(inputs: &dyn Inputs, params: &Json) -> Result<ToolResult, Stri
         n.checked_add(count).ok_or("Merge has too many features")
     })?;
     let no_memory = |e: TryReserveError| format!("Merge: not enough memory for {n} features: {e}");
+    crate::control::begin(n);
+    crate::control::check()?;
     out.features.try_reserve_exact(n).map_err(no_memory)?;
     for (i, ds) in layers.iter().enumerate() {
         let mapping = mappings.get(i).ok_or("Merge field mapping is missing")?;
@@ -56,6 +58,7 @@ pub(crate) fn run(inputs: &dyn Inputs, params: &Json) -> Result<ToolResult, Stri
         let all = 0..if selection.is_empty() { ds.features.len() } else { 0 };
         for row in selection.iter().copied().chain(all) {
             let Some(feature) = ds.features.get(row) else { continue };
+            crate::control::check()?;
             if feature.geometry.as_ref().is_some_and(|g| g.kind() != first.geometry_type) {
                 return Err(format!("{}: a feature does not match the layer geometry type", ds.name));
             }
@@ -69,6 +72,7 @@ pub(crate) fn run(inputs: &dyn Inputs, params: &Json) -> Result<ToolResult, Stri
             }
             let geometry = feature.geometry.as_ref().map(clone_geometry).transpose().map_err(no_memory)?;
             out.push_next(geometry, attrs);
+            crate::control::advance(1);
         }
     }
     Ok(ToolResult {
@@ -107,4 +111,72 @@ pub(crate) fn clone_geometry(g: &Geometry) -> Result<Geometry, TryReserveError> 
             Geometry::Polygon(out)
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::Control;
+    use rustgis_data::FieldType;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct MergeInputs {
+        data: HashMap<String, Dataset>,
+        selected: HashMap<String, Vec<usize>>,
+    }
+
+    impl Inputs for MergeInputs {
+        fn dataset(&self, layer: &str) -> Option<&Dataset> {
+            self.data.get(layer)
+        }
+
+        fn selection(&self, layer: &str) -> &[usize] {
+            self.selected.get(layer).map(Vec::as_slice).unwrap_or(&[])
+        }
+    }
+
+    fn point_layer(name: &str, count: usize) -> Dataset {
+        let mut ds = Dataset::new(name, GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+        for i in 0..count {
+            ds.push_next(Some(Geometry::Point(Coord::new(i as f64, 0.0))), vec![Value::Int(i as i64)]);
+        }
+        ds
+    }
+
+    #[test]
+    fn merge_checks_cancel_and_reports_progress() {
+        let mut inputs = MergeInputs {
+            data: HashMap::from([("A".to_string(), point_layer("A", 3)), ("B".to_string(), point_layer("B", 4))]),
+            ..Default::default()
+        };
+        let params = serde_json::json!({"inputs": ["A", "B"], "attributes": true});
+
+        let counting = Control::cancelled_at_look(u64::MAX);
+        let res = crate::run_with("merge", &inputs, &params, &counting).unwrap();
+        let Output::Layer(out) = res.output else { panic!("expected layer") };
+        assert_eq!(out.features.len(), 7);
+        assert_eq!(counting.progress(), Some((7, 7)));
+        assert_eq!(counting.looked(), 8);
+
+        let cancel_pre_reserve = Control::cancelled_at_look(1);
+        let err = crate::run_with("merge", &inputs, &params, &cancel_pre_reserve).unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_pre_reserve.looked(), 1);
+        assert_eq!(cancel_pre_reserve.progress(), Some((0, 7)));
+
+        let cancel_mid = Control::cancelled_at_look(5);
+        let err = crate::run_with("merge", &inputs, &params, &cancel_mid).unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_mid.looked(), 5);
+        assert_eq!(cancel_mid.progress(), Some((3, 7)));
+
+        // Stale selection indices in A must not inflate progress past valid count n = 1 + 4 = 5.
+        inputs.selected.insert("A".to_string(), vec![0, usize::MAX]);
+        let counting_sel = Control::cancelled_at_look(u64::MAX);
+        let res_sel = crate::run_with("merge", &inputs, &params, &counting_sel).unwrap();
+        let Output::Layer(out_sel) = res_sel.output else { panic!("expected layer") };
+        assert_eq!(out_sel.features.len(), 5);
+        assert_eq!(counting_sel.progress(), Some((5, 5)));
+    }
 }

@@ -204,12 +204,49 @@ fn written(v: &Value) -> String {
     JoinKey::from_value(v).map(|k| k.display()).unwrap_or_default()
 }
 
+/// Validates windowed flags and key-field compatibility and returns the progress work units
+/// (`source_len` + optional `NumberAsText` scan + `target_len`) that [`join_field`] will advance.
+pub(crate) fn join_field_work(
+    target: &Dataset,
+    target_len: usize,
+    source: &Dataset,
+    source_len: usize,
+    target_field: &str,
+    join_field: &str,
+) -> Result<usize, String> {
+    if target.windowed {
+        return Err("the target layer is streamed; load all features first".into());
+    }
+    if source.windowed {
+        return Err("the source layer is streamed; load all features first".into());
+    }
+    let target_key_idx = crate::tools::find_field_case_insensitive(target, target_field)?;
+    let source_key_idx = crate::tools::find_field_case_insensitive(source, join_field)?;
+    let target_key_field = target.fields.get(target_key_idx).ok_or_else(|| "target key field missing".to_string())?;
+    let source_key_field = source.fields.get(source_key_idx).ok_or_else(|| "source key field missing".to_string())?;
+    let comparison = key_comparison(target_key_field, source_key_field)?;
+    let extra_scan = if comparison == KeyComparison::NumberAsText { source_len } else { 0 };
+    Ok(source_len.saturating_add(extra_scan).saturating_add(target_len))
+}
+
 /// Executes a non-spatial attribute join from `source` onto `target`.
 ///
 /// Preserves target order, IDs, geometry, existing attributes, and the record count of the
 /// provided target dataset (when invoked through the tool, row selections are applied beforehand).
 /// Appends selected attributes from `source` based on matching key values.
 pub fn join_field(target: &Dataset, source: &Dataset, opts: &JoinFieldOptions<'_>) -> Result<(Dataset, JoinFieldReport), String> {
+    join_field_with_progress(target, source, opts, false)
+}
+
+/// Executes [`join_field`], optionally continuing an active `control::begin` step started by the
+/// caller (used by `joinField` when partial selections copy rows beforehand so progress climbs
+/// monotonically across subsetting and joining).
+pub(crate) fn join_field_with_progress(
+    target: &Dataset,
+    source: &Dataset,
+    opts: &JoinFieldOptions<'_>,
+    progress_started: bool,
+) -> Result<(Dataset, JoinFieldReport), String> {
     if target.windowed {
         return Err("the target layer is streamed; load all features first".into());
     }
@@ -278,33 +315,40 @@ pub fn join_field(target: &Dataset, source: &Dataset, opts: &JoinFieldOptions<'_
     }
 
     // 5. Index source records: Map JoinKey -> source feature index
+    let extra_scan = if comparison == KeyComparison::NumberAsText { source.features.len() } else { 0 };
+    if !progress_started {
+        crate::control::begin(source.features.len().saturating_add(extra_scan).saturating_add(target.features.len()));
+    }
+    crate::control::check()?;
     let mut source_index: HashMap<JoinKey, usize> = HashMap::with_capacity(source.features.len());
     let mut duplicate_count = 0usize;
 
     for (s_idx, s_feat) in source.features.iter().enumerate() {
+        crate::control::check()?;
         let val = s_feat.attrs.get(source_key_idx).unwrap_or(&Value::Null);
-        let Some(key) = JoinKey::from_value_compared(val, comparison) else {
-            // Null or non-finite keys in source cannot match
-            continue;
-        };
-
-        match source_index.entry(key) {
-            std::collections::hash_map::Entry::Occupied(mut occ) => {
-                duplicate_count += 1;
-                match opts.duplicate_strategy {
-                    DuplicateStrategy::Error => {
-                        return Err(format!("duplicate key {} found in source table under Error duplicate strategy", occ.key().display()));
-                    }
-                    DuplicateStrategy::First => {}
-                    DuplicateStrategy::Last => {
-                        occ.insert(s_idx);
+        if let Some(key) = JoinKey::from_value_compared(val, comparison) {
+            match source_index.entry(key) {
+                std::collections::hash_map::Entry::Occupied(mut occ) => {
+                    duplicate_count += 1;
+                    match opts.duplicate_strategy {
+                        DuplicateStrategy::Error => {
+                            return Err(format!(
+                                "duplicate key {} found in source table under Error duplicate strategy",
+                                occ.key().display()
+                            ));
+                        }
+                        DuplicateStrategy::First => {}
+                        DuplicateStrategy::Last => {
+                            occ.insert(s_idx);
+                        }
                     }
                 }
-            }
-            std::collections::hash_map::Entry::Vacant(vac) => {
-                vac.insert(s_idx);
+                std::collections::hash_map::Entry::Vacant(vac) => {
+                    vac.insert(s_idx);
+                }
             }
         }
+        crate::control::advance(1);
     }
 
     // Source text keys with leading zeros, by their digits without them: a target number that
@@ -312,11 +356,13 @@ pub fn join_field(target: &Dataset, source: &Dataset, opts: &JoinFieldOptions<'_
     let mut zero_padded_sources: HashMap<String, usize> = HashMap::new();
     if comparison == KeyComparison::NumberAsText {
         for (s_idx, s_feat) in source.features.iter().enumerate() {
+            crate::control::check()?;
             if let Some(Value::Text(text)) = s_feat.attrs.get(source_key_idx)
                 && let Some(digits) = without_leading_zeros(text)
             {
                 zero_padded_sources.entry(digits.to_string()).or_insert(s_idx);
             }
+            crate::control::advance(1);
         }
     }
     let source_key_value = |s_idx: usize| source.features.get(s_idx).and_then(|f| f.attrs.get(source_key_idx)).unwrap_or(&Value::Null);
@@ -329,6 +375,7 @@ pub fn join_field(target: &Dataset, source: &Dataset, opts: &JoinFieldOptions<'_
     let mut out_features = Vec::with_capacity(target_len);
 
     for t_feat in &target.features {
+        crate::control::check()?;
         if t_feat.attrs.len() > target.fields.len() {
             return Err(format!(
                 "target feature {} has {} attributes, exceeding schema field count {}",
@@ -376,6 +423,7 @@ pub fn join_field(target: &Dataset, source: &Dataset, opts: &JoinFieldOptions<'_
         }
 
         out_features.push(rustgis_data::Feature { id: t_feat.id, geometry: t_feat.geometry.clone(), attrs: new_attrs });
+        crate::control::advance(1);
     }
 
     out.features = out_features.into();
@@ -1310,5 +1358,80 @@ mod tests {
         assert_eq!(out_col.fields[2].name, "cost_2");
         assert_eq!(out_col.fields[2].alias, None);
         assert_eq!(out_col.fields[2].display(), "cost_2");
+    }
+
+    #[test]
+    fn test_join_field_checks_cancel_and_reports_progress() {
+        use crate::control::Control;
+
+        // Case 1: Exact comparison (Integer vs Integer), 5 source rows (one Null key) + 5 target rows => total 10.
+        let target = make_table("target", vec![("id", FieldType::Integer)], (1..=5).map(|i| vec![Value::Int(i)]).collect());
+        let source = make_table(
+            "source",
+            vec![("id", FieldType::Integer), ("tag", FieldType::Text)],
+            vec![
+                vec![Value::Int(1), Value::Text("a".into())],
+                vec![Value::Int(2), Value::Text("b".into())],
+                vec![Value::Null, Value::Text("null".into())],
+                vec![Value::Int(4), Value::Text("d".into())],
+                vec![Value::Int(5), Value::Text("e".into())],
+            ],
+        );
+        let opts = JoinFieldOptions {
+            target_field: "id",
+            join_field: "id",
+            fields_to_transfer: None,
+            prefix: "",
+            duplicate_strategy: DuplicateStrategy::First,
+            output_name: "joined".into(),
+        };
+
+        let counting = Control::cancelled_at_look(u64::MAX);
+        let (out, rep) = crate::run_under("Join Field", &counting, || join_field(&target, &source, &opts)).unwrap();
+        assert_eq!(rep.matched_records, 4);
+        assert_eq!(out.features.len(), 5);
+        assert_eq!(counting.progress(), Some((10, 10)));
+        assert_eq!(counting.looked(), 11);
+
+        let cancel_source = Control::cancelled_at_look(3);
+        let err = crate::run_under("Join Field", &cancel_source, || join_field(&target, &source, &opts)).unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_source.looked(), 3);
+        assert_eq!(cancel_source.progress(), Some((1, 10)));
+
+        let cancel_target = Control::cancelled_at_look(8);
+        let err = crate::run_under("Join Field", &cancel_target, || join_field(&target, &source, &opts)).unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_target.looked(), 8);
+        assert_eq!(cancel_target.progress(), Some((6, 10)));
+
+        // Case 2: NumberAsText comparison (Text target vs Integer source), 4 rows each => total 12.
+        let target_text =
+            make_table("target", vec![("GEOID", FieldType::Text)], (1..=4).map(|i| vec![Value::Text(i.to_string())]).collect());
+        let source_int = make_table(
+            "source",
+            vec![("GEOID", FieldType::Integer), ("tag", FieldType::Text)],
+            (1..=4).map(|i| vec![Value::Int(i), Value::Text(format!("v{i}"))]).collect(),
+        );
+        let opts_num = JoinFieldOptions {
+            target_field: "GEOID",
+            join_field: "GEOID",
+            fields_to_transfer: None,
+            prefix: "",
+            duplicate_strategy: DuplicateStrategy::First,
+            output_name: "joined_num".into(),
+        };
+
+        let counting_num = Control::cancelled_at_look(u64::MAX);
+        let (_, rep_num) = crate::run_under("Join Field", &counting_num, || join_field(&target_text, &source_int, &opts_num)).unwrap();
+        assert_eq!(rep_num.matched_records, 4);
+        assert_eq!(counting_num.progress(), Some((12, 12)));
+        assert_eq!(counting_num.looked(), 13);
+
+        let cancel_scan = Control::cancelled_at_look(7);
+        let err = crate::run_under("Join Field", &cancel_scan, || join_field(&target_text, &source_int, &opts_num)).unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_scan.looked(), 7);
+        assert_eq!(cancel_scan.progress(), Some((5, 12)));
     }
 }

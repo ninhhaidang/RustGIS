@@ -8774,22 +8774,39 @@ fn zonal_stats_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<
     Ok(ToolResult { losses, output: Output::Layer(out), messages })
 }
 
-/// Returns a borrowed dataset when rows match the full dataset in identity order, or a new dataset containing
-/// only the selected rows, in table order, with schema, CRS, and windowed flag preserved.
-fn subset<'a>(ds: &'a Dataset, selected_rows: &[usize]) -> Cow<'a, Dataset> {
-    // Selections keep the order they were picked in: sort and dedupe so the table's order wins.
+/// Sorts, deduplicates, and bounds-filters `selected_rows` against `ds` so table order wins.
+fn normalize_selected_rows(ds: &Dataset, selected_rows: &[usize]) -> Vec<usize> {
     let mut rows: Vec<usize> = selected_rows.iter().copied().filter(|&r| r < ds.features.len()).collect();
     rows.sort_unstable();
     rows.dedup();
+    rows
+}
+
+/// Returns a borrowed dataset when `rows` (sorted, deduplicated, and in bounds) covers the full
+/// dataset, or a new dataset containing only those selected rows with schema, CRS, and windowed
+/// flag preserved.
+///
+/// Advances progress within the caller's active `control::begin` step and returns `Err` when the
+/// run is cancelled before allocating or between cloned rows.
+fn subset<'a>(ds: &'a Dataset, rows: &[usize]) -> Result<Cow<'a, Dataset>, String> {
     if rows.len() == ds.features.len() {
-        Cow::Borrowed(ds)
+        Ok(Cow::Borrowed(ds))
     } else {
         let mut sub = Dataset::new(ds.name.clone(), ds.geometry_type, ds.fields.clone());
         sub.crs = ds.crs;
         sub.crs_incomplete = ds.crs_incomplete;
         sub.windowed = ds.windowed;
-        sub.features = rows.iter().filter_map(|&r| ds.features.get(r).cloned()).collect::<Vec<_>>().into();
-        Cow::Owned(sub)
+        crate::control::check()?;
+        let mut features = Vec::with_capacity(rows.len());
+        for &r in rows {
+            crate::control::check()?;
+            if let Some(f) = ds.features.get(r) {
+                features.push(f.clone());
+            }
+            crate::control::advance(1);
+        }
+        sub.features = features.into();
+        Ok(Cow::Owned(sub))
     }
 }
 
@@ -8904,9 +8921,6 @@ fn join_field_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         }
     }
 
-    let target_ref = subset(target, &target_rows);
-    let source_ref = subset(source, &source_rows);
-
     let target_field = s(p, "targetField");
     if target_field.is_empty() {
         return Err("target key field is required".into());
@@ -8962,7 +8976,18 @@ fn join_field_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         output_name,
     };
 
-    let (out, report) = crate::attribute_join::join_field(&target_ref, &source_ref, &opts)?;
+    let target_norm = normalize_selected_rows(target, &target_rows);
+    let source_norm = normalize_selected_rows(source, &source_rows);
+    let join_work =
+        crate::attribute_join::join_field_work(target, target_norm.len(), source, source_norm.len(), opts.target_field, opts.join_field)?;
+    let target_copy = if target_norm.len() == target.features.len() { 0 } else { target_norm.len() };
+    let source_copy = if source_norm.len() == source.features.len() { 0 } else { source_norm.len() };
+    crate::control::begin(target_copy.saturating_add(source_copy).saturating_add(join_work));
+
+    let target_ref = subset(target, &target_norm)?;
+    let source_ref = subset(source, &source_norm)?;
+
+    let (out, report) = crate::attribute_join::join_field_with_progress(&target_ref, &source_ref, &opts, true)?;
     messages.push(report.message(&target.name));
     messages.extend(report.leading_zero_notice());
 
@@ -18058,5 +18083,77 @@ mod tests {
         );
         assert!(res18.is_err());
         assert_eq!(res18.unwrap_err(), "Transfer Fields must be a string or JSON array");
+    }
+
+    #[test]
+    fn join_field_partial_selection_subset_checks_cancel_and_reports_progress() {
+        use crate::control::Control;
+
+        struct SelectedInputs {
+            datasets: HashMap<String, Dataset>,
+            selections: HashMap<String, Vec<usize>>,
+        }
+        impl Inputs for SelectedInputs {
+            fn dataset(&self, layer: &str) -> Option<&Dataset> {
+                self.datasets.get(layer)
+            }
+            fn table(&self, _id: u32) -> Option<&Dataset> {
+                None
+            }
+            fn selection(&self, layer: &str) -> &[usize] {
+                self.selections.get(layer).map(|v| v.as_slice()).unwrap_or(&[])
+            }
+        }
+
+        let mut target = Dataset::new("target", GeometryType::None, vec![Field::new("id", FieldType::Integer)]);
+        for i in 0..4 {
+            target.push(None, vec![Value::Int(i)]);
+        }
+        let mut source =
+            Dataset::new("source", GeometryType::None, vec![Field::new("id", FieldType::Integer), Field::new("tag", FieldType::Integer)]);
+        for i in 0..4 {
+            source.push(None, vec![Value::Int(i), Value::Int(i * 10)]);
+        }
+        let inp = SelectedInputs {
+            datasets: HashMap::from([("target".to_string(), target), ("source".to_string(), source)]),
+            selections: HashMap::from([("target".to_string(), vec![0, 1, 2]), ("source".to_string(), vec![0, 1])]),
+        };
+        let params = serde_json::json!({
+            "target": "target",
+            "targetField": "id",
+            "joinTable": "source",
+            "joinField": "id"
+        });
+
+        // Shared progress total across target subset (3), source subset (2), source index (2), and target join (3) = 10.
+        let counting = Control::cancelled_at_look(u64::MAX);
+        let res = crate::run_with("joinField", &inp, &params, &counting).unwrap();
+        let Output::Table(out) = res.output else { panic!("expected Output::Table") };
+        assert_eq!(out.features.len(), 3);
+        assert_eq!(out.features[0].attrs[1], Value::Int(0));
+        assert_eq!(out.features[1].attrs[1], Value::Int(10));
+        assert_eq!(out.features[2].attrs[1], Value::Null);
+        assert_eq!(counting.progress(), Some((10, 10)));
+
+        // Cancel mid-target subset (look 1 before alloc, look 2 row 0 -> advance 1, look 3 row 1).
+        let cancel_target = Control::cancelled_at_look(3);
+        let err = crate::run_with("joinField", &inp, &params, &cancel_target).unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_target.looked(), 3);
+        assert_eq!(cancel_target.progress(), Some((1, 10)));
+
+        // Cancel mid-source subset (4 looks in target subset -> 3 done; look 5 before alloc, look 6 row 0 -> 4 done, look 7 row 1).
+        let cancel_source = Control::cancelled_at_look(7);
+        let err = crate::run_with("joinField", &inp, &params, &cancel_source).unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_source.looked(), 7);
+        assert_eq!(cancel_source.progress(), Some((4, 10)));
+
+        // Cancel mid-join (7 subset looks -> 5 done; look 8 pre-index, look 9 source row 0 -> 6 done, look 10 source row 1).
+        let cancel_join = Control::cancelled_at_look(10);
+        let err = crate::run_with("joinField", &inp, &params, &cancel_join).unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_join.looked(), 10);
+        assert_eq!(cancel_join.progress(), Some((6, 10)));
     }
 }
