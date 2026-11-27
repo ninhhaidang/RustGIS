@@ -665,10 +665,13 @@ pub fn coalesce_read_zm(notes: &mut rustgis_data::loss::Notes, file: &str, ds: &
 }
 
 /// What a GeoPackage export of `ds` says of its dates: date-times written in UTC, and text in
-/// date fields that isn't a date, and rounded to the millisecond; for a FlatGeobuf, its date fields with no values. Nothing for
+/// date fields that isn't a date, and rounded to the millisecond, and of values in yes/no fields
+/// that aren't yes or no, written empty; for a FlatGeobuf, its date fields with no values. Nothing for
 /// another format, or when there was none.
 pub fn gpkg_dates_note(ds: &rustgis_data::Dataset, ext: &str, path: &str) -> Vec<rustgis_data::loss::Note> {
-    use rustgis_data::io::{fine_dates, fine_dates_note, offset_dates, text_in_dates, text_in_dates_note, utc_dates_note};
+    use rustgis_data::io::{
+        fine_dates, fine_dates_note, offset_dates, text_in_dates, text_in_dates_note, unheld_yes_no, unheld_yes_no_note, utc_dates_note,
+    };
     if ext == "fgb" {
         return rustgis_data::io::fgb_empty_dates_note(&ds.fields, &rustgis_data::io::written_values(ds.features.iter(), &ds.fields), path)
             .map(rustgis_data::loss::Note::plain)
@@ -680,7 +683,12 @@ pub fn gpkg_dates_note(ds: &rustgis_data::Dataset, ext: &str, path: &str) -> Vec
     }
     let utc = utc_dates_note(&ds.fields, &offset_dates(ds.features.iter(), &ds.fields), path);
     let fine = fine_dates_note(&ds.fields, &fine_dates(ds.features.iter(), &ds.fields), path);
-    utc.into_iter().chain(fine).chain(text_in_dates_note(&ds.fields, &text_in_dates(ds.features.iter(), &ds.fields), path)).collect()
+    let yes_no = unheld_yes_no_note(&ds.fields, &unheld_yes_no(ds), path);
+    utc.into_iter()
+        .chain(fine)
+        .chain(text_in_dates_note(&ds.fields, &text_in_dates(ds.features.iter(), &ds.fields), path))
+        .chain(yes_no)
+        .collect()
 }
 
 /// Writes layer `l` to `path`, in `asked` or the system the format defaults to (the project's,

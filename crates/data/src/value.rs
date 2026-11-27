@@ -229,9 +229,86 @@ impl Value {
         }
     }
 
+    /// Whether this value, put in a decimal (Double) field, comes out rounded: a whole number past
+    /// 2^53, written as digits (with or without `.0`) and held only exactly, or a number written as
+    /// text with more significant digits than a decimal holds ([`double_holds`](crate::io::double_holds)):
+    /// `9007199254740993.0` and `12345678901234567000.0` are; `0.1`, `1e3` and
+    /// `1.2345678901234567e19`, which says only its 17 digits, aren't.
+    pub fn rounds_as_double(&self) -> bool {
+        match self {
+            // i128 holds both exactly.
+            Value::Int(i) => (*i as f64) as i128 != i128::from(*i),
+            Value::Text(t) => {
+                let t = t.trim();
+                if !t.parse::<f64>().is_ok_and(f64::is_finite) {
+                    return false;
+                }
+                // A whole number written with a decimal point (`12345678901234567000.0`) is held
+                // only exactly, as one written without it is.
+                match t.split_once('.') {
+                    Some((whole, zeros)) if whole.bytes().any(|b| b.is_ascii_digit()) && zeros.bytes().all(|b| b == b'0') => {
+                        !crate::io::double_holds(whole)
+                    }
+                    _ => !crate::io::double_holds(t),
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a number written as text has a fraction, read from its digits (not from the
+    /// decimal it parses to, which can round one away): `2.5`, `2.0000000000000001` and
+    /// `2.0000000000000000001e0` have; `2`, `2.000` and `1e3` haven't. Text that isn't a number
+    /// written out in digits (`inf`, `x`) has none.
+    pub fn text_has_fraction(text: &str) -> bool {
+        let t = text.trim().trim_start_matches(['-', '+']);
+        let (mantissa, exp) = match t.split_once(['e', 'E']) {
+            Some((m, e)) => (m, e.parse::<i64>().ok()),
+            None => (t, Some(0)),
+        };
+        let Some(exp) = exp else { return false };
+        let (whole, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        if !whole.bytes().chain(frac.bytes()).all(|b| b.is_ascii_digit()) || whole.len() + frac.len() == 0 {
+            return false;
+        }
+        // The digits past the point once the exponent moves it: a fraction when any isn't 0.
+        let digits = format!("{whole}{frac}");
+        let past = i64::try_from(frac.len()).unwrap_or(i64::MAX).saturating_sub(exp);
+        let kept = i64::try_from(digits.len()).unwrap_or(0).saturating_sub(past.max(0));
+        match usize::try_from(kept) {
+            Ok(kept) => digits.get(kept..).is_some_and(|f| f.bytes().any(|b| b != b'0')),
+            // The point moves past every digit: all of them are fraction.
+            Err(_) => digits.bytes().any(|b| b != b'0'),
+        }
+    }
+
+    /// The yes/no value this value is, as a yes/no field holds it: a yes/no as it is, a whole
+    /// number yes unless it is 0, text one of the [`yes_no`](Value::yes_no) words; anything else
+    /// (`0.5`, `maybe`, a date, null) is neither.
+    pub fn as_yes_no(&self) -> Option<bool> {
+        match self {
+            Value::Bool(b) => Some(*b),
+            Value::Int(i) => Some(*i != 0),
+            Value::Float(f) if f.is_finite() && f.fract() == 0.0 => Some(*f != 0.0),
+            Value::Text(t) => Value::yes_no(t),
+            _ => None,
+        }
+    }
+
+    /// The yes/no value text says, ignoring case and spaces around it: `true`, `t`, `yes`, `y` and
+    /// `1` are true; `false`, `f`, `no`, `n` and `0` are false; other text is neither.
+    pub fn yes_no(text: &str) -> Option<bool> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "t" | "yes" | "y" | "1" => Some(true),
+            "false" | "f" | "no" | "n" | "0" => Some(false),
+            _ => None,
+        }
+    }
+
     /// Parses user text into a value of `ty` (empty → Null). Text a number field can't hold,
     /// including a non-finite Double (`NaN`, `inf`), is Null. Dates are ISO 8601: `YYYY-MM-DD`
     /// for a date; that, a time and an optional zone for a date-time. Text that isn't one is Null.
+    /// A yes/no field takes the words of [`yes_no`](Value::yes_no); other text is Null, not false.
     pub fn parse(text: &str, ty: FieldType) -> Value {
         let t = text.trim();
         if t.is_empty() || t.eq_ignore_ascii_case("<null>") {
@@ -244,7 +321,7 @@ impl Value {
                 .or_else(|| t.parse::<f64>().ok().filter(|f| f.is_finite()).map(|f| f as i64))
                 .map_or(Value::Null, Value::Int),
             FieldType::Double => t.parse::<f64>().ok().filter(|f| f.is_finite()).map_or(Value::Null, Value::Float),
-            FieldType::Boolean => Value::Bool(matches!(t.to_ascii_lowercase().as_str(), "true" | "yes" | "1" | "y")),
+            FieldType::Boolean => Value::yes_no(t).map_or(Value::Null, Value::Bool),
             FieldType::Text => Value::Text(t.to_string()),
             FieldType::Date => Date::parse(t).map(Value::Date).unwrap_or(Value::Null),
             FieldType::DateTime => DateTime::parse(t).map(Value::DateTime).unwrap_or(Value::Null),
@@ -671,6 +748,44 @@ mod tests {
             assert_eq!(Value::parse(text, FieldType::Integer), Value::Null, "{text}");
             assert!(matches!(Value::parse_source(text, FieldType::Integer), Value::Float(f) if !f.is_finite()));
             assert!(matches!(Value::parse_source(text, FieldType::Double), Value::Float(f) if !f.is_finite()));
+        }
+        for (text, said) in [(" Yes ", Some(true)), ("T", Some(true)), ("1", Some(true)), ("n", Some(false)), ("FALSE", Some(false))] {
+            assert_eq!(Value::yes_no(text), said, "{text}");
+            assert_eq!(Value::parse(text, FieldType::Boolean), Value::Bool(said.unwrap_or_default()), "{text}");
+        }
+        for (text, rounded) in [
+            ("9007199254740993.0", true),
+            ("12345678901234567000.0", true),
+            ("12345678901234567890", true),
+            ("9007199254740992.0", false),
+            ("0.1", false),
+            ("1e3", false),
+            ("1.2345678901234567e19", false),
+        ] {
+            assert_eq!(Value::Text(text.into()).rounds_as_double(), rounded, "{text}");
+        }
+        assert!(Value::Int((1 << 53) + 1).rounds_as_double() && !Value::Int(1 << 53).rounds_as_double());
+        for (text, fraction) in [
+            ("2.5", true),
+            ("-2.7", true),
+            ("2.0000000000000001", true),
+            ("2.0000000000000000001e0", true),
+            ("25e-1", true),
+            ("5e-1", true),
+            (".5", true),
+            ("2", false),
+            ("2.000", false),
+            ("1e3", false),
+            ("1.5e1", false),
+            ("2.50e1", false),
+            ("inf", false),
+            ("x", false),
+        ] {
+            assert_eq!(Value::text_has_fraction(text), fraction, "{text}");
+        }
+        for text in ["maybe", "2", "on", "yess"] {
+            assert_eq!(Value::yes_no(text), None, "{text}");
+            assert_eq!(Value::parse(text, FieldType::Boolean), Value::Null, "{text} is neither, not no");
         }
         assert_eq!(Value::parse("2.5", FieldType::Double), Value::Float(2.5));
         assert_eq!(Value::parse("2.5", FieldType::Integer), Value::Int(2));

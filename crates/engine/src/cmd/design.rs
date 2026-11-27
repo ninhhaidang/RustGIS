@@ -195,11 +195,15 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
         zs.push((*r, z));
     }
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
-    // New features: subtype defaults fill empty fields; elevation goes in `z`.
+    // New features: subtype defaults fill empty fields; elevation goes in `z`. A default its field
+    // can't hold as given (one saved before it was checked, or for a field retyped since) is left
+    // out, and said once the edit is kept, naming its fields; one that isn't finite refuses the edit.
+    let (mut unheld, mut unheld_rows): (Vec<String>, usize) = (Vec::new(), 0);
     if let Some(st) = l.design.subtypes.clone()
         && let Some(sfi) = l.dataset.field_index(&st.field)
     {
         for r in &new_rows {
+            let mut left_out = false;
             let code = l.dataset.value(*r, sfi).as_f64().map(|v| v as i64);
             let Some(sub) = code.and_then(|c| st.subtypes.iter().find(|x| x.code == c)) else { continue };
             for (field, v) in &sub.defaults {
@@ -208,12 +212,22 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
                     && let Some(cell) = l.dataset.features.get_mut(*r).and_then(|f| f.attrs.get_mut(fi))
                     && cell.is_null()
                 {
+                    // One that isn't finite refuses the edit, as it always has: no cell takes it.
                     if super::edit::non_finite_input(v, ty) {
                         return Err(format!("field '{field}' requires a finite number"));
                     }
-                    *cell = super::edit::coerce(v.clone(), ty);
+                    match super::edit::held_default(field, v, ty) {
+                        Ok(held) => *cell = held,
+                        Err(_) => {
+                            left_out = true;
+                            if !unheld.contains(field) {
+                                unheld.push(field.clone());
+                            }
+                        }
+                    }
                 }
             }
+            unheld_rows += usize::from(left_out);
         }
     }
     if elevation != Elevation::None && !zs.is_empty() {
@@ -322,6 +336,15 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
         for (code, notice) in losses.notices(by, &field, ty) {
             s.notify_loss(code, notice);
         }
+    }
+    if unheld_rows > 0 {
+        let features = if unheld_rows == 1 { "1 new feature".to_string() } else { format!("{unheld_rows} new features") };
+        let fields: Vec<String> = unheld.iter().map(|f| format!("'{f}'")).collect();
+        s.notify_loss(
+            rustgis_data::loss::LossCode::DroppedValue,
+            format!("{layer}: subtype defaults left out of {features}, as their fields can't hold them as given: {}", fields.join(", "))
+                .into(),
+        );
     }
     if !unread.is_empty() {
         s.notify(
@@ -2219,15 +2242,16 @@ fn domain(s: &mut Session, p: &Json) -> CmdResult {
         return Ok(Json::Null);
     }
     let kind = if let Some(codes) = p.get("coded").and_then(Json::as_array) {
-        let pairs: Vec<(Value, String)> = codes
-            .iter()
-            .take(10_000)
-            .filter_map(|c| {
-                let code = super::edit::coerce(Value::from_json(c.get(0)?), ty);
-                let desc = c.get(1).and_then(Json::as_str).map(String::from).unwrap_or_else(|| code.to_string());
-                (!code.is_null()).then_some((code, desc))
-            })
-            .collect();
+        // A code its field can't hold as given is refused, not cut to another or left out.
+        let mut pairs: Vec<(Value, String)> = Vec::new();
+        for c in codes.iter().take(10_000) {
+            let Some(given) = c.get(0) else { continue };
+            let code = super::edit::held_default(&fname, &Value::from_json(given), ty)?;
+            let desc = c.get(1).and_then(Json::as_str).map(String::from).unwrap_or_else(|| code.to_string());
+            if !code.is_null() {
+                pairs.push((code, desc));
+            }
+        }
         if pairs.is_empty() {
             return Err("coded is a list of [code, description] pairs".into());
         }
@@ -2275,16 +2299,14 @@ fn subtypes(s: &mut Session, p: &Json) -> CmdResult {
     for v in list {
         let code = v.get("code").and_then(Json::as_i64).ok_or("each subtype has an integer code")?;
         let name = super::within("name", "a subtype's name", v.get("name").and_then(Json::as_str).ok_or("each subtype has a name")?, 200)?;
-        let defaults: Vec<(String, Value)> = v
+        let mut defaults: Vec<(String, Value)> = v
             .get("defaults")
             .and_then(Json::as_object)
             .map(|o| o.iter().map(|(k, v)| (k.clone(), Value::from_json(v))).collect())
             .unwrap_or_default();
-        for (field, value) in &defaults {
-            if let Some(ty) = l.dataset.field_index(field).and_then(|i| l.dataset.fields.get(i)).map(|f| f.ty)
-                && super::edit::non_finite_input(value, ty)
-            {
-                return Err(format!("field '{field}' requires a finite number"));
+        for (field, value) in &mut defaults {
+            if let Some(ty) = l.dataset.field_index(field).and_then(|i| l.dataset.fields.get(i)).map(|f| f.ty) {
+                *value = super::edit::held_default(field, value, ty)?;
             }
         }
         if subs.iter().any(|x: &Subtype| x.code == code) {
@@ -2418,7 +2440,8 @@ fn contingent(s: &mut Session, p: &Json) -> CmdResult {
         .take(100_000)
         .map(|c| {
             let vals = c.as_array().filter(|a| a.len() == fields.len()).ok_or("each combination has one value per field")?;
-            Ok(vals.iter().zip(&fields).map(|(v, (_, ty))| super::edit::coerce(Value::from_json(v), *ty)).collect())
+            // A value its field can't hold as given is refused, not cut to another.
+            vals.iter().zip(&fields).map(|(v, (name, ty))| super::edit::held_default(name, &Value::from_json(v), *ty)).collect()
         })
         .collect::<Result<_, String>>()?;
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
@@ -2572,7 +2595,7 @@ fn related(s: &mut Session, p: &Json) -> CmdResult {
     Ok(json!({"related": total, "layers": names}))
 }
 
-/// Validates defaults before replacing a template; a refused numeric value leaves it intact.
+/// Validates defaults before replacing a template; a refused value leaves it intact.
 fn template(s: &mut Session, p: &Json) -> CmdResult {
     let id = s.layer_id(p)?;
     let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or("name is required")?.to_string();
@@ -2587,15 +2610,7 @@ fn template(s: &mut Session, p: &Json) -> CmdResult {
         for (k, v) in o {
             let fi = l.dataset.field_index(k).ok_or_else(|| format!("no field named '{k}'"))?;
             let ty = l.dataset.fields.get(fi).map(|f| f.ty).unwrap_or(FieldType::Text);
-            let value = Value::from_json(v);
-            if super::edit::non_finite_input(&value, ty) {
-                return Err(format!("field '{k}' requires a finite number"));
-            }
-            let coerced = super::edit::coerce(value.clone(), ty);
-            // A default a date field can't hold is refused, as edit.addFeature refuses the value.
-            if ty.is_temporal() && coerced.is_null() && !value.asks_null() {
-                return Err(format!("field '{k}': '{value}' isn't a {} value", ty.label()));
-            }
+            let coerced = super::edit::held_default(k, &Value::from_json(v), ty)?;
             defaults.push((l.dataset.fields.get(fi).map(|f| f.name.clone()).unwrap_or_default(), coerced));
         }
     }

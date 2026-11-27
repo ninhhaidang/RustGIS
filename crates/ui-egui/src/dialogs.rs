@@ -3515,6 +3515,7 @@ fn calculation_preview(rows: &[rustgis_engine::cmd::edit::CalculationPreview]) -
                 PreviewLoss::NotANumber => tl_raw!("not a number"),
                 PreviewLoss::NotFinite => tl_raw!("not a finite number"),
                 PreviewLoss::Time => tl_raw!("time dropped"),
+                PreviewLoss::Rounded => tl_raw!("rounded"),
                 PreviewLoss::Unheld => tl_raw!("not a value the field holds"),
                 // The phrases the run's notices give for the same errors.
                 PreviewLoss::Error(fault) => tl_raw!(fault.describe()),

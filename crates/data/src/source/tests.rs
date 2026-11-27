@@ -4049,6 +4049,74 @@ fn geopackage_writes_fine_date_time_text_as_a_date_time() {
     assert_eq!(stored, "2026-03-05T14:30:00.123Z");
 }
 
+/// Text another program left in a GeoPackage yes/no column reads as yes or no when it is a yes/no
+/// word; other text reads as empty, and is said, on the desktop and in the browser.
+#[test]
+fn geopackage_yes_no_text_that_isnt_yes_or_no_is_said() {
+    let workspace = tempfile::tempdir().unwrap();
+    let path = workspace.path().join("gates.gpkg");
+    let mut gates = Dataset::new("gates", GeometryType::Point, vec![Field::new("open", FieldType::Boolean)]);
+    for v in [Value::Bool(true), Value::Null, Value::Null, Value::Null] {
+        gates.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![v]);
+    }
+    crate::io::write_path(&gates, &path).unwrap();
+    let read = |odd: &str| {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        // The spatial index's triggers call functions only SpatiaLite has; the geometry stays.
+        let triggers: Vec<String> = c
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|n| n.unwrap())
+            .collect();
+        for t in triggers {
+            c.execute(&format!("DROP TRIGGER \"{t}\""), []).unwrap();
+        }
+        c.execute("UPDATE gates SET open = 'No' WHERE fid = 2", []).unwrap();
+        c.execute("UPDATE gates SET open = ?1 WHERE fid = 3", [odd]).unwrap();
+        c.execute("UPDATE gates SET open = '' WHERE fid = 4", []).unwrap();
+        drop(c);
+        let desktop = open_path(&path, None).unwrap();
+        let browser = gpkg_mem::GpkgMemSource::open_shared(Shared(Arc::new(std::fs::read(&path).unwrap())), None).unwrap();
+        [desktop.as_ref(), &browser as &dyn FeatureSource].map(|src| {
+            let (ds, report) = materialize(src).unwrap();
+            let values: Vec<Value> = ds.features.iter().map(|f| f.attrs[0].clone()).collect();
+            let said: Vec<_> = report.messages.iter().filter(|n| n.text.contains("yes or no")).map(|n| (n.text.clone(), n.loss)).collect();
+            (values, said)
+        })
+    };
+    for (values, said) in read("maybe") {
+        assert_eq!(values, [Value::Bool(true), Value::Bool(false), Value::Null, Value::Null]);
+        let code = Some(crate::loss::LossCode::DroppedValue);
+        assert_eq!(said, [("gates: 1 value isn't yes or no and was read as empty, in 'open'".to_string(), code)]);
+    }
+    // An export writes a yes/no field's values as a yes/no field reads them, and counts the rest.
+    let mut odd = Dataset::new("odd", GeometryType::Point, vec![Field::new("open", FieldType::Boolean)]);
+    for v in [Value::Float(2.0), Value::Float(0.5), Value::Text("no".into()), Value::Text("maybe".into()), Value::Null] {
+        odd.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![v]);
+    }
+    let counts = crate::io::unheld_yes_no(&odd);
+    assert_eq!(
+        crate::io::unheld_yes_no_note(&odd.fields, &counts, "odd.gpkg").map(|n| (n.text, n.loss)),
+        Some((
+            "odd.gpkg: 2 values aren't yes or no and were written empty, in 'open'".to_string(),
+            Some(crate::loss::LossCode::DroppedValue)
+        ))
+    );
+    let clean = crate::io::unheld_yes_no(&gates);
+    assert_eq!(crate::io::unheld_yes_no_note(&gates.fields, &clean, "gates.gpkg"), None);
+    let odd_path = workspace.path().join("odd.gpkg");
+    crate::io::write_path(&odd, &odd_path).unwrap();
+    let (ds, _) = materialize(open_path(&odd_path, None).unwrap().as_ref()).unwrap();
+    let values: Vec<Value> = ds.features.iter().map(|f| f.attrs[0].clone()).collect();
+    assert_eq!(values, [Value::Bool(true), Value::Null, Value::Bool(false), Value::Null, Value::Null]);
+    for (values, said) in read("t") {
+        assert_eq!(values, [Value::Bool(true), Value::Bool(false), Value::Bool(true), Value::Null]);
+        assert!(said.is_empty(), "{said:?}");
+    }
+}
+
 /// A GeoPackage export writes DATE and DATETIME columns, as GeoPackage gives them: a date-time with
 /// a zone in UTC with `Z` (its other offset said), one without a zone without, milliseconds always.
 /// The desktop and browser readers read them back as dates; a value that isn't one, as null, said

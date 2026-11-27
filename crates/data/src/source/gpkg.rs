@@ -1498,6 +1498,9 @@ fn sql_value(v: &Value, ty: FieldType) -> rusqlite::types::Value {
     use rusqlite::types::Value as Sql;
     match (v, ty) {
         (Value::Null, _) => Sql::Null,
+        // A yes/no field holds a yes/no value, read as a yes/no field reads one; other values are
+        // null, as `io::unheld_yes_no` counts them.
+        (v, FieldType::Boolean) => v.as_yes_no().map_or(Sql::Null, |b| Sql::Integer(i64::from(b))),
         (Value::Int(x), _) => Sql::Integer(*x),
         (Value::Float(x), _) if x.is_finite() => Sql::Real(*x),
         (Value::Float(_), _) => Sql::Null,
@@ -1578,6 +1581,7 @@ fn value(v: ValueRef<'_>, ty: FieldType, unread: &mut Vec<usize>, rounded: Optio
         (ValueRef::Real(f), FieldType::Integer) if f.fract() == 0.0 && f.abs() < 9e15 => Value::Int(f as i64),
         (ValueRef::Real(f), _) => Value::Float(f),
         (ValueRef::Text(t), FieldType::Text) => Value::Text(String::from_utf8_lossy(t).into_owned()),
+        (ValueRef::Text(t), FieldType::Boolean) => super::yes_no_text(&String::from_utf8_lossy(t), unread, k),
         (ValueRef::Text(t), ty) => Value::parse_source(&String::from_utf8_lossy(t), ty),
         (ValueRef::Blob(_), _) => Value::Null,
     }

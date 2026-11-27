@@ -3391,7 +3391,7 @@ impl TextColumn {
 /// `0.10000000000000001` (0.1 to 17 digits) and `0.00000000023283064365386962890625` (2^-32
 /// exactly) are; `12345678901234567891` and `0.12345678901234567891` aren't. No Double's exact
 /// value has more than 767 significant digits, so longer text isn't one, and isn't formatted.
-fn double_holds(v: &str) -> bool {
+pub fn double_holds(v: &str) -> bool {
     /// The digits of a number's mantissa without leading or trailing zeros.
     fn digits(s: &str) -> String {
         let mantissa = s.split(['e', 'E']).next().unwrap_or_default();
@@ -4909,6 +4909,33 @@ pub fn text_in_dates<'a>(features: impl IntoIterator<Item = &'a crate::Feature>,
         }
     }
     counts
+}
+
+/// For each field, how many values a GeoPackage export writes empty in a yes/no field, as they
+/// aren't yes or no ([`Value::as_yes_no`]): `0.5`, `maybe`, a date. Null and empty text aren't counted.
+pub fn unheld_yes_no(ds: &Dataset) -> Vec<usize> {
+    let mut counts = vec![0usize; ds.fields.len()];
+    for f in &ds.features {
+        for ((n, field), v) in counts.iter_mut().zip(&ds.fields).zip(&f.attrs) {
+            *n += usize::from(field.ty == FieldType::Boolean && !v.asks_null() && v.as_yes_no().is_none());
+        }
+    }
+    counts
+}
+
+/// What a GeoPackage export to `target` says of the values it wrote empty in yes/no fields
+/// ([`unheld_yes_no`]). `None` when there was none.
+pub fn unheld_yes_no_note(fields: &[Field], counts: &[usize], target: &str) -> Option<crate::loss::Note> {
+    let total: usize = counts.iter().sum();
+    if total == 0 {
+        return None;
+    }
+    let target: String = target.chars().map(dbf_notice_char).collect();
+    let what = if total == 1 { "1 value isn't yes or no and was".to_string() } else { format!("{total} values aren't yes or no and were") };
+    Some(crate::loss::Note::loss(
+        crate::loss::LossCode::DroppedValue,
+        format!("{target}: {what} written empty, in {}", named_fields(fields, counts)),
+    ))
 }
 
 /// What a GeoPackage export to `target` says of the text it wrote in date fields

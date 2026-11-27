@@ -1521,6 +1521,173 @@ fn set_value_says_what_a_whole_number_field_took_with_its_code() {
     }
 }
 
+#[test]
+fn yes_no_text_that_isnt_yes_or_no_is_refused_or_said_never_read_as_no() {
+    use rustgis_data::{Value as V, loss::LossCode};
+    let mut s = world();
+    s.run("edit.addField", &json!({"layer": "Cities", "name": "flag", "type": "boolean"})).unwrap();
+    let cell = |s: &Session, row: usize| {
+        let ds = &s.map().layer_by_name("Cities").unwrap().dataset;
+        ds.value(row, ds.field_index("flag").unwrap()).clone()
+    };
+    // The yes/no words go in, and a whole number is yes when it isn't 0; anything else is refused.
+    for (value, held) in [(json!(" No "), false), (json!("t"), true), (json!(2), true), (json!(0), false)] {
+        s.run("edit.setValue", &json!({"layer": "Cities", "row": 0, "field": "flag", "value": value})).unwrap();
+        assert_eq!(cell(&s, 0), V::Bool(held), "{value}");
+    }
+    let err = s.run("edit.setValue", &json!({"layer": "Cities", "row": 0, "field": "flag", "value": "maybe"})).unwrap_err();
+    assert_eq!(err, "'maybe' isn't a Boolean value");
+    let err = s.run("edit.setValue", &json!({"layer": "Cities", "row": 0, "field": "flag", "value": 0.5})).unwrap_err();
+    assert_eq!(err, "'0.5' isn't a Boolean value");
+    let err = s.run("edit.setValue", &json!({"layer": "Cities", "row": 0, "field": "flag", "value": 1e-7})).unwrap_err();
+    assert!(err.ends_with("isn't a Boolean value"), "not the 0 it shows as: {err}");
+    let err = s.run("edit.template", &json!({"layer": "Cities", "name": "T", "defaults": {"flag": 1e-7}})).unwrap_err();
+    assert_eq!(err, "field 'flag': '0.0000001' isn't a Boolean value", "named as given");
+    assert_eq!(cell(&s, 0), V::Bool(false), "a refused value leaves the cell as it was");
+    // Calculate Field writes null for a result that isn't yes or no, and says so; clean results say nothing.
+    let mark = s.notice_mark();
+    s.run("edit.calculateField", &json!({"layer": "Cities", "field": "flag", "expression": "'yes'"})).unwrap();
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.contains("Calculate Field")), "{:?}", s.notices_since(mark));
+    let mark = s.notice_mark();
+    s.run("edit.calculateField", &json!({"layer": "Cities", "field": "flag", "expression": "'maybe'"})).unwrap();
+    let said: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("'flag' is null in")).map(|n| n.loss()).collect();
+    assert_eq!(said, [Some(LossCode::DroppedValue)], "{:?}", s.notices_since(mark));
+    assert_eq!(cell(&s, 0), V::Null);
+    // Paste: the same.
+    let point = json!({"type": "Point", "coordinates": [0.0, 0.0]});
+    let pasted = |flags: &[&str]| {
+        let features: Vec<Value> = flags.iter().map(|f| json!({"type": "Feature", "geometry": point, "properties": {"flag": f}})).collect();
+        json!({"layer": "Cities", "text": json!({"type": "FeatureCollection", "features": features}).to_string()})
+    };
+    let mark = s.notice_mark();
+    s.run("edit.paste", &pasted(&["yes", "N", ""])).unwrap();
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.contains("is null in")), "{:?}", s.notices_since(mark));
+    s.run("edit.undo", &Value::Null).unwrap();
+    let mark = s.notice_mark();
+    s.run("edit.paste", &pasted(&["yes", "maybe", "later"])).unwrap();
+    let said: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("'flag' is null in 2 features")).map(|n| n.loss()).collect();
+    assert_eq!(said, [Some(LossCode::DroppedValue)], "{:?}", s.notices_since(mark));
+    s.run("edit.undo", &Value::Null).unwrap();
+}
+
+#[test]
+fn a_default_its_field_cant_hold_as_given_is_refused_when_set() {
+    use rustgis_data::Value as V;
+    let mut s = world();
+    s.run("edit.addField", &json!({"layer": "Cities", "name": "n", "type": "long"})).unwrap();
+    s.run("edit.addField", &json!({"layer": "Cities", "name": "flag", "type": "boolean"})).unwrap();
+    s.run("edit.addField", &json!({"layer": "Cities", "name": "x", "type": "double"})).unwrap();
+    s.run("edit.addField", &json!({"layer": "Cities", "name": "kind", "type": "long"})).unwrap();
+    for (field, value) in [("n", json!(2.7)), ("n", json!("seven")), ("n", json!(1e30)), ("flag", json!("maybe"))] {
+        let defaults = json!({field: value});
+        let err = s.run("edit.template", &json!({"layer": "Cities", "name": "T", "defaults": defaults})).unwrap_err();
+        assert!(err.starts_with(&format!("field '{field}': ")) && (err.contains("isn't a") || err.contains("as given")), "{value}: {err}");
+        let subtypes = json!([{"code": 1, "name": "One", "defaults": defaults}]);
+        let err = s.run("data.subtypes", &json!({"layer": "Cities", "field": "kind", "subtypes": subtypes})).unwrap_err();
+        assert!(err.starts_with(&format!("field '{field}': ")), "{value}: {err}");
+    }
+    let err = s.run("edit.template", &json!({"layer": "Cities", "name": "T", "defaults": {"x": 9_007_199_254_740_993_i64}})).unwrap_err();
+    assert_eq!(err, "field 'x': a Double field can't hold '9007199254740993' as given");
+    for (field, text) in
+        [("x", "9007199254740993.0"), ("x", "12345678901234567890"), ("n", "1.00000000000000001e0"), ("n", "9007199254740993e0")]
+    {
+        let err = s.run("edit.template", &json!({"layer": "Cities", "name": "T", "defaults": {field: text}})).unwrap_err();
+        assert_eq!(err, format!("field '{field}': a {} field can't hold '{text}' as given", if field == "n" { "Long" } else { "Double" }));
+    }
+    // edit.setValue keeps such values, and says what holding them lost; exact ones say nothing.
+    for (field, value, said) in [
+        ("x", json!(9_007_199_254_740_993_i64), Some(rustgis_data::loss::LossCode::ChangedRounded)),
+        ("x", json!("9007199254740993.0"), Some(rustgis_data::loss::LossCode::ChangedRounded)),
+        ("x", json!("9007199254740992.0"), None),
+        ("x", json!(0.1), None),
+        ("n", json!("2.0000000000000000001e0"), Some(rustgis_data::loss::LossCode::ChangedTruncated)),
+        ("n", json!("1e3"), None),
+        ("n", json!("9007199254740993e0"), Some(rustgis_data::loss::LossCode::ChangedRounded)),
+        ("n", json!("9007199254740992e0"), None),
+    ] {
+        let mark = s.notice_mark();
+        s.run("edit.setValue", &json!({"layer": "Cities", "row": 0, "field": field, "value": value})).unwrap();
+        let codes: Vec<_> = s.notices_since(mark).iter().filter_map(|n| n.loss()).collect();
+        assert_eq!(codes, said.into_iter().collect::<Vec<_>>(), "{value}");
+        s.run("edit.undo", &Value::Null).unwrap();
+    }
+    let err = s.run("data.contingentValues", &json!({"layer": "Cities", "name": "C", "fields": ["n", "flag"], "combos": [[2.5, true]]}));
+    assert_eq!(err.unwrap_err(), "field 'n': a Long field can't hold '2.5' as given");
+    let err = s.run("data.domain", &json!({"layer": "Cities", "field": "flag", "coded": [[true, "Yes"], ["maybe", "Maybe"]]})).unwrap_err();
+    assert_eq!(err, "field 'flag': 'maybe' isn't a Boolean value");
+    assert!(s.map().layer_by_name("Cities").unwrap().design.templates.is_empty(), "a refused template isn't added");
+    // Defaults the fields hold as given are kept, and fill new features with nothing to say.
+    s.run("edit.addField", &json!({"layer": "Cities", "name": "note", "type": "text"})).unwrap();
+    let defaults = json!({"n": 2.0, "flag": "yes", "x": "9007199254740992.0", "note": 0.1234567});
+    s.run("edit.template", &json!({"layer": "Cities", "name": "T", "defaults": defaults})).unwrap();
+    let mark = s.notice_mark();
+    let point = json!({"type": "Point", "coordinates": [0.0, 0.0]});
+    let row = s.run("edit.addFeature", &json!({"layer": "Cities", "geometry": point, "template": "T"})).unwrap()["row"].as_u64().unwrap();
+    assert!(s.notices_since(mark).iter().all(|n| n.loss().is_none()), "{:?}", s.notices_since(mark));
+    let ds = &s.map().layer_by_name("Cities").unwrap().dataset;
+    let row = row as usize;
+    assert_eq!((ds.value(row, ds.field_index("n").unwrap()), ds.value(row, ds.field_index("flag").unwrap())), (&V::Int(2), &V::Bool(true)));
+    assert_eq!(ds.value(row, ds.field_index("note").unwrap()), &V::Text("0.1234567".into()), "in full, not to six places");
+    s.run("edit.undo", &Value::Null).unwrap();
+    s.run("edit.setValue", &json!({"layer": "Cities", "row": 0, "field": "note", "value": 0.1234567})).unwrap();
+    let ds = &s.map().layer_by_name("Cities").unwrap().dataset;
+    assert_eq!(ds.value(0, ds.field_index("note").unwrap()), &V::Text("0.1234567".into()), "edit.setValue too");
+    s.run("edit.undo", &Value::Null).unwrap();
+    // Calculate Field and Paste say what a decimal field rounds; exact values say nothing.
+    // (A number written in an expression is read as a decimal when it is parsed, so text stands in.)
+    for (expression, said) in
+        [("'9007199254740993.0'", true), ("'9007199254740993'", true), ("'9007199254740992.0'", false), ("0.1", false)]
+    {
+        let mark = s.notice_mark();
+        s.run("edit.calculateField", &json!({"layer": "Cities", "field": "x", "expression": expression})).unwrap();
+        let codes: Vec<_> = s.notices_since(mark).iter().filter_map(|n| n.loss()).collect();
+        assert_eq!(codes.contains(&rustgis_data::loss::LossCode::ChangedRounded), said, "{expression}: {:?}", s.notices_since(mark));
+        s.run("edit.undo", &Value::Null).unwrap();
+    }
+    for (x, said) in [(json!(9_007_199_254_740_993_i64), true), (json!(0.1), false)] {
+        let feature = json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [0.0, 0.0]}, "properties": {"x": x}});
+        let text = json!({"type": "FeatureCollection", "features": [feature]}).to_string();
+        let mark = s.notice_mark();
+        s.run("edit.paste", &json!({"layer": "Cities", "text": text})).unwrap();
+        let codes: Vec<_> = s.notices_since(mark).iter().filter_map(|n| n.loss()).collect();
+        assert_eq!(codes.contains(&rustgis_data::loss::LossCode::ChangedRounded), said, "{x}: {:?}", s.notices_since(mark));
+        s.run("edit.undo", &Value::Null).unwrap();
+    }
+    s.run("edit.calculateField", &json!({"layer": "Cities", "field": "note", "expression": "0.1234567"})).unwrap();
+    let ds = &s.map().layer_by_name("Cities").unwrap().dataset;
+    assert_eq!(ds.value(0, ds.field_index("note").unwrap()), &V::Text("0.1234567".into()), "Calculate Field too");
+    s.run("edit.undo", &Value::Null).unwrap();
+    // A subtype's defaults fill a new feature of its code. One saved before defaults were
+    // checked, that its field can't hold as given, is left out and said.
+    let subtypes = json!([{"code": 1, "name": "One", "defaults": {"n": "7", "flag": "no"}}]);
+    s.run("data.subtypes", &json!({"layer": "Cities", "field": "kind", "subtypes": subtypes, "symbolize": false})).unwrap();
+    let new = |s: &mut Session| {
+        let mark = s.notice_mark();
+        let row = s.run("edit.addFeature", &json!({"layer": "Cities", "geometry": point, "attributes": {"kind": 1}})).unwrap()["row"]
+            .as_u64()
+            .unwrap();
+        let ds = &s.map().layer_by_name("Cities").unwrap().dataset;
+        let held =
+            (ds.value(row as usize, ds.field_index("n").unwrap()).clone(), ds.value(row as usize, ds.field_index("flag").unwrap()).clone());
+        let said: Vec<_> = s.notices_since(mark).iter().filter(|n| n.loss().is_some()).map(|n| (n.text.clone(), n.loss())).collect();
+        s.run("edit.undo", &Value::Null).unwrap();
+        (held, said)
+    };
+    assert_eq!(new(&mut s), ((V::Int(7), V::Bool(false)), vec![]));
+    let cities = s.map_mut().layers.iter_mut().find(|l| l.name == "Cities").unwrap();
+    let defaults = &mut cities.design.subtypes.as_mut().unwrap().subtypes[0].defaults;
+    defaults.iter_mut().find(|(f, _)| f == "n").unwrap().1 = V::Float(2.7);
+    let (held, said) = new(&mut s);
+    assert_eq!(held, (V::Null, V::Bool(false)));
+    assert_eq!(
+        said,
+        [(
+            "Cities: subtype defaults left out of 1 new feature, as their fields can't hold them as given: 'n'".to_string(),
+            Some(rustgis_data::loss::LossCode::DroppedValue)
+        )]
+    );
+}
+
 /// A date field is added, edited as ISO text, compared in a where clause, calculated, offered to
 /// the time slider, and kept as dates through a project save; arithmetic on it is an error, and
 /// text that isn't a date is reported, not quietly stored as null.

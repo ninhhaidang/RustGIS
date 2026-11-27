@@ -488,13 +488,13 @@ pub(crate) fn validate(g: &Geometry) -> Result<(), String> {
     }
 }
 
-/// `v` as a value of a `ty` field. A date-time into a date field is the day it shows. A number goes into a number field as it is, not through the
-/// text it shows (which rounds a decimal to six places); a decimal, or text written as one, into a
+/// `v` as a value of a `ty` field. A date-time into a date field is the day it shows. A number
+/// goes into a number field as it is, not through the text it shows (which rounds a decimal to six
+/// places); a decimal, or text written as one, into a
 /// whole-number field loses its fraction (toward zero); a whole number past 2^53 into a decimal
 /// field is the nearest decimal. Not a number, and an infinity in a whole-number field, are null.
-/// Other values go through their text (a
-/// decimal into a text field as it's shown, to six places), and what the field can't hold is
-/// null. A number past the 64-bit range is held at the range's end, as it was; [`coerce_cut`], for
+/// A decimal goes into a text field in full, as a file writes it. Other values go through their
+/// text, and what the field can't hold is null. A number past the 64-bit range is held at the range's end, as it was; [`coerce_cut`], for
 /// callers that say what was cut, makes it null instead.
 pub(crate) fn coerce(v: Value, ty: FieldType) -> Value {
     match convert(v, ty) {
@@ -520,6 +520,10 @@ pub(crate) enum Cut {
     NotFinite,
     /// A date-time's time of day or zone: a date field keeps its day.
     Time,
+    /// Digits past those a decimal holds: a whole number past 2^53 in a decimal field, or text
+    /// with more significant digits than the decimal it is read through
+    /// ([`Value::rounds_as_double`], [`double_holds`](rustgis_data::io::double_holds)).
+    Rounded,
 }
 
 /// How many of a field's results [`coerce_cut`] cut, of each kind, for one notice per kind.
@@ -530,6 +534,7 @@ pub(crate) struct Cuts {
     not_numbers: usize,
     not_finite: usize,
     times: usize,
+    rounded: usize,
 }
 
 impl Cuts {
@@ -541,6 +546,7 @@ impl Cuts {
             Cut::NotANumber => self.not_numbers += 1,
             Cut::NotFinite => self.not_finite += 1,
             Cut::Time => self.times += 1,
+            Cut::Rounded => self.rounded += 1,
         }
     }
 
@@ -576,6 +582,10 @@ impl Cuts {
         if self.times > 0 {
             let their = if self.times == 1 { "its" } else { "their" };
             out.push((LossCode::DroppedTime, format!("{by}: '{field}' holds dates, so {} kept only {their} day", results(self.times))));
+        }
+        if self.rounded > 0 {
+            let were = if self.rounded == 1 { "was" } else { "were" };
+            out.push((LossCode::ChangedRounded, format!("{by}: {} {were} rounded to the digits '{field}' holds", results(self.rounded))));
         }
         out
     }
@@ -619,6 +629,7 @@ impl Loss {
             Loss::Cut(Cut::NotANumber) => PreviewLoss::NotANumber,
             Loss::Cut(Cut::NotFinite) => PreviewLoss::NotFinite,
             Loss::Cut(Cut::Time) => PreviewLoss::Time,
+            Loss::Cut(Cut::Rounded) => PreviewLoss::Rounded,
             Loss::Unread => PreviewLoss::Unheld,
             Loss::Error(fault) => PreviewLoss::Error(fault),
         })
@@ -638,6 +649,8 @@ pub enum PreviewLoss {
     NotFinite,
     /// A date field keeps a date-time's day.
     Time,
+    /// Digits past those the field holds are rounded.
+    Rounded,
     /// A result the field can't hold (text that isn't a number or a date) is null.
     Unheld,
     /// The expression's error made it null.
@@ -716,6 +729,7 @@ impl WriteLosses {
             (cuts.not_numbers, PreviewLoss::NotANumber),
             (cuts.not_finite, PreviewLoss::NotFinite),
             (cuts.times, PreviewLoss::Time),
+            (cuts.rounded, PreviewLoss::Rounded),
         ]
         .into_iter()
         .find_map(|(n, loss)| (n > 0).then_some(loss))
@@ -780,6 +794,26 @@ pub(crate) fn non_finite_input(value: &Value, ty: FieldType) -> bool {
         }
 }
 
+/// A value set once for a field and used again (a template's or subtype's default, a domain's
+/// code, a contingent combination) as a `ty` field holds it, refused when holding it would lose
+/// any of it: one that isn't finite or isn't a value of the field's type, or that the field would
+/// cut, clamp or round. It is checked when it is set, as no later edit could say what was lost.
+pub(crate) fn held_default(field: &str, value: &Value, ty: FieldType) -> Result<Value, String> {
+    if non_finite_input(value, ty) {
+        return Err(format!("field '{field}' requires a finite number"));
+    }
+    let coerced = coerce(value.clone(), ty);
+    // Named as given, not as shown (which rounds a decimal to six places).
+    let given = value.to_file_text();
+    if coerced.is_null() && !value.asks_null() {
+        return Err(format!("field '{field}': '{given}' isn't a {} value", ty.label()));
+    }
+    if numeric_loss(value, &coerced, ty).is_some() || matches!(value, Value::DateTime(t) if ty == FieldType::Date && !t.is_date()) {
+        return Err(format!("field '{field}': a {} field can't hold '{given}' as given", ty.label()));
+    }
+    Ok(coerced)
+}
+
 /// Whether a number, or a number written as text, is an infinity (not NaN).
 fn infinite(value: &Value) -> bool {
     match value {
@@ -797,7 +831,9 @@ fn convert(v: Value, ty: FieldType) -> (Value, Cut, Option<f64>) {
         (Value::Float(f), FieldType::Integer) if f.is_infinite() => (Value::Null, Cut::NotFinite, None),
         (Value::Float(f), FieldType::Integer) => whole(f),
         (Value::Float(f), FieldType::Double) => (Value::Float(f), Cut::None, None),
-        (Value::Int(i), FieldType::Double) => (Value::Float(i as f64), Cut::None, None),
+        (Value::Int(i), FieldType::Double) => {
+            (Value::Float(i as f64), if Value::Int(i).rounds_as_double() { Cut::Rounded } else { Cut::None }, None)
+        }
         // A date-time into a date field is the day it shows, and said so when it had a time or zone.
         (Value::DateTime(t), FieldType::Date) => (Value::Date(t.date()), if t.is_date() { Cut::None } else { Cut::Time }, None),
         // A date is no number or yes/no: null (and said by the caller), not read as false.
@@ -812,11 +848,29 @@ fn convert(v: Value, ty: FieldType) -> (Value, Cut, Option<f64>) {
                 (Some((v, cut)), Ok(f)) => (v, cut, Some(f)),
                 // A word the decimal reader takes ("inf", "NaN") isn't a number written as text:
                 // null, and said so, as not a number.
-                (None, Ok(f)) if f.is_finite() || t.bytes().any(|b| b.is_ascii_digit()) => whole(f),
+                // A fraction the decimal rounded away (`2.0000000000000000001e0`) is still one.
+                // A fraction the decimal rounded away (`2.0000000000000000001e0`) is still one, and
+                // digits past those it holds (`9007199254740993e0`) are rounded.
+                (None, Ok(f)) if f.is_finite() || t.bytes().any(|b| b.is_ascii_digit()) => match whole(f) {
+                    (v @ Value::Int(_), Cut::None, x) if Value::text_has_fraction(&t) => (v, Cut::Fraction, x),
+                    (v @ Value::Int(_), Cut::None, x) if !rustgis_data::io::double_holds(t.trim()) => (v, Cut::Rounded, x),
+                    held => held,
+                },
                 (None, Ok(f)) if f.is_infinite() => (Value::Null, Cut::NotFinite, None),
                 (None, Ok(_)) => (Value::Null, Cut::NotANumber, None),
                 _ => (Value::parse(&t, ty), Cut::None, None),
             },
+        },
+        // A decimal goes into a text field in full, not as the six places it's shown to.
+        (Value::Float(f), FieldType::Text) if f.is_finite() => (Value::Text(Value::Float(f).to_file_text()), Cut::None, None),
+        // A whole number is yes when it isn't 0, as a shapefile writes it.
+        (Value::Int(i), FieldType::Boolean) => (Value::Bool(i != 0), Cut::None, None),
+        (Value::Float(f), FieldType::Boolean) if f.fract() == 0.0 => (Value::Bool(f != 0.0), Cut::None, None),
+        // A fraction is no yes/no value: null, not the text it's shown as (`0.0000001` shows `0`).
+        (Value::Float(_), FieldType::Boolean) => (Value::Null, Cut::None, None),
+        (Value::Text(t), FieldType::Double) => match Value::parse_source(&t, ty) {
+            v @ Value::Float(_) if Value::Text(t).rounds_as_double() => (v, Cut::Rounded, None),
+            v => (v, Cut::None, None),
         },
         // Uncounted coercion retains source numbers until output can explain any loss.
         (Value::Text(t), _) => (Value::parse_source(&t, ty), Cut::None, None),
@@ -901,11 +955,16 @@ fn numeric_loss(input: &Value, v: &Value, ty: FieldType) -> Option<CellLoss> {
                 "{layer}, field '{field}', row {row}: 1 attribute value was clamped to the 64-bit integer range",
                 LossCode::DroppedValue,
             )),
+            Cut::Rounded => {
+                Some(("{layer}, field '{field}', row {row}: 1 attribute value lost integer precision", LossCode::ChangedRounded))
+            }
             Cut::None if &exact != v => {
                 Some(("{layer}, field '{field}', row {row}: 1 attribute value lost integer precision", LossCode::ChangedRounded))
             }
             _ => None,
         }
+    } else if ty == FieldType::Double && matches!(v, Value::Float(_)) && coerce_cut(input.clone(), ty).1 == Cut::Rounded {
+        Some(("{layer}, field '{field}', row {row}: 1 attribute value was rounded to the digits a decimal holds", LossCode::ChangedRounded))
     } else {
         None
     }
@@ -964,8 +1023,8 @@ fn set_value(s: &mut Session, p: &Json) -> CmdResult {
     Ok(Json::Null)
 }
 
-/// `raw` (an `edit.setValue` value) as a value of a `ty` field. A number that isn't finite, and a
-/// value a date field can't hold, are refused.
+/// `raw` (an `edit.setValue` value) as a value of a `ty` field. A number that isn't finite, a
+/// value a date field can't hold, and text that isn't a yes/no word in a yes/no field, are refused.
 fn typed(raw: Json, ty: FieldType) -> Result<Value, String> {
     Ok(match raw {
         // A number that isn't finite (NaN, infinity) is no value a number field holds, nor one a
@@ -973,16 +1032,20 @@ fn typed(raw: Json, ty: FieldType) -> Result<Value, String> {
         Json::String(t) if ty.is_numeric() && t.trim().parse::<f64>().is_ok_and(|f| !f.is_finite()) => {
             return Err(format!("'{}' isn't a finite number, which a {} field holds", t.trim(), ty.label()));
         }
-        // Text a date field can't hold (`soon`) is refused, not stored as null.
+        // Text a date or yes/no field can't hold (`soon`, `maybe`) is refused, not stored as null.
         Json::String(t) => match Value::parse(&t, ty) {
-            Value::Null if ty.is_temporal() && !t.trim().is_empty() && !t.trim().eq_ignore_ascii_case("<null>") => {
+            Value::Null
+                if (ty.is_temporal() || ty == FieldType::Boolean) && !t.trim().is_empty() && !t.trim().eq_ignore_ascii_case("<null>") =>
+            {
                 return Err(format!("'{}' isn't a {} value", t.trim(), ty.label()));
             }
             v => v,
         },
-        // So is any other value a date field can't hold (`20260305`).
+        // So is any other value a date or yes/no field can't hold (`20260305`, `0.5`).
         other => match coerce(Value::from_json(&other), ty) {
-            Value::Null if ty.is_temporal() && !other.is_null() => return Err(format!("'{other}' isn't a {} value", ty.label())),
+            Value::Null if (ty.is_temporal() || ty == FieldType::Boolean) && !other.is_null() => {
+                return Err(format!("'{other}' isn't a {} value", ty.label()));
+            }
             v => v,
         },
     })

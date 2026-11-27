@@ -326,6 +326,7 @@ fn value(v: &Val, ty: FieldType, unread: &mut Vec<usize>, rounded: &mut Vec<usiz
         (Val::Real(f), FieldType::Integer) if f.fract() == 0.0 && f.abs() < 9e15 => Value::Int(*f as i64),
         (Val::Real(f), _) => Value::Float(*f),
         (Val::Text(t), FieldType::Text) => Value::Text(t.clone()),
+        (Val::Text(t), FieldType::Boolean) => super::yes_no_text(t, unread, k),
         (Val::Text(t), ty) => Value::parse_source(t, ty),
     }
 }
