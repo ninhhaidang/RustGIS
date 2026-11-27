@@ -259,6 +259,10 @@ pub fn serif_fonts() -> Option<&'static SerifFonts> {
                 })
             })
         };
+        // Search by family tier (system paths before extra Linux roots within each tier):
+        // 1) static preferred serifs (`SERIF_CANDIDATES`: Georgia, Times New Roman, static Noto Serif),
+        // 2) variable Noto Serif across all roots (`serif_font_roots`),
+        // 3) fallback serifs (`SERIF_LAST`: DejaVu Serif, Liberation Serif).
         find_fixed(SERIF_CANDIDATES).or_else(|| variable_noto_serif(&serif_font_roots(&roots))).or_else(|| find_fixed(SERIF_LAST))
     })
     .as_ref()
@@ -522,8 +526,9 @@ fn scan_cjk_roots(roots: &[std::path::PathBuf]) -> std::collections::HashMap<&'s
     const MAX_DEPTH: usize = 6;
     const MAX_DIRS: usize = 2_000;
     const MAX_FILES: usize = 20_000;
-    // Bound total entries materialized from read_dir across the entire scan so oversized
-    // directories are truncated deterministically before sorting rather than buffers growing unboundedly.
+    // Bound the entries read from read_dir across the whole scan, so an oversized directory cannot
+    // grow the buffers without limit. Which entries survive the cut follows the filesystem's
+    // listing order, not the sorted order.
     const MAX_ENTRIES: usize = MAX_FILES + MAX_DIRS;
 
     let targets = all_cjk_linux_filenames();
