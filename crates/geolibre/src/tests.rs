@@ -220,7 +220,7 @@ fn outputs_are_named_by_the_output_field() {
     let params = rustgis_analysis::resolve_params(&spec2, &json!({"dem": "dem", "output": "Taken"})).unwrap();
     let both = prepare_with(&spec2, &meta2, &fg, &params).unwrap();
     assert_eq!(both.outputs.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(), ["Taken streams 2", "Taken basins 2"]);
-    let numbered_notes: Vec<&String> = both.notes.iter().filter(|n| n.contains("numbered")).collect();
+    let numbered_notes: Vec<&Note> = both.notes.iter().filter(|n| n.contains("numbered")).collect();
     assert!(matches!(numbered_notes[..], [n] if n.contains("2 output name(s)")), "{:?}", both.notes);
     // A long name whose output name is taken: the number goes after the output's name, which is
     // kept whole (review).
@@ -931,4 +931,57 @@ fn a_vector_written_into_a_tif_comes_back_as_a_vector() {
     let junk = finish(&job, &[("output.tif".into(), b"not a picture".to_vec())], &[], None);
     assert!(matches!(junk.output, Output::Layers(ref l) if l.is_empty()));
     assert!(junk.messages.iter().any(|m| m.starts_with("Flowpaths:")), "{:?}", junk.messages);
+}
+
+/// Features that lie outside the working coordinate system are passed without geometry, which is
+/// a loss with its code, and a clean input says nothing; `finish` hands the code on as a
+/// `LossMessage` and keeps the plain notes as messages (the native and browser runners both end
+/// in `finish`).
+#[test]
+fn features_passed_without_geometry_keep_their_code_to_the_result() {
+    let mut f = Fixture::new();
+    let crs = Crs::from_epsg(32617).unwrap();
+    let tf = crs.transformer().unwrap();
+    let mut job = Job {
+        tool: "buffer".into(),
+        name: "Buffer".into(),
+        files: Vec::new(),
+        args: Vec::new(),
+        outputs: Vec::new(),
+        crs,
+        notes: Vec::new(),
+    };
+    stage(&f, "pts", Data::Vector, &tf, &mut job).unwrap();
+    assert!(job.notes.is_empty(), "a clean layer says nothing: {:?}", job.notes);
+    // A point with no place in the zone (no coordinates to give it).
+    f.points.features.push(Feature {
+        id: 2,
+        geometry: Some(Geometry::Point(Coord::new(f64::NAN, f64::NAN))),
+        attrs: vec![rustgis_data::Value::Int(2)],
+    });
+    stage(&f, "pts", Data::Vector, &tf, &mut job).unwrap();
+    let [note] = &job.notes[..] else { panic!("one notice: {:?}", job.notes) };
+    assert_eq!(note.loss, Some(LossCode::DroppedGeometry));
+    assert!(note.text.starts_with("pts: 1 features lie outside the working coordinate system"), "{note:?}");
+    job.notes.push(Note::plain("Buffer: the output name is cut"));
+    let r = finish(&job, &[], &[], None);
+    assert_eq!(r.losses.len(), 1, "{:?}", r.losses);
+    assert_eq!(r.losses[0].code, LossCode::DroppedGeometry);
+    assert!(r.losses[0].text.contains("passed without geometry"), "{:?}", r.losses);
+    assert_eq!(r.messages, ["Buffer: the output name is cut"], "the coded note is not said twice");
+}
+
+/// What reading a packed-colour output left out is said after the split with its code when it has
+/// one, and as a plain message when it has none.
+#[test]
+fn what_reading_a_split_colour_output_left_out_keeps_its_code() {
+    let tiff = u32_tiff([0xFF0A_141E, 0xFF00_0001, 0, 0xFFFF_FFFF], None, false);
+    let mut grey = rustgis_data::raster::read_bytes("output.tif", &tiff).unwrap();
+    grey.lost.push(Note::loss(LossCode::ChangedRounded, "values were rounded"));
+    grey.lost.push(Note::plain("a table was left out"));
+    let (mut messages, mut losses) = (Vec::new(), Vec::new());
+    colours_split(&grey, &tiff, "Sharpened", &mut messages, &mut losses);
+    assert_eq!(losses, [LossMessage { code: LossCode::ChangedRounded, text: "Sharpened: values were rounded".into() }]);
+    assert!(messages.iter().any(|m| m == "Sharpened: a table was left out"), "{messages:?}");
+    assert!(!messages.iter().any(|m| m.contains("rounded")), "{messages:?}");
 }

@@ -508,7 +508,7 @@ pub struct SeriesReading {
 /// A series read on its thread, as `zarr.series` answers it, and what reading it said (a read
 /// that fails said it too).
 #[cfg(not(target_arch = "wasm32"))]
-pub type SeriesResult = (Result<Value, String>, Vec<String>);
+pub type SeriesResult = (Result<Value, String>, Vec<rustgis_engine::data::loss::Note>);
 
 /// Starts reading the series at `at` under the Time Series pane's layer on a thread of its own: a
 /// wrong request is said at once, and the read lands through [`land_series`].
@@ -566,7 +566,7 @@ pub fn land_series(app: &mut RustGisApp) -> bool {
     // What reading it said, though it then failed; not for a read that was cancelled.
     if !cancelled {
         for n in notes {
-            app.session.warn(n);
+            app.session.say_warning(n);
         }
     }
     match res {

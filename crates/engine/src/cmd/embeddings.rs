@@ -10,6 +10,8 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(not(target_arch = "wasm32"))]
+use rustgis_data::loss::{LossCode, Note};
 use rustgis_data::{Geometry, GeometryType, raster};
 use rustgis_map::raster::RasterLayer;
 use serde_json::{Value, json};
@@ -823,14 +825,15 @@ pub(crate) fn similarity_work(s: &Session, p: &Value) -> Result<super::workflows
         rustgis_data::progress::check().map_err(|e| e.to_string())?;
         // Before anything is asked of the network: a layer that can't be the reference is refused.
         let (points, from, taken) = points()?;
-        let (files, place, mut notes) = tile_files(area, &[year])?;
+        let (files, place, searched) = tile_files(area, &[year])?;
+        let mut notes: Vec<Note> = searched.into_iter().map(Note::plain).collect();
         let file = files.first().ok_or("AlphaEarth has no file there")?;
         let w = read_window(file, area, cell)?;
         notes.extend(w.notes());
         let r = &w.raster;
         // A reference with no embedding fails with what its layer said.
         let (reference, missed) = reference(r, &points).map_err(|e| with_notes(e, &taken))?;
-        notes.extend(taken);
+        notes.extend(taken.into_iter().map(Note::plain));
         notes.extend(missed_points(missed, points.len()));
         let band = similarity_band(r, &reference)?;
         let name = name.unwrap_or_else(|| format!("AlphaEarth {year} similarity"));
@@ -860,7 +863,8 @@ pub(crate) fn change_work(s: &Session, p: &Value) -> Result<super::workflows::Wo
     #[cfg(not(target_arch = "wasm32"))]
     Ok(Box::new(move || {
         rustgis_data::progress::check().map_err(|e| e.to_string())?;
-        let (files, place, mut notes) = tile_files(area, &[from, to])?;
+        let (files, place, searched) = tile_files(area, &[from, to])?;
+        let mut notes: Vec<Note> = searched.into_iter().map(Note::plain).collect();
         let (Some(a), Some(b)) = (files.first(), files.get(1)) else { return Err("AlphaEarth has no files there".into()) };
         let a = read_window(a, area, cell)?;
         let b = read_window(b, area, cell)?;
@@ -879,7 +883,7 @@ const IN_THE_BROWSER: &str = "AlphaEarth's similarity and change are worked out 
 /// The made raster, kept as a GeoTIFF, with what to say of it once it is added (by its name on
 /// the map) and what the command answers besides.
 #[cfg(not(target_arch = "wasm32"))]
-fn made_saying(r: rustgis_data::raster::Raster, notes: Vec<String>, extra: Value) -> Result<super::workflows::Made, String> {
+fn made_saying(r: rustgis_data::raster::Raster, notes: Vec<Note>, extra: Value) -> Result<super::workflows::Made, String> {
     let bytes = raster::geotiff::write_all(&r).map_err(|e| e.to_string())?;
     let name = r.name.clone();
     let layer = RasterLayer::from_written(r, format!("{name}.tif"), bytes);
@@ -888,7 +892,7 @@ fn made_saying(r: rustgis_data::raster::Raster, notes: Vec<String>, extra: Value
         let id = v.get("layer").and_then(Value::as_u64).and_then(|i| u32::try_from(i).ok());
         let added = id.and_then(|id| s.map().layer(id)).map_or(said, |l| l.name.clone());
         for note in notes {
-            s.notify(format!("{added}: {note}"), false);
+            s.say(note.prefixed(&added));
         }
     });
     Ok(super::workflows::made_layer(name, layer, Some(extra), Some(then)))
@@ -956,26 +960,36 @@ fn pick_tile(found: &emb::SeriesFound, years: &[i32]) -> Result<(Vec<String>, St
 /// are on one grid, so the second's says the same; anything it adds is said too, by its year),
 /// and what each file's header left out, by year: once, for both, when both left it out.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn two_years_notes(a: &super::layer::WindowRaster, b: &super::layer::WindowRaster, (from, to): (i32, i32)) -> Vec<String> {
-    let mut notes = a.read_notes();
+pub(crate) fn two_years_notes(a: &super::layer::WindowRaster, b: &super::layer::WindowRaster, (from, to): (i32, i32)) -> Vec<Note> {
+    let mut notes: Vec<Note> = a.read_notes().into_iter().map(Note::plain).collect();
     for n in b.read_notes() {
-        if !notes.contains(&n) {
-            notes.push(format!("the {to} file: {n}"));
+        if !notes.iter().any(|known| known.text == n) {
+            notes.push(Note::plain(format!("the {to} file: {n}")));
         }
     }
-    for l in a.raster.lost.texts() {
-        let both = b.raster.lost.says(l);
-        notes.push(if both { format!("the {from} and {to} files: {l}") } else { format!("the {from} file: {l}") });
+    for l in a.raster.lost.iter() {
+        let both = b.raster.lost.says(&l.text);
+        notes.push(if both {
+            l.clone().prefixed(&format!("the {from} and {to} files"))
+        } else {
+            l.clone().prefixed(&format!("the {from} file"))
+        });
     }
-    notes.extend(b.raster.lost.texts().filter(|l| !a.raster.lost.says(l)).map(|l| format!("the {to} file: {l}")));
+    notes.extend(b.raster.lost.iter().filter(|l| !a.raster.lost.says(&l.text)).map(|l| l.clone().prefixed(&format!("the {to} file"))));
     notes
 }
 
-/// What a similarity says of its reference points that have no embedding in the area read.
+/// What a similarity says of its reference points that have no embedding in the area read: left
+/// out of the reference, so a loss.
 #[cfg(not(target_arch = "wasm32"))]
-fn missed_points(missed: usize, of: usize) -> Option<String> {
+fn missed_points(missed: usize, of: usize) -> Option<Note> {
     (missed > 0).then(|| {
-        format!("{missed} of the {of} reference points have no embedding in the area read (outside it, or no data there) and were left out")
+        Note::loss(
+            LossCode::DroppedFeature,
+            format!(
+                "{missed} of the {of} reference points have no embedding in the area read (outside it, or no data there) and were left out"
+            ),
+        )
     })
 }
 
@@ -1519,22 +1533,31 @@ mod tests {
         // Reference points with no embedding: said with a count, nothing when all have one.
         assert_eq!(missed_points(0, 3), None);
         assert_eq!(
-            missed_points(1, 3).as_deref(),
-            Some("1 of the 3 reference points have no embedding in the area read (outside it, or no data there) and were left out")
+            missed_points(1, 3),
+            Some(Note::loss(
+                LossCode::DroppedFeature,
+                "1 of the 3 reference points have no embedding in the area read (outside it, or no data there) and were left out"
+            ))
         );
         // What the work says is said once its raster is added, under the layer's name; a raster
         // with nothing to say adds none.
         let mut s = Session::new(Project::default());
         let r = quantised([[1.0; 3]; 4]);
-        let made = |name: &str, notes: Vec<String>| {
+        let made = |name: &str, notes: Vec<Note>| {
             let raster = rustgis_analysis::rasterops::derive(&r, name, vec![vec![0.5; 4]]).unwrap();
             made_saying(raster, notes, json!({"year": 2024})).unwrap()
         };
         let mark = s.notice_mark();
-        let v = super::super::workflows::add_made(&mut s, made("Sim", notes.clone())).unwrap();
+        let mut with_loss: Vec<Note> = notes.iter().map(Note::from).collect();
+        with_loss.extend(missed_points(2, 5));
+        let v = super::super::workflows::add_made(&mut s, made("Sim", with_loss)).unwrap();
         assert_eq!(v["year"], 2024);
         let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
-        assert_eq!(said.iter().filter(|n| n.starts_with("Sim: ")).count(), 5, "{said:?}");
+        assert_eq!(said.iter().filter(|n| n.starts_with("Sim: ")).count(), 6, "{said:?}");
+        // The loss keeps its code under the layer's name; the others are ordinary notices.
+        let coded: Vec<_> = s.notices_since(mark).iter().filter_map(|n| n.loss().map(|c| (c, n.text.clone()))).collect();
+        assert_eq!(coded.len(), 1, "{coded:?}");
+        assert!(coded[0].0 == LossCode::DroppedFeature && coded[0].1.starts_with("Sim: 2 of the 5 reference points"), "{coded:?}");
         let mark = s.notice_mark();
         super::super::workflows::add_made(&mut s, made("Clean", Vec::new())).unwrap();
         assert!(!s.notices_since(mark).iter().any(|n| n.text.starts_with("Clean: ")));

@@ -1777,17 +1777,34 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
                         format!("no cell of {} falls inside {pl} ({} polygon part(s) failed raster projection)", r.name, failed_parts.len())
                     })?;
                 let clipped = clip_window(&r, cols, rows, Some(&mask), None, out)?;
-                let mut messages = Vec::new();
+                // Each a loss with its code: said as a notice once the clip is added, and kept in the
+                // answer's `messages` for a script.
+                let mut notes = Vec::new();
                 if skipped > 0 {
-                    messages.push(format!("{pl}: skipped {skipped} feature(s) with invalid polygon geometry"));
-                }
-                if !failed_parts.is_empty() {
-                    messages.push(format!(
-                        "{pl}: skipped {} polygon part(s) that could not be projected onto the raster grid; valid parts were retained",
-                        failed_parts.len()
+                    notes.push(rustgis_data::loss::Note::loss(
+                        rustgis_data::loss::LossCode::DroppedFeature,
+                        format!("{pl}: skipped {skipped} feature(s) with invalid polygon geometry"),
                     ));
                 }
-                super::workflows::made(clipped, (!messages.is_empty()).then(|| json!({"messages": messages})))
+                if !failed_parts.is_empty() {
+                    notes.push(rustgis_data::loss::Note::loss(
+                        rustgis_data::loss::LossCode::DroppedGeometry,
+                        format!(
+                            "{pl}: skipped {} polygon part(s) that could not be projected onto the raster grid; valid parts were retained",
+                            failed_parts.len()
+                        ),
+                    ));
+                }
+                let messages: Vec<&str> = notes.iter().map(|n| n.text.as_str()).collect();
+                let extra = (!messages.is_empty()).then(|| json!({"messages": messages}));
+                let then: Option<super::workflows::Then> = (!notes.is_empty()).then(|| {
+                    Box::new(move |s: &mut Session, _: &mut Value| {
+                        for note in notes {
+                            s.say(note);
+                        }
+                    }) as super::workflows::Then
+                });
+                super::workflows::made_then(clipped, extra, then)
             }))
         }
         "clip" => {
@@ -2701,6 +2718,8 @@ fn clip_window(
     }
     // Some of the values rounded when the file was read may be in the window: how many isn't known.
     out.keep_rounded_mark(r);
+    // What reading the input left out was said, with its code, when the input was read: a clip,
+    // like a resample or a pixel edit, doesn't say it again.
     Ok(out)
 }
 

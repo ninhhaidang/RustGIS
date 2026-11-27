@@ -395,7 +395,15 @@ pub fn external_start(s: &mut Session, tool: &str, params: &Value) -> Result<Ext
             return Err(format!("no GeoLibre tool '{tool}'"));
         }
         let params = params.clone();
-        let job = preparing(&continuation, || pin.prepare_suite(&map_inputs(s, Some(spec), &params, Tiled::ByPath)?, &params))?;
+        let (job, said, lost) = preparing(&continuation, || {
+            let inputs = map_inputs(s, Some(spec), &params, Tiled::ByPath)?;
+            Ok((pin.prepare_suite(&inputs, &params)?, inputs.messages.clone(), inputs.losses.clone()))
+        })?;
+        // What reading its inputs approximated or lost, said now, as a plugin tool's are.
+        if !said.is_empty() {
+            s.notify(format!("{}: {}", spec.name, said.join("; ")), false);
+        }
+        say_input_losses(s, spec.name, lost);
         s.next_pending = s.next_pending.wrapping_add(1);
         let id = s.next_pending;
         let run = ExternalRun {
@@ -534,19 +542,21 @@ pub fn plugin_start(s: &mut Session, tool: &str, params: &Value) -> Result<Plugi
     let spec = pin.spec();
     let plugin = pin.plugin().ok_or_else(|| format!("no plugin tool '{tool}'"))?;
     let (_, tid) = rustgis_plugins::split_id(spec.id).ok_or("invalid plugin tool id")?;
-    let (job, full_ids, said) = preparing(&continuation, || {
+    let (job, full_ids, said, lost) = preparing(&continuation, || {
         let inputs = map_inputs(s, Some(spec), resolved, Tiled::Overview)?;
         let job = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             rustgis_plugins::tools::prepare_pinned(plugin.plugin(), tid, &inputs, resolved)
         }))
         .unwrap_or_else(|_| Err(format!("{} failed unexpectedly", spec.name)))?;
-        Ok((job, full_ids(&inputs.loaded), inputs.messages.clone()))
+        Ok((job, full_ids(&inputs.loaded), inputs.messages.clone(), inputs.losses.clone()))
     })?;
     // What reading its inputs approximated (a raster's overview read for a file read in place),
     // said now: the run's result is the plugin's own.
     if !said.is_empty() {
         s.notify(format!("{}: {}", spec.name, said.join("; ")), false);
     }
+    // What reading its inputs lost (a layer's rows or geometry left out), as a loss with its code.
+    say_input_losses(s, spec.name, lost);
     let read = read_layers(s, spec, resolved);
     s.next_pending = s.next_pending.wrapping_add(1);
     let id = s.next_pending;
@@ -4170,6 +4180,13 @@ fn apply_with(
     Ok((out, messages))
 }
 
+/// Says what reading a plugin tool's inputs lost, each as a loss with its code, under the tool's name.
+fn say_input_losses(s: &mut Session, tool: &str, lost: Vec<LossMessage>) {
+    for loss in lost {
+        publish_tool_loss(s, loss.code, &format!("{tool}: {}", loss.text), false);
+    }
+}
+
 /// Publishes a typed loss, retaining it through rollback when a file has already been delivered.
 fn publish_tool_loss(s: &mut Session, code: LossCode, text: &str, written: bool) {
     let mark = s.notice_mark();
@@ -4182,6 +4199,27 @@ fn publish_tool_loss(s: &mut Session, code: LossCode, text: &str, written: bool)
 #[cfg(test)]
 mod file_tests {
     use super::*;
+
+    #[test]
+    fn a_plugin_tools_input_losses_are_said_with_their_codes() {
+        let mut s = Session::new(crate::Project::default());
+        let mark = s.notice_mark();
+        say_input_losses(&mut s, "Make Points", Vec::new());
+        assert!(s.notices_since(mark).is_empty(), "a clean read says nothing");
+        let lost = vec![
+            LossMessage { code: LossCode::DroppedFeature, text: "Sites: 2 rows couldn't be read and were left out".into() },
+            LossMessage { code: LossCode::DroppedValue, text: "Sites: 1 value isn't a date and was read as empty, in 'day'".into() },
+        ];
+        say_input_losses(&mut s, "Make Points", lost);
+        let said: Vec<_> = s.notices_since(mark).iter().map(|n| (n.loss(), n.text.clone())).collect();
+        assert_eq!(
+            said,
+            [
+                (Some(LossCode::DroppedFeature), "Make Points: Sites: 2 rows couldn't be read and were left out".to_string()),
+                (Some(LossCode::DroppedValue), "Make Points: Sites: 1 value isn't a date and was read as empty, in 'day'".to_string()),
+            ]
+        );
+    }
 
     #[test]
     fn raster_to_pmtiles_queues_the_archive_without_changing_the_map() {

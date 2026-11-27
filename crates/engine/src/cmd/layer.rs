@@ -6742,9 +6742,10 @@ pub(crate) struct WindowRaster {
 impl WindowRaster {
     /// What to say of the read, in order, and what its raster left out (`lost`: what the header
     /// holds but isn't read, values past `f32`'s range), for a caller that makes another raster
-    /// from it and so doesn't add this one (whose `lost` the layer would say).
-    pub(crate) fn notes(&self) -> Vec<String> {
-        self.read_notes().into_iter().chain(self.raster.lost.texts().map(String::from)).collect()
+    /// from it and so doesn't add this one (whose `lost` the layer would say). The read's own notes
+    /// are plain (the box's edges are empty ground, not data left out); `lost` keeps its codes.
+    pub(crate) fn notes(&self) -> Vec<rustgis_data::loss::Note> {
+        self.read_notes().into_iter().map(rustgis_data::loss::Note::plain).chain(self.raster.lost.iter().cloned()).collect()
     }
 
     /// What to say of the read alone (its size and level, a cell size finer than the file's, the

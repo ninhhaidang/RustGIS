@@ -36,6 +36,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use rustgis_analysis::{Inputs, Output, OutputLayer, ParamKind, ParamSpec, ToolResult, ToolSpec};
+use rustgis_data::loss::{LossCode, LossMessage, Note};
 use rustgis_data::raster::{Crs, Transformer};
 use rustgis_data::{Coord, Dataset, Extent, Geometry};
 use serde_json::{Value, json};
@@ -458,8 +459,8 @@ pub struct Job {
     /// (file name, layer name) for each declared output.
     outputs: Vec<(String, String)>,
     crs: Crs,
-    /// Problems found while staging that don't stop the run.
-    notes: Vec<String>,
+    /// Problems found while staging that don't stop the run; a loss keeps its code to [`finish`].
+    notes: Vec<Note>,
 }
 
 impl Job {
@@ -535,7 +536,10 @@ fn stage(inputs: &dyn Inputs, value: &str, data: Data, tf: &Transformer, job: &m
         }
         let (bytes, lost) = vector_bytes(ds, inputs.selection(value), job.crs, tf)?;
         if lost > 0 {
-            job.notes.push(format!("{value}: {lost} features lie outside the working coordinate system and were passed without geometry"));
+            job.notes.push(Note::loss(
+                LossCode::DroppedGeometry,
+                format!("{value}: {lost} features lie outside the working coordinate system and were passed without geometry"),
+            ));
         }
         return Ok(job.stage(value, "geojson", bytes));
     }
@@ -772,7 +776,7 @@ fn prepare_with(spec: &ToolSpec, meta: &Meta, inputs: &dyn Inputs, params: &Valu
                 {
                     let (order, note) = calculator_order(expression, list, inputs).map_err(|e| format!("{}: {e}", spec.name))?;
                     list = order;
-                    job.notes.extend(note.map(|n| format!("{}: {n}", spec.name)));
+                    job.notes.extend(note.map(|n| Note::plain(format!("{}: {n}", spec.name))));
                 }
                 let files = list.into_iter().map(|n| stage(inputs, n, p.data, &tf, &mut job)).collect::<Result<Vec<_>, _>>()?;
                 if !files.is_empty() {
@@ -813,17 +817,25 @@ fn prepare_with(spec: &ToolSpec, meta: &Meta, inputs: &dyn Inputs, params: &Valu
     }
     // One notice per kind, with a count.
     if !renamed.is_empty() {
-        job.notes.push(format!("{}: {} output name(s) in use already, so numbered: {}", spec.name, renamed.len(), renamed.join(", ")));
+        job.notes.push(Note::plain(format!(
+            "{}: {} output name(s) in use already, so numbered: {}",
+            spec.name,
+            renamed.len(),
+            renamed.join(", ")
+        )));
     }
     if shortened {
-        job.notes.push(format!("{}: the output name is cut to fit each output's own name within {MAX_OUTPUT_NAME} characters", spec.name));
+        job.notes.push(Note::plain(format!(
+            "{}: the output name is cut to fit each output's own name within {MAX_OUTPUT_NAME} characters",
+            spec.name
+        )));
     }
     Ok(job)
 }
 
 /// The layer name given in [`OUTPUT`], trimmed, or `None` for the tool's own name. Cut to
 /// [`MAX_OUTPUT_NAME`] characters, which is said.
-fn output_name(spec: &ToolSpec, params: &Value, notes: &mut Vec<String>) -> Result<Option<String>, String> {
+fn output_name(spec: &ToolSpec, params: &Value, notes: &mut Vec<Note>) -> Result<Option<String>, String> {
     let name = match params.get(OUTPUT) {
         None | Some(Value::Null) => return Ok(None),
         Some(Value::String(s)) => s.trim(),
@@ -834,7 +846,9 @@ fn output_name(spec: &ToolSpec, params: &Value, notes: &mut Vec<String>) -> Resu
     }
     let n = name.chars().count();
     if n > MAX_OUTPUT_NAME {
-        notes.push(format!("{}: the output name is cut from {n} to {MAX_OUTPUT_NAME} characters", spec.name));
+        // Plain: the layer's name is the tool's own naming, not data a file or layer holds, and the
+        // fix for a cut (a format that holds more text) isn't one for a name.
+        notes.push(Note::plain(format!("{}: the output name is cut from {n} to {MAX_OUTPUT_NAME} characters", spec.name)));
     }
     Ok(Some(name.chars().take(MAX_OUTPUT_NAME).collect()))
 }
@@ -1005,7 +1019,7 @@ fn load(
     job: &Job,
     dir: Option<&Path>,
     messages: &mut Vec<String>,
-    losses: &mut Vec<rustgis_data::loss::LossMessage>,
+    losses: &mut Vec<LossMessage>,
 ) -> Option<OutputLayer> {
     let mut ext = Path::new(file_name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     // A tool whose manifest calls its vector output a raster writes GeoJSON into the `.tif` it is
@@ -1035,7 +1049,7 @@ fn load(
     match ext.as_str() {
         "tif" | "tiff" | "asc" => match rustgis_data::raster::read_bytes(file_name, bytes) {
             Ok(grey) => {
-                let bytes = if ext == "asc" { bytes.to_vec() } else { colours_split(&grey, bytes, layer_name, messages) };
+                let bytes = if ext == "asc" { bytes.to_vec() } else { colours_split(&grey, bytes, layer_name, messages, losses) };
                 Some(OutputLayer::Raster { name: layer_name.to_string(), file_name: file_name.to_string(), bytes })
             }
             Err(e) => {
@@ -1056,7 +1070,7 @@ fn load(
                     for note in report.messages {
                         let note = note.prefixed(layer_name);
                         match note.loss {
-                            Some(code) => losses.push(rustgis_data::loss::LossMessage { code, text: note.text }),
+                            Some(code) => losses.push(LossMessage { code, text: note.text }),
                             None => messages.push(note.text),
                         }
                     }
@@ -1128,7 +1142,13 @@ fn load(
 /// `0xAABBGGRR`, as Panchromatic Sharpening writes by default) rewritten as red, green, blue and
 /// alpha byte bands before anything holds it as `f32`, which drops the red byte (#2594), and said;
 /// any other as the tool wrote it. `grey` is the file as read.
-fn colours_split(grey: &rustgis_data::raster::Raster, bytes: &[u8], layer_name: &str, messages: &mut Vec<String>) -> Vec<u8> {
+fn colours_split(
+    grey: &rustgis_data::raster::Raster,
+    bytes: &[u8],
+    layer_name: &str,
+    messages: &mut Vec<String>,
+    losses: &mut Vec<LossMessage>,
+) -> Vec<u8> {
     use rustgis_data::raster::geotiff;
     match geotiff::unpack_rgba(grey, bytes).and_then(|r| r.map(|r| geotiff::write_all(&r)).transpose()) {
         Ok(Some(rgba)) => {
@@ -1136,7 +1156,13 @@ fn colours_split(grey: &rustgis_data::raster::Raster, bytes: &[u8], layer_name: 
                 "{layer_name}: its one band of packed colours (alpha, blue, green and red bytes) was split into red, green and blue bands, see-through where alpha is 0 or the pixel is no-data"
             ));
             // What reading the tool's file left out, which the rewritten file no longer shows.
-            messages.extend(grey.lost.texts().map(|l| format!("{layer_name}: {l}")));
+            for note in grey.lost.iter().cloned() {
+                let note = note.prefixed(layer_name);
+                match note.loss {
+                    Some(code) => losses.push(LossMessage { code, text: note.text }),
+                    None => messages.push(note.text),
+                }
+            }
             rgba
         }
         Ok(None) => bytes.to_vec(),
@@ -1213,11 +1239,17 @@ pub fn finish(job: &Job, files: &[(String, Vec<u8>)], lines: &[String], dir: Opt
         }
         _ => serde_json::Map::new(),
     };
-    let mut messages = job.notes.clone();
+    let mut messages = Vec::new();
+    let mut losses = Vec::new();
+    for note in job.notes.iter().cloned() {
+        match note.loss {
+            Some(code) => losses.push(LossMessage { code, text: note.text }),
+            None => messages.push(note.text),
+        }
+    }
     messages.extend(lines.into_iter().take(40).map(str::to_string));
 
     let mut layers = Vec::new();
-    let mut losses = Vec::new();
     for (file, name) in &job.outputs {
         // A tool may pick its own extension (a shapefile for a vector output).
         let stem = Path::new(file).file_stem();
@@ -1248,7 +1280,7 @@ pub fn finish(job: &Job, files: &[(String, Vec<u8>)], lines: &[String], dir: Opt
         let text: String = text.chars().take(2000).collect();
         messages.push(format!("{}: {text}", label_of(k)));
     }
-    if layers.is_empty() && messages.is_empty() {
+    if layers.is_empty() && messages.is_empty() && losses.is_empty() {
         messages.push(format!("{} finished without output", job.name));
     }
     ToolResult { losses, output: Output::Layers(layers), messages }
