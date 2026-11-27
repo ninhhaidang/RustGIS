@@ -313,9 +313,16 @@ fn extra_linux_roots(roots: &[std::path::PathBuf]) -> impl Iterator<Item = &std:
 }
 
 /// The folders under each root where distributions put each font package's own folder.
+/// Always includes `/usr/share/fonts` first so non-Linux Unix systems (e.g. FreeBSD) keep
+/// the original system `FONT_ROOTS` search for variable Noto Serif when Linux-only Flatpak/XDG
+/// roots are gated off.
 fn serif_font_roots(roots: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
+    let mut base = vec![std::path::PathBuf::from("/usr/share/fonts")];
     for root in roots {
+        push_unique_root(&mut base, root.clone());
+    }
+    let mut out = Vec::new();
+    for root in base {
         out.push(root.clone());
         out.push(root.join("truetype"));
         out.push(root.join("opentype"));
@@ -514,6 +521,53 @@ fn all_cjk_linux_filenames() -> Vec<&'static str> {
     out
 }
 
+/// Diagnostics from the bounded Linux CJK font-folder fallback scan, recording any unreadable
+/// directories, directory-entry errors, or folders truncated/skipped at the scan limits.
+/// Clean (`is_clean()`) when every existing folder under the scanned roots was walked in full.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CjkRootScanSummary {
+    /// Directories whose `read_dir` failed for a reason other than `NotFound`.
+    pub unreadable_dirs: usize,
+    /// Directory entries that returned an I/O error during iteration.
+    pub entry_errors: usize,
+    /// Directories truncated or skipped because a depth, directory, file, or entry cap was hit.
+    pub truncated_dirs: usize,
+    /// First affected path, so notices say where skipping or errors happened.
+    pub sample_path: Option<std::path::PathBuf>,
+}
+
+impl CjkRootScanSummary {
+    /// Whether every existing folder under the scanned roots was walked completely without errors.
+    pub fn is_clean(&self) -> bool {
+        self.unreadable_dirs == 0 && self.entry_errors == 0 && self.truncated_dirs == 0
+    }
+
+    /// Human-readable notice naming what was skipped or unreadable, how much, and where,
+    /// or `None` when the scan completed cleanly.
+    pub fn notice(&self) -> Option<String> {
+        if self.is_clean() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if self.truncated_dirs > 0 {
+            parts.push(format!("{} folder(s) reached the scan limit", self.truncated_dirs));
+        }
+        if self.unreadable_dirs > 0 {
+            parts.push(format!("{} unreadable folder(s)", self.unreadable_dirs));
+        }
+        if self.entry_errors > 0 {
+            parts.push(format!("{} directory entry error(s)", self.entry_errors));
+        }
+        let where_text = self.sample_path.as_deref().map(|p| format!(" (e.g. {})", p.display())).unwrap_or_default();
+        Some(format!("CJK font folder search stopped early: {}{where_text}; some installed CJK fonts may not be found.", parts.join(", ")))
+    }
+}
+
+struct CjkRootIndex {
+    files: std::collections::HashMap<&'static str, Vec<std::path::PathBuf>>,
+    summary: CjkRootScanSummary,
+}
+
 /// Shared bounded BFS under Linux `roots` indexing known CJK font filenames across all four regions
 /// (`MAX_DEPTH = 6`, `MAX_DIRS = 2_000`, `MAX_FILES = 20_000`).
 ///
@@ -524,33 +578,44 @@ fn all_cjk_linux_filenames() -> Vec<&'static str> {
 ///
 /// Out of scope for #2313: Arabic, Bengali, Lao, and symbol faces remain on their fixed paths
 /// (`script_paths`) without nested directory fallback search.
-fn scan_cjk_roots(roots: &[std::path::PathBuf]) -> std::collections::HashMap<&'static str, Vec<std::path::PathBuf>> {
+fn scan_cjk_roots(roots: &[std::path::PathBuf]) -> CjkRootIndex {
     const MAX_DEPTH: usize = 6;
     const MAX_DIRS: usize = 2_000;
     const MAX_FILES: usize = 20_000;
+    scan_cjk_roots_bounded(roots, MAX_DEPTH, MAX_DIRS, MAX_FILES)
+}
+
+fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_dirs: usize, max_files: usize) -> CjkRootIndex {
     // Bound the entries read from read_dir across the whole scan, so an oversized directory cannot
     // grow the buffers without limit. Which entries survive the cut follows the filesystem's
     // listing order, not the sorted order.
-    const MAX_ENTRIES: usize = MAX_FILES + MAX_DIRS;
+    let max_entries = max_files.saturating_add(max_dirs);
 
     let targets = all_cjk_linux_filenames();
-    let mut found: std::collections::HashMap<&'static str, Vec<std::path::PathBuf>> = std::collections::HashMap::new();
+    let mut files: std::collections::HashMap<&'static str, Vec<std::path::PathBuf>> = std::collections::HashMap::new();
+    let mut summary = CjkRootScanSummary::default();
     if targets.is_empty() || roots.is_empty() {
-        return found;
+        return CjkRootIndex { files, summary };
     }
 
     let mut seen: std::collections::HashMap<std::path::PathBuf, usize> = std::collections::HashMap::new();
+    let mut skipped_dirs: Vec<std::path::PathBuf> = Vec::new();
     let mut dirs_visited = 0usize;
     let mut files_seen = 0usize;
     let mut entries_seen = 0usize;
 
     for root in roots {
-        if dirs_visited >= MAX_DIRS || files_seen >= MAX_FILES || entries_seen >= MAX_ENTRIES {
-            break;
+        if dirs_visited >= max_dirs || files_seen >= max_files || entries_seen >= max_entries {
+            if root.exists() {
+                skipped_dirs.push(root.clone());
+            }
+            continue;
         }
         let mut queue = std::collections::VecDeque::from([(root.clone(), 0usize)]);
         while let Some((dir, depth)) = queue.pop_front() {
-            if depth > MAX_DEPTH || dirs_visited >= MAX_DIRS || files_seen >= MAX_FILES || entries_seen >= MAX_ENTRIES {
+            if depth > max_depth || dirs_visited >= max_dirs || files_seen >= max_files || entries_seen >= max_entries {
+                skipped_dirs.push(dir);
+                skipped_dirs.extend(queue.drain(..).map(|(p, _)| p));
                 break;
             }
             let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
@@ -558,32 +623,61 @@ fn scan_cjk_roots(roots: &[std::path::PathBuf]) -> std::collections::HashMap<&'s
             if seen.get(&canonical).is_some_and(|&prev| prev <= depth) {
                 continue;
             }
-            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(err) => {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        summary.unreadable_dirs += 1;
+                        summary.sample_path.get_or_insert_with(|| dir.clone());
+                    }
+                    continue;
+                }
+            };
             seen.insert(canonical, depth);
             dirs_visited += 1;
 
-            let entry_budget = MAX_ENTRIES.saturating_sub(entries_seen);
-            if entry_budget == 0 {
-                break;
+            let mut children = Vec::new();
+            let mut entry_cap_hit = false;
+            for entry in entries {
+                match entry {
+                    Ok(e) => {
+                        if entries_seen >= max_entries {
+                            entry_cap_hit = true;
+                            break;
+                        }
+                        entries_seen += 1;
+                        children.push(e.path());
+                    }
+                    Err(_) => {
+                        summary.entry_errors += 1;
+                        summary.sample_path.get_or_insert_with(|| dir.clone());
+                    }
+                }
             }
-            let mut children: Vec<std::path::PathBuf> = entries.flatten().take(entry_budget).map(|e| e.path()).collect();
-            entries_seen += children.len();
+            if entry_cap_hit {
+                summary.truncated_dirs += 1;
+                summary.sample_path.get_or_insert_with(|| dir.clone());
+            }
             children.sort();
 
             for path in children {
                 if path.is_dir() {
-                    if depth < MAX_DEPTH && queue.len() < MAX_DIRS.saturating_sub(dirs_visited) {
+                    if depth < max_depth && queue.len() < max_dirs.saturating_sub(dirs_visited) {
                         queue.push_back((path, depth + 1));
+                    } else {
+                        skipped_dirs.push(path);
                     }
                 } else {
-                    if files_seen >= MAX_FILES {
+                    if files_seen >= max_files {
+                        summary.truncated_dirs += 1;
+                        summary.sample_path.get_or_insert_with(|| dir.clone());
                         break;
                     }
                     files_seen += 1;
                     if let Some(name) = path.file_name().and_then(|n| n.to_str())
                         && let Some(&target_name) = targets.iter().find(|&&t| t == name)
                     {
-                        let bucket = found.entry(target_name).or_default();
+                        let bucket = files.entry(target_name).or_default();
                         if !bucket.contains(&path) {
                             bucket.push(path);
                         }
@@ -593,12 +687,25 @@ fn scan_cjk_roots(roots: &[std::path::PathBuf]) -> std::collections::HashMap<&'s
         }
     }
 
-    found
+    // Count only skipped directories that were not subsequently visited through a shallower path.
+    let mut skipped_seen: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+    for path in skipped_dirs {
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if !seen.contains_key(&canonical) && skipped_seen.insert(canonical) {
+            summary.truncated_dirs += 1;
+            summary.sample_path.get_or_insert(path);
+        }
+    }
+
+    CjkRootIndex { files, summary }
 }
 
-fn cjk_root_index() -> &'static std::collections::HashMap<&'static str, Vec<std::path::PathBuf>> {
-    static INDEX: OnceLock<std::collections::HashMap<&'static str, Vec<std::path::PathBuf>>> = OnceLock::new();
-    INDEX.get_or_init(|| scan_cjk_roots(&linux_font_roots()))
+static CJK_ROOT_INDEX: OnceLock<CjkRootIndex> = OnceLock::new();
+static CJK_SCAN_NOTICE_NEEDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static CJK_SCAN_NOTICE_TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn cjk_root_index() -> &'static CjkRootIndex {
+    CJK_ROOT_INDEX.get_or_init(|| scan_cjk_roots(&linux_font_roots()))
 }
 
 /// Pre-populates the shared Linux CJK fallback folder index on the family-indexing background thread.
@@ -607,6 +714,18 @@ pub(crate) fn warm_up_cjk_roots() {
     if std::env::var_os("RUSTGIS_BUILTIN_FONTS").is_none() {
         let _ = cjk_root_index();
     }
+}
+
+/// Returns truncation or directory-read diagnostics once if a CJK font lookup actually fell back
+/// to the bounded recursive scan and encountered limits or errors. Never starts a scan itself.
+pub fn take_cjk_scan_summary() -> Option<CjkRootScanSummary> {
+    if !CJK_SCAN_NOTICE_NEEDED.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    if CJK_SCAN_NOTICE_TAKEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return None;
+    }
+    CJK_ROOT_INDEX.get().filter(|idx| !idx.summary.is_clean()).map(|idx| idx.summary.clone())
 }
 
 /// Selects the first usable CJK font from a scanned root index in `region`'s preference order.
@@ -676,7 +795,13 @@ pub fn cjk_font(region: CjkRegion) -> Option<&'static (Vec<u8>, u32)> {
                     Some((bytes, index))
                 })
             })
-            .or_else(|| find_cjk_in_index(cjk_root_index(), region).map(|(_, bytes, index)| (bytes, index)))
+            .or_else(|| {
+                let index = cjk_root_index();
+                if !index.summary.is_clean() {
+                    CJK_SCAN_NOTICE_NEEDED.store(true, std::sync::atomic::Ordering::Release);
+                }
+                find_cjk_in_index(&index.files, region).map(|(_, bytes, index)| (bytes, index))
+            })
             .or_else(|| cached_script_font(ScriptFont::Cjk(region)))
     });
     match (found, region) {
@@ -1557,17 +1682,21 @@ mod tests {
         std::fs::write(&jp_path, valid_font).unwrap();
 
         let missing_index = super::scan_cjk_roots(&[dir.path().join("missing")]);
-        assert!(super::find_cjk_in_index(&missing_index, super::CjkRegion::SimplifiedChinese).is_none());
+        assert!(missing_index.summary.is_clean(), "missing optional roots should not emit a notice");
+        assert!(missing_index.summary.notice().is_none());
+        assert!(super::find_cjk_in_index(&missing_index.files, super::CjkRegion::SimplifiedChinese).is_none());
 
         let index = super::scan_cjk_roots(&[dir.path().to_path_buf()]);
+        assert!(index.summary.is_clean());
+        assert!(index.summary.notice().is_none());
         let (chosen_path, found_bytes, found_face) =
-            super::find_cjk_in_index(&index, super::CjkRegion::SimplifiedChinese).expect("should discover nested SC font");
+            super::find_cjk_in_index(&index.files, super::CjkRegion::SimplifiedChinese).expect("should discover nested SC font");
         assert_eq!(chosen_path, sc_path);
         assert_eq!(found_bytes, valid_font);
         assert_eq!(found_face, 0);
 
         let (chosen_jp, _, jp_face) =
-            super::find_cjk_in_index(&index, super::CjkRegion::Japanese).expect("single scan should also index Japanese font");
+            super::find_cjk_in_index(&index.files, super::CjkRegion::Japanese).expect("single scan should also index Japanese font");
         assert_eq!(chosen_jp, jp_path);
         assert_eq!(jp_face, 0);
 
@@ -1575,7 +1704,8 @@ mod tests {
         std::fs::remove_file(&sc_path).unwrap();
         let fallback_index = super::scan_cjk_roots(&[dir.path().to_path_buf()]);
         let (fallback_path, fallback_bytes, fallback_face) =
-            super::find_cjk_in_index(&fallback_index, super::CjkRegion::SimplifiedChinese).expect("should fall back to wqy-microhei.ttc");
+            super::find_cjk_in_index(&fallback_index.files, super::CjkRegion::SimplifiedChinese)
+                .expect("should fall back to wqy-microhei.ttc");
         assert_eq!(fallback_path, wqy_path);
         assert_eq!(fallback_bytes, valid_font);
         assert_eq!(fallback_face, 0);
@@ -1583,7 +1713,71 @@ mod tests {
         // Corrupt-only directory returns None.
         std::fs::remove_file(&wqy_path).unwrap();
         let corrupt_index = super::scan_cjk_roots(&[dir.path().to_path_buf()]);
-        assert!(super::find_cjk_in_index(&corrupt_index, super::CjkRegion::SimplifiedChinese).is_none());
+        assert!(super::find_cjk_in_index(&corrupt_index.files, super::CjkRegion::SimplifiedChinese).is_none());
+    }
+
+    #[test]
+    fn serif_font_roots_keeps_system_roots_when_linux_roots_are_empty() {
+        use std::path::PathBuf;
+
+        assert_eq!(
+            super::serif_font_roots(&[]),
+            vec![PathBuf::from("/usr/share/fonts"), PathBuf::from("/usr/share/fonts/truetype"), PathBuf::from("/usr/share/fonts/opentype")]
+        );
+
+        let with_extra = super::serif_font_roots(&[PathBuf::from("/usr/share/fonts"), PathBuf::from("/run/host/fonts")]);
+        assert_eq!(
+            with_extra,
+            vec![
+                PathBuf::from("/usr/share/fonts"),
+                PathBuf::from("/usr/share/fonts/truetype"),
+                PathBuf::from("/usr/share/fonts/opentype"),
+                PathBuf::from("/run/host/fonts"),
+                PathBuf::from("/run/host/fonts/truetype"),
+                PathBuf::from("/run/host/fonts/opentype"),
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_cjk_roots_reports_truncation_and_is_silent_when_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub_a = dir.path().join("a");
+        let sub_b = dir.path().join("b");
+        std::fs::create_dir_all(&sub_a).unwrap();
+        std::fs::create_dir_all(&sub_b).unwrap();
+        std::fs::write(sub_a.join("f1.ttf"), b"x").unwrap();
+        std::fs::write(sub_a.join("f2.ttf"), b"x").unwrap();
+        std::fs::write(sub_b.join("f3.ttf"), b"x").unwrap();
+
+        // Clean scan within limits produces no notice.
+        let clean = super::scan_cjk_roots_bounded(&[dir.path().to_path_buf()], 6, 10, 10);
+        assert!(clean.summary.is_clean(), "{:?}", clean.summary);
+        assert!(clean.summary.notice().is_none());
+
+        // Capping files below the directory's file count reports truncation with count and path.
+        let capped_files = super::scan_cjk_roots_bounded(&[dir.path().to_path_buf()], 6, 10, 1);
+        assert!(!capped_files.summary.is_clean());
+        assert!(capped_files.summary.truncated_dirs >= 1, "{:?}", capped_files.summary);
+        let notice = capped_files.summary.notice().expect("truncated scan should produce a notice");
+        assert!(notice.contains("reached the scan limit"), "{notice}");
+        assert!(capped_files.summary.sample_path.is_some());
+
+        // Capping depth below the subfolders reports skipped folders.
+        let capped_depth = super::scan_cjk_roots_bounded(&[dir.path().to_path_buf()], 0, 10, 10);
+        assert_eq!(capped_depth.summary.truncated_dirs, 2, "{:?}", capped_depth.summary);
+        assert!(capped_depth.summary.notice().is_some());
+
+        // Unreadable and entry-error counts appear in notice text.
+        let err_summary = super::CjkRootScanSummary {
+            unreadable_dirs: 2,
+            entry_errors: 3,
+            truncated_dirs: 0,
+            sample_path: Some(dir.path().to_path_buf()),
+        };
+        let err_notice = err_summary.notice().expect("errors should produce a notice");
+        assert!(err_notice.contains("2 unreadable folder(s)"), "{err_notice}");
+        assert!(err_notice.contains("3 directory entry error(s)"), "{err_notice}");
     }
 
     #[cfg(unix)]
@@ -1604,12 +1798,14 @@ mod tests {
         std::os::unix::fs::symlink(&target, deep_parent.join("link")).unwrap();
 
         let deep_only = super::scan_cjk_roots(&[dir.path().join("deep")]);
-        assert!(super::find_cjk_in_index(&deep_only, super::CjkRegion::SimplifiedChinese).is_none());
+        assert!(super::find_cjk_in_index(&deep_only.files, super::CjkRegion::SimplifiedChinese).is_none());
+        assert_eq!(deep_only.summary.truncated_dirs, 1, "sub at depth 7 should be reported as skipped");
 
         // Visiting target again as a shallower root revisits it and discovers sub/NotoSansSC-Regular.otf.
         let revisited = super::scan_cjk_roots(&[dir.path().join("deep"), target.clone()]);
+        assert!(revisited.summary.is_clean(), "revisited sub should not count as skipped: {:?}", revisited.summary);
         let (chosen, _, _) =
-            super::find_cjk_in_index(&revisited, super::CjkRegion::SimplifiedChinese).expect("shallower root should revisit target");
+            super::find_cjk_in_index(&revisited.files, super::CjkRegion::SimplifiedChinese).expect("shallower root should revisit target");
         assert_eq!(chosen, expected);
     }
 }

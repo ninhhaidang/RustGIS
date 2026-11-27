@@ -1901,6 +1901,11 @@ impl Session {
             // A command may change a map's projection, or add layers to it.
             if s.depth == 0 {
                 s.note_shown_systems();
+                if let Some(summary) = rustgis_render::fonts::take_cjk_scan_summary()
+                    && let Some(msg) = summary.notice()
+                {
+                    s.notify(msg, false);
+                }
             }
             // Native sessions without a drawing loop recover their own failed overviews.
             // Named callers and sealed completions do not initiate unrelated maintenance.

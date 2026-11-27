@@ -7299,6 +7299,30 @@ impl RustGisApp {
         self.ensure_script_font();
         self.ensure_data_cjk_font(ctx);
         self.ensure_other_script_fonts(ctx);
+        if let Some(summary) = rustgis_engine::render::fonts::take_cjk_scan_summary() {
+            let mut parts = Vec::new();
+            if summary.truncated_dirs > 0 {
+                parts.push(i18n::fmt("{count} folder(s) reached the scan limit", &[("count", &summary.truncated_dirs.to_string())]));
+            }
+            if summary.unreadable_dirs > 0 {
+                parts.push(i18n::fmt("{count} unreadable folder(s)", &[("count", &summary.unreadable_dirs.to_string())]));
+            }
+            if summary.entry_errors > 0 {
+                parts.push(i18n::fmt("{count} directory entry error(s)", &[("count", &summary.entry_errors.to_string())]));
+            }
+            let details = parts.join(", ");
+            let msg = match summary.sample_path.as_deref() {
+                Some(path) => i18n::fmt(
+                    "CJK font folder search stopped early: {details} (e.g. {path}); some installed CJK fonts may not be found.",
+                    &[("details", &details), ("path", &path.display().to_string())],
+                ),
+                None => i18n::fmt(
+                    "CJK font folder search stopped early: {details}; some installed CJK fonts may not be found.",
+                    &[("details", &details)],
+                ),
+            };
+            self.session.notify(msg, false);
+        }
         // Fonts downloaded by the web app.
         let fonts: Vec<(String, Vec<u8>)> = match &self.services.font_inbox {
             Some(inbox) => std::mem::take(&mut *inbox.lock().unwrap_or_else(|e| e.into_inner())),
