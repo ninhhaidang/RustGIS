@@ -248,6 +248,9 @@ pub(crate) fn uncapped() -> bool {
 /// inside an item of a loop ([`Pace`]): a few milliseconds.
 pub(crate) const PACE_WORK: usize = 1 << 22;
 
+/// Coordinates processed per [`Pace`] slice when scanning or copying a single large geometry.
+pub(crate) const COORD_PACE_CHUNK: usize = 65_536;
+
 /// Looks at the cancel flag about every [`PACE_WORK`] units of work, within an item that may
 /// take long on its own (a row of a wide grid without a work cap), so Cancel stops the run soon.
 #[derive(Default)]

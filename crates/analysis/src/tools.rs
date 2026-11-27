@@ -8783,16 +8783,21 @@ enum SelectedSubset {
 
 impl SelectedSubset {
     /// Builds a normalized selection for `ds`. Skips allocating and sorting when `sel` is empty
-    /// (full table). For a non-empty selection, sorts and deduplicates in-bounds indices in one
-    /// pass (an uninterruptible `usize` sort, fast even on millions of indices) so table order wins.
-    fn from_selection(ds: &Dataset, sel: &[usize]) -> Self {
+    /// (full table). For a non-empty selection, fallibly reserves the in-bounds index buffer, then
+    /// sorts and deduplicates it in one pass (an uninterruptible `usize` sort, fast even on
+    /// millions of indices) so table order wins.
+    fn from_selection(ds: &Dataset, sel: &[usize]) -> Result<Self, String> {
         if sel.is_empty() {
-            return Self::All(ds.features.len());
+            return Ok(Self::All(ds.features.len()));
         }
-        let mut rows: Vec<usize> = sel.iter().copied().filter(|&r| r < ds.features.len()).collect();
+        let in_bounds = sel.iter().filter(|&&r| r < ds.features.len()).count();
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(in_bounds)
+            .map_err(|e| format!("Join Field: not enough memory for {in_bounds} selected row indices: {e}"))?;
+        rows.extend(sel.iter().copied().filter(|&r| r < ds.features.len()));
         rows.sort_unstable();
         rows.dedup();
-        if rows.len() == ds.features.len() { Self::All(ds.features.len()) } else { Self::Rows(rows) }
+        if rows.len() == ds.features.len() { Ok(Self::All(ds.features.len())) } else { Ok(Self::Rows(rows)) }
     }
 
     fn len(&self) -> usize {
@@ -8800,6 +8805,10 @@ impl SelectedSubset {
             Self::All(n) => *n,
             Self::Rows(rows) => rows.len(),
         }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     fn copy_work(&self) -> usize {
@@ -8916,9 +8925,9 @@ fn join_field_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let mut messages = Vec::new();
 
     let target_sel = inp.selection(s(p, "target"));
-    let target_subset = SelectedSubset::from_selection(target, target_sel);
+    let target_subset = SelectedSubset::from_selection(target, target_sel)?;
     if !target_sel.is_empty() {
-        if target_subset.len() == 0 {
+        if target_subset.is_empty() {
             messages.push(format!(
                 "Warning: the selection on target '{}' contains only stale indices (0/{} features selected); output is empty",
                 target.name,
@@ -8935,9 +8944,9 @@ fn join_field_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     }
 
     let source_sel = inp.selection(s(p, "joinTable"));
-    let source_subset = SelectedSubset::from_selection(source, source_sel);
+    let source_subset = SelectedSubset::from_selection(source, source_sel)?;
     if !source_sel.is_empty() {
-        if source_subset.len() == 0 {
+        if source_subset.is_empty() {
             messages.push(format!(
                 "Warning: the selection on source '{}' contains only stale indices (0/{} records selected); no attributes will match",
                 source.name,

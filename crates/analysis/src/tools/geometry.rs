@@ -32,7 +32,8 @@ pub(super) fn convert(inp: &dyn Inputs, p: &Json, mode: Conversion) -> Result<To
     finish(out, skipped, tool)
 }
 
-const COORD_PACE_CHUNK: usize = 65_536;
+use crate::control::COORD_PACE_CHUNK;
+
 const PART_PACE_WORK: usize = crate::control::PACE_WORK / 65_536;
 
 /// Copies `ring` (closing it if needed) in [`COORD_PACE_CHUNK`]-vertex slices with fallible
@@ -253,10 +254,10 @@ fn require_schema(f: &Feature, width: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Walks `g` in [`COORD_PACE_CHUNK`]-coordinate slices, rejecting non-finite coordinates and
-/// computing its bounding [`Extent`] while checking Cancel via `pace`.
-fn finite_extent_paced(g: &Geometry, pace: &mut crate::control::Pace) -> Result<Extent, String> {
-    fn visit_slice(coords: &[Coord], extent: &mut Extent, pace: &mut crate::control::Pace) -> Result<(), String> {
+/// Walks `g` in [`COORD_PACE_CHUNK`]-coordinate slices, rejecting non-finite coordinates while
+/// checking Cancel via `pace` and forwarding each finite coordinate to `visit`.
+fn visit_finite_coords_paced(g: &Geometry, pace: &mut crate::control::Pace, mut visit: impl FnMut(Coord)) -> Result<(), String> {
+    fn visit_slice(coords: &[Coord], pace: &mut crate::control::Pace, visit: &mut impl FnMut(Coord)) -> Result<(), String> {
         if pace.stop(PART_PACE_WORK) {
             return Err(crate::control::Cancelled.into());
         }
@@ -268,23 +269,22 @@ fn finite_extent_paced(g: &Geometry, pace: &mut crate::control::Pace) -> Result<
                 if !c.is_finite() {
                     return Err("Geometry conversion requires finite coordinates".into());
                 }
-                extent.expand(c);
+                visit(c);
             }
         }
         Ok(())
     }
-    let mut extent = Extent::EMPTY;
     match g {
         Geometry::Point(c) => {
             if !c.is_finite() {
                 return Err("Geometry conversion requires finite coordinates".into());
             }
-            extent.expand(*c);
+            visit(*c);
         }
-        Geometry::MultiPoint(pts) => visit_slice(pts, &mut extent, pace)?,
+        Geometry::MultiPoint(pts) => visit_slice(pts, pace, &mut visit)?,
         Geometry::Line(parts) => {
             for part in parts {
-                visit_slice(part, &mut extent, pace)?;
+                visit_slice(part, pace, &mut visit)?;
             }
         }
         Geometry::Polygon(polys) => {
@@ -293,18 +293,26 @@ fn finite_extent_paced(g: &Geometry, pace: &mut crate::control::Pace) -> Result<
                     return Err(crate::control::Cancelled.into());
                 }
                 for ring in rings {
-                    visit_slice(ring, &mut extent, pace)?;
+                    visit_slice(ring, pace, &mut visit)?;
                 }
             }
         }
     }
+    Ok(())
+}
+
+/// Walks `g` in [`COORD_PACE_CHUNK`]-coordinate slices, rejecting non-finite coordinates and
+/// computing its bounding [`Extent`] while checking Cancel via `pace`.
+fn finite_extent_paced(g: &Geometry, pace: &mut crate::control::Pace) -> Result<Extent, String> {
+    let mut extent = Extent::EMPTY;
+    visit_finite_coords_paced(g, pace, |c| extent.expand(c))?;
     Ok(extent)
 }
 
 /// Rejects invalid coordinates before extent calculation or endpoint hashing can hide them,
-/// checking Cancel via `pace` inside large geometries.
+/// checking Cancel via `pace` inside large geometries without computing an unused extent.
 fn require_finite_paced(g: &Geometry, pace: &mut crate::control::Pace) -> Result<(), String> {
-    finite_extent_paced(g, pace).map(|_| ())
+    visit_finite_coords_paced(g, pace, |_| {})
 }
 
 /// Returns counted loss notices, refusing a result in which every usable geometry was lost.

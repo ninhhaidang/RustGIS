@@ -90,8 +90,6 @@ pub(crate) fn run(inputs: &dyn Inputs, params: &Json) -> Result<ToolResult, Stri
     })
 }
 
-const COORD_COPY_CHUNK: usize = 65_536;
-
 enum CloneGeometryError {
     Cancelled,
     Reserve(TryReserveError),
@@ -104,12 +102,13 @@ impl From<TryReserveError> for CloneGeometryError {
 }
 
 /// Fallible, cancel-aware geometry copy: reserves exact capacities and checks `pace` between
-/// parts and every [`COORD_COPY_CHUNK`] coordinates so a single huge feature still observes Cancel.
+/// parts and every [`crate::control::COORD_PACE_CHUNK`] coordinates so a single huge feature still
+/// observes Cancel.
 fn clone_geometry_paced(g: &Geometry, pace: &mut crate::control::Pace) -> Result<Geometry, CloneGeometryError> {
     fn coords(source: &[Coord], pace: &mut crate::control::Pace) -> Result<Vec<Coord>, CloneGeometryError> {
         let mut out = Vec::new();
         out.try_reserve_exact(source.len())?;
-        for chunk in source.chunks(COORD_COPY_CHUNK) {
+        for chunk in source.chunks(crate::control::COORD_PACE_CHUNK) {
             if pace.stop(chunk.len()) {
                 return Err(CloneGeometryError::Cancelled);
             }
@@ -250,7 +249,7 @@ mod tests {
     fn clone_geometry_paced_cancels_mid_large_polygon_and_many_rings() {
         use crate::control::{PACE_WORK, Pace};
 
-        let verts = COORD_COPY_CHUNK + 2_048;
+        let verts = crate::control::COORD_PACE_CHUNK + 2_048;
         let big_ring: Vec<Coord> = (0..verts).map(|i| Coord::new(i as f64, 0.0)).collect();
         let big_poly = Geometry::Polygon(vec![vec![big_ring]]);
 
