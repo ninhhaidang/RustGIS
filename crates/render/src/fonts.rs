@@ -654,13 +654,11 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
                     }
                 }
             }
-            if entry_cap_hit {
-                summary.truncated_dirs += 1;
-                summary.sample_path.get_or_insert_with(|| dir.clone());
-            }
             children.sort();
 
-            for path in children {
+            let mut dir_truncated = entry_cap_hit;
+            let mut iter = children.into_iter();
+            while let Some(path) = iter.next() {
                 if path.is_dir() {
                     if depth < max_depth && queue.len() < max_dirs.saturating_sub(dirs_visited) {
                         queue.push_back((path, depth + 1));
@@ -669,8 +667,8 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
                     }
                 } else {
                     if files_seen >= max_files {
-                        summary.truncated_dirs += 1;
-                        summary.sample_path.get_or_insert_with(|| dir.clone());
+                        dir_truncated = true;
+                        skipped_dirs.extend(iter.filter(|p| p.is_dir()));
                         break;
                     }
                     files_seen += 1;
@@ -683,6 +681,10 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
                         }
                     }
                 }
+            }
+            if dir_truncated {
+                summary.truncated_dirs += 1;
+                summary.sample_path.get_or_insert_with(|| dir.clone());
             }
         }
     }
@@ -1762,6 +1764,15 @@ mod tests {
         let notice = capped_files.summary.notice().expect("truncated scan should produce a notice");
         assert!(notice.contains("reached the scan limit"), "{notice}");
         assert!(capped_files.summary.sample_path.is_some());
+
+        // Subfolders sorted after the file that hits max_files are also counted as skipped.
+        let behind_dir = tempfile::tempdir().unwrap();
+        std::fs::write(behind_dir.path().join("a1.ttf"), b"x").unwrap();
+        std::fs::write(behind_dir.path().join("a2.ttf"), b"x").unwrap();
+        std::fs::create_dir_all(behind_dir.path().join("z1")).unwrap();
+        std::fs::create_dir_all(behind_dir.path().join("z2")).unwrap();
+        let capped_behind = super::scan_cjk_roots_bounded(&[behind_dir.path().to_path_buf()], 6, 10, 1);
+        assert_eq!(capped_behind.summary.truncated_dirs, 3, "{:?}", capped_behind.summary);
 
         // Capping depth below the subfolders reports skipped folders.
         let capped_depth = super::scan_cjk_roots_bounded(&[dir.path().to_path_buf()], 0, 10, 10);
