@@ -280,6 +280,8 @@ impl GpkgSource {
         // Columns: the primary key, the geometry and the attribute fields.
         let mut pk = None;
         let mut fields = Vec::new();
+        // The columns with no field type (BLOB), which reading leaves out.
+        let mut left_out = Vec::new();
         {
             let mut st = conn.prepare(&format!("PRAGMA table_info({})", quote(&table))).map_err(err)?;
             let cols = st
@@ -294,8 +296,9 @@ impl GpkgSource {
                     pk = Some(name);
                     continue;
                 }
-                if let Some(ty) = field_type(&decl) {
-                    fields.push(Field::new(name, ty));
+                match field_type(&decl) {
+                    Some(ty) => fields.push(Field::new(name, ty)),
+                    None => left_out.push((name, "binary".to_string())),
                 }
             }
         }
@@ -354,7 +357,7 @@ impl GpkgSource {
             "POLYGON" | "MULTIPOLYGON" | "SURFACE" | "MULTISURFACE" => GeometryType::Polygon,
             _ => GeometryType::None,
         };
-        let info = SourceInfo {
+        let mut info = SourceInfo {
             name: table.clone(),
             format: "GeoPackage",
             geometry_type,
@@ -368,6 +371,10 @@ impl GpkgSource {
             notes,
             zm_dropped: false,
         };
+        info.note_columns(
+            &left_out,
+            ["of a type RustGIS has no field for was left out", "of types RustGIS has no field for were left out"],
+        );
         let file = Some((path.to_path_buf(), id));
         let mut src = GpkgSource {
             info,

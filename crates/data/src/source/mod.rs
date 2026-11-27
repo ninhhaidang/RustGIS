@@ -189,21 +189,12 @@ impl SourceInfo {
         }
     }
 
-    /// Notes what happened to some columns in one note, counting them and naming the first 12
-    /// with their kind ("price (decimal)"): `what` says it for one column, then for several.
-    /// Nothing when there are none.
+    /// Notes what happened to some columns in one note ([`columns_note`]). Nothing when there are
+    /// none.
     pub(crate) fn note_columns(&mut self, cols: &[(String, String)], what: [&str; 2]) {
-        const NAMED: usize = 12;
-        let [one, several] = what;
-        let n = cols.len();
-        let what = match n {
-            0 => return,
-            1 => one,
-            _ => several,
-        };
-        let named: Vec<String> = cols.iter().take(NAMED).map(|(name, kind)| format!("{name} ({kind})")).collect();
-        let more = if n > NAMED { format!(" and {} more", n - NAMED) } else { String::new() };
-        self.notes.push(format!("{n} column{} {what}: {}{more}", if n == 1 { "" } else { "s" }, named.join(", ")));
+        if let Some(note) = columns_note(cols, what) {
+            self.notes.push(note);
+        }
     }
 
     /// The source's coordinate system, when it isn't longitude/latitude: one known by its EPSG
@@ -211,6 +202,23 @@ impl SourceInfo {
     pub fn coordinate_system(&self) -> Option<Crs> {
         Crs::parse(&self.crs).ok().filter(|c| *c != Crs::LonLat)
     }
+}
+
+/// The note of some columns a reader left out, counting them and naming the first 12 with their
+/// kind ("photo (binary)"): `what` says it for one column, then for several. `None` when there
+/// are none.
+pub(crate) fn columns_note(cols: &[(String, String)], what: [&str; 2]) -> Option<String> {
+    const NAMED: usize = 12;
+    let [one, several] = what;
+    let n = cols.len();
+    let what = match n {
+        0 => return None,
+        1 => one,
+        _ => several,
+    };
+    let named: Vec<String> = cols.iter().take(NAMED).map(|(name, kind)| format!("{name} ({kind})")).collect();
+    let more = if n > NAMED { format!(" and {} more", n - NAMED) } else { String::new() };
+    Some(format!("{n} column{} {what}: {}{more}", if n == 1 { "" } else { "s" }, named.join(", ")))
 }
 
 /// A read: the features intersecting `extent` (longitude/latitude; `None` = all), at most `limit`.

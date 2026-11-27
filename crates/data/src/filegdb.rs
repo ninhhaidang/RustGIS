@@ -324,9 +324,27 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
     // The attribute fields: every field but the geometry, and the object ID first.
     let mut fields: Vec<Field> = Vec::new();
     let mut columns: Vec<usize> = Vec::new();
+    // The table's own geometry is its first geometry field; the fields with no type of ours are
+    // left out, and said below.
+    let geometry_at = table.fields.iter().position(|f| f.kind == Kind::Geometry);
+    let mut left_out: Vec<(String, String)> = Vec::new();
     for (i, f) in table.fields.iter().enumerate() {
         let ty = match f.kind {
-            Kind::Geometry | Kind::Binary | Kind::Raster => continue,
+            Kind::Geometry if Some(i) == geometry_at => continue,
+            // A raster field is never read here (`Table::parse` refuses the table), but a kind that
+            // is left out is named whatever the parser does.
+            Kind::Geometry => {
+                left_out.push((f.name.clone(), "geometry".to_string()));
+                continue;
+            }
+            Kind::Binary => {
+                left_out.push((f.name.clone(), "binary".to_string()));
+                continue;
+            }
+            Kind::Raster => {
+                left_out.push((f.name.clone(), "raster".to_string()));
+                continue;
+            }
             Kind::Int16 | Kind::Int32 | Kind::Int64 | Kind::ObjectId => FieldType::Integer,
             Kind::Float32 | Kind::Float64 => FieldType::Double,
             Kind::Date | Kind::DateTimeOffset => FieldType::DateTime,
@@ -336,6 +354,13 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
         let alias = (!f.alias.is_empty() && f.alias != f.name).then(|| f.alias.clone());
         fields.push(Field { name: f.name.clone(), ty, alias });
         columns.push(i);
+    }
+    // Said by the table's name, as another table with the same fields says it too.
+    if let Some(note) = crate::source::columns_note(
+        &left_out,
+        ["of a type RustGIS has no field for was left out", "of types RustGIS has no field for were left out"],
+    ) {
+        report.messages.push(format!("{name}: {note}"));
     }
     let patches = table.shape == Shape::Multipatch;
     // A multipatch's lowest and highest Z, and the difference (what an extrusion stands it up by),
@@ -364,7 +389,6 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
     if let Some(c) = crs.filter(|_| to_lonlat.is_some()) {
         ds.held_in = c;
     }
-    let geometry_at = table.fields.iter().position(|f| f.kind == Kind::Geometry);
     let (mut curves, mut wall_hulls, mut unmerged, mut unprojected, mut beyond) = (0usize, 0usize, 0usize, 0usize, 0usize);
     // Multipatches with points but no footprint: too few, all on one line, or not finite numbers.
     let mut no_footprint = 0usize;

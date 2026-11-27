@@ -3935,6 +3935,52 @@ fn flatgeobuf_binary_columns_are_said_and_left_out() {
     assert!(src.info().notes.is_empty(), "{:?}", src.info().notes);
 }
 
+/// A GeoPackage's BLOB columns, which RustGIS has no field type for, are said and left out by the
+/// desktop reader and the browser's alike, the columns after them keeping their values; a table
+/// without one says nothing (#2916).
+#[test]
+fn geopackage_blob_columns_are_said_and_left_out() {
+    let d = tempfile::tempdir().unwrap();
+    let blobs = |n: usize| {
+        let path = d.path().join(format!("blobs{n}.gpkg"));
+        write_gpkg(&path, false);
+        let c = rusqlite::Connection::open(&path).unwrap();
+        for i in 1..=n {
+            c.execute_batch(&format!(
+                "ALTER TABLE \"grid \"\"q\"\"\" ADD COLUMN b{i:02} BLOB; ALTER TABLE \"grid \"\"q\"\"\" ADD COLUMN after{i:02} TEXT;"
+            ))
+            .unwrap();
+        }
+        path
+    };
+    let notes = |path: &Path| {
+        let bytes = Shared(Arc::new(std::fs::read(path).unwrap()));
+        let mem = gpkg_mem::GpkgMemSource::open_shared(bytes, None).unwrap();
+        let sql = open_path(path, None).unwrap();
+        let said = |s: &dyn FeatureSource| s.info().notes.texts().map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(said(&mem), said(sql.as_ref()), "the browser's reader says what the desktop's does");
+        let fields: Vec<String> = sql.info().fields.iter().map(|f| f.name.clone()).collect();
+        assert_eq!(mem.info().fields, sql.info().fields);
+        // Read whole, the layer's name goes before it.
+        let (_, report) = materialize(sql.as_ref()).unwrap();
+        (said(sql.as_ref()), fields, report.messages.texts().map(str::to_string).collect::<Vec<_>>())
+    };
+    let one = notes(&blobs(1));
+    assert_eq!(one.0, ["1 column of a type RustGIS has no field for was left out: b01 (binary)"]);
+    assert_eq!(one.1, ["name", "value", "ok", "after01"]);
+    assert_eq!(one.2, [format!("grid \"q\": {}", one.0[0])]);
+    let two = notes(&blobs(2));
+    assert_eq!(two.0, ["2 columns of types RustGIS has no field for were left out: b01 (binary), b02 (binary)"]);
+    let many = notes(&blobs(13));
+    let named: Vec<String> = (1..=12).map(|i| format!("b{i:02} (binary)")).collect();
+    assert_eq!(many.0, [format!("13 columns of types RustGIS has no field for were left out: {} and 1 more", named.join(", "))]);
+    // The table as the fixture writes it: nothing is left out, nothing said.
+    let clean = d.path().join("clean.gpkg");
+    write_gpkg(&clean, false);
+    let none = notes(&clean);
+    assert!(none.0.is_empty() && none.2.is_empty(), "{none:?}");
+}
+
 /// The tables of a GeoPackage, by name.
 fn gpkg_tables(path: &Path) -> Vec<String> {
     let c = rusqlite::Connection::open(path).unwrap();

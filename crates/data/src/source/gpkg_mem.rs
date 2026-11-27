@@ -191,13 +191,18 @@ impl GpkgMemSource {
             .ok_or_else(|| DataError::Format(format!("GeoPackage: no column '{geom}' in {table_name}")))?;
         let mut fields = Vec::new();
         let mut field_cols = Vec::new();
+        // The columns with no field type (BLOB), which reading leaves out.
+        let mut left_out = Vec::new();
         for (i, c) in table.columns.iter().enumerate() {
             if i == geom_col || Some(i) == table.rowid_column {
                 continue;
             }
-            if let Some(ty) = super::gpkg_blob::field_type(&c.decl) {
-                fields.push(Field::new(c.name.clone(), ty));
-                field_cols.push(i);
+            match super::gpkg_blob::field_type(&c.decl) {
+                Some(ty) => {
+                    fields.push(Field::new(c.name.clone(), ty));
+                    field_cols.push(i);
+                }
+                None => left_out.push((c.name.clone(), "binary".to_string())),
             }
         }
         let contents = meta_rows(&db, &schema, "gpkg_contents").unwrap_or_default();
@@ -211,7 +216,7 @@ impl GpkgMemSource {
             "POLYGON" | "MULTIPOLYGON" | "SURFACE" | "MULTISURFACE" => GeometryType::Polygon,
             _ => GeometryType::None,
         };
-        let info = SourceInfo {
+        let mut info = SourceInfo {
             name: table_name,
             format: "GeoPackage",
             geometry_type,
@@ -225,6 +230,10 @@ impl GpkgMemSource {
             notes,
             zm_dropped: false,
         };
+        info.note_columns(
+            &left_out,
+            ["of a type RustGIS has no field for was left out", "of types RustGIS has no field for were left out"],
+        );
         let mut src = GpkgMemSource { info, db, table, geom_col, field_cols, reproject };
         // The extent the file declares, else the envelopes in the geometry headers.
         let native = match declared.filter(|e| !e.is_empty()) {

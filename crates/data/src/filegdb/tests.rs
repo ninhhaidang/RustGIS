@@ -37,7 +37,14 @@ enum F {
     Text(&'static str),
     Int(&'static str),
     Date(&'static str, u8),
-    Shape { z: bool, wkt: &'static str },
+    Shape {
+        z: bool,
+        wkt: &'static str,
+    },
+    /// A binary field.
+    Blob(&'static str),
+    /// A second geometry field, under its own name.
+    Shape2(&'static str),
 }
 
 /// One row's stored values (the object ID stores nothing): `None` is null.
@@ -59,6 +66,34 @@ fn table(layer_flags: u32, fields: &[F], rows: &[Vec<V>]) -> (Vec<u8>, Vec<u8>) 
         f.extend(utf16_bytes(n));
         f.push(0);
     };
+    let shape = |f: &mut Vec<u8>, field_name: &str, z: bool, wkt: &str| {
+        name(f, field_name);
+        f.extend([7, 0, 7]);
+        let w = utf16_bytes(wkt);
+        f.extend((w.len() as i16).to_le_bytes());
+        f.extend(w);
+        f.push(if z { 3 } else { 1 });
+        for v in [0.0f64, 0.0, 1000.0] {
+            f.extend(v.to_le_bytes());
+        }
+        if z {
+            f.extend(0.0f64.to_le_bytes());
+            f.extend(1000.0f64.to_le_bytes());
+        }
+        f.extend(0.001f64.to_le_bytes());
+        if z {
+            f.extend(0.001f64.to_le_bytes());
+        }
+        for v in [0.0f64, 0.0, 100.0, 100.0] {
+            f.extend(v.to_le_bytes());
+        }
+        if layer_flags & 0x8000_0000 != 0 {
+            f.extend([0.0f64, 100.0].iter().flat_map(|v| v.to_le_bytes()));
+        }
+        f.push(0);
+        f.extend(1u32.to_le_bytes());
+        f.extend(10.0f64.to_le_bytes());
+    };
     for field in fields {
         match field {
             F::Oid => {
@@ -79,33 +114,11 @@ fn table(layer_flags: u32, fields: &[F], rows: &[Vec<V>]) -> (Vec<u8>, Vec<u8>) 
                 name(&mut f, n);
                 f.extend([*kind, 8, 5, 0]);
             }
-            F::Shape { z, wkt } => {
-                name(&mut f, "SHAPE");
-                f.extend([7, 0, 7]);
-                let w = utf16_bytes(wkt);
-                f.extend((w.len() as i16).to_le_bytes());
-                f.extend(w);
-                f.push(if *z { 3 } else { 1 });
-                for v in [0.0f64, 0.0, 1000.0] {
-                    f.extend(v.to_le_bytes());
-                }
-                if *z {
-                    f.extend(0.0f64.to_le_bytes());
-                    f.extend(1000.0f64.to_le_bytes());
-                }
-                f.extend(0.001f64.to_le_bytes());
-                if *z {
-                    f.extend(0.001f64.to_le_bytes());
-                }
-                for v in [0.0f64, 0.0, 100.0, 100.0] {
-                    f.extend(v.to_le_bytes());
-                }
-                if layer_flags & 0x8000_0000 != 0 {
-                    f.extend([0.0f64, 100.0].iter().flat_map(|v| v.to_le_bytes()));
-                }
-                f.push(0);
-                f.extend(1u32.to_le_bytes());
-                f.extend(10.0f64.to_le_bytes());
+            F::Shape { z, wkt } => shape(&mut f, "SHAPE", *z, wkt),
+            F::Shape2(n) => shape(&mut f, n, false, ""),
+            F::Blob(n) => {
+                name(&mut f, n);
+                f.extend([8, 0, 5]);
             }
         }
     }
@@ -955,4 +968,59 @@ fn filegdb_temporal_fields_keep_days_offsets_and_null_notices() {
             assert_eq!(notices[0].loss, Some(crate::loss::LossCode::ChangedRounded));
         }
     }
+}
+
+/// A binary field and a geometry field after the first are left out of the layer, and said, once
+/// for the table and by its name; a table without them says nothing (#2916).
+#[test]
+fn binary_and_extra_geometry_fields_are_said_and_left_out() {
+    let square = || V::Blob(polygon(&square(0.0, 0.0, 10.0)));
+    let shape = F::Shape { z: false, wkt: LONLAT };
+    let said = |fields: &[F], row: Vec<V>, name: &'static str| {
+        let files = geodatabase(vec![(name, table(4, fields, &[row]))]);
+        let layers = read_files(&files).unwrap();
+        let (ds, report) = layers.into_iter().next().unwrap();
+        let names: Vec<String> = ds.fields.iter().map(|f| f.name.clone()).collect();
+        assert!(matches!(&ds.features[0].geometry, Some(Geometry::Polygon(_))), "{:?}", ds.features[0].geometry);
+        assert_eq!(report.skipped, 0, "{report:?}");
+        (names, report.messages.texts().map(str::to_string).collect::<Vec<_>>())
+    };
+    // One binary field: the values after it keep their place.
+    let (names, messages) =
+        said(&[F::Oid, shape, F::Blob("scan"), F::Text("name")], vec![square(), V::Blob(vec![1, 2, 3]), V::Text(Some("a"))], "photos");
+    assert_eq!(names, ["OBJECTID", "name"]);
+    assert_eq!(messages, ["photos: 1 column of a type RustGIS has no field for was left out: scan (binary)"]);
+    // A binary field and a second geometry field, each named with its kind.
+    let (names, messages) = said(
+        &[F::Oid, F::Shape { z: false, wkt: LONLAT }, F::Text("name"), F::Blob("scan"), F::Shape2("Shape_2")],
+        vec![square(), V::Text(Some("a")), V::Blob(vec![9]), square()],
+        "photos",
+    );
+    assert_eq!(names, ["OBJECTID", "name"]);
+    assert_eq!(messages, ["photos: 2 columns of types RustGIS has no field for were left out: scan (binary), Shape_2 (geometry)"]);
+    // Thirteen are counted and the first twelve named.
+    let blobs: Vec<&'static str> = ["b01", "b02", "b03", "b04", "b05", "b06", "b07", "b08", "b09", "b10", "b11", "b12", "b13"].into();
+    let mut fields = vec![F::Oid, F::Shape { z: false, wkt: LONLAT }];
+    fields.extend(blobs.iter().map(|n| F::Blob(n)));
+    let mut row = vec![square()];
+    row.extend(blobs.iter().map(|_| V::Blob(Vec::new())));
+    let (_, messages) = said(&fields, row, "many");
+    let named: Vec<String> = blobs.iter().take(12).map(|n| format!("{n} (binary)")).collect();
+    assert_eq!(messages, [format!("many: 13 columns of types RustGIS has no field for were left out: {} and 1 more", named.join(", "))]);
+    // Nothing left out: nothing said.
+    let (names, messages) =
+        said(&[F::Oid, F::Shape { z: false, wkt: LONLAT }, F::Text("name")], vec![square(), V::Text(Some("a"))], "clean");
+    assert_eq!(names, ["OBJECTID", "name"]);
+    assert!(messages.is_empty(), "{messages:?}");
+    // Two tables with the same field each say it: the table's name tells them apart.
+    let one = |name| (name, table(4, &[F::Oid, F::Shape { z: false, wkt: LONLAT }, F::Blob("scan")], &[vec![square(), V::Blob(vec![1])]]));
+    let layers = read_files(&geodatabase(vec![one("north"), one("south")])).unwrap();
+    let all: Vec<String> = layers.iter().flat_map(|(_, r)| r.messages.texts().map(str::to_string)).collect();
+    assert_eq!(
+        all,
+        [
+            "north: 1 column of a type RustGIS has no field for was left out: scan (binary)",
+            "south: 1 column of a type RustGIS has no field for was left out: scan (binary)"
+        ]
+    );
 }
