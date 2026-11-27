@@ -32,6 +32,16 @@ deletes the selection, adds or calculates a field, and calculates geometry attri
 The first column, **Feature ID**, shows each feature's identifier, not its current row position
 after sorting or filtering. It is not a dataset field: do not use it as a geoprocessing field name.
 
+The cell last clicked is the current cell, shown with an outline. After a click or a scroll in the
+table, the **arrow keys** move it: up and down through the rows as the table sorts and filters them,
+left and right through the columns shown, **Feature ID** first. It stops at the edges, the table
+scrolls to keep it in view, and a held key keeps moving. With no current cell, or with its row or
+column no longer shown, an arrow starts at the first row or column shown. Moving it doesn't change
+the selection. **Enter** edits it, as a double-click does (Feature ID can't be edited). While the
+table is in use the arrow keys don't pan, turn or tilt the map or nudge a layout element; click or
+scroll the map or layout and they do again. While you type in a cell or in **Filter rows…**, the
+keys are the text box's. A shortcut you give an arrow key or Enter still runs its command.
+
 Right-click a row for **Zoom To**, **Remove from Selection**, **Copy** (the feature, as
 **Copy** in the ribbon does), **Copy Value** (the text of the cell clicked; a number is copied in
 full and a picture gives its stored data) and **Delete** (Undo brings the rows back; greyed while

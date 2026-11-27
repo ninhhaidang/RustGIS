@@ -3075,8 +3075,10 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
     }
     // Arrow keys pan; Shift+Left and Shift+Right turn the map, Shift+Up and Shift+Down tilt it
     // (as in MapLibre). With Alt or Mod held the arrows are shortcuts (Alt+Shift+arrows move the
-    // active layer in the Layers pane's outline, #836), not map moves.
-    if !ui.ctx().egui_wants_keyboard_input() {
+    // active layer in the Layers pane's outline, #836), not map moves. With the attribute table
+    // in use they move its current cell, and the map stays: held keys are read here, so the
+    // table taking the key presses wouldn't stop them.
+    if !ui.ctx().egui_wants_keyboard_input() && crate::inuse::pane(app) != crate::inuse::Pane::Table {
         let (mut dx, mut dy, mut turn, mut tilt) = (0.0, 0.0, 0.0, 0.0);
         ui.input(|i| {
             if i.modifiers.alt || i.modifiers.command {

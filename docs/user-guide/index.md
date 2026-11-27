@@ -549,6 +549,7 @@ with `{"layer":"parcels"}`.
 | ++delete++ | Delete selected features; with Edit Vertices, the chosen vertex; in a layout, the selected element; in the layer list, remove the selected layers (++backspace++ too) |
 | ++ctrl+d++ | Duplicate the selected layout element |
 | Arrow keys / ++shift++ + arrow keys | Nudge the selected layout element / nudge it further |
+| Arrow keys / ++enter++ | In the attribute table, move the current cell / edit it |
 | ++alt+shift+right++ / ++alt+shift+left++ | Indent the active layer into the group above it / outdent it out of its group |
 | ++alt+shift+up++ / ++alt+shift+down++ | Move the active layer up / down one step in the Layers pane |
 | ++f2++ | Rename the active layer; on the map and layout tabs, and in a layout, the map or layout in view |
@@ -559,10 +560,12 @@ On macOS, ++cmd++ takes the place of ++ctrl++. **Help › Shortcuts** lists them
 from the same table the app runs them from. While you type in a text field, undo and redo take
 back its typing, not the project's last change.
 
-++delete++ and ++f2++ act on the part of the window you last clicked, dragged or scrolled in.
-Click a layer in the Layers pane and ++delete++ removes it (Undo brings it back), whatever is
-selected on the map; click or scroll the map and it deletes the selected features again. When
-++delete++ has nothing to act on, a notice says why.
+++delete++, ++f2++ and the arrow keys act on the part of the window you last clicked, dragged or
+scrolled in. Click a layer in the Layers pane and ++delete++ removes it (Undo brings it back),
+whatever is selected on the map; click or scroll the map and it deletes the selected features
+again. When ++delete++ has nothing to act on, a notice says why. In the
+[attribute table](analysis.md#the-attribute-table) the arrow keys move between cells; on the map
+they pan it, and in a layout they nudge the selected element.
 
 Copy and Paste follow it too. In the Layers pane they copy and paste the selected layers, as **Copy
 Layer** and **Paste Layer** in a layer's menu do: the copies go above the active layer, or at the

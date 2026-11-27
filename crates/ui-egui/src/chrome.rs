@@ -917,6 +917,8 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
     let element = app.session.active_layout.is_some() && app.layout.selected.is_some();
     // The pane the user last pressed or scrolled in: Delete and Rename act on it.
     let pane = crate::inuse::pane(app);
+    // The arrows nudge that element, unless the attribute table is in use: they are its cells'.
+    let nudges = element && pane != Pane::Table;
     // What to run now, each with the pane that was in use as its key went down, and what to run
     // once the panes are drawn ([`late_keys`]).
     let mut run: Vec<(String, Value, Pane)> = Vec::new();
@@ -954,7 +956,7 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
             }
             // With a layout element selected, the arrows nudge it (below), whatever else they run;
             // the nudge never takes Ctrl (⌘), so a shortcut with it still runs.
-            if element && !b.chord.command && matches!(b.chord.key, Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown) {
+            if nudges && !b.chord.command && matches!(b.chord.key, Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown) {
                 continue;
             }
             if i.consume_shortcut(&KeyboardShortcut::new(b.chord.modifiers(), b.chord.key)) {
@@ -988,7 +990,7 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
             }
             // Arrow keys nudge the selected layout element, further with Shift; held, it keeps
             // going. Shift first: a plain arrow's pattern takes Shift-arrows too.
-            if element {
+            if nudges {
                 use crate::layoutview::{NUDGE_FAST_MM, NUDGE_MM};
                 for (key, dx, dy) in
                     [(Key::ArrowLeft, -1.0, 0.0), (Key::ArrowRight, 1.0, 0.0), (Key::ArrowUp, 0.0, -1.0), (Key::ArrowDown, 0.0, 1.0)]
@@ -1023,6 +1025,10 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
             }
         }
     });
+    // After the shortcuts, so a key the user bound to a command still runs it.
+    if !typing {
+        crate::table::take_keys(app, ctx);
+    }
     let dialogs = dialogs_up(app);
     crate::inuse::keep_late(app, late, dialogs);
     run_keys(app, ctx, &run);

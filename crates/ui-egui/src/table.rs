@@ -1,6 +1,7 @@
 //! The attribute table, docked under the map: sort, filter to the selection, select rows (synced
 //! with the map) and edit values in place, a layer's or a standalone table's.
 
+mod cursor;
 mod dates;
 mod rowmenu;
 
@@ -15,6 +16,7 @@ use serde_json::{Value, json};
 use crate::theme::{Tokens, semibold};
 use crate::widgets::{small, small_for};
 use crate::{RustGisApp, icons};
+pub(crate) use cursor::take_keys;
 
 #[derive(Default)]
 pub struct TableState {
@@ -39,6 +41,12 @@ pub struct TableState {
     stats: Option<ColumnStats>,
     /// The cell a row's right-click menu was last opened on.
     menu: Option<rowmenu::Opened>,
+    /// The cell the arrow keys move and Enter edits.
+    current: Option<cursor::Current>,
+    /// The frame's cell keys, taken as it began ([`take_keys`]) for [`show`] to act on.
+    keys: Vec<egui::Key>,
+    /// Whether the next frame scrolls the current cell into view.
+    reveal: bool,
 }
 
 struct RowOrder {
@@ -188,6 +196,7 @@ pub(crate) fn prune_views(app: &mut RustGisApp) {
         app.table.sort_schema = None;
         app.table.row_order = None;
         app.table.menu = None;
+        app.table.current = None;
         app.table.opened = app.session.opened;
     }
     let project = &app.session.project;
@@ -358,6 +367,7 @@ impl CellEdit {
 /// shown, docked under the map: its rows, toolbar and cell editor. Edits run as commands.
 pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     dates::show(app, ui.ctx());
+    let keys = std::mem::take(&mut app.table.keys);
     let layer_id = app.session.table_layer;
     // An edit is the layer's or table's it was opened on: the view closed (however) or showing
     // another, it is dropped rather than written later to whatever row has its place.
@@ -371,6 +381,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     if layer_id.is_none() && app.session.table_standalone.is_none() {
         app.table.stats = None;
         app.table.row_order = None;
+        app.table.current = None;
         return;
     }
     if app.table.stats.as_ref().is_some_and(|s| !s.of(app, layer_id)) {
@@ -497,6 +508,24 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                 (app.table.selected_only && is_layer).then_some(selection.as_slice()),
             );
             let row_count = rows.map_or(ds.features.len(), <[usize]>::len);
+            let table = cursor::Shown { view: key, table_instance, ds: &ds, rows, columns: &shown };
+            if app.table.current.as_mut().is_some_and(|c| !c.follow(&table)) {
+                app.table.current = None;
+            }
+            let mark = app.table.current.as_ref().and_then(|c| c.mark(&ds));
+            // The place and field of the current cell, when this frame is to scroll to it.
+            let reveal = std::mem::take(&mut app.table.reveal)
+                .then(|| app.table.current.as_mut().and_then(|c| c.place(&table).zip(c.mark(&ds)).map(|(at, (_, field))| (at, field))))
+                .flatten();
+            // Sideways, the column's header is scrolled to: it is drawn wherever the rows are, and
+            // the rows' own scroll area keeps what is asked inside it.
+            let reveal_column = |ui: &Ui, field: Option<usize>| {
+                if reveal.is_some_and(|(_, f)| f == field) {
+                    ui.scroll_to_rect_animation(ui.max_rect(), None, egui::style::ScrollAnimation::none());
+                }
+            };
+            // The place and field of the cell clicked.
+            let mut pressed: Option<(usize, Option<usize>)> = None;
             let mut clicked: Option<(usize, bool)> = None;
             let mut commits: Vec<(u64, usize, String, String)> = Vec::new();
             // Whether the cell being typed in was laid out (its row scrolled into view).
@@ -515,6 +544,8 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
             // The row right-clicked, or whose menu is open.
             let mut menu_row: Option<rowmenu::RowAt> = None;
             egui::ScrollArea::horizontal().show(ui, |ui| {
+                // The table's width on screen.
+                let view = ui.clip_rect().x_range();
                 let mut tb = TableBuilder::new(ui)
                     .striped(true)
                     .resizable(true)
@@ -524,14 +555,19 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                 for _ in &shown {
                     tb = tb.column(Column::initial(120.0).at_least(50.0).clip(true));
                 }
+                if let Some((at, _)) = reveal {
+                    tb = tb.scroll_to_row(at, None).animate_scrolling(false);
+                }
                 tb.min_scrolled_height(0.0)
                     .header(24.0, |mut h| {
                         h.col(|ui| {
+                            reveal_column(ui, None);
                             ui.label(egui::RichText::new(tl!("Feature ID")).font(semibold(11.5)).color(t.text_dim))
                                 .on_hover_text(tl!("Feature identifier, not a dataset field or a row position."));
                         });
                         for &i in &shown {
                             h.col(|ui| {
+                                reveal_column(ui, Some(i));
                                 let Some(fd) = ds.fields.get(i) else { return };
                                 let arrow = match app.table.sort {
                                     Some((c, true)) if c == i => " ↑",
@@ -630,6 +666,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                             // and the cell right-clicked.
                             let mut over: Option<egui::Response> = None;
                             let mut right: Option<usize> = None;
+                            let at = row.index();
                             let mut take = |cell: egui::Response, text: Option<egui::Response>, col: Option<usize>| {
                                 let cell = match text {
                                     Some(text) => cell | text,
@@ -637,6 +674,9 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                                 };
                                 if cell.secondary_clicked() {
                                     right = col;
+                                }
+                                if cell.clicked() || cell.secondary_clicked() {
+                                    pressed = Some((at, col));
                                 }
                                 match over.as_mut() {
                                     Some(o) => *o |= cell,
@@ -646,6 +686,9 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                             let mut text = None;
                             let (_, cell) = row.col(|ui| {
                                 text = Some(ui.label(egui::RichText::new(oid.to_string()).size(11.5).color(t.text_dim)));
+                                if mark == Some((r, None)) {
+                                    cursor::outline(ui, &t, view);
+                                }
                             });
                             take(cell, text, None);
                             for &c in &shown {
@@ -684,24 +727,15 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                                         let txt = egui::RichText::new(shown).size(11.5);
                                         let txt = if matches!(v, V::Null) || picture { txt.color(t.text_disabled).italics() } else { txt };
                                         let resp = ui.add(egui::Label::new(txt).sense(Sense::click()).truncate());
-                                        if resp.double_clicked() && ds.fields.get(c).is_some_and(|f| ds.field_index(&f.name) != Some(c)) {
-                                            // Its value would be written to the field its name finds.
-                                            by_other_name = true;
-                                        } else if resp.double_clicked() {
-                                            // The cell being typed in is kept first (once: its
-                                            // editor may have kept it on losing the focus).
-                                            if let Some(e) = app.table.editing.take()
-                                                && !commits.iter().any(|q| q.0 == e.fid && q.1 == e.col)
-                                                && cancel != Some((e.fid, e.col))
-                                            {
-                                                commits.push((e.fid, e.col, e.text, e.was));
-                                            }
-                                            let text = if matches!(v, V::Null) { String::new() } else { v.to_string() };
-                                            app.table.editing = Some(CellEdit::new(key, oid, c, text, &ds.fields, table_instance));
+                                        if resp.double_clicked() {
+                                            by_other_name |= !table.open_editor((r, oid, c), &mut app.table.editing, &mut commits, cancel);
                                         } else if resp.clicked() {
                                             clicked = Some((r, ui.input(|i| i.modifiers.command || i.modifiers.shift)));
                                         }
                                         text = Some(resp);
+                                        if mark == Some((r, Some(c))) {
+                                            cursor::outline(ui, &t, view);
+                                        }
                                     }
                                 });
                                 take(cell, text, Some(c));
@@ -718,6 +752,32 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                         });
                     });
             });
+            // The frame's click, then its keys: a cell clicked and a key pressed in one frame act
+            // in that order. What they change shows on the next frame.
+            if let Some((at, field)) = pressed {
+                app.table.current = table.cell(at, field);
+                ui.ctx().request_repaint();
+            }
+            for pressed_key in keys {
+                if pressed_key == egui::Key::Enter {
+                    let Some(at) = app.table.current.as_mut().and_then(|c| c.editable(&table)) else { continue };
+                    // Pressed again before the editor was drawn (its row is being scrolled to):
+                    // it stays as it is.
+                    if !app.table.editing.as_ref().is_some_and(|e| e.fid == at.1 && e.col == at.2) {
+                        by_other_name |= !table.open_editor(at, &mut app.table.editing, &mut commits, cancel);
+                    }
+                } else if let Some(next) = table.step(app.table.current.as_mut(), pressed_key) {
+                    app.table.current = Some(next);
+                } else {
+                    continue;
+                }
+                app.table.reveal = true;
+                ui.ctx().request_repaint();
+                // What was pressed after the Enter that opened a cell is not the table's.
+                if pressed_key == egui::Key::Enter {
+                    break;
+                }
+            }
             if let Some(i) = sort_click {
                 app.table.sort = match app.table.sort {
                     Some((c, true)) if c == i => Some((i, false)),
@@ -1321,6 +1381,476 @@ mod tests {
         h.get_by_label("Copy Value").click();
         h.step();
         assert_eq!(h.state().ui.copy_out.as_deref(), Some("Delta"));
+    }
+
+    type Window = egui_kittest::Harness<'static, RustGisApp>;
+
+    /// The whole window, as its frames run, so the keys are read where a frame reads them and the
+    /// pane in use follows the pointer. No right pane: more room for the table and the map.
+    fn window(mut app: RustGisApp) -> Window {
+        app.ui.right_open.clear();
+        app.ui.right = None;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 900.0)).with_max_steps(64).with_step_dt(0.25).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(6);
+        h
+    }
+
+    /// An app whose table shows "Places", with fields Name, Note and Rank and editing on: four
+    /// points whose names and ranks sort them differently.
+    fn places() -> (RustGisApp, u32) {
+        use rustgis_engine::data::{FieldType, Geometry, GeometryType};
+        use rustgis_engine::geom::Coord;
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let schema = vec![Field::new("Name", FieldType::Text), Field::new("Note", FieldType::Text), Field::new("Rank", FieldType::Integer)];
+        let mut ds = Dataset::new("Places", GeometryType::Point, schema);
+        for (i, (name, rank)) in [("Alpha", 3), ("Bravo", 1), ("Charlie", 4), ("Delta", 2)].into_iter().enumerate() {
+            let at = Geometry::Point(Coord::new(10.0 * i as f64, 0.0));
+            ds.push(Some(at), vec![V::Text(name.into()), V::Text(format!("note {name}")), V::Int(rank)]);
+        }
+        let id = app.session.map_mut().add_dataset(ds);
+        app.session.table_layer = Some(id);
+        app.run("edit.enable", json!({"on": true})).unwrap();
+        (app, id)
+    }
+
+    /// Of two fields of one name, one is deleted: which of them the current cell was in can't be
+    /// told any more, so there is none, rather than one in the field that is left.
+    #[test]
+    fn the_current_cell_goes_when_a_field_of_its_name_does() {
+        use rustgis_engine::data::{FieldType, Geometry, GeometryType};
+        use rustgis_engine::geom::Coord;
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let schema = vec![Field::new("Name", FieldType::Text), Field::new("v", FieldType::Text), Field::new("v", FieldType::Text)];
+        let mut ds = Dataset::new("Twins", GeometryType::Point, schema);
+        ds.push(
+            Some(Geometry::Point(Coord::new(0.0, 0.0))),
+            vec![V::Text("Alpha".into()), V::Text("first".into()), V::Text("second".into())],
+        );
+        let id = app.session.map_mut().add_dataset(ds);
+        app.session.table_layer = Some(id);
+        let mut h = window(app);
+        h.get_by_label("first").click();
+        h.run_steps(3);
+        assert!(h.state().table.current.is_some(), "the click made the cell current");
+        // An unrelated field added leaves it.
+        h.state_mut().run("edit.addField", json!({"layer": id, "name": "Rank", "type": "long"})).unwrap();
+        h.run_steps(3);
+        assert!(h.state().table.current.is_some(), "another field added leaves the current cell");
+        h.state_mut().run("edit.deleteField", json!({"layer": id, "field": "v"})).unwrap();
+        h.run_steps(3);
+        assert!(h.state().table.current.is_none(), "one of the two fields named v has gone");
+    }
+
+    /// The current cell as its row's Name and its field's name, "Feature ID" for that column.
+    fn current(h: &Window) -> Option<(String, String)> {
+        let app = h.state();
+        let ds = match app.session.table_layer {
+            Some(id) => &app.session.map().layer(id)?.dataset,
+            None => &app.session.project.table(app.session.table_standalone?)?.dataset,
+        };
+        let (row, field) = app.table.current.as_ref()?.mark(ds)?;
+        let field = field.map_or_else(|| "Feature ID".to_string(), |i| ds.fields[i].name.clone());
+        Some((ds.value(row, ds.field_index("Name")?).to_string(), field))
+    }
+
+    /// What [`current`] answers for the cell of the row named `name`, in `field`.
+    fn at(name: &str, field: &str) -> Option<(String, String)> {
+        Some((name.to_string(), field.to_string()))
+    }
+
+    /// A key pressed and let go.
+    fn key(h: &mut Window, key: egui::Key) {
+        h.key_press(key);
+        h.run_steps(2);
+    }
+
+    /// A turn of the mouse wheel at `pos`, which makes the pane there the one in use.
+    fn wheel(h: &mut Window, pos: egui::Pos2, lines: f32) {
+        h.event(egui::Event::PointerMoved(pos));
+        h.step();
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, lines),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        });
+        h.run_steps(8);
+    }
+
+    /// Where the map or the layout is, above the table.
+    const ON_THE_VIEW: egui::Pos2 = egui::pos2(700.0, 350.0);
+
+    /// A click makes a cell current, and each arrow moves it as the table shows its rows and
+    /// columns: sorted, filtered, reordered and with a column hidden. It stops at the edges, leaves
+    /// the selection alone, and goes with its feature, its field or its table.
+    #[test]
+    fn arrow_keys_move_the_current_cell_as_the_table_shows_it() {
+        use egui::Key::{ArrowDown, ArrowLeft, ArrowRight, ArrowUp};
+        let (app, id) = places();
+        let mut h = window(app);
+        assert_eq!(current(&h), None);
+        h.get_by_label("Bravo").click();
+        h.run_steps(3);
+        assert_eq!(current(&h), at("Bravo", "Name"));
+        let selected = |h: &Window| h.state().session.map().layer(id).unwrap().selection.clone();
+        assert_eq!(selected(&h), [1], "the click selects, as before");
+
+        for (pressed, want) in [
+            (ArrowDown, ("Charlie", "Name")),
+            (ArrowRight, ("Charlie", "Note")),
+            (ArrowRight, ("Charlie", "Rank")),
+            (ArrowRight, ("Charlie", "Rank")),
+            (ArrowDown, ("Delta", "Rank")),
+            (ArrowDown, ("Delta", "Rank")),
+            (ArrowLeft, ("Delta", "Note")),
+            (ArrowLeft, ("Delta", "Name")),
+            (ArrowLeft, ("Delta", "Feature ID")),
+            (ArrowLeft, ("Delta", "Feature ID")),
+            (ArrowUp, ("Charlie", "Feature ID")),
+            (ArrowUp, ("Bravo", "Feature ID")),
+            (ArrowUp, ("Alpha", "Feature ID")),
+            (ArrowUp, ("Alpha", "Feature ID")),
+        ] {
+            key(&mut h, pressed);
+            assert_eq!(current(&h), at(want.0, want.1), "after {pressed:?}");
+            assert_eq!(selected(&h), [1], "the selection stays");
+        }
+        // A widget that has the keyboard (reached with Tab) keeps the keys: the cell stays. A
+        // click on a cell takes the keyboard back for the table.
+        key(&mut h, egui::Key::Tab);
+        assert!(h.ctx.memory(|m| m.focused()).is_some(), "Tab gave a widget the keyboard");
+        key(&mut h, ArrowDown);
+        assert_eq!(current(&h), at("Alpha", "Feature ID"), "the arrows are the focused widget's");
+        h.get_by_label("Bravo").click();
+        h.run_steps(3);
+        assert_eq!(current(&h), at("Bravo", "Name"));
+        key(&mut h, ArrowUp);
+        key(&mut h, ArrowLeft);
+        assert_eq!(current(&h), at("Alpha", "Feature ID"), "the arrows are the table's again");
+        assert_eq!(selected(&h), [1]);
+        // Two presses in one frame move twice.
+        h.input_mut().events.extend([ArrowDown, ArrowDown].map(|key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }));
+        h.run_steps(3);
+        assert_eq!(current(&h), at("Charlie", "Feature ID"));
+        // A held key repeats.
+        for (held, want) in [(ArrowUp, "Alpha"), (ArrowDown, "Charlie")] {
+            h.key_down(held);
+            h.key_down(held);
+            h.key_up(held);
+            h.run_steps(3);
+            assert_eq!(current(&h), at(want, "Feature ID"), "held {held:?}");
+        }
+
+        // Sorted by rank (Bravo, Delta, Alpha, Charlie), Rank moved to the front and Note hidden.
+        let fields = h.state().session.map().layer(id).unwrap().dataset.fields.clone();
+        let instance = h.state().session.map().layer(id).unwrap().instance_id();
+        let mut view = ColumnView::default();
+        view.shift(&fields, 2, true);
+        view.shift(&fields, 2, true);
+        view.hide(&fields, 1);
+        h.state_mut().table.views.insert(ViewKey::Layer(instance), view);
+        h.run_steps(2);
+        h.get_by_label("Rank").click();
+        h.run_steps(3);
+        assert_eq!(current(&h), at("Charlie", "Feature ID"), "the cell stays with its feature");
+        for (pressed, want) in [
+            (ArrowUp, ("Alpha", "Feature ID")),
+            (ArrowRight, ("Alpha", "Rank")),
+            (ArrowRight, ("Alpha", "Name")),
+            (ArrowRight, ("Alpha", "Name")),
+            (ArrowUp, ("Delta", "Name")),
+            (ArrowUp, ("Bravo", "Name")),
+            (ArrowUp, ("Bravo", "Name")),
+        ] {
+            key(&mut h, pressed);
+            assert_eq!(current(&h), at(want.0, want.1), "sorted, after {pressed:?}");
+        }
+        // Filtered to the names with an "l" (Delta, Alpha, Charlie): Bravo is left out, so an arrow
+        // starts at the first row shown, in the same column.
+        h.state_mut().table.filter = "l".into();
+        h.run_steps(2);
+        for (pressed, want) in [(ArrowDown, "Delta"), (ArrowDown, "Alpha"), (ArrowDown, "Charlie"), (ArrowDown, "Charlie")] {
+            key(&mut h, pressed);
+            assert_eq!(current(&h), at(want, "Name"), "filtered, after {pressed:?}");
+        }
+        // A hidden column's cell starts again at the first column, in the same row.
+        let mut view = ColumnView::default();
+        view.hide(&fields, 0);
+        h.state_mut().table.views.insert(ViewKey::Layer(instance), view);
+        h.state_mut().table.filter.clear();
+        h.state_mut().table.sort = None;
+        h.run_steps(2);
+        key(&mut h, ArrowUp);
+        assert_eq!(current(&h), at("Charlie", "Feature ID"));
+        assert_eq!(selected(&h), [1]);
+
+        // Edits under it: another field added and a row before it deleted leave it; its own field
+        // or feature gone, it goes. Then the first arrow starts at the first row and column.
+        key(&mut h, ArrowRight);
+        assert_eq!(current(&h), at("Charlie", "Note"));
+        h.state_mut().run("edit.addField", json!({"layer": id, "name": "Extra", "type": "long"})).unwrap();
+        h.state_mut().run("edit.delete", Value::Null).unwrap();
+        h.run_steps(2);
+        assert_eq!(current(&h), at("Charlie", "Note"), "Bravo, above it, was deleted");
+        h.state_mut().run("edit.deleteField", json!({"layer": id, "field": "Note"})).unwrap();
+        h.run_steps(2);
+        assert!(h.state().table.current.is_none(), "its field is gone");
+        key(&mut h, ArrowDown);
+        assert_eq!(current(&h), at("Alpha", "Feature ID"));
+        h.state_mut().run("select.rows", json!({"layer": id, "rows": [0], "mode": "new"})).unwrap();
+        h.state_mut().run("edit.delete", Value::Null).unwrap();
+        h.run_steps(2);
+        assert!(h.state().table.current.is_none(), "its feature is gone");
+
+        // Another table, and another project, start with none.
+        let table = h.state_mut().run("layer.addDataText", json!({"fileName": "sites.csv", "text": "Name\nEcho\nFoxtrot\n"})).unwrap();
+        key(&mut h, ArrowDown);
+        assert!(h.state().table.current.is_some());
+        h.state_mut().session.table_layer = None;
+        h.state_mut().session.table_standalone = table["id"].as_u64().and_then(|id| u32::try_from(id).ok());
+        h.run_steps(2);
+        assert!(h.state().table.current.is_none(), "another table");
+        h.get_by_label("Echo").click();
+        h.run_steps(3);
+        key(&mut h, ArrowDown);
+        assert_eq!(current(&h), at("Foxtrot", "Name"), "a standalone table's cells too");
+        h.state_mut().run("project.new", Value::Null).unwrap();
+        h.run_steps(2);
+        assert!(h.state().table.current.is_none(), "another project");
+    }
+
+    /// The arrows are the table's only while it is the pane in use and nothing is being typed: with
+    /// the map in use they pan it; a text box keeps them; and a selected layout element is nudged
+    /// only while the layout is in use.
+    #[test]
+    fn the_cell_keys_are_the_tables_only_while_it_is_in_use() {
+        use crate::inuse::{Pane, pane};
+        use egui::Key::{ArrowDown, ArrowRight, Enter};
+        let (app, id) = places();
+        let mut h = window(app);
+        let center = |h: &Window| {
+            let at = h.state().session.map().camera.center_lonlat();
+            (at.x, at.y)
+        };
+        h.get_by_label("Alpha").click();
+        h.run_steps(3);
+        assert_eq!(pane(h.state()), Pane::Table);
+        let before = center(&h);
+        key(&mut h, ArrowDown);
+        assert_eq!(current(&h), at("Bravo", "Name"));
+        assert_eq!(center(&h), before, "the map doesn't pan too");
+
+        wheel(&mut h, ON_THE_VIEW, 1.0);
+        assert_eq!(pane(h.state()), Pane::View);
+        let before = center(&h);
+        key(&mut h, ArrowDown);
+        key(&mut h, Enter);
+        assert_eq!(current(&h), at("Bravo", "Name"), "the map is in use");
+        assert!(h.state().table.editing.is_none());
+        assert_ne!(center(&h), before, "the arrow pans the map");
+
+        // In the filter box the arrows move its cursor, and Enter leaves the cell alone.
+        h.get_by_label("Alpha").click();
+        h.run_steps(3);
+        let row = h.get_by_label("Selected only").rect().center().y;
+        let inputs = h.query_all_by_role(egui::accesskit::Role::TextInput);
+        let filter: Vec<_> = inputs.filter(|n| (n.rect().center().y - row).abs() < 12.0).collect();
+        assert_eq!(filter.len(), 1, "the filter box is the text box in the table's toolbar");
+        filter[0].click();
+        h.run_steps(3);
+        assert!(h.ctx.egui_wants_keyboard_input(), "the cursor is in the filter box");
+        assert_eq!(pane(h.state()), Pane::Table);
+        key(&mut h, ArrowDown);
+        key(&mut h, ArrowRight);
+        assert_eq!(current(&h), at("Alpha", "Name"));
+        key(&mut h, Enter);
+        assert!(h.state().table.editing.is_none());
+
+        // A key the user bound to a command still runs it.
+        let bound = crate::keymap::Chord::parse("ArrowRight").unwrap();
+        h.state_mut().ui.keymap.assign(bound, "select.clear", Value::Null);
+        h.get_by_label("Alpha").click();
+        h.run_steps(3);
+        key(&mut h, ArrowRight);
+        assert!(h.state().session.map().layer(id).unwrap().selection.is_empty(), "the shortcut ran");
+        assert_eq!(current(&h), at("Alpha", "Name"), "and the cell stayed");
+        h.state_mut().ui.keymap.remove(bound);
+
+        // A layout's element selected: the arrows are the cells' while the table is in use.
+        h.state_mut().run("layout.new", json!({"name": "Sheet"})).unwrap();
+        let li = h.state().session.active_layout.unwrap();
+        let title = h.state().session.project.layouts[li].elements.iter().find(|e| e.name == "Title").unwrap().id;
+        h.run_steps(3);
+        h.get_by_label("Alpha").click();
+        h.run_steps(3);
+        h.state_mut().layout.selected = Some(title);
+        h.run_steps(2);
+        let place = |h: &Window| {
+            let e = h.state().session.project.layouts[li].element(title).unwrap();
+            (e.x, e.y)
+        };
+        let before = place(&h);
+        key(&mut h, ArrowDown);
+        h.key_press_modifiers(egui::Modifiers::SHIFT, ArrowDown);
+        h.run_steps(2);
+        assert_eq!(current(&h), at("Bravo", "Name"));
+        assert_eq!(place(&h), before, "no nudge, with Shift or without");
+        wheel(&mut h, ON_THE_VIEW, 1.0);
+        assert_eq!(pane(h.state()), Pane::View);
+        key(&mut h, ArrowDown);
+        assert_ne!(place(&h), before, "the layout is in use");
+        assert_eq!(current(&h), at("Bravo", "Name"));
+    }
+
+    /// Enter edits the current cell as a double-click does: the value typed is kept, Escape leaves
+    /// it, a held Enter doesn't reopen it, and Feature ID or a dialog up leave Enter alone.
+    #[test]
+    fn enter_edits_the_current_cell() {
+        use egui::Key::{ArrowDown, ArrowLeft, Enter, Escape};
+        let (app, id) = places();
+        let mut h = window(app);
+        let name = |h: &Window, row: usize| h.state().session.map().layer(id).unwrap().dataset.value(row, 0).to_string();
+        h.get_by_label("Alpha").click();
+        h.run_steps(3);
+        let selected = h.state().session.map().layer(id).unwrap().selection.clone();
+        key(&mut h, ArrowDown);
+        key(&mut h, Enter);
+        let fid = h.state().session.map().layer(id).unwrap().dataset.features.row(1).unwrap().id();
+        assert_eq!(h.state().table.editing.as_ref().map(|e| (e.fid, e.col)), Some((fid, 0)), "the current cell, not the selected");
+        h.event(egui::Event::Text(" two".into()));
+        h.run_steps(2);
+        // The arrows are the editor's.
+        key(&mut h, ArrowDown);
+        assert_eq!(current(&h), at("Bravo", "Name"));
+        // Enter held: it keeps the value, and its repeat doesn't open the cell again.
+        h.key_down(Enter);
+        h.run_steps(2);
+        h.key_down(Enter);
+        h.run_steps(2);
+        h.key_up(Enter);
+        h.run_steps(2);
+        assert_eq!(name(&h, 1), "Bravo two");
+        assert!(h.state().table.editing.is_none(), "the editor closed");
+        assert_eq!(current(&h), at("Bravo two", "Name"), "still the current cell");
+        assert_eq!(h.state().session.map().layer(id).unwrap().selection, selected);
+
+        key(&mut h, Enter);
+        h.event(egui::Event::Text(" no".into()));
+        h.run_steps(2);
+        key(&mut h, Escape);
+        assert!(h.state().table.editing.is_none());
+        assert_eq!(name(&h, 1), "Bravo two", "Escape leaves it");
+        key(&mut h, ArrowDown);
+        assert_eq!(current(&h), at("Charlie", "Name"), "the arrows are the table's again");
+
+        // With editing turned off it opens, and keeping the value says why it can't.
+        h.state_mut().run("edit.enable", json!({"on": false})).unwrap();
+        let mark = h.state().session.notice_mark();
+        key(&mut h, Enter);
+        h.event(egui::Event::Text("x".into()));
+        h.run_steps(2);
+        key(&mut h, Enter);
+        assert_eq!(name(&h, 2), "Charlie");
+        assert!(h.state().session.notices_since(mark).iter().any(|n| n.text.contains("editing is turned off")));
+        h.state_mut().run("edit.enable", json!({"on": true})).unwrap();
+
+        // A dialog that is up has Enter.
+        h.state_mut().run("ui.dialog", json!({"name": "bookmark"})).unwrap();
+        h.run_steps(3);
+        key(&mut h, Enter);
+        assert!(h.state().table.editing.is_none(), "Enter was the dialog's");
+        h.state_mut().dialogs.open = None;
+        h.run_steps(2);
+
+        // Feature ID can't be edited.
+        h.get_by_label("Alpha").click();
+        h.run_steps(3);
+        key(&mut h, ArrowLeft);
+        assert_eq!(current(&h), at("Alpha", "Feature ID"));
+        key(&mut h, Enter);
+        assert!(h.state().table.editing.is_none());
+    }
+
+    /// The table scrolls, down and sideways, to keep the current cell in view, and Enter scrolls
+    /// back to a cell scrolled away from before it edits it.
+    #[test]
+    fn the_table_scrolls_to_the_current_cell() {
+        use egui::Key::{ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Enter};
+        let names: Vec<String> = (0..14).map(|c| format!("field{c}")).collect();
+        let mut ds =
+            Dataset::new("Grid", rustgis_engine::data::GeometryType::Point, fields(&names.iter().map(String::as_str).collect::<Vec<_>>()));
+        for r in 0..200 {
+            ds.push(None, (0..14).map(|c| V::Text(format!("r{r}c{c}"))).collect());
+        }
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let id = app.session.map_mut().add_dataset(ds);
+        app.session.table_layer = Some(id);
+        app.run("edit.enable", json!({"on": true})).unwrap();
+        let mut h = window(app);
+        h.get_by_label("r0c0").click();
+        h.run_steps(3);
+        // Where the table's columns start, right of the Layers pane.
+        let left = h.get_by_label("Feature ID").rect().left() - 8.0;
+        // Drawn inside the table: right of its edge, below the column headers and above the
+        // status bar.
+        let in_view = |h: &Window, cell: &str| {
+            let header = h.get_by_label("Feature ID").rect().bottom();
+            let Some(r) = h.query_by_label(cell).map(|n| n.rect()) else { return false };
+            r.left() >= left && r.right() <= 1200.0 && r.top() >= header && r.bottom() <= 875.0
+        };
+        // A key, and the frames in which the scroll it asks for is drawn.
+        let step = |h: &mut Window, pressed: egui::Key| {
+            key(h, pressed);
+            h.run_steps(2);
+        };
+        assert!(in_view(&h, "r0c0") && !in_view(&h, "r40c0") && !in_view(&h, "r0c13"));
+        for row in 1..=40 {
+            step(&mut h, ArrowDown);
+            assert!(in_view(&h, &format!("r{row}c0")), "row {row} is in view");
+        }
+        for column in 1..14 {
+            step(&mut h, ArrowRight);
+            assert!(in_view(&h, &format!("r40c{column}")), "column {column} is in view");
+        }
+        for column in (0..13).rev() {
+            step(&mut h, ArrowLeft);
+            assert!(in_view(&h, &format!("r40c{column}")), "column {column} is back in view");
+        }
+        step(&mut h, ArrowLeft);
+        let id_header = h.get_by_label("Feature ID").rect();
+        assert!(id_header.left() >= left, "the Feature ID column is in view: {id_header:?}");
+        step(&mut h, ArrowRight);
+        for row in (0..40).rev() {
+            step(&mut h, ArrowUp);
+            assert!(in_view(&h, &format!("r{row}c0")), "row {row} is back in view");
+        }
+
+        // Scrolled far from the cell, Enter scrolls back and the editor takes what is typed.
+        let on_table = h.get_by_label("r2c3").rect().center();
+        wheel(&mut h, on_table, -60.0);
+        assert!(h.query_by_label("r0c0").is_none(), "scrolled away");
+        key(&mut h, Enter);
+        h.run_steps(4);
+        h.event(egui::Event::Text("!".into()));
+        h.run_steps(2);
+        key(&mut h, Enter);
+        let value = h.state().session.map().layer(id).unwrap().dataset.value(0, 0).to_string();
+        assert_eq!(value, "r0c0!");
+        assert!(in_view(&h, "r0c0!"), "and the table shows it");
     }
 
     fn fields(names: &[&str]) -> Vec<Field> {

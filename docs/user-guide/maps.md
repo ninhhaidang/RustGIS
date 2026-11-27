@@ -71,7 +71,9 @@ view to it, and says so.
 **Rotating and tilting the map.** Drag with the right mouse button, or hold ++ctrl++ and drag
 with the Pan tool, to turn the map about the centre of the view (to the right turns it clockwise)
 and to tilt it (up tilts it further), as in MapLibre; or hold ++shift++ and press ++arrow-left++ or ++arrow-right++ to turn it, ++arrow-up++ or ++arrow-down++
-to tilt it. The north arrow turns with the map to point north and leans back as it tilts; click
+to tilt it (after a click or a scroll in the
+[attribute table](analysis.md#the-attribute-table), the arrow keys move between its cells
+instead). The north arrow turns with the map to point north and leans back as it tilts; click
 it to face north and look straight down again. The bearing (the compass direction the top of the
 view faces, in degrees clockwise from north) and the pitch (the tilt from looking straight down,
 0 to 85 degrees) work as in MapLibre. They are saved with the project, its bookmarks and bookmark
