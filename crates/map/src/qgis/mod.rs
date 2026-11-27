@@ -31,6 +31,7 @@ use crate::effects::Blend;
 use crate::symbology::{Labeling, LineStroke, MarkerRotation, Picture, Renderer};
 pub use annotation::{Annotation, MAX_ITEMS as MAX_ANNOTATIONS};
 pub use expr::{reads_measure, to_sql};
+use rustgis_data::loss::LossCode;
 pub use source::{MAX_MEMORY_FIELDS, Source, VirtualFrom, WebOptions, is_drive_relative, is_relative};
 pub use structure::{MAX_BOOKMARKS, MAX_RELATIONS, ProjectBookmark, ProjectRelation, listed};
 
@@ -55,14 +56,14 @@ pub struct Report {
     /// Where each note is in `notes`, by layer, kind and text: a hostile project can make
     /// thousands of different notes, and a repeat is found without going through them all.
     #[serde(skip)]
-    index: HashMap<(String, NoteKind, String), usize>,
-    /// Different notes past [`MAX_NOTES`], not kept but counted in a closing note of their kind:
-    /// approximated, then skipped.
+    index: HashMap<NoteKey, usize>,
+    /// Different notes past [`MAX_NOTES`], not kept but counted in a closing note of their kind
+    /// and loss code.
     #[serde(skip)]
-    more: [usize; 2],
-    /// Where each kind's closing note is in `notes`, kept in step by [`Report::forget`].
+    more: HashMap<(NoteKind, Option<LossCode>), usize>,
+    /// Where each closing note is in `notes`, kept in step by [`Report::forget`].
     #[serde(skip)]
-    closing: [Option<usize>; 2],
+    closing: HashMap<(NoteKind, Option<LossCode>), usize>,
     /// Raster image markers' images by their `imageFile`, read before the symbols showing them
     /// (`symbol::read_images`): each kept picture with its height over its width, or why it isn't
     /// drawn. Carried here because every symbol reader already takes the report; passing them
@@ -86,6 +87,17 @@ pub struct Note {
     pub text: String,
     /// How many times it came up (once per symbol, class or rule it applies to).
     pub count: usize,
+    /// What happened to the layer's data, when this is a loss of data (features, geometry,
+    /// attributes, coordinates or times) and not only of how the map is drawn.
+    #[serde(serialize_with = "loss_id", skip_serializing_if = "Option::is_none")]
+    pub loss: Option<LossCode>,
+}
+
+fn loss_id<S: serde::Serializer>(code: &Option<LossCode>, s: S) -> Result<S::Ok, S::Error> {
+    match code {
+        Some(code) => s.serialize_str(code.spec().id),
+        None => s.serialize_none(),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -97,39 +109,40 @@ pub enum NoteKind {
     Skipped,
 }
 
+/// A note's identity: a coded note never merges with a plain one or one of another code.
+type NoteKey = (String, NoteKind, Option<LossCode>, String);
+
 impl Report {
     /// Notes `text` about `layer`, counting a repeat rather than listing it again.
     pub fn note(&mut self, layer: &str, kind: NoteKind, text: impl Into<String>) {
-        let key = (layer.to_string(), kind, text.into());
+        self.note_coded(layer, kind, None, text.into());
+    }
+
+    fn note_coded(&mut self, layer: &str, kind: NoteKind, loss: Option<LossCode>, text: String) {
+        let key: NoteKey = (layer.to_string(), kind, loss, text);
         if let Some(n) = self.index.get(&key).and_then(|&i| self.notes.get_mut(i)) {
             n.count = n.count.saturating_add(1);
         } else if self.notes.len() < MAX_NOTES {
             self.index.insert(key.clone(), self.notes.len());
-            let (layer, kind, text) = key;
-            self.notes.push(Note { layer, kind, text, count: 1 });
+            let (layer, kind, loss, text) = key;
+            self.notes.push(Note { layer, kind, text, count: 1, loss });
         } else {
-            // Past the cap, a new note is counted in the one closing note of its kind, never
-            // listed itself.
-            let (_, kind, _) = key;
-            let k = usize::from(kind == NoteKind::Skipped);
-            let more = self.more.get(k).copied().unwrap_or(0).saturating_add(1);
+            // Past the cap, a new note is counted in the one closing note of its kind and code,
+            // never listed itself (a loss keeps its code there).
+            let at = (kind, loss);
+            let more = self.more.get(&at).copied().unwrap_or(0).saturating_add(1);
             let text = format!("{more} more note(s) not listed");
-            let at = self.closing.get(k).copied().flatten();
-            match at.and_then(|i| self.notes.get_mut(i)) {
+            match self.closing.get(&at).copied().and_then(|i| self.notes.get_mut(i)) {
                 Some(closing) => {
                     closing.text = text;
                     closing.count = closing.count.saturating_add(1);
                 }
                 None => {
-                    self.notes.push(Note { layer: String::new(), kind, text, count: 1 });
-                    if let Some(c) = self.closing.get_mut(k) {
-                        *c = Some(self.notes.len() - 1);
-                    }
+                    self.notes.push(Note { layer: String::new(), kind, text, count: 1, loss });
+                    self.closing.insert(at, self.notes.len() - 1);
                 }
             }
-            if let Some(m) = self.more.get_mut(k) {
-                *m = more;
-            }
+            self.more.insert(at, more);
         }
     }
 
@@ -141,15 +154,21 @@ impl Report {
         self.note(layer, NoteKind::Skipped, text);
     }
 
-    /// How many times `text` was noted for `layer`.
+    /// Notes a loss of the layer's data (not of how it is drawn) with its code, which a notice
+    /// and `--strict` go by. A coded note never merges with a plain one.
+    pub fn lost(&mut self, layer: &str, kind: NoteKind, code: LossCode, text: impl Into<String>) {
+        self.note_coded(layer, kind, Some(code), text.into());
+    }
+
+    /// How many times `text` was noted for `layer` (plain).
     fn noted(&self, layer: &str, kind: NoteKind, text: &str) -> usize {
-        let key = (layer.to_string(), kind, text.to_string());
+        let key: NoteKey = (layer.to_string(), kind, None, text.to_string());
         self.index.get(&key).and_then(|&i| self.notes.get(i)).map_or(0, |n| n.count)
     }
 
-    /// Withdraws a provisional note once checking against the destination fields disproves it.
+    /// Withdraws a provisional plain note once checking against the destination fields disproves it.
     fn forget(&mut self, layer: &str, kind: NoteKind, text: &str) {
-        let key = (layer.to_string(), kind, text.to_string());
+        let key: NoteKey = (layer.to_string(), kind, None, text.to_string());
         let Some(&at) = self.index.get(&key) else { return };
         if let Some(note) = self.notes.get_mut(at)
             && note.count > 1
@@ -157,15 +176,15 @@ impl Report {
             note.count -= 1;
             return;
         }
-        self.notes.retain(|n| n.layer != layer || n.kind != kind || n.text != text);
-        self.index = self.notes.iter().enumerate().map(|(i, n)| ((n.layer.clone(), n.kind, n.text.clone()), i)).collect();
+        self.notes.retain(|n| n.layer != layer || n.kind != kind || n.loss.is_some() || n.text != text);
+        self.index = self.notes.iter().enumerate().map(|(i, n)| ((n.layer.clone(), n.kind, n.loss, n.text.clone()), i)).collect();
         // The closing notes moved up with the rest.
-        for (k, kind) in [NoteKind::Approximated, NoteKind::Skipped].into_iter().enumerate() {
-            let more = self.more.get(k).copied().unwrap_or(0);
+        self.closing.clear();
+        for (&(kind, loss), &more) in &self.more {
             let text = format!("{more} more note(s) not listed");
-            let at = self.notes.iter().rposition(|n| n.kind == kind && n.layer.is_empty() && n.text == text);
-            if let Some(c) = self.closing.get_mut(k) {
-                *c = at.filter(|_| more > 0);
+            let at = self.notes.iter().rposition(|n| n.kind == kind && n.loss == loss && n.layer.is_empty() && n.text == text);
+            if let Some(at) = at.filter(|_| more > 0) {
+                self.closing.insert((kind, loss), at);
             }
         }
     }
@@ -599,7 +618,18 @@ pub fn read_project(text: &str, dir: &str, images: &mut ReadImage, report: &mut 
     let maplayers: Vec<Node> =
         child(root, "projectlayers").map(|p| p.children().filter(|c| c.has_tag_name("maplayer")).collect()).unwrap_or_default();
     if maplayers.len() > MAX_LAYERS {
-        report.skipped("", format!("layers past the first {MAX_LAYERS}"));
+        // Coded only when a layer left out holds data: a group or annotation layer holds none, nor
+        // does a memory layer, which QGIS saves without its features.
+        let text = format!("layers past the first {MAX_LAYERS}");
+        let holds_data = |ml: &Node| {
+            !matches!(ml.attribute("type"), Some("group" | "annotation"))
+                && child(*ml, "provider").and_then(|p| p.text()).map(str::trim) != Some("memory")
+        };
+        if maplayers.iter().skip(MAX_LAYERS).any(holds_data) {
+            report.lost("", NoteKind::Skipped, LossCode::DroppedFeature, text);
+        } else {
+            report.skipped("", text);
+        }
     }
     let mut layers: Vec<(Option<usize>, ProjectLayer)> = Vec::new();
     // QGIS group layers (a group drawn as one) whose blending mode RustGIS's groups don't have,

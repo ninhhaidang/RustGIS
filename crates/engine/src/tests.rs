@@ -5257,6 +5257,45 @@ fn qgis_import_notices_group_layers_and_bound_the_sample_without_dropping_return
     assert!(said[0].text.len() < 4096);
 }
 
+#[test]
+fn qgis_import_codes_only_the_notes_that_lose_data() {
+    use rustgis_data::loss::LossCode;
+    let mut s = world();
+    let layer = |name: &str, provider: &str, source: &str| {
+        format!(
+            r#"<maplayer type="vector"><id>{name}</id><layername>{name}</layername><provider>{provider}</provider><datasource>{source}</datasource></maplayer>"#
+        )
+    };
+    let layers = [
+        layer("Unsupported", "not-a-provider", "x"),
+        r#"<maplayer type="vector"><id>Unnamed</id><layername>Unnamed</layername><datasource>x</datasource></maplayer>"#.to_string(),
+        layer("Heights", "memory", "PointZ?crs=EPSG:4326&amp;field=a:string"),
+        layer("Arcs", "memory", "CompoundCurve?crs=EPSG:4326&amp;field=a:string"),
+    ]
+    .concat();
+    let text = format!(r#"<qgis><projectlayers>{layers}</projectlayers><Layouts><Layout name="page"/></Layouts></qgis>"#);
+    let mark = s.notice_mark();
+    let result = s.run("project.importQgis", &json!({"text": text})).unwrap();
+    let notes = result["notes"].as_array().unwrap();
+    let json_loss = |layer: &str, text: &str| {
+        notes.iter().find(|n| n["layer"] == layer && n["text"].as_str().unwrap().contains(text)).map(|n| n["loss"].as_str())
+    };
+    assert_eq!(json_loss("Unsupported", "RustGIS doesn't read"), Some(Some("dropped.feature")));
+    assert_eq!(json_loss("Unnamed", "RustGIS doesn't read"), Some(Some("dropped.feature")), "a vector layer naming no provider");
+    // A memory layer opens empty, so its Z values and curves held no data: plain.
+    assert_eq!(json_loss("Heights", "Z and M"), Some(None));
+    assert_eq!(json_loss("Arcs", "curves read as lines"), Some(None));
+    assert_eq!(json_loss("", "print layouts"), Some(None), "a layout is drawing, not data: no code");
+    let said = s.notices_since(mark);
+    let with = |code| said.iter().filter(|n| n.loss() == Some(code)).collect::<Vec<_>>();
+    assert!(with(LossCode::DroppedFeature)[0].text.contains("Unsupported"), "{said:?}");
+    assert!(with(LossCode::DroppedZm).is_empty() && with(LossCode::ApproximatedCurve).is_empty(), "{said:?}");
+    let layouts: Vec<_> = said.iter().filter(|n| n.text.contains("print layouts")).collect();
+    assert_eq!(layouts.len(), 1);
+    assert_eq!(layouts[0].loss(), None);
+    assert!(said.iter().filter(|n| n.loss().is_some()).all(|n| !n.text.contains("print layouts")), "no coded notice holds a plain note");
+}
+
 /// A QGIS categorized renderer by an expression classes by it where the expression reads on the
 /// layer; where it doesn't, every feature draws with the first category's symbol, noted, as before.
 #[test]

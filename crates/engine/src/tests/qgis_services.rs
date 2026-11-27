@@ -98,12 +98,16 @@ fn a_qgis_projects_web_service_layers_come_in_from_their_services() {
     }
     assert!(notes.contains("the same tiles as Topo, which takes its place"), "{notes}");
     // A type the service doesn't list: noted, the others still in.
-    assert!(notes.contains(r#""kind":"skipped","layer":"Missing","text":"the layer: "#) && notes.contains("no layer 'nope'"), "{notes}");
+    assert!(
+        notes.contains(r#""kind":"skipped","layer":"Missing","loss":"dropped.feature","text":"the layer: "#)
+            && notes.contains("no layer 'nope'"),
+        "{notes}"
+    );
     assert!(s.map().layer_by_name("Missing").is_none());
     assert_eq!(out["layers"].as_array().map(Vec::len), Some(3), "{out}");
     assert!(!notes.contains("abc1234"), "{notes}");
     // A map service that doesn't answer is left out: no fall back to its whole map.
-    assert!(notes.contains(r#""kind":"skipped","layer":"Gone","text":"the layer: "#), "{notes}");
+    assert!(notes.contains(r#""kind":"skipped","layer":"Gone","loss":"dropped.feature","text":"the layer: "#), "{notes}");
     assert!(!notes.contains("its map layer 1 alone"), "{notes}");
     // Two layers of it: its whole map, said as what is drawn, not as an unread setting.
     assert!(
@@ -201,7 +205,7 @@ fn ogc_api_wmts_and_wcs_layers_come_in_from_their_services() {
     assert_eq!(subsets, ["Long(5.1,5.3)", "Lat(49.5,49.9)"], "{get:?}");
     // The WMTS layer was asked as one (its answer here isn't one: noted).
     assert!(asked.iter().any(|r| r.path == "/wmts" && r.query.iter().any(|(k, v)| k == "SERVICE" && v == "WMTS")), "{asked:?}");
-    assert!(notes.contains(r#""layer":"Tiles","text":"the layer: "#), "{notes}");
+    assert!(notes.contains(r#""layer":"Tiles","loss":"dropped.feature","text":"the layer: "#), "{notes}");
     // Its tile matrix set is RustGIS's choice, not QGIS's: said for the WMTS layer, and for no other.
     assert!(notes.contains(r#""layer":"Tiles","text":"its tile matrix set: RustGIS takes the service's Web Mercator one"#), "{notes}");
     assert_eq!(notes.matches("its tile matrix set").count(), 1, "{notes}");

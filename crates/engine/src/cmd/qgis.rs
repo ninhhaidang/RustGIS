@@ -3,6 +3,7 @@
 //! `style.importQgis` gives a layer a `.qml` style. Both say what they couldn't carry over
 //! (`rustgis_map::qgis::Report`).
 
+use rustgis_data::loss::LossCode;
 use rustgis_geom::{Coord, Extent};
 use rustgis_map::qgis::{self, NoteKind, Report, Source, listed};
 use serde_json::{Value, json};
@@ -268,7 +269,10 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
                 }
             }
             Ok(None) => {}
-            Err(e) => report.skipped(&layer.name, format!("the layer: {e}")),
+            // A layer whose data wasn't read is data the import left out; an annotation layer is
+            // drawing only.
+            Err(e) if layer.kind == "annotation" => report.skipped(&layer.name, format!("the layer: {e}")),
+            Err(e) => report.lost(&layer.name, NoteKind::Skipped, LossCode::DroppedFeature, format!("the layer: {e}")),
         }
     }
     note_texts_under_layers_above(&drawn, &mut report);
@@ -427,12 +431,22 @@ fn add_layer(
     let name = layer.name.as_str();
     if let Source::File { path, .. } | Source::Csv { path, .. } | Source::Archive { path, .. } = &layer.source {
         if !has_dir && qgis::is_relative(path) {
-            report.skipped(name, format!("the file {path}, relative to the project's folder, which the import wasn't given (pass dir)"));
+            report.lost(
+                name,
+                NoteKind::Skipped,
+                LossCode::DroppedFeature,
+                format!("the file {path}, relative to the project's folder, which the import wasn't given (pass dir)"),
+            );
             return Ok(None);
         }
         // `C:roads.gpkg`: relative to the working directory on drive C, which no folder fixes.
         if qgis::is_drive_relative(path) {
-            report.skipped(name, format!("the file {path}, relative to a drive's working directory (give a full path in QGIS)"));
+            report.lost(
+                name,
+                NoteKind::Skipped,
+                LossCode::DroppedFeature,
+                format!("the file {path}, relative to a drive's working directory (give a full path in QGIS)"),
+            );
             return Ok(None);
         }
     }
@@ -487,8 +501,10 @@ fn add_layer(
             let share = path.starts_with("file://") || path.starts_with("\\\\") || path.starts_with("//");
             if share || (*kind == "mbtiles" && path.contains("://")) {
                 let at = if share { "on a network share" } else { "at a web address" };
-                report.skipped(
+                report.lost(
                     name,
+                    NoteKind::Skipped,
+                    LossCode::DroppedFeature,
                     format!(
                         "the tile archive {at}: RustGIS reads MBTiles files on this computer, and PMTiles archives there or on the web"
                     ),
@@ -499,13 +515,17 @@ fn add_layer(
             // no file by its path.
             #[cfg(not(target_arch = "wasm32"))]
             if !path.contains("://") && !std::path::Path::new(path).is_file() {
-                report.skipped(name, format!("the tile archive {path}: no file there"));
+                report.lost(name, NoteKind::Skipped, LossCode::DroppedFeature, format!("the tile archive {path}: no file there"));
                 return Ok(None);
             }
             #[cfg(target_arch = "wasm32")]
             if !path.contains("://") {
-                report
-                    .skipped(name, format!("the tile archive {path}, a file the browser doesn't read by its path (add it with Add Data)"));
+                report.lost(
+                    name,
+                    NoteKind::Skipped,
+                    LossCode::DroppedFeature,
+                    format!("the tile archive {path}, a file the browser doesn't read by its path (add it with Add Data)"),
+                );
                 return Ok(None);
             }
             let before = s.active_layer;
@@ -539,7 +559,8 @@ fn add_layer(
             return Ok(Some(name.to_string()));
         }
         Source::Memory { geometry, crs, fields, as_text: (as_text, texts), cut, unnamed, taken, zm, curved, unknown_geometry } => {
-            // QGIS keeps none of a memory layer's features: it opens empty, with its fields.
+            // QGIS keeps none of a memory layer's features: it opens empty, with its fields, so
+            // what these notes leave out held no data, and they stay plain.
             let mut ds = rustgis_data::Dataset::new(name, *geometry, fields.clone());
             if let Some(c) = layer.crs.as_deref().or(crs.as_deref()) {
                 match rustgis_data::raster::crs::Crs::parse(c) {
@@ -589,7 +610,7 @@ fn add_layer(
                 }
                 None => "RustGIS reads one that selects every column of one layer, with or without a WHERE clause, as that layer".into(),
             };
-            report.skipped(name, format!("the virtual layer `{shown}{more}`: {why}"));
+            report.lost(name, NoteKind::Skipped, LossCode::DroppedFeature, format!("the virtual layer `{shown}{more}`: {why}"));
             return Ok(None);
         }
         Source::Wms { url, layer: wms, wmts, options, .. } => {
@@ -709,7 +730,13 @@ fn add_layer(
         Source::Other { provider } => {
             // A layer of no provider (an annotation layer, a group layer) is told by its kind.
             let what = if provider.is_empty() { format!("{} layers", layer.kind) } else { format!("{provider} sources") };
-            report.skipped(name, format!("the layer: RustGIS doesn't read QGIS's {what}"));
+            // An annotation or group layer holds no data; any other layer's data is left out,
+            // with or without a provider named.
+            if matches!(layer.kind.as_str(), "annotation" | "group") {
+                report.skipped(name, format!("the layer: RustGIS doesn't read QGIS's {what}"));
+            } else {
+                report.lost(name, NoteKind::Skipped, LossCode::DroppedFeature, format!("the layer: RustGIS doesn't read QGIS's {what}"));
+            }
             return Ok(None);
         }
     }
@@ -841,7 +868,7 @@ fn database_note(
             format!("the {what} table {table} ({connection}): connect to the database to add it{refused}{}", left("the connection text"))
         }
     };
-    report.skipped(name, text);
+    report.lost(name, NoteKind::Skipped, LossCode::DroppedFeature, text);
 }
 
 /// The name of the saved connection to the database `connection` names (QGIS's `key=value`
@@ -1931,7 +1958,11 @@ impl Geographic {
 }
 
 fn note_json(n: &qgis::Note) -> Value {
-    json!({"layer": n.layer, "kind": n.kind, "text": n.text, "count": n.count})
+    let mut note = json!({"layer": n.layer, "kind": n.kind, "text": n.text, "count": n.count});
+    if let (Some(code), Some(note)) = (n.loss, note.as_object_mut()) {
+        note.insert("loss".into(), json!(code.spec().id));
+    }
+    note
 }
 
 /// The returned report serves CLI and Python callers; the app also needs every coalesced
@@ -1945,15 +1976,33 @@ fn notify_report(s: &mut Session, report: &Report) {
         }
         text
     };
+    // A notice is about one kind of note and one loss code, so a note that reports a loss never
+    // shares a notice with a plain one (or with another code's): plain notes first, then each
+    // code in the order its first note came.
+    let mut groups: Vec<(NoteKind, Option<LossCode>)> = Vec::new();
     for kind in [NoteKind::Approximated, NoteKind::Skipped] {
-        let notes: Vec<_> = report.notes.iter().filter(|note| note.kind == kind).collect();
+        for note in report.notes.iter().filter(|note| note.kind == kind) {
+            if !groups.contains(&(kind, note.loss)) {
+                groups.push((kind, note.loss));
+            }
+        }
+    }
+    groups.sort_by_key(|(kind, loss)| (*kind == NoteKind::Skipped, loss.is_some()));
+    let say = |s: &mut Session, loss: Option<LossCode>, text: crate::notice_text::NoticeText| match loss {
+        Some(code) => s.notify_loss(code, text),
+        None => s.notify_text(text, false),
+    };
+    for (kind, loss) in groups {
+        let notes: Vec<_> = report.notes.iter().filter(|note| note.kind == kind && note.loss == loss).collect();
         let Some(first) = notes.first() else { continue };
         if notes.len() == 1 {
             let template = match kind {
                 NoteKind::Approximated => "QGIS import, {layer}: {detail} (drawn differently; count {count})",
                 NoteKind::Skipped => "QGIS import, {layer}: {detail} (left out; count {count})",
             };
-            s.notify_text(
+            say(
+                s,
+                loss,
                 crate::notice_text::NoticeText::format(
                     template,
                     [
@@ -1962,7 +2011,6 @@ fn notify_report(s: &mut Session, report: &Report) {
                         ("count", first.count.to_string().into()),
                     ],
                 ),
-                false,
             );
             continue;
         }
@@ -1990,12 +2038,13 @@ fn notify_report(s: &mut Session, report: &Report) {
             NoteKind::Approximated => "QGIS import: {count} approximations; affected layers: {layers}. {samples}",
             NoteKind::Skipped => "QGIS import: {count} omissions; affected layers: {layers}. {samples}",
         };
-        s.notify_text(
+        say(
+            s,
+            loss,
             crate::notice_text::NoticeText::format(
                 template,
                 [("count", count.to_string().into()), ("layers", layers.to_string().into()), ("samples", samples.into())],
             ),
-            false,
         );
     }
 }

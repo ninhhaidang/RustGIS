@@ -3493,3 +3493,24 @@ fn a_dropped_virtual_filter_is_not_noted_for_letter_case() {
     assert!(report.notes.iter().any(|n| n.layer == "v" && n.text.contains("too long to read together")), "{:?}", report.notes);
     assert_eq!(letter_case_notes(&report, "v"), 0, "{:?}", report.notes);
 }
+
+/// Layers past the most an import reads are a data loss only when one of them holds data: a
+/// group or annotation layer holds none.
+#[test]
+fn layers_past_the_limit_are_coded_only_when_one_holds_data() {
+    let past = |tail: &str| {
+        let group = r#"<maplayer type="group"><id>g</id><layername>g</layername></maplayer>"#.repeat(super::MAX_LAYERS);
+        let text = format!("<qgis><projectlayers>{group}{tail}</projectlayers></qgis>");
+        let mut report = Report::default();
+        read_project(&text, "/maps", &mut report).unwrap();
+        report.notes.iter().find(|n| n.text.contains("layers past the first")).map(|n| n.loss)
+    };
+    let group = r#"<maplayer type="group"><id>h</id><layername>h</layername></maplayer>"#;
+    let vector =
+        r#"<maplayer type="vector"><id>v</id><layername>v</layername><provider>ogr</provider><datasource>v.shp</datasource></maplayer>"#;
+    assert_eq!(past(group), Some(None), "only a group past the limit: plain");
+    let memory =
+        r#"<maplayer type="vector"><id>m</id><layername>m</layername><provider>memory</provider><datasource>Point</datasource></maplayer>"#;
+    assert_eq!(past(memory), Some(None), "a memory layer opens empty: plain");
+    assert_eq!(past(vector), Some(Some(rustgis_data::loss::LossCode::DroppedFeature)));
+}
