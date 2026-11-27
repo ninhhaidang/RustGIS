@@ -504,10 +504,12 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   in a presentation's map pages of it); a text that a longer name would take past the characters a
   text holds, or that a name with a brace (which a token can't hold) would break, keeps the old
   name, and the rename says so; deleting it leaves them as written, and when layout elements still
-  name it (a text's tokens, or a chart's, table's or colorbar's layer), says how many. A layer
-  read in place covers what is loaded, as a chart does, and a warning says so. A token with no
-  figure (no such layer or field, a field with no numbers, a raster layer, or a sum, mean, least
-  or greatest written without its field) stays as written, and a warning names what is missing.
+  name it (a text's tokens, or a chart's, table's or colorbar's layer), says how many. It also says
+  how many map series (by their index layer) and presentation map page titles (by their tokens)
+  name it. A layer read in place covers what is loaded, as a chart does, and a warning says so. A
+  token with no figure (no such layer or field, a field with no numbers, a raster layer, or a sum,
+  mean, least or greatest written without its field) stays as written, and a warning names what is
+  missing.
   Both warnings come when the text is added or changed, or its layout is made or imported, or when
   another map frame becomes the first (it is given another map, the one before it is deleted or
   drawn over it, or its map is deleted), not when the page is exported. A presentation map page's
@@ -809,7 +811,8 @@ The locator outlines the main frame's changing extent as the series turns its pa
 **Export Layout** writes all pages to PDF by default, but only the **first 500** when there are
 more, with a warning. Split longer books' index data into layers of at most 500 features.
 `layout.export` with `"allPages":false` writes only the current PDF page; PNG and SVG always
-write the current page.
+write the current page. When the index layer is no longer in the series frame's map (it was
+removed, say), the PDF holds only the current page, and the export says so.
 
 ### Mark the page's own feature
 

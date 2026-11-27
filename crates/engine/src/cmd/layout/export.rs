@@ -101,6 +101,14 @@ pub(in crate::cmd::layout) fn layout_bytes_inner(
     // Only a whole-series PDF names every page.
     let info = series_info(s, li, current);
     let names = if all && pdf { series_pages(s, li) } else { None };
+    // A series whose index layer is gone has no pages to step through (#3075).
+    if all
+        && pdf
+        && info.is_none()
+        && let Some(series) = &saved.series
+    {
+        s.warn(format!("The map series' index layer '{}' isn't in its frame's map: the PDF holds the current page only", series.layer));
+    }
     let total = info.as_ref().map_or(1, |i| i.0);
     // Every page of a map series (PDF), or just the layout as it is now.
     let pages: Vec<usize> = match (&names, all && pdf) {
