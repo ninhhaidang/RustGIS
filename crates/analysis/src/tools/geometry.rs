@@ -22,9 +22,7 @@ pub(super) fn convert(inp: &dyn Inputs, p: &Json, mode: Conversion) -> Result<To
     let mut skipped = 0;
     let row_ids = rows(inp, p, "input", ds);
     crate::control::begin(row_ids.len());
-    if row_ids.is_empty() {
-        crate::control::check()?;
-    }
+    crate::control::check()?;
     let mut pace = crate::control::Pace::default();
     for row in row_ids {
         crate::control::check()?;
@@ -68,10 +66,15 @@ fn convert_row(
                         *skipped += 1;
                         continue;
                     }
-                    let mut line = ring.clone();
-                    if let Some(first) = line.first().copied()
-                        && line.last() != Some(&first)
-                    {
+                    let closed = ring.first() == ring.last();
+                    let mut line = Vec::with_capacity(ring.len() + usize::from(!closed));
+                    for chunk in ring.chunks(65_536) {
+                        if pace.stop(chunk.len()) {
+                            return Err(crate::control::Cancelled.into());
+                        }
+                        line.extend_from_slice(chunk);
+                    }
+                    if !closed && let Some(first) = line.first().copied() {
                         line.push(first);
                     }
                     parts.push(line);
@@ -273,9 +276,7 @@ pub(super) fn unsplit(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
     let mut skipped = 0;
     let row_ids = rows(inp, p, "input", ds);
     crate::control::begin(row_ids.len());
-    if row_ids.is_empty() {
-        crate::control::check()?;
-    }
+    crate::control::check()?;
     let mut pace = crate::control::Pace::default();
     for row in row_ids {
         crate::control::check()?;
@@ -444,12 +445,12 @@ mod tests {
             let counting = Control::cancelled_at_look(u64::MAX);
             crate::run_with(tool, &inp, &params, &counting).unwrap();
             assert_eq!(counting.progress(), Some((5, 5)), "{tool}");
-            assert_eq!(counting.looked(), 5, "{tool}");
+            assert_eq!(counting.looked(), 6, "{tool}");
 
-            let cancelled = Control::cancelled_at_look(3);
+            let cancelled = Control::cancelled_at_look(4);
             let err = crate::run_with(tool, &inp, &params, &cancelled).unwrap_err();
             assert!(err.contains("cancelled"), "{tool}: {err}");
-            assert_eq!(cancelled.looked(), 3, "{tool}");
+            assert_eq!(cancelled.looked(), 4, "{tool}");
             assert_eq!(cancelled.progress(), Some((2, 5)), "{tool}");
         }
 
@@ -465,12 +466,32 @@ mod tests {
 
         let counting_rings = Control::cancelled_at_look(u64::MAX);
         crate::run_with("polygonToLine", &poly_inp, &params, &counting_rings).unwrap();
-        assert_eq!(counting_rings.looked(), 2);
+        assert_eq!(counting_rings.looked(), 3);
 
-        let cancel_ring = Control::cancelled_at_look(2);
+        let cancel_ring = Control::cancelled_at_look(3);
         let err = crate::run_with("polygonToLine", &poly_inp, &params, &cancel_ring).unwrap_err();
         assert!(err.contains("cancelled"), "{err}");
-        assert_eq!(cancel_ring.looked(), 2);
+        assert_eq!(cancel_ring.looked(), 3);
+
+        // Fewer than 1,024 rings with many vertices also trigger Pace inside the chunked vertex copy.
+        let make_heavy_rings = |verts: usize| {
+            let mut ring = Vec::with_capacity(verts);
+            for i in 0..verts {
+                ring.push(Coord::new(i as f64, 0.0));
+            }
+            let rings = vec![ring; 800];
+            let mut d = Dataset::new("input", GeometryType::Polygon, vec![]);
+            d.push_next(Some(Geometry::Polygon(vec![rings])), vec![]);
+            One(d)
+        };
+        let counting_small = Control::cancelled_at_look(u64::MAX);
+        crate::run_with("polygonToLine", &make_heavy_rings(4), &params, &counting_small).unwrap();
+        assert_eq!(counting_small.looked(), 2);
+
+        let cancel_verts = Control::cancelled_at_look(3);
+        let err = crate::run_with("polygonToLine", &make_heavy_rings(1_200), &params, &cancel_verts).unwrap_err();
+        assert!(err.contains("cancelled"), "{err}");
+        assert_eq!(cancel_verts.looked(), 3);
     }
 
     #[test]
@@ -548,18 +569,18 @@ mod tests {
         let Output::Layer(out) = res.output else { panic!("expected layer") };
         assert_eq!(out.features.len(), 1);
         assert_eq!(counting.progress(), Some((4, 4)));
-        assert_eq!(counting.looked(), 8);
+        assert_eq!(counting.looked(), 9);
 
-        let cancel_input = Control::cancelled_at_look(2);
+        let cancel_input = Control::cancelled_at_look(3);
         let err = crate::run_with("unsplitLine", &inp, &params, &cancel_input).unwrap_err();
         assert!(err.contains("cancelled"), "{err}");
-        assert_eq!(cancel_input.looked(), 2);
+        assert_eq!(cancel_input.looked(), 3);
         assert_eq!(cancel_input.progress(), Some((1, 4)));
 
-        let cancel_chain = Control::cancelled_at_look(6);
+        let cancel_chain = Control::cancelled_at_look(7);
         let err = crate::run_with("unsplitLine", &inp, &params, &cancel_chain).unwrap_err();
         assert!(err.contains("cancelled"), "{err}");
-        assert_eq!(cancel_chain.looked(), 6);
+        assert_eq!(cancel_chain.looked(), 7);
         assert_eq!(cancel_chain.progress(), Some((1, 4)));
     }
 }
