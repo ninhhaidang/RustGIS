@@ -1907,7 +1907,7 @@ impl Session {
             if s.depth == 0 {
                 s.note_shown_systems();
                 if !s.ui_handles_cjk_scan_notice
-                    && let Some(summary) = rustgis_render::fonts::take_cjk_scan_summary()
+                    && let Some(summary) = take_cjk_scan_summary_for_session()
                     && let Some(msg) = summary.notice()
                 {
                     s.notify(msg, false);
@@ -4335,4 +4335,20 @@ impl Session {
         }
         self.project.gp_history.push(record);
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Thread-local override for [`take_cjk_scan_summary_for_session`] so tests can exercise
+    /// `Session::run`'s CJK scan notice wiring in parallel without mutating the global font cache.
+    static TEST_CJK_SCAN_SUMMARY: std::cell::RefCell<Option<Option<rustgis_render::fonts::CjkRootScanSummary>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn take_cjk_scan_summary_for_session() -> Option<rustgis_render::fonts::CjkRootScanSummary> {
+    #[cfg(test)]
+    if let Some(summary) = TEST_CJK_SCAN_SUMMARY.with_borrow_mut(|slot| slot.as_mut().map(Option::take)) {
+        return summary;
+    }
+    rustgis_render::fonts::take_cjk_scan_summary()
 }

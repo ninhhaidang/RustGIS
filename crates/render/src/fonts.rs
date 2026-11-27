@@ -604,7 +604,10 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
         return CjkRootIndex { files, summary };
     }
 
-    let mut seen: std::collections::HashMap<std::path::PathBuf, usize> = std::collections::HashMap::new();
+    // Canonical directory -> (shallowest depth visited, direct subdirectory names discovered on
+    // first visit). Revisiting at a strictly shallower depth re-enqueues only cached subdirectories
+    // without re-reading the directory or double-counting against the directory/entry/file caps.
+    let mut seen: std::collections::HashMap<std::path::PathBuf, (usize, Vec<std::ffi::OsString>)> = std::collections::HashMap::new();
     let mut skipped_dirs: Vec<std::path::PathBuf> = Vec::new();
     let mut dirs_visited = 0usize;
     let mut files_seen = 0usize;
@@ -627,7 +630,19 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
             }
             let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
             // Revisit only when reached at a strictly shallower depth so deep symlinks cannot shadow shallow paths.
-            if seen.get(&canonical).is_some_and(|&prev| prev <= depth) {
+            if let Some((prev_depth, child_subdirs)) = seen.get_mut(&canonical) {
+                if *prev_depth <= depth {
+                    continue;
+                }
+                *prev_depth = depth;
+                for name in &*child_subdirs {
+                    let child = dir.join(name);
+                    if depth < max_depth && queue.len() < max_dirs {
+                        queue.push_back((child, depth + 1));
+                    } else {
+                        skipped_dirs.push(child);
+                    }
+                }
                 continue;
             }
             let entries = match std::fs::read_dir(&dir) {
@@ -640,7 +655,6 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
                     continue;
                 }
             };
-            seen.insert(canonical, depth);
             dirs_visited += 1;
 
             let mut children = Vec::new();
@@ -663,11 +677,15 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
             }
             children.sort();
 
+            let mut child_subdirs = Vec::new();
             let mut dir_truncated = entry_cap_hit;
             let mut iter = children.into_iter();
             while let Some(path) = iter.next() {
                 match std::fs::metadata(&path) {
                     Ok(meta) if meta.is_dir() => {
+                        if let Some(name) = path.file_name() {
+                            child_subdirs.push(name.to_os_string());
+                        }
                         if depth < max_depth && queue.len() < max_dirs.saturating_sub(dirs_visited) {
                             queue.push_back((path, depth + 1));
                         } else {
@@ -708,6 +726,7 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
                     }
                 }
             }
+            seen.insert(canonical, (depth, child_subdirs));
             if dir_truncated {
                 summary.truncated_dirs += 1;
                 summary.sample_path.get_or_insert_with(|| dir.clone());
@@ -1849,6 +1868,47 @@ mod tests {
         let (chosen, _, _) =
             super::find_cjk_in_index(&revisited.files, super::CjkRegion::SimplifiedChinese).expect("shallower root should revisit target");
         assert_eq!(chosen, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_cjk_roots_revisit_does_not_double_count_caps_or_entry_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_font = include_bytes!("../testdata/test-fallback.otf");
+
+        let target = dir.path().join("target");
+        let sub = target.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(target.join("other.ttf"), b"x").unwrap();
+        let expected = sub.join("NotoSansSC-Regular.otf");
+        std::fs::write(&expected, valid_font).unwrap();
+
+        let deep = dir.path().join("deep");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::os::unix::fs::symlink(&target, deep.join("link")).unwrap();
+
+        // Exact unique totals across [deep, target]: 3 directories (deep, target, sub) and 2 files
+        // (other.ttf, NotoSansSC-Regular.otf). Under max_depth = 1, target is first visited at
+        // depth 1 through deep/link (leaving sub at depth 2) and revisited at depth 0 as the
+        // second root. Revisiting must not re-spend directory, file, or entry budgets.
+        let tight = super::scan_cjk_roots_bounded(&[deep.clone(), target.clone()], 1, 3, 2);
+        assert!(tight.summary.is_clean(), "revisit must not double-count scan caps: {:?}", tight.summary);
+        assert!(tight.summary.notice().is_none());
+        let (chosen, _, _) =
+            super::find_cjk_in_index(&tight.files, super::CjkRegion::SimplifiedChinese).expect("sub must still fit within tight caps");
+        assert_eq!(chosen, expected);
+
+        // Metadata errors inside target must likewise be counted once, not duplicated on revisit.
+        let loop_a = target.join("loop-a");
+        let loop_b = target.join("loop-b");
+        std::os::unix::fs::symlink(&loop_b, &loop_a).unwrap();
+        std::os::unix::fs::symlink(&loop_a, &loop_b).unwrap();
+        let with_loop = super::scan_cjk_roots_bounded(&[deep, target], 1, 10, 10);
+        assert_eq!(with_loop.summary.entry_errors, 2, "entry errors must not double-count on revisit: {:?}", with_loop.summary);
+        assert_eq!(with_loop.summary.truncated_dirs, 0, "{:?}", with_loop.summary);
+        let (chosen_with_loop, _, _) = super::find_cjk_in_index(&with_loop.files, super::CjkRegion::SimplifiedChinese)
+            .expect("nested CJK font still found alongside symlink loop");
+        assert_eq!(chosen_with_loop, expected);
     }
 
     #[cfg(unix)]

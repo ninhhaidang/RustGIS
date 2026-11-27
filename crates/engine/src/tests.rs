@@ -63093,3 +63093,71 @@ fn a_transparency_reads_back_without_float_noise() {
     assert_eq!(crate::cmd::project::percent(33.3), json!(33.3));
     assert_eq!(crate::cmd::project::percent(0.0), json!(0.0));
 }
+
+/// Headless sessions emit the CJK font-folder scan notice once through `Session::run` when a
+/// fallback scan was lossy, stay silent when clean, and leave the summary untouched when a UI
+/// shell takes ownership for translation.
+#[test]
+fn headless_session_run_emits_cjk_scan_notice_only_when_lossy() {
+    use rustgis_render::fonts::CjkRootScanSummary;
+
+    struct SummaryGuard;
+    impl SummaryGuard {
+        fn set(summary: Option<CjkRootScanSummary>) -> Self {
+            crate::TEST_CJK_SCAN_SUMMARY.with_borrow_mut(|slot| *slot = Some(summary));
+            Self
+        }
+    }
+    impl Drop for SummaryGuard {
+        fn drop(&mut self) {
+            crate::TEST_CJK_SCAN_SUMMARY.with_borrow_mut(|slot| *slot = None);
+        }
+    }
+
+    // Lossy summary on a headless session emits one English notice and consumes it.
+    let mut headless = Session::new(Project::default());
+    assert!(!headless.ui_handles_cjk_scan_notice);
+    let lossy = CjkRootScanSummary {
+        truncated_dirs: 2,
+        unreadable_dirs: 1,
+        entry_errors: 0,
+        sample_path: Some(std::path::PathBuf::from("/run/host/fonts")),
+    };
+    {
+        let _guard = SummaryGuard::set(Some(lossy.clone()));
+        let mark = headless.notice_mark();
+        headless.run("connection.list", &Value::Null).unwrap();
+        let notices = headless.notices_since(mark);
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(!notices[0].error);
+        assert!(notices[0].text.contains("CJK font folder search stopped early"), "{}", notices[0].text);
+        assert!(notices[0].text.contains("2 folder(s) reached the scan limit"), "{}", notices[0].text);
+        assert!(notices[0].text.contains("1 unreadable folder(s)"), "{}", notices[0].text);
+        assert!(notices[0].text.contains("/run/host/fonts"), "{}", notices[0].text);
+
+        // One-shot: a subsequent command emits nothing.
+        let mark2 = headless.notice_mark();
+        headless.run("connection.list", &Value::Null).unwrap();
+        assert!(headless.notices_since(mark2).is_empty(), "{:?}", headless.notices_since(mark2));
+    }
+
+    // Clean summary (all zeros) and absence of summary emit no notice.
+    for clean in [Some(CjkRootScanSummary::default()), None] {
+        let _guard = SummaryGuard::set(clean);
+        let mark = headless.notice_mark();
+        headless.run("connection.list", &Value::Null).unwrap();
+        assert!(headless.notices_since(mark).is_empty(), "clean scan must stay silent: {:?}", headless.notices_since(mark));
+    }
+
+    // UI-managed sessions leave the summary untouched so ui-egui can translate it.
+    let mut ui_session = Session::new(Project::default());
+    ui_session.ui_handles_cjk_scan_notice = true;
+    {
+        let _guard = SummaryGuard::set(Some(lossy));
+        let mark = ui_session.notice_mark();
+        ui_session.run("connection.list", &Value::Null).unwrap();
+        assert!(ui_session.notices_since(mark).is_empty(), "{:?}", ui_session.notices_since(mark));
+        let still_pending = crate::TEST_CJK_SCAN_SUMMARY.with_borrow(|slot| slot.as_ref().and_then(Option::as_ref).is_some());
+        assert!(still_pending, "UI session must not consume the CJK scan summary inside Session::run");
+    }
+}
