@@ -115,6 +115,11 @@ impl ModelBuilder {
         self.open && self.active
     }
 
+    /// Whether a question about unsaved changes is up, or about to be drawn.
+    pub fn asking(&self) -> bool {
+        self.confirm.is_some()
+    }
+
     /// Whether the canvas has changes not saved to the project.
     pub fn dirty(&self) -> bool {
         self.graph != self.saved || self.saved_as.as_deref().is_some_and(|s| s != self.name.trim())
@@ -587,19 +592,29 @@ fn request(app: &mut RustGisApp, p: Pending) {
 }
 
 /// ModelBuilder's keys, before the app's own: Delete (or Backspace) deletes the selection,
-/// Ctrl+D duplicates the selected node, Ctrl+Z and Ctrl+Y undo and redo canvas edits.
+/// Ctrl+D duplicates the selected node, Ctrl+Z and Ctrl+Y undo and redo canvas edits. With the
+/// layer list in use, Delete and Backspace are left for it.
 pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
     if !app.mb.shown() || ctx.egui_wants_keyboard_input() {
         return;
     }
     let cmd = egui::Modifiers::COMMAND;
+    // The pane in use as the key went down: the wheel turned over the canvas after it doesn't
+    // make the key the canvas's, on the same frame or while the key is held (its repeats are the
+    // pane's it was pressed in, as in `chrome::shortcuts`).
+    let layers = |key| {
+        let pressed_in = crate::inuse::press(app, key, None).map(|press| press.pane).or_else(|| crate::inuse::held_in(app, key));
+        pressed_in.unwrap_or_else(|| crate::inuse::pane(app)) == crate::inuse::Pane::Layers
+    };
     let (mut del, mut dup, mut undo, mut redo) = (false, false, false, false);
     ctx.input_mut(|i| {
         undo = i.consume_shortcut(&egui::KeyboardShortcut::new(cmd, egui::Key::Z));
         redo = i.consume_shortcut(&egui::KeyboardShortcut::new(cmd | egui::Modifiers::SHIFT, egui::Key::Z))
             || i.consume_shortcut(&egui::KeyboardShortcut::new(cmd, egui::Key::Y));
-        if app.mb.selected.is_some() || app.mb.selected_edge.is_some() {
-            del = i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace);
+        // Nothing is deleted while a mouse button is down, as with the app's own Delete.
+        if (app.mb.selected.is_some() || app.mb.selected_edge.is_some()) && !crate::inuse::down(app) {
+            del =
+                [egui::Key::Delete, egui::Key::Backspace].into_iter().any(|key| !layers(key) && i.consume_key(egui::Modifiers::NONE, key));
         }
         if app.mb.selected.is_some() {
             dup = i.consume_shortcut(&egui::KeyboardShortcut::new(cmd, egui::Key::D));
@@ -2118,6 +2133,55 @@ mod tests {
         h.run_steps(2);
         assert!(h.state().mb.shown());
         assert_eq!(h.state().mb.graph.nodes.len(), 3, "the canvas is kept");
+    }
+
+    /// A layer clicked in the list with a node selected on the canvas: Delete is the list's. It
+    /// removes that layer and leaves the node (#2945).
+    #[test]
+    fn delete_is_the_layer_lists_while_it_is_in_use() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.ui.right_open.clear();
+        app.ui.right = None;
+        app.run("ui.modelBuilder", Value::Null).unwrap();
+        let node = app.mb.add(&Add::Input, pos2(0.0, 0.0));
+        app.mb.selected = Some(node);
+        let layers = app.session.map().layers.len();
+        // The whole window: the layer list beside the canvas.
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1300.0, 900.0)).with_max_steps(64).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(6);
+        assert!(h.state().mb.shown());
+        h.get_by_label("Rivers").click();
+        h.run_steps(2);
+        h.event(Event::Key { key: Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+        h.run_steps(2);
+        assert_eq!(h.state().mb.graph.nodes.len(), 1, "the node stays");
+        assert_eq!(h.state().session.map().layers.len(), layers - 1);
+        assert!(h.state().session.map().layer_by_name("Rivers").is_none(), "Delete removed the layer clicked in the list");
+        // The key still held, and the wheel turned over the canvas: its repeats stay the layer
+        // list's, and the node stays.
+        let canvas = pos2(800.0, 500.0);
+        h.event(Event::PointerMoved(canvas));
+        h.step();
+        h.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, 1.0),
+            modifiers: Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        });
+        h.run_steps(2);
+        h.event(Event::Key { key: Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+        h.run_steps(2);
+        assert_eq!(h.state().mb.graph.nodes.len(), 1, "a held Delete's repeat on the canvas leaves the node");
+        assert_eq!(h.state().session.map().layers.len(), layers - 1);
     }
 
     /// Closing with unsaved changes asks first; Discard closes, Cancel keeps the model open.

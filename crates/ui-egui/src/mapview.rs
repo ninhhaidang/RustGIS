@@ -856,6 +856,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     if app.chrome.is_none() {
         view_tabs(app, ui, &t);
     }
+    app.ui.in_use.drawn(crate::inuse::Pane::View, ui.layer_id(), ui.available_rect_before_wrap());
     crate::vertexedit::cancel_stale_drag(app);
     crate::vertexedit::say_unplaced(app);
     if app.mb.shown() {
@@ -4451,6 +4452,7 @@ fn popup(app: &mut RustGisApp, ui: &mut Ui, rect: Rect) {
     // Keyed by the feature: egui remembers an area's (and a scroll area's and grid's) size, and
     // the next popup mustn't start from the last one's.
     let key = (&layer, &title, attrs.len());
+    let mut drawn = None;
     egui::Area::new(egui::Id::unique(("identify_popup", key))).fixed_pos(pos).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
         let frame = egui::Frame::NONE
             .fill(t.menu)
@@ -4636,7 +4638,12 @@ fn popup(app: &mut RustGisApp, ui: &mut Ui, rect: Rect) {
             new_limit = Some(vec2(limit.x + d.x, r.height() + d.y).clamp(vec2(240.0, 120.0), space));
         }
         ui.ctx().data_mut(|d| d.insert_temp(shown_id, r.height()));
+        drawn = Some((ui.layer_id(), r));
     });
+    // The pop-up is the map's: a press in it leaves the layer list, as one on the map does.
+    if let Some((layer, r)) = drawn {
+        app.ui.in_use.drawn(crate::inuse::Pane::View, layer, r);
+    }
     if let Some(l) = new_limit {
         ui.ctx().data_mut(|d| d.insert_temp(limit_id, l));
     }
@@ -4815,6 +4822,7 @@ fn next_view_tab(ui: &mut Ui, w: f32) -> Rect {
 /// is always in sight.
 fn view_tabs(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    app.ui.in_use.drawn(crate::inuse::Pane::Tabs, ui.layer_id(), r);
     ui.painter().rect_filled(r, 0.0, t.tab_strip);
     ui.painter().line_segment([pos2(r.min.x, r.max.y - 0.5), pos2(r.max.x, r.max.y - 0.5)], Stroke::new(1.0, t.border));
     // The tabs take the strip but the New Map button's room and the gaps around it.

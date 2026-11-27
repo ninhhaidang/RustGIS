@@ -62,6 +62,7 @@ mod geometrycalc;
 mod globe_drape;
 mod graphicformat;
 pub mod icons;
+mod inuse;
 mod keymap;
 mod labelfonts;
 mod labelpane;
@@ -1014,6 +1015,8 @@ pub struct UiState {
     pub tab_strip_rect: Option<egui::Rect>,
     /// Where the left and right panes were drawn on the last frame, while they show.
     pub pane_rects: [Option<egui::Rect>; 2],
+    /// The pane the user is working in, for the keys that act on it.
+    pub(crate) in_use: inuse::InUse,
     /// Tabs hidden from the ribbon (Settings › Customize › Ribbon).
     pub hidden_tabs: Vec<String>,
     /// Extra Quick Access Toolbar commands.
@@ -1276,6 +1279,7 @@ impl Default for UiState {
             shortcut_preferences_full: false,
             tab_strip_rect: None,
             pane_rects: [None; 2],
+            in_use: inuse::InUse::default(),
             copy_out: None,
             open_url: None,
             copy_image: None,
@@ -7551,6 +7555,8 @@ impl RustGisApp {
         let t = theme::Tokens::get(&ctx);
         // Before the shortcuts and the fields: the row picked in a text field's menu, as its keys.
         fieldmenu::play(self, &ctx);
+        // Before the shortcuts: a key acts on the pane this frame's press is in.
+        inuse::follow(self, &ctx);
         chrome::shortcuts(self, &ctx);
         panes::follow_layer_filter(self);
         // A Zarr summary or point series, a trend, a workflow, an export or a read running on its thread lands
@@ -7606,6 +7612,9 @@ impl RustGisApp {
         chrome::about(self, &ctx);
         #[cfg(not(target_arch = "wasm32"))]
         agentthreads::windows(self, &ctx);
+        // The keys that follow a click of this frame, now that the panes have taken it and the
+        // dialogs it opened are up. Before the notices, which a key that can't run adds to.
+        chrome::late_keys(self, &ctx);
         chrome::notices(self, &ctx);
         // After every field is drawn: one right-clicked opens its menu.
         fieldmenu::show(self, &ctx);

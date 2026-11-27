@@ -49,7 +49,10 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                 let rect = ui.available_rect_before_wrap();
                 let mut body = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
                 match left {
-                    LeftPane::Contents => contents(app, &mut body, &t),
+                    LeftPane::Contents => {
+                        app.ui.in_use.drawn(crate::inuse::Pane::Layers, body.layer_id(), rect);
+                        contents(app, &mut body, &t);
+                    }
                     LeftPane::Catalog => catalog(app, &mut body, &t),
                     LeftPane::Sources => crate::sourcespane::show(app, &mut body, &t),
                 }

@@ -4,6 +4,7 @@
 use egui::{Align2, CornerRadius, Key, KeyboardShortcut, Modifiers, Rect, Sense, Stroke, Ui, pos2, vec2};
 use serde_json::{Value, json};
 
+use crate::inuse::{Late, Pane};
 use crate::mapview::Toast;
 use crate::theme::{Tokens, regular, semibold};
 use crate::widgets::{row_button, selectable_menu_row, small, text_w, why_disabled};
@@ -883,13 +884,7 @@ fn parse_scale(text: &str) -> Option<f64> {
 
 /// Global keyboard shortcuts.
 pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
-    if app.ui.command_search.is_some() {
-        return;
-    }
-    // Behind a dialog (Save changes?, Recover unsaved work?, Command Search…) the keys are the
-    // dialog's: Escape answers it rather than switching tools, and Ctrl+N can't start what it
-    // asks about.
-    if crate::saveprompt::waiting(app) || ctx.memory(|m| m.top_modal_layer()).is_some() || app.ui.shortcut_editor.capturing() {
+    if behind_a_dialog(app, ctx) {
         return;
     }
     // The repeat-use form is not modal: another pane or an unfinished sketch keeps Escape.
@@ -915,22 +910,17 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
         app.ui.history_jump = None;
     }
     crate::modelbuilder::shortcuts(app, ctx);
-    // The search box (or a table cell, or the Script pane's find bar) had the focus until egui
-    // took it away on Escape: that Escape clears the box (leaves the cell as it was, closes the
-    // bar), not the tool. An open list (a clause's Functions) keeps the same keys as a box, those
-    // without Ctrl (⌘): Escape closes it.
-    let pass = ctx.cumulative_pass_nr();
-    let typing = ctx.egui_wants_keyboard_input()
-        || crate::completion::menu_is_open(ctx)
-        || crate::crspicker::list_is_open(ctx)
-        || crate::searchbox::had_focus(&app.ui.search, pass)
-        || crate::table::had_focus(&app.table, pass)
-        || app.workflow.script_find.had_focus(pass);
+    let typing = typing(app, ctx);
     // A text field focused, not any widget (a button reached with Tab): it has an undo of its own.
     let text_field = ctx.text_edit_focused();
     // An element selected in the open layout, for the layout's own keys.
     let element = app.session.active_layout.is_some() && app.layout.selected.is_some();
-    let mut run: Vec<(String, Value)> = Vec::new();
+    // The pane the user last pressed or scrolled in: Delete and Rename act on it.
+    let pane = crate::inuse::pane(app);
+    // What to run now, each with the pane that was in use as its key went down, and what to run
+    // once the panes are drawn ([`late_keys`]).
+    let mut run: Vec<(String, Value, Pane)> = Vec::new();
+    let mut late: Vec<Late> = Vec::new();
     let keymap = &app.ui.keymap;
     ctx.input_mut(|i| {
         for b in keymap.match_order() {
@@ -938,8 +928,7 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
             // which type text, and undo and redo, whatever they're bound to (#685), as ModelBuilder
             // leaves them.
             // Pause unmodified shortcuts during first-person movement, retaining the existing Escape, Home and Delete controls.
-            if (typing && !b.chord.command)
-                || (text_field && b.chord.is_text_undo())
+            if text_takes(Some(b.chord), typing, text_field)
                 || (app.session.map().view.first_person
                     && !b.chord.command
                     && !b.chord.alt
@@ -958,14 +947,36 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
             if element && !b.chord.command && matches!(b.chord.key, Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown) {
                 continue;
             }
+            // The press that the shortcut takes, if it isn't only a held key's repeats.
+            let press = crate::inuse::press(app, b.chord.key, Some(b.chord.modifiers()));
             if i.consume_shortcut(&KeyboardShortcut::new(b.chord.modifiers(), b.chord.key)) {
-                run.push((b.command.clone(), b.params.clone()));
+                let (id, params) = (b.command.clone(), b.params.clone());
+                match press {
+                    None if follows_click(&id) && repeat_stops(app, b.chord.key, pane) => {}
+                    None => run.push((id, params, pane)),
+                    // A key that acts on what a click picks waits for the click to be taken.
+                    Some(press) if press.after_click && follows_click(&id) => {
+                        late.push(Late { id, params, pane: press.pane, chord: Some(b.chord) });
+                    }
+                    Some(press) => run.push((id, params, press.pane)),
+                }
             }
         }
         if !typing {
-            // A Mac keyboard's delete key is Backspace: it deletes a layout element too.
-            if element && i.consume_key(Modifiers::NONE, Key::Backspace) {
-                run.push(("edit.delete".into(), Value::Null));
+            // A Mac keyboard's delete key is Backspace: it deletes a layout element too, and
+            // removes the layers picked in the layer list. There it is the key alone, pressed
+            // once: `consume_key` takes Shift and Alt with it, and a held key's repeats.
+            let press = crate::inuse::press(app, Key::Backspace, None);
+            let key_pane = press.map_or(pane, |press| press.pane);
+            // In the layer list only that press counts; for a layout's element, a repeat does too.
+            let takes = if key_pane == Pane::Layers { press.is_some() } else { element };
+            if takes && i.consume_key(Modifiers::NONE, Key::Backspace) {
+                let (id, params) = ("edit.delete".to_string(), Value::Null);
+                if press.is_some_and(|press| press.after_click) {
+                    late.push(Late { id, params, pane: key_pane, chord: None });
+                } else if press.is_some() || !repeat_stops(app, Key::Backspace, key_pane) {
+                    run.push((id, params, key_pane));
+                }
             }
             // Arrow keys nudge the selected layout element, further with Shift; held, it keeps
             // going. Shift first: a plain arrow's pattern takes Shift-arrows too.
@@ -976,7 +987,7 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
                 {
                     for (m, step) in [(Modifiers::SHIFT, NUDGE_FAST_MM), (Modifiers::NONE, NUDGE_MM)] {
                         for _ in 0..i.count_and_consume_key(m, key) {
-                            run.push(("ui.layoutNudge".into(), json!({"dx": dx * step, "dy": dy * step})));
+                            run.push(("ui.layoutNudge".into(), json!({"dx": dx * step, "dy": dy * step}), pane));
                         }
                     }
                 }
@@ -984,16 +995,107 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
             // Clipboard keys arrive as events, not key presses.
             for e in &i.events {
                 match e {
-                    egui::Event::Copy => run.push(("ui.copy".into(), Value::Null)),
-                    egui::Event::Cut => run.push(("ui.cut".into(), Value::Null)),
-                    egui::Event::Paste(text) => run.push(("edit.paste".into(), json!({"text": text}))),
+                    egui::Event::Copy => run.push(("ui.copy".into(), Value::Null, pane)),
+                    egui::Event::Cut => run.push(("ui.cut".into(), Value::Null, pane)),
+                    egui::Event::Paste(text) => run.push(("edit.paste".into(), json!({"text": text}), pane)),
                     _ => {}
                 }
             }
         }
     });
-    for (id, p) in &run {
-        let (id, p) = (id.as_str(), p.clone());
+    let dialogs = dialogs_up(app);
+    crate::inuse::keep_late(app, late, dialogs);
+    run_keys(app, ctx, &run);
+}
+
+/// Whether the keys are a dialog's (Save changes?, Recover unsaved work?, Command Search…):
+/// Escape answers it rather than switching tools, and Ctrl+N can't start what it asks about.
+fn behind_a_dialog(app: &RustGisApp, ctx: &egui::Context) -> bool {
+    app.ui.command_search.is_some()
+        || crate::saveprompt::waiting(app)
+        || ctx.memory(|m| m.top_modal_layer()).is_some()
+        || app.ui.shortcut_editor.capturing()
+}
+
+/// The dialogs and questions that are up, whether the File menu's backstage covers the window, and
+/// the project, as one number: it differs once a click (or a key of the same frame) has opened or
+/// answered one, or another project has taken this one's place. (egui says a modal dialog is up
+/// only from the frame after it first shows.)
+fn dialogs_up(app: &RustGisApp) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let asked = (app.map.deleting.is_some(), app.mb.asking(), crate::saveprompt::waiting(app));
+    (app.dialogs.open, asked, app.ui.command_search.is_some(), app.ui.backstage, app.session.opened).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Whether a held key's repeat of a command that acts on what a click picks ([`follows_click`])
+/// does nothing, with `pane` in use. In the layer list, each removal makes the next layer the
+/// active one, so a held Delete would take the list from there down. A key held since another
+/// pane was in use stays that pane's (Delete held in the layer list, then the wheel turned over
+/// the map, must not reach the map's features). And while a click is under way, the key's first
+/// press didn't act either.
+fn repeat_stops(app: &RustGisApp, key: Key, pane: Pane) -> bool {
+    pane == Pane::Layers || crate::inuse::clicking(app) || crate::inuse::held_in(app, key).is_some_and(|pressed_in| pressed_in != pane)
+}
+
+/// Whether text is being typed. The search box (or a table cell, or the Script pane's find bar)
+/// had the focus until egui took it away on Escape: that Escape clears the box (leaves the cell as
+/// it was, closes the bar), not the tool. An open list (a clause's Functions) keeps the same keys
+/// as a box, those without Ctrl (⌘): Escape closes it.
+fn typing(app: &RustGisApp, ctx: &egui::Context) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.egui_wants_keyboard_input()
+        || crate::completion::menu_is_open(ctx)
+        || crate::crspicker::list_is_open(ctx)
+        || crate::searchbox::had_focus(&app.ui.search, pass)
+        || crate::table::had_focus(&app.table, pass)
+        || app.workflow.script_find.had_focus(pass)
+}
+
+/// Whether a text field keeps a key for itself (`chord`: the shortcut, or `None` for a key that
+/// is none): while one has the focus it keeps the keys it acts on, those without Ctrl (⌘), which
+/// type text, and undo and redo, whatever they're bound to (#685), as ModelBuilder leaves them.
+fn text_takes(chord: Option<crate::keymap::Chord>, typing: bool, text_field: bool) -> bool {
+    match chord {
+        Some(chord) => (typing && !chord.command) || (text_field && chord.is_text_undo()),
+        None => typing,
+    }
+}
+
+/// Whether command `id` acts on what a click picks (the layer, the tab, the features). A frame
+/// reads its keys before it draws the panes, where a click is taken, so on a slow frame a layer
+/// clicked and Delete pressed would remove the layer picked before: the key of such a command,
+/// pressed while a click is under way, runs in [`late_keys`].
+fn follows_click(id: &str) -> bool {
+    matches!(id, "edit.delete" | "layer.rename")
+}
+
+/// Runs the keys [`shortcuts`] left for the end of the frame, now that the panes have taken its
+/// click and the dialogs it opened are up. A key pressed while a button is still down came
+/// before anyone could know what the click picks: it is dropped, as is one that a text field
+/// takes when the click put the cursor in one, and one whose click opened or answered a dialog
+/// (Delete Layout?), which the key was not for.
+pub fn late_keys(app: &mut RustGisApp, ctx: &egui::Context) {
+    let (late, dialogs) = crate::inuse::take_late(app);
+    if late.is_empty() || crate::inuse::down(app) || behind_a_dialog(app, ctx) || dialogs != dialogs_up(app) {
+        return;
+    }
+    let (typing, text_field) = (typing(app, ctx), ctx.text_edit_focused());
+    let run: Vec<(String, Value, Pane)> =
+        late.into_iter().filter(|key| !text_takes(key.chord, typing, text_field)).map(|key| (key.id, key.params, key.pane)).collect();
+    // The panes and dialogs were drawn before these keys run: another frame shows what they did.
+    if !run.is_empty() {
+        ctx.request_repaint();
+    }
+    run_keys(app, ctx, &run);
+}
+
+/// Runs the commands of the keys pressed, each with the pane that was in use as its key went
+/// down: what a key does depends on the tool, the view and the pane.
+fn run_keys(app: &mut RustGisApp, ctx: &egui::Context, run: &[(String, Value, Pane)]) {
+    for (id, p, pane) in run {
+        let (id, p, pane) = (id.as_str(), p.clone(), *pane);
         if id == "tool.set" {
             app.map.cancel_sketch();
             app.layout.cancel_tool();
@@ -1038,6 +1140,22 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
             crate::circleedit::cancel(app);
             continue;
         }
+        // In the layer list, Delete removes the layers picked there, never the features selected
+        // on the map, a layout's element or a vertex (#2945).
+        if id == "edit.delete" && pane == Pane::Layers {
+            remove_picked_layers(app);
+            continue;
+        }
+        // On the tabs, and in a layout, Rename (F2) is for the map or layout in view, as a
+        // double-click on its tab is; elsewhere it renames the active layer (below).
+        if id == "layer.rename"
+            && p.get("name").is_none()
+            && p.get("layer").is_none()
+            && let Some(dialog) = renames_view(app, pane)
+        {
+            let _ = app.run("ui.dialog", json!({"name": dialog}));
+            continue;
+        }
         // With Edit Vertices, Delete removes the chosen vertex rather than the feature.
         if id == "edit.delete"
             && app.session.active_layout.is_none()
@@ -1056,19 +1174,16 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
                 .selected
                 .is_some_and(|el| app.session.project.layouts.get(li).is_some_and(|l| l.locked_in_removal(el).is_some()));
             if kept {
-                let text = crate::i18n::fmt(
-                    "{command}: {reason}",
-                    &[("command", tl_raw!("Delete Element")), ("reason", crate::layoutview::locked_delete())],
-                );
-                if !app.map.toasts.iter().any(|t| t.text == text) {
-                    app.session.notify(text, true);
-                }
+                cannot_run(app, tl_raw!("Delete Element"), crate::layoutview::locked_delete());
             } else if let Some(el) = app.layout.selected.take() {
                 let _ = app.run("layout.removeElement", json!({"layout": li, "element": el}));
+            } else {
+                cannot_run(app, tl_raw!("Delete Element"), tl_raw!("no element is selected"));
             }
             continue;
         }
-        if matches!(id, "edit.delete" | "ui.copy" | "ui.cut") && app.session.map().selection_count() == 0 {
+        // Copy and Cut with nothing selected do nothing. Delete says so (below).
+        if matches!(id, "ui.copy" | "ui.cut") && app.session.map().selection_count() == 0 {
             continue;
         }
         // Pasting text that isn't features (a stray copy from elsewhere) does nothing.
@@ -1086,11 +1201,7 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
             && let Some(why) = why_disabled(app, id)
         {
             let label = app.session.registry.get(id).map_or(id, |s| s.label);
-            let text = crate::i18n::fmt("{command}: {reason}", &[("command", tl_raw!(label)), ("reason", tl_raw!(why))]);
-            // Once while it shows: a held key repeats, and each repeat comes here.
-            if !app.map.toasts.iter().any(|t| t.text == text) {
-                app.session.notify(text, true);
-            }
+            cannot_run(app, tl_raw!(label), tl_raw!(why));
             continue;
         }
         // Rename with no name given (F2) opens the Rename dialog for the active layer, as Command
@@ -1101,6 +1212,42 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
             continue;
         }
         let _ = app.run_by_user(id, p);
+    }
+}
+
+/// Says why a key's command (`label`, translated, as `reason` is) can't run now. Once while the
+/// notice shows: a held key repeats, and each repeat comes here.
+fn cannot_run(app: &mut RustGisApp, label: &str, reason: &str) {
+    let text = crate::i18n::fmt("{command}: {reason}", &[("command", label), ("reason", reason)]);
+    if !app.map.toasts.iter().any(|t| t.text == text) {
+        app.session.notify(text, true);
+    }
+}
+
+/// Delete in the layer list: removes what is picked there, as its menu's Remove does (one Undo
+/// step, no question asked). That is the tile layer picked, else the layers picked together;
+/// with neither, it says so.
+fn remove_picked_layers(app: &mut RustGisApp) {
+    if let Some(i) = app.session.selected_tile() {
+        let _ = app.run("map.removeTiles", json!({"index": i}));
+    } else if let Some(why) = why_disabled(app, "layer.remove") {
+        cannot_run(app, tl_raw!("Remove"), tl_raw!(why));
+    } else {
+        let _ = app.run("layer.remove", Value::Null);
+    }
+}
+
+/// The dialog Rename (F2) opens for the map or layout in view, when `pane` is one where the key
+/// is about it rather than the active layer: the tabs, or a layout. `None` elsewhere, and with
+/// ModelBuilder in view (a model is named in its own toolbar).
+fn renames_view(app: &RustGisApp, pane: Pane) -> Option<&'static str> {
+    if app.mb.shown() {
+        return None;
+    }
+    match (pane, app.session.active_layout.is_some()) {
+        (Pane::Tabs | Pane::View, true) => Some("renameLayout"),
+        (Pane::Tabs, false) => Some("renameMap"),
+        _ => None,
     }
 }
 

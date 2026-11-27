@@ -378,7 +378,8 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     }
     let t = Tokens::get(ui.ctx());
     let pass = ui.ctx().cumulative_pass_nr();
-    egui::Panel::bottom("attribute_table")
+    let layer = ui.layer_id();
+    let panel = egui::Panel::bottom("attribute_table")
         .resizable(true)
         .default_size(250.0)
         .size_range(120.0..=600.0)
@@ -838,6 +839,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                 rowmenu::show(app, key, at);
             }
         });
+    app.ui.in_use.drawn(crate::inuse::Pane::Table, layer, panel.response.rect);
     statistics_window(app, ui.ctx());
 }
 

@@ -546,14 +546,19 @@ with `{"layer":"parcels"}`.
 | ++ctrl+equal++ / ++ctrl+minus++ | Zoom in / out |
 | ++home++ | Full extent |
 | ++esc++ | Back to Explore; cancel a sketch |
-| ++delete++ | Delete selected features; with Edit Vertices, the chosen vertex; in a layout, the selected element |
+| ++delete++ | Delete selected features; with Edit Vertices, the chosen vertex; in a layout, the selected element; in the layer list, remove the selected layers (++backspace++ too) |
 | ++ctrl+d++ | Duplicate the selected layout element |
 | Arrow keys / ++shift++ + arrow keys | Nudge the selected layout element / nudge it further |
 | ++alt+shift+right++ / ++alt+shift+left++ | Indent the active layer into the group above it / outdent it out of its group |
 | ++alt+shift+up++ / ++alt+shift+down++ | Move the active layer up / down one step in the Layers pane |
-| ++f2++ | Rename the active layer |
+| ++f2++ | Rename the active layer; on the map and layout tabs, and in a layout, the map or layout in view |
 | ++ctrl+c++ / ++ctrl+x++ / ++ctrl+v++ | Copy / Cut / Paste features |
 
 On macOS, ++cmd++ takes the place of ++ctrl++. **Help › Shortcuts** lists them all in the app,
 from the same table the app runs them from. While you type in a text field, undo and redo take
 back its typing, not the project's last change.
+
+++delete++ and ++f2++ act on the part of the window you last clicked, dragged or scrolled in.
+Click a layer in the Layers pane and ++delete++ removes it (Undo brings it back), whatever is
+selected on the map; click or scroll the map and it deletes the selected features again. When
+++delete++ has nothing to act on, a notice says why.
