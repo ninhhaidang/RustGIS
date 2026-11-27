@@ -36,9 +36,42 @@ pub struct UiFonts {
 }
 
 /// Reads a regular font within its budget, including a file that grows after metadata is read.
+/// Uses a nonblocking open on Linux and macOS so a named pipe swapped into a candidate path can
+/// never block font discovery waiting for a writer.
 fn read_bounded(path: impl AsRef<std::path::Path>, limit: u64) -> Option<Vec<u8>> {
     use std::io::Read;
-    let file = std::fs::File::open(path).ok()?;
+    let path = path.as_ref();
+    let pre_meta = std::fs::metadata(path).ok()?;
+    if !pre_meta.is_file() || pre_meta.len() > limit {
+        return None;
+    }
+    let mut open = std::fs::OpenOptions::new();
+    open.read(true);
+    #[cfg(all(
+        target_os = "linux",
+        any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "x86",
+            target_arch = "arm",
+            target_arch = "riscv64",
+            target_arch = "powerpc64",
+            target_arch = "s390x",
+            target_arch = "loongarch64"
+        )
+    ))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Linux asm-generic `O_NONBLOCK` (`0o4000`).
+        open.custom_flags(0o4000);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // macOS/BSD `O_NONBLOCK` (`0x0004`).
+        open.custom_flags(0x0004);
+    }
+    let file = open.open(path).ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.len() > limit {
         return None;
@@ -538,6 +571,8 @@ pub struct CjkRootScanSummary {
     pub entry_errors: usize,
     /// Directories truncated or skipped because a depth, directory, file, or entry cap was hit.
     pub truncated_dirs: usize,
+    /// Whether the OS refused to spawn the background scan thread in an async UI session.
+    pub thread_spawn_failed: bool,
     /// First affected path, so notices say where skipping or errors happened.
     pub sample_path: Option<std::path::PathBuf>,
 }
@@ -545,7 +580,7 @@ pub struct CjkRootScanSummary {
 impl CjkRootScanSummary {
     /// Whether every existing folder under the scanned roots was walked completely without errors.
     pub fn is_clean(&self) -> bool {
-        self.unreadable_dirs == 0 && self.entry_errors == 0 && self.truncated_dirs == 0
+        self.unreadable_dirs == 0 && self.entry_errors == 0 && self.truncated_dirs == 0 && !self.thread_spawn_failed
     }
 
     /// Human-readable notice naming what was skipped or unreadable, how much, and where,
@@ -555,6 +590,9 @@ impl CjkRootScanSummary {
             return None;
         }
         let mut parts = Vec::new();
+        if self.thread_spawn_failed {
+            parts.push("background scan thread could not start".to_string());
+        }
         if self.truncated_dirs > 0 {
             parts.push(format!("{} folder(s) reached the scan limit", self.truncated_dirs));
         }
@@ -623,6 +661,7 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
             continue;
         }
         let mut queue = std::collections::VecDeque::from([(root.clone(), 0usize)]);
+        let mut queued_depth: std::collections::HashMap<std::path::PathBuf, usize> = std::collections::HashMap::new();
         while let Some((dir, depth)) = queue.pop_front() {
             if depth > max_depth || dirs_visited >= max_dirs || files_seen >= max_files || entries_seen >= max_entries {
                 skipped_dirs.push(dir);
@@ -636,10 +675,24 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
                     continue;
                 }
                 *prev_depth = depth;
-                for name in &*child_subdirs {
+                let names = child_subdirs.clone();
+                queued_depth.entry(canonical).and_modify(|d| *d = (*d).min(depth)).or_insert(depth);
+                for name in names {
                     let child = dir.join(name);
-                    if depth < max_depth && queue.len() < max_dirs {
-                        queue.push_back((child, depth + 1));
+                    let next_depth = depth + 1;
+                    if next_depth > max_depth {
+                        skipped_dirs.push(child);
+                        continue;
+                    }
+                    let child_canonical = std::fs::canonicalize(&child).unwrap_or_else(|_| child.clone());
+                    if seen.get(&child_canonical).is_some_and(|&(prev, _)| prev <= next_depth)
+                        || queued_depth.get(&child_canonical).is_some_and(|&prev| prev <= next_depth)
+                    {
+                        continue;
+                    }
+                    if queue.len() < max_dirs {
+                        queued_depth.insert(child_canonical, next_depth);
+                        queue.push_back((child, next_depth));
                     } else {
                         skipped_dirs.push(child);
                     }
@@ -656,6 +709,7 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
                     continue;
                 }
             };
+            queued_depth.entry(canonical.clone()).and_modify(|d| *d = (*d).min(depth)).or_insert(depth);
             dirs_visited += 1;
 
             let mut children = Vec::new();
@@ -687,13 +741,25 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
                         if let Some(name) = path.file_name() {
                             child_subdirs.push(name.to_os_string());
                         }
-                        if depth < max_depth && queue.len() < max_dirs.saturating_sub(dirs_visited) {
-                            queue.push_back((path, depth + 1));
+                        let next_depth = depth + 1;
+                        if next_depth > max_depth {
+                            skipped_dirs.push(path);
+                            continue;
+                        }
+                        let child_canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                        if seen.get(&child_canonical).is_some_and(|&(prev, _)| prev <= next_depth)
+                            || queued_depth.get(&child_canonical).is_some_and(|&prev| prev <= next_depth)
+                        {
+                            continue;
+                        }
+                        if queue.len() < max_dirs.saturating_sub(dirs_visited) {
+                            queued_depth.insert(child_canonical, next_depth);
+                            queue.push_back((path, next_depth));
                         } else {
                             skipped_dirs.push(path);
                         }
                     }
-                    Ok(_) => {
+                    Ok(meta) if meta.is_file() => {
                         if files_seen >= max_files {
                             dir_truncated = true;
                             for remaining in iter {
@@ -719,6 +785,7 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
                             }
                         }
                     }
+                    Ok(_) => {}
                     Err(err) => {
                         if err.kind() != std::io::ErrorKind::NotFound {
                             summary.entry_errors += 1;
@@ -809,8 +876,29 @@ impl CjkScanState {
         self.index.get().filter(|idx| !idx.summary.is_clean()).map(|idx| idx.summary.clone())
     }
 
+    fn publish_done(&self) {
+        use std::sync::atomic::Ordering;
+        // Publish `done` before advancing `FONT_GENERATION` so any reader observing the new
+        // generation resolves against the completed scan (and disk cache) rather than `Pending`.
+        if !self.done.swap(true, Ordering::AcqRel) {
+            FONT_GENERATION.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    #[cfg(any(not(target_arch = "wasm32"), test))]
+    fn record_spawn_refused(&self) {
+        let _ = self.index.set(CjkRootIndex {
+            files: std::collections::HashMap::new(),
+            summary: CjkRootScanSummary { thread_spawn_failed: true, ..Default::default() },
+        });
+        self.notice_needed.store(true, std::sync::atomic::Ordering::Release);
+        self.publish_done();
+    }
+
     /// Starts the bounded Linux CJK folder walk on a background thread once. Returns `true`
     /// while the scan is running off-thread so UI callers return `None` without blocking.
+    /// If the OS refuses to spawn the thread, records a diagnostic summary and marks the scan done
+    /// without running the folder walk on the UI thread.
     fn start_async_scan(&'static self, scan: impl Fn() -> CjkRootIndex + Clone + Send + 'static) -> bool {
         use std::sync::atomic::Ordering;
         if self.done.load(Ordering::Acquire) || self.index.get().is_some() {
@@ -824,34 +912,32 @@ impl CjkScanState {
             struct FinishOnDrop(&'static CjkScanState);
             impl Drop for FinishOnDrop {
                 fn drop(&mut self) {
-                    self.0.done.store(true, Ordering::Release);
+                    self.0.publish_done();
                 }
             }
-            let bg_scan = scan.clone();
             if std::thread::Builder::new()
                 .name("cjk-font-scan".into())
                 .spawn(move || {
                     let _done = FinishOnDrop(self);
-                    let index = self.index.get_or_init(bg_scan);
+                    let index = self.index.get_or_init(scan);
                     if !index.summary.is_clean() {
                         self.notice_needed.store(true, Ordering::Release);
-                    }
-                    if !index.files.is_empty() {
-                        FONT_GENERATION.fetch_add(1, Ordering::Release);
                     }
                 })
                 .is_ok()
             {
                 return true;
             }
+            self.record_spawn_refused();
+            false
         }
-        // Thread spawn refused (or wasm32): run the bounded scan once before marking done.
-        let index = self.index.get_or_init(scan);
-        if !index.summary.is_clean() {
-            self.notice_needed.store(true, Ordering::Release);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = scan;
+            let _ = self.index.set(CjkRootIndex { files: std::collections::HashMap::new(), summary: CjkRootScanSummary::default() });
+            self.publish_done();
+            false
         }
-        self.done.store(true, Ordering::Release);
-        false
     }
 
     fn resolve_region(
@@ -869,7 +955,11 @@ impl CjkScanState {
         if let Some(found) = fixed_slot.get_or_init(|| find_fixed(region)).as_ref() {
             return CjkResolveResult::Resolved(Some(found));
         }
-        if use_root_scan && self.async_enabled.load(std::sync::atomic::Ordering::Acquire) && self.start_async_scan(scan.clone()) {
+        if use_root_scan
+            && !BLOCKING_CJK_SCAN.get()
+            && self.async_enabled.load(std::sync::atomic::Ordering::Acquire)
+            && self.start_async_scan(scan.clone())
+        {
             return CjkResolveResult::Pending;
         }
         let Some(fallback_slot) = self.fallback.get(slot) else {
@@ -882,6 +972,9 @@ impl CjkScanState {
                     if !index.summary.is_clean() {
                         self.notice_needed.store(true, std::sync::atomic::Ordering::Release);
                     }
+                    if self.async_enabled.load(std::sync::atomic::Ordering::Acquire) {
+                        self.publish_done();
+                    }
                     find_cjk_in_index(&index.files, region).map(|(_, bytes, index)| (bytes, index))
                 } else {
                     None
@@ -891,6 +984,27 @@ impl CjkScanState {
             .as_ref();
         CjkResolveResult::Resolved(found)
     }
+}
+
+thread_local! {
+    /// Set by background export workers ([`with_blocking_cjk_scan`]) so exports wait for any
+    /// in-flight Linux CJK folder scan rather than omitting glyphs.
+    static BLOCKING_CJK_SCAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` with blocking Linux CJK folder resolution on the current thread. Intended for
+/// background export workers (off the UI thread) so exports wait for an in-flight scan and can
+/// use discovered or disk-cached faces instead of returning `Pending`.
+pub fn with_blocking_cjk_scan<T>(f: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            BLOCKING_CJK_SCAN.set(self.0);
+        }
+    }
+    let prev = BLOCKING_CJK_SCAN.replace(true);
+    let _reset = Reset(prev);
+    f()
 }
 
 static CJK_SCAN: CjkScanState = CjkScanState::new();
@@ -1970,6 +2084,7 @@ mod tests {
             unreadable_dirs: 2,
             entry_errors: 3,
             truncated_dirs: 0,
+            thread_spawn_failed: false,
             sample_path: Some(dir.path().to_path_buf()),
         };
         let err_notice = err_summary.notice().expect("errors should produce a notice");
@@ -2051,6 +2166,7 @@ mod tests {
     #[test]
     fn cjk_scan_state_stays_non_blocking_while_async_scan_runs_and_retries_when_ready() {
         use std::sync::{Arc, Mutex, mpsc};
+        use std::time::{Duration, Instant};
 
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("distro").join("sub");
@@ -2073,8 +2189,8 @@ mod tests {
         assert!(!FIXED_STATE.is_ready(), "fixed-path hit must not start the folder walk");
 
         // 2) Async UI mode: a fixed-path miss spawns a background scan and returns Pending without
-        // blocking; once the background scan completes, retrying returns the discovered font and
-        // bumps FONT_GENERATION.
+        // blocking; a blocking export worker waits for the scan and resolves immediately, and UI
+        // retries succeed once the background scan completes and bumps FONT_GENERATION.
         static ASYNC_STATE: super::CjkScanState = super::CjkScanState::new();
         ASYNC_STATE.enable_async();
         let (entered_tx, entered_rx) = mpsc::channel();
@@ -2093,28 +2209,47 @@ mod tests {
                     let _ = tx.send(());
                 }
                 if let Some(rx) = release.lock().unwrap().take() {
-                    let _ = rx.recv();
+                    let _ = rx.recv_timeout(Duration::from_secs(5));
                 }
                 super::scan_cjk_roots(std::slice::from_ref(&scan_root))
             },
             |_| None,
         );
         assert!(matches!(first, super::CjkResolveResult::Pending), "UI caller must not block while scanning");
-        entered_rx.recv().expect("background scan thread started");
+        entered_rx.recv_timeout(Duration::from_secs(5)).expect("background scan thread started");
         assert!(ASYNC_STATE.is_pending());
         assert!(!ASYNC_STATE.is_ready());
 
-        // Subsequent calls while still scanning also stay non-blocking and do not poison cache.
+        // Subsequent UI calls while still scanning stay non-blocking and do not poison cache.
         let second =
             ASYNC_STATE.resolve_region(super::CjkRegion::SimplifiedChinese, |_| None, true, || super::scan_cjk_roots(&[]), |_| None);
         assert!(matches!(second, super::CjkResolveResult::Pending));
 
+        // A background export worker using `with_blocking_cjk_scan` waits for the scan and gets
+        // the discovered face rather than `Pending`.
+        let (export_tx, export_rx) = mpsc::channel();
+        let export_handle = std::thread::Builder::new()
+            .name("test-cjk-export".into())
+            .spawn(move || {
+                let res = super::with_blocking_cjk_scan(|| {
+                    ASYNC_STATE.resolve_region(super::CjkRegion::SimplifiedChinese, |_| None, true, || super::scan_cjk_roots(&[]), |_| None)
+                });
+                let _ =
+                    export_tx.send(matches!(res, super::CjkResolveResult::Resolved(Some((bytes, 0))) if bytes.as_slice() == valid_font));
+            })
+            .unwrap();
+
         release_tx.send(()).unwrap();
+        assert!(export_rx.recv_timeout(Duration::from_secs(5)).unwrap(), "export worker must resolve discovered CJK font");
+        export_handle.join().unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
         while !ASYNC_STATE.is_ready() {
+            assert!(Instant::now() < deadline, "timed out waiting for async scan completion");
             std::thread::yield_now();
         }
         assert!(!ASYNC_STATE.is_pending());
-        assert!(super::font_generation() > gen_before, "completing scan with discovered files must bump font generation");
+        assert!(super::font_generation() > gen_before, "completing scan must bump font generation");
 
         let retried =
             ASYNC_STATE.resolve_region(super::CjkRegion::SimplifiedChinese, |_| None, true, || super::scan_cjk_roots(&[]), |_| None);
@@ -2127,7 +2262,44 @@ mod tests {
         }
         assert!(ASYNC_STATE.take_summary().is_none(), "clean scan emits no notice");
 
-        // 3) Sync headless/CLI mode (async not enabled): resolves synchronously on the first call.
+        // 3) Empty async scan still bumps FONT_GENERATION so disk-cache fallback unblocks metrics.
+        static EMPTY_ASYNC_STATE: super::CjkScanState = super::CjkScanState::new();
+        EMPTY_ASYNC_STATE.enable_async();
+        let empty_gen = super::font_generation();
+        let empty_first = EMPTY_ASYNC_STATE.resolve_region(
+            super::CjkRegion::SimplifiedChinese,
+            |_| None,
+            true,
+            || super::scan_cjk_roots(&[]),
+            |_| Some((valid_font.to_vec(), 0)),
+        );
+        assert!(matches!(empty_first, super::CjkResolveResult::Pending));
+        let empty_deadline = Instant::now() + Duration::from_secs(5);
+        while !EMPTY_ASYNC_STATE.is_ready() {
+            assert!(Instant::now() < empty_deadline, "timed out waiting for empty async scan");
+            std::thread::yield_now();
+        }
+        assert!(super::font_generation() > empty_gen, "empty async scan must still bump font generation");
+        let cached_fallback = EMPTY_ASYNC_STATE.resolve_region(
+            super::CjkRegion::SimplifiedChinese,
+            |_| None,
+            true,
+            || super::scan_cjk_roots(&[]),
+            |_| Some((valid_font.to_vec(), 0)),
+        );
+        assert!(matches!(cached_fallback, super::CjkResolveResult::Resolved(Some(_))));
+
+        // 4) Refused scan thread records a non-clean notice without running the walk inline.
+        static REFUSED_STATE: super::CjkScanState = super::CjkScanState::new();
+        REFUSED_STATE.enable_async();
+        REFUSED_STATE.record_spawn_refused();
+        assert!(REFUSED_STATE.is_ready());
+        assert!(!REFUSED_STATE.is_pending());
+        let refused_summary = REFUSED_STATE.take_summary().expect("spawn refusal must produce a notice");
+        assert!(refused_summary.thread_spawn_failed);
+        assert!(refused_summary.notice().is_some_and(|n| n.contains("background scan thread could not start")));
+
+        // 5) Sync headless/CLI mode (async not enabled): resolves synchronously on the first call.
         static SYNC_STATE: super::CjkScanState = super::CjkScanState::new();
         let sync_root = dir.path().to_path_buf();
         let sync_res = SYNC_STATE.resolve_region(
@@ -2144,6 +2316,36 @@ mod tests {
             }
             _ => panic!("sync mode must discover nested CJK font immediately"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_cjk_roots_deduplicates_self_link_and_skips_named_pipes() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_font = include_bytes!("../testdata/test-fallback.otf");
+
+        // Self-referencing symlink sorted before `z` must not consume the remaining directory slot.
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("a-link")).unwrap();
+        let z_dir = dir.path().join("z");
+        std::fs::create_dir_all(&z_dir).unwrap();
+        let expected = z_dir.join("NotoSansSC-Regular.otf");
+        std::fs::write(&expected, valid_font).unwrap();
+
+        let tight = super::scan_cjk_roots_bounded(&[dir.path().to_path_buf()], 6, 2, 10);
+        assert!(tight.summary.is_clean(), "self-link alias must not exhaust dir cap: {:?}", tight.summary);
+        let (chosen, _, _) =
+            super::find_cjk_in_index(&tight.files, super::CjkRegion::SimplifiedChinese).expect("z should use the second directory slot");
+        assert_eq!(chosen, expected);
+
+        // Named pipe (FIFO) with a matching CJK font filename must be skipped and never block open.
+        let fifo_dir = tempfile::tempdir().unwrap();
+        let fifo_path = fifo_dir.path().join("NotoSansSC-Regular.otf");
+        let mkfifo = std::process::Command::new("mkfifo").arg(&fifo_path).status().expect("mkfifo available on unix");
+        assert!(mkfifo.success(), "mkfifo failed");
+        let fifo_scan = super::scan_cjk_roots(&[fifo_dir.path().to_path_buf()]);
+        assert!(fifo_scan.summary.is_clean(), "{:?}", fifo_scan.summary);
+        assert!(fifo_scan.files.is_empty(), "special files must not be indexed: {:?}", fifo_scan.files);
+        assert!(super::read_bounded(&fifo_path, super::MAX_FONT_BYTES as u64).is_none(), "read_bounded must reject FIFOs without blocking");
     }
 
     #[cfg(unix)]

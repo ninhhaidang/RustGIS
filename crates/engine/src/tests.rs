@@ -63121,6 +63121,7 @@ fn headless_session_run_emits_cjk_scan_notice_only_when_lossy() {
         truncated_dirs: 2,
         unreadable_dirs: 1,
         entry_errors: 0,
+        thread_spawn_failed: false,
         sample_path: Some(std::path::PathBuf::from("/run/host/fonts")),
     };
     {

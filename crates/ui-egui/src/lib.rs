@@ -2266,6 +2266,9 @@ impl RustGisApp {
             return None;
         }
         let mut parts = Vec::new();
+        if summary.thread_spawn_failed {
+            parts.push(i18n::t_raw("background scan thread could not start").to_string());
+        }
         if summary.truncated_dirs > 0 {
             parts.push(i18n::fmt_raw("{count} folder(s) reached the scan limit", &[("count", &summary.truncated_dirs.to_string())]));
         }
@@ -2342,13 +2345,16 @@ impl RustGisApp {
             let face = theme::installed_face(bytes, *index, matches!(region, ScriptFont::Cjk(_)));
             self.extra_fonts.push((name, std::sync::Arc::new(face), Some(region)));
             self.fonts_dirty = true;
-        } else if matches!(region, ScriptFont::Cjk(_)) && self.cjk_scan_in_flight() {
+            return;
+        }
+        if matches!(region, ScriptFont::Cjk(_)) && self.cjk_scan_in_flight() {
             // Linux CJK folder scan is running off the UI thread; retry once it finishes.
-        } else if let (Some(fetch), Some(url)) = (&self.services.fetch_font, script_font_url(region)) {
-            self.fonts_requested.push(name);
+            return;
+        }
+        self.fonts_requested.push(name);
+        if let (Some(fetch), Some(url)) = (&self.services.fetch_font, script_font_url(region)) {
             fetch(url);
         } else {
-            self.fonts_requested.push(name);
             log::warn!("no {region:?} font installed; text in that script may not display");
         }
     }
@@ -2441,10 +2447,10 @@ impl RustGisApp {
     /// CJK font installed).
     fn ensure_data_cjk_font(&mut self, ctx: &egui::Context) {
         use rustgis_engine::render::fonts::{CjkRegion, CjkScript, ScriptFont, script_font_url, take_missing_cjk};
-        let fetching = self.services.fetch_font.is_some();
-        if self.fonts_dirty || self.fonts_pending || (!fetching && self.cjk_scan_in_flight()) {
+        if self.fonts_dirty || self.fonts_pending || self.cjk_scan_in_flight() {
             return;
         }
+        let fetching = self.services.fetch_font.is_some();
         let samples = rustgis_engine::render::fonts::peek_missing_text();
         let missing: Vec<_> = take_missing_cjk()
             .into_iter()
@@ -7751,8 +7757,10 @@ impl RustGisApp {
             autosave::tick(self, &ctx);
         }
         // Missing text first drawn this frame needs a next logic pass even without input.
-        // Handled requests wait for their result instead of keeping an idle window repainting.
-        if rustgis_engine::render::fonts::peek_missing_cjk().iter().any(|s| !self.cjk_scripts_handled.contains(s))
+        // Handled requests (or CJK misses waiting on an in-flight Linux folder scan) wait for
+        // their result instead of keeping an idle window repainting every frame.
+        if (!self.cjk_scan_in_flight()
+            && rustgis_engine::render::fonts::peek_missing_cjk().iter().any(|s| !self.cjk_scripts_handled.contains(s)))
             || rustgis_engine::render::fonts::peek_missing_text()
                 .iter()
                 .any(|(s, _)| !matches!(s, rustgis_engine::render::fonts::ScriptFont::Cjk(_)) && !self.other_scripts_handled.contains(s))
@@ -8294,6 +8302,7 @@ mod language_coverage_tests {
             truncated_dirs: 2,
             unreadable_dirs: 0,
             entry_errors: 1,
+            thread_spawn_failed: false,
             sample_path: Some(std::path::PathBuf::from("/run/host/fonts")),
         });
         let ctx = egui::Context::default();
@@ -8322,6 +8331,7 @@ mod language_coverage_tests {
             truncated_dirs: 0,
             unreadable_dirs: 1,
             entry_errors: 0,
+            thread_spawn_failed: false,
             sample_path: Some(std::path::PathBuf::from("/run/host/user-fonts")),
         });
         let missing_mark = missing_app.session.notice_mark();
@@ -8364,6 +8374,20 @@ mod language_coverage_tests {
         assert_eq!(app.language_coverage, Some((app.chosen_lang(), false)));
         let unavailable: Vec<_> = app.session.notices_since(mark).iter().filter(|n| n.text.contains("can't display")).collect();
         assert_eq!(unavailable.len(), 1, "{unavailable:?}");
+
+        // While a scan is pending, data-CJK downloads are also deferred even when fetch_font is set.
+        let (mut dl_app, dl_ctx) = without_script_font("en");
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = asked.clone();
+        dl_app.services.fetch_font = Some(Box::new(move |url| sink.lock().unwrap().push(url.to_string())));
+        dl_app.cjk_roots_applied = false;
+        dl_app.test_cjk_roots_state = Some((true, false));
+        rustgis_engine::render::fonts::note_missing_cjk('か');
+        let mut output = dl_ctx.run_ui(egui::RawInput::default(), |ui| dl_app.ensure_data_cjk_font(ui.ctx()));
+        output.textures_delta.clear();
+        assert!(asked.lock().unwrap().is_empty(), "must not start font download while CJK folder scan is in flight");
+        // Drain missing CJK bit cleanly so other tests start clean.
+        let _ = rustgis_engine::render::fonts::take_missing_cjk();
     }
 }
 
@@ -8371,6 +8395,8 @@ mod language_coverage_tests {
 mod cjk_download_tests {
     /// Initializes the font stack before a poll can recheck actual missing characters.
     fn poll_cjk(app: &mut super::RustGisApp) {
+        // Download tests emulate a browser/environment with no Linux CJK folder scan in flight.
+        app.test_cjk_roots_state = Some((false, false));
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.ensure_data_cjk_font(ui.ctx()));
         output.textures_delta.clear();

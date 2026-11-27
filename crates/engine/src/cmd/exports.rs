@@ -124,7 +124,9 @@ fn completion_with_notes(command: &str, written_path: Option<&str>, notes: &[Str
 /// placed is written: a Cancel that comes after the last step doesn't turn it into a failure.
 fn written_under(name: &str, control: &std::sync::Arc<rustgis_analysis::control::Control>, work: Work) -> Result<Wrote, String> {
     let mut wrote = None;
-    let res = rustgis_analysis::run_under(name, control, || work().map(|w| wrote = Some(w)));
+    // Exports run off the UI thread (or headlessly), so wait for any in-flight Linux CJK folder
+    // scan rather than writing a file with missing CJK glyphs.
+    let res = rustgis_analysis::run_under(name, control, || rustgis_render::fonts::with_blocking_cjk_scan(work).map(|w| wrote = Some(w)));
     match wrote {
         Some(w) => Ok(w),
         None => Err(res.err().unwrap_or_else(|| format!("{name} wrote nothing"))),
