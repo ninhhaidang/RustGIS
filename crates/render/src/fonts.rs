@@ -280,8 +280,14 @@ fn push_unique_root(out: &mut Vec<std::path::PathBuf>, path: std::path::PathBuf)
     }
 }
 
+/// POSIX absolute path check used for `XDG_DATA_HOME` (required by the XDG Base Directory spec)
+/// and `HOME`, working consistently even when Linux root logic is unit-tested on Windows.
+pub(crate) fn is_posix_absolute(path: &std::ffi::OsStr) -> bool {
+    path.as_encoded_bytes().starts_with(b"/")
+}
+
 /// Linux font roots in search order: system, local, Flatpak host mounts, and XDG/user directories.
-/// Shared with `crate::families::font_dirs`.
+/// Shared with `crate::families::font_dirs` on Linux.
 pub(crate) fn linux_font_roots_with(xdg_data_home: Option<&std::ffi::OsStr>, home: Option<&std::ffi::OsStr>) -> Vec<std::path::PathBuf> {
     let mut roots = Vec::new();
     for dir in ["/usr/share/fonts", "/usr/local/share/fonts"] {
@@ -290,12 +296,12 @@ pub(crate) fn linux_font_roots_with(xdg_data_home: Option<&std::ffi::OsStr>, hom
     for dir in FLATPAK_FONT_DIRS {
         push_unique_root(&mut roots, std::path::PathBuf::from(dir));
     }
-    if let Some(xdg) = xdg_data_home.filter(|v| !v.is_empty()) {
+    if let Some(xdg) = xdg_data_home.filter(|v| is_posix_absolute(v)) {
         push_unique_root(&mut roots, std::path::PathBuf::from(xdg).join("fonts"));
-    } else if let Some(h) = home.filter(|v| !v.is_empty()) {
+    } else if let Some(h) = home.filter(|v| is_posix_absolute(v)) {
         push_unique_root(&mut roots, std::path::PathBuf::from(h).join(".local").join("share").join("fonts"));
     }
-    if let Some(h) = home.filter(|v| !v.is_empty()) {
+    if let Some(h) = home.filter(|v| is_posix_absolute(v)) {
         push_unique_root(&mut roots, std::path::PathBuf::from(h).join(".fonts"));
     }
     roots
@@ -1642,6 +1648,11 @@ mod tests {
 
         let roots_home = super::linux_font_roots_with(None, Some(OsStr::new("/custom/home")));
         assert!(roots_home.contains(&PathBuf::from("/custom/home/.local/share/fonts")), "{roots_home:?}");
+
+        // Per XDG Base Directory spec, relative XDG_DATA_HOME is ignored and falls back to $HOME/.local/share.
+        let roots_rel = super::linux_font_roots_with(Some(OsStr::new("relative/xdg")), Some(OsStr::new("/custom/home")));
+        assert!(!roots_rel.contains(&PathBuf::from("relative/xdg/fonts")), "{roots_rel:?}");
+        assert!(roots_rel.contains(&PathBuf::from("/custom/home/.local/share/fonts")), "{roots_rel:?}");
 
         for (region, index) in [
             (super::CjkRegion::Japanese, 0),

@@ -202,8 +202,18 @@ fn font_dirs() -> Vec<PathBuf> {
     } else if cfg!(target_os = "android") {
         // Android's app home has no system fonts; manufacturer faces can live on /product.
         dirs.extend(crate::fonts::ANDROID_FONT_DIRS.iter().map(PathBuf::from));
+    } else if cfg!(target_os = "linux") {
+        dirs.extend(crate::fonts::linux_font_roots_with(
+            std::env::var_os("XDG_DATA_HOME").as_deref(),
+            home.as_deref().map(Path::as_os_str),
+        ));
     } else {
-        dirs = crate::fonts::linux_font_roots_with(std::env::var_os("XDG_DATA_HOME").as_deref(), home.as_deref().map(Path::as_os_str));
+        dirs.extend(["/usr/share/fonts", "/usr/local/share/fonts"].map(PathBuf::from));
+        match std::env::var_os("XDG_DATA_HOME").filter(|v| crate::fonts::is_posix_absolute(v)) {
+            Some(d) => dirs.push(PathBuf::from(d).join("fonts")),
+            None => dirs.extend(home.iter().map(|h| h.join(".local").join("share").join("fonts"))),
+        }
+        dirs.extend(home.iter().map(|h| h.join(".fonts")));
     }
     dirs
 }
