@@ -366,6 +366,12 @@ pub(super) fn long_commands(boundaries: bool) {
         ("a5Grid", json!({"system": "Hexagon", "resolution": 3, "area": "Input Layer", "input": "Countries"})),
         ("a5Aggregate", json!({"system": "H3", "input": "Cities", "resolution": 3})),
         ("a5Grid", json!({"system": "H3", "resolution": 3, "area": "Input Layer", "input": "Countries"})),
+        ("joinField", json!({"target": "Cities", "joinTable": "ranks", "targetField": "name", "joinField": "name"})),
+        ("merge", json!({"inputs": ["Countries", "Squares"], "attributes": true})),
+        ("polygonToLine", json!({"input": "Countries"})),
+        ("featureEnvelopeToPolygon", json!({"input": "Countries"})),
+        ("splitLineAtVertices", json!({"input": "Rivers"})),
+        ("unsplitLine", json!({"input": "Rivers"})),
     ];
     for (tool, params) in &tools {
         exercise(&s, tool, params, Kind::Tool, &dir.0, boundaries);
