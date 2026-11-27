@@ -4205,6 +4205,7 @@ fn add_element(s: &mut Session, p: &Value) -> CmdResult {
             (name, rect, ElementKind::Line { color, width, dir, head, dash })
         }
         "extentIndicator" => {
+            only_add_keys(p, "an extent indicator", ADD_EXTENT_INDICATOR_KEYS)?;
             let frame = frame_of(l, p)?;
             let of =
                 p.get("of").and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok()).ok_or("of (the frame to outline) is required")?;
@@ -4224,6 +4225,7 @@ fn add_element(s: &mut Session, p: &Value) -> CmdResult {
             return Ok(json!({"element": frame}));
         }
         "grid" => {
+            only_add_keys(p, "a grid", ADD_GRID_KEYS)?;
             let frame = frame_of(l, p)?;
             unlocked(l, frame)?;
             // Options not given keep the frame's grid's, or the defaults for a new grid.
@@ -7536,4 +7538,260 @@ fn element_selectors(kind: &ElementKind) -> Option<Value> {
         ElementKind::NorthArrow { frame, .. } | ElementKind::ScaleBar { frame, .. } => json!({"frame":frame}),
         _ => return None,
     })
+}
+
+/// Keys read by `layout.addElement` for an extent indicator (#2890).
+const ADD_EXTENT_INDICATOR_KEYS: &[&str] = &["layout", "kind", "frame", "of", "color", "width"];
+
+/// Keys read by `layout.addElement` for a grid (#2890).
+const ADD_GRID_KEYS: &[&str] = &[
+    "layout",
+    "kind",
+    "frame",
+    "type",
+    "crs",
+    "step",
+    "short",
+    "mgrs",
+    "color",
+    "width",
+    "labels",
+    "labelSize",
+    "style",
+    "tickLength",
+    "format",
+    "hemisphere",
+    "edges",
+    "labelOrientation",
+    "off",
+];
+
+/// Refuses any non-null key in `p` that `what` does not read, naming it and what `what` reads.
+fn only_add_keys(p: &Value, what: &str, allowed: &[&str]) -> Result<(), String> {
+    let Some(obj) = p.as_object() else { return Ok(()) };
+    if let Some(key) = obj.keys().find(|k| !obj.get(*k).is_none_or(Value::is_null) && !allowed.contains(&k.as_str())) {
+        return Err(format!("layout.addElement: {what} takes no \"{key}\" (it reads {})", allowed.join(", ")));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rustgis_map::Rgba;
+    use rustgis_map::layout::{CoordFormat, ElementKind, GridEdges, GridKind, GridStyle, Orientation};
+    use serde_json::{Value, json};
+
+    use crate::{Project, Session};
+
+    fn layout_session() -> (Session, u32) {
+        let mut s = Session::new(Project::default());
+        s.run("layout.new", &json!({"name": "L", "template": "map"})).unwrap();
+        let frame = s.project.layouts[0].first_frame().unwrap();
+        (s, frame)
+    }
+
+    #[test]
+    fn add_element_grid_refuses_unread_parameters_without_mutating() {
+        let (mut s, frame) = layout_session();
+        let before_layout = s.project.layouts[0].clone();
+        let before_undo = s.undo_depth();
+
+        for (key, val) in [
+            ("x", json!(10)),
+            ("y", json!(10)),
+            ("w", json!(50)),
+            ("h", json!(50)),
+            ("text", json!("hi")),
+            ("angle", json!(30)),
+            ("divisions", json!(4)),
+            ("of", json!(frame)),
+            ("bold", json!(true)),
+            ("units", json!("meters")),
+            ("rows", json!(5)),
+        ] {
+            let err = s.run("layout.addElement", &json!({"kind": "grid", "step": 20, key: val})).unwrap_err();
+            assert!(err.starts_with(&format!("layout.addElement: a grid takes no \"{key}\" (it reads ")), "{key}: {err}");
+            assert!(err.contains("layout, kind, frame, type, crs, step"), "{key}: {err}");
+            assert_eq!(s.project.layouts[0], before_layout, "{key} mutated layout");
+            assert_eq!(s.undo_depth(), before_undo, "{key} pushed an undo step");
+        }
+
+        // Exact issue #2890 reproduction payload (BTreeMap checks keys in alphabetical order: "angle" first).
+        let err = s
+            .run(
+                "layout.addElement",
+                &json!({"kind": "grid", "step": 20, "x": 10, "y": 10, "w": 50, "h": 50, "text": "hi", "angle": 30, "divisions": 4}),
+            )
+            .unwrap_err();
+        assert!(err.starts_with("layout.addElement: a grid takes no \"angle\" (it reads "), "{err}");
+        assert_eq!(s.project.layouts[0], before_layout);
+        assert_eq!(s.undo_depth(), before_undo);
+    }
+
+    #[test]
+    fn add_element_extent_indicator_refuses_unread_parameters_without_mutating() {
+        let (mut s, frame) = layout_session();
+        let inset = s.run("layout.addFrame", &json!({"x": 150, "y": 150, "w": 40, "h": 40})).unwrap()["element"].as_u64().unwrap() as u32;
+        let before_layout = s.project.layouts[0].clone();
+        let before_undo = s.undo_depth();
+
+        for (key, val) in [
+            ("x", json!(10)),
+            ("y", json!(10)),
+            ("w", json!(50)),
+            ("h", json!(50)),
+            ("text", json!("hi")),
+            ("step", json!(5)),
+            ("bold", json!(true)),
+            ("type", json!("measured")),
+            ("off", json!(true)),
+            ("angle", json!(30)),
+            ("divisions", json!(4)),
+        ] {
+            let err = s.run("layout.addElement", &json!({"kind": "extentIndicator", "frame": inset, "of": frame, key: val})).unwrap_err();
+            assert_eq!(
+                err,
+                format!("layout.addElement: an extent indicator takes no \"{key}\" (it reads layout, kind, frame, of, color, width)"),
+                "{key}: {err}"
+            );
+            assert_eq!(s.project.layouts[0], before_layout, "{key} mutated layout");
+            assert_eq!(s.undo_depth(), before_undo, "{key} pushed an undo step");
+        }
+
+        // Exact issue #2890 reproduction payload (BTreeMap checks keys in alphabetical order: "bold" first).
+        let err = s
+            .run(
+                "layout.addElement",
+                &json!({"kind": "extentIndicator", "frame": inset, "of": frame, "x": 10, "w": 50, "text": "hi", "step": 5, "bold": true}),
+            )
+            .unwrap_err();
+        assert_eq!(err, "layout.addElement: an extent indicator takes no \"bold\" (it reads layout, kind, frame, of, color, width)");
+        assert_eq!(s.project.layouts[0], before_layout);
+        assert_eq!(s.undo_depth(), before_undo);
+    }
+
+    #[test]
+    fn add_element_grid_and_extent_indicator_allow_null_unread_keys_and_all_valid_keys_silently() {
+        let (mut s, frame) = layout_session();
+        let inset = s.run("layout.addFrame", &json!({"x": 150, "y": 150, "w": 40, "h": 40})).unwrap()["element"].as_u64().unwrap() as u32;
+
+        // Explicit null values for unread keys count as not given and emit no notice.
+        let mark = s.notice_mark();
+        s.run(
+            "layout.addElement",
+            &json!({"kind": "grid", "step": 20, "x": null, "y": null, "w": null, "h": null, "text": null, "angle": null, "divisions": null, "of": null}),
+        )
+        .unwrap();
+        s.run(
+            "layout.addElement",
+            &json!({"kind": "extentIndicator", "frame": inset, "of": frame, "x": null, "w": null, "text": null, "step": null, "bold": null}),
+        )
+        .unwrap();
+        assert!(s.notices_since(mark).is_empty(), "{:?}", s.notices_since(mark));
+
+        // Clean calls covering every allowed key for grid (graticule + measured/MGRS + off) and extentIndicator.
+        let mark = s.notice_mark();
+        s.run(
+            "layout.addElement",
+            &json!({
+                "layout": 0,
+                "kind": "grid",
+                "frame": frame,
+                "type": "graticule",
+                "step": 10,
+                "color": "#334455",
+                "width": 1.0,
+                "labels": true,
+                "labelSize": 10,
+                "style": "linesAndTicks",
+                "tickLength": 2.5,
+                "format": "dms",
+                "hemisphere": true,
+                "edges": ["top", "bottom", "left", "right"],
+                "labelOrientation": "vertical",
+                "off": false
+            }),
+        )
+        .unwrap();
+        assert!(s.notices_since(mark).is_empty(), "{:?}", s.notices_since(mark));
+        let Some(ElementKind::MapFrame { grid: Some(g), .. }) = s.project.layouts[0].element(frame).map(|e| &e.kind) else {
+            panic!("expected grid on frame");
+        };
+        assert_eq!(g.kind, GridKind::Graticule);
+        assert_eq!(g.step, 10.0);
+        assert_eq!(g.color, Rgba::rgb(0x33, 0x44, 0x55));
+        assert_eq!(g.width, 1.0);
+        assert!(g.labels);
+        assert_eq!(g.label_size, 10.0);
+        assert_eq!(g.style, GridStyle::LinesAndTicks);
+        assert_eq!(g.tick_length, 2.5);
+        assert_eq!(g.format, CoordFormat::Dms);
+        assert!(g.hemisphere);
+        assert_eq!(g.edges, GridEdges { top: true, bottom: true, left: true, right: true });
+        assert_eq!(g.label_orientation, Orientation::Vertical);
+
+        let mark = s.notice_mark();
+        s.run(
+            "layout.addElement",
+            &json!({
+                "layout": "L",
+                "kind": "grid",
+                "frame": frame,
+                "type": "measured",
+                "crs": "EPSG:32632",
+                "step": 1000,
+                "short": true,
+                "mgrs": true
+            }),
+        )
+        .unwrap();
+        assert!(s.notices_since(mark).is_empty(), "{:?}", s.notices_since(mark));
+        let Some(ElementKind::MapFrame { grid: Some(g), .. }) = s.project.layouts[0].element(frame).map(|e| &e.kind) else {
+            panic!("expected measured grid on frame");
+        };
+        assert_eq!(g.kind, GridKind::Measured);
+        assert_eq!(g.crs.as_deref(), Some("EPSG:32632"));
+        assert_eq!(g.step, 1000.0);
+        assert!(g.short);
+        assert!(g.mgrs);
+
+        let mark = s.notice_mark();
+        s.run("layout.addElement", &json!({"layout": 0, "kind": "grid", "frame": frame, "off": true})).unwrap();
+        assert!(s.notices_since(mark).is_empty(), "{:?}", s.notices_since(mark));
+        assert!(matches!(s.project.layouts[0].element(frame).map(|e| &e.kind), Some(ElementKind::MapFrame { grid: None, .. })));
+
+        let mark = s.notice_mark();
+        s.run(
+            "layout.addElement",
+            &json!({"layout": 0, "kind": "extentIndicator", "frame": inset, "of": frame, "color": "#1F4E9A", "width": 1.5}),
+        )
+        .unwrap();
+        assert!(s.notices_since(mark).is_empty(), "{:?}", s.notices_since(mark));
+        assert!(matches!(
+            s.project.layouts[0].element(inset).map(|e| &e.kind),
+            Some(ElementKind::MapFrame { extent_of: Some(of), extent_color, extent_width, .. })
+                if *of == frame && *extent_color == Rgba::rgb(0x1F, 0x4E, 0x9A) && *extent_width == 1.5
+        ));
+
+        // Earlier kind-specific checks keep their existing messages, including intentional null refusals.
+        assert_eq!(s.run("layout.addElement", &json!({"kind": "grid", "fill": "#FFFFFF"})).unwrap_err(), super::ONLY_FILL);
+        assert_eq!(
+            s.run("layout.addElement", &json!({"kind": "extentIndicator", "frame": inset, "of": frame, "outline": "#FFFFFF"})).unwrap_err(),
+            super::ONLY_OUTLINE
+        );
+        assert_eq!(
+            s.run("layout.addElement", &json!({"kind": "grid", "background": {"fill": "#FFFFFF"}})).unwrap_err(),
+            super::NO_OVERLAY_BACKGROUND
+        );
+        assert_eq!(
+            s.run("layout.addElement", &json!({"kind": "extentIndicator", "frame": inset, "of": frame, "background": {"fill": "#FFFFFF"}}))
+                .unwrap_err(),
+            super::NO_OVERLAY_BACKGROUND
+        );
+        assert_eq!(s.run("layout.addElement", &json!({"kind": "grid", "dash": Value::Null})).unwrap_err(), super::ONLY_DASH);
+        assert_eq!(
+            s.run("layout.addElement", &json!({"kind": "grid", "unitLabel": Value::Null})).unwrap_err(),
+            super::ONLY_SCALE_BAR_DETAILS
+        );
+    }
 }
