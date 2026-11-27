@@ -36,6 +36,14 @@ pub const TOKEN_URL: &str = "https://identity.dataspace.copernicus.eu/auth/realm
 pub const CLIENT_ID: &str = "cdse-public";
 /// The hosts whose files need the token: the only ones it is sent to, over HTTPS.
 pub const DATA_HOSTS: &[&str] = &["download.dataspace.copernicus.eu", "zipper.dataspace.copernicus.eu"];
+/// The hosts where a request counts against the account's quota: [`DATA_HOSTS`] and CDSE's S3
+/// endpoint.
+const QUOTA_HOSTS: &[&str] = &["download.dataspace.copernicus.eu", "zipper.dataspace.copernicus.eu", "eodata.dataspace.copernicus.eu"];
+/// Requests under way at once to each of [`QUOTA_HOSTS`], counted per host: the connections a
+/// general account may have open (<https://documentation.dataspace.copernicus.eu/Quotas.html>).
+/// One more is refused with 429. The quota counts an account's connections over all its hosts, so
+/// layers read from two hosts at once may still meet one.
+pub(crate) const PER_HOST: usize = 4;
 /// Where an account is made.
 pub const SIGN_UP: &str = "https://dataspace.copernicus.eu";
 /// An access token is renewed this long before it expires (seconds).
@@ -504,6 +512,11 @@ fn https_host(url: &str) -> Option<String> {
         return None;
     }
     Some(authority.trim_end_matches('.').to_ascii_lowercase())
+}
+
+/// Whether requests to the server `name` (lowercase, no port) count against a CDSE quota.
+pub(crate) fn has_quota(name: &str) -> bool {
+    QUOTA_HOSTS.contains(&name)
 }
 
 /// Whether `url` is on a CDSE data host, the only place the token is sent: HTTPS, no user info

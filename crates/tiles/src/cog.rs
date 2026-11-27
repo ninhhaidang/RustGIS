@@ -1623,11 +1623,29 @@ fn read_whole(e: &str) -> bool {
     e.contains(NOT_COG) || e.contains("not a GeoTIFF")
 }
 
+/// Forgets a header that failed because its connection dropped
+/// ([`crate::cache::connection_dropped`]), so a caller that asks for the file itself (a layer
+/// added, an analysis) rather than draws it has the header read again now. The map's draws
+/// ([`info`]) keep their wait, as after every other failure.
+fn ask_again_if_dropped(url: &str) {
+    let mut i = infos().lock().unwrap_or_else(|e| e.into_inner());
+    if matches!(i.get(url), Some(State::Failed(e, ..)) if crate::cache::connection_dropped(e)) {
+        i.remove(url);
+    }
+}
+
+/// [`ask_again_if_dropped`] for a layer added without its header read first (a plugin's command in
+/// the app, a data cube's file): the map's draw that follows reads it again.
+pub fn forget_dropped(url: &str) {
+    ask_again_if_dropped(split(url).0);
+}
+
 /// Whether the file at `url` is a cloud-optimised GeoTIFF, waiting for the answer (the command
 /// line): `Ok(false)` for any other file, read whole instead.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn probe_blocking(url: &str) -> Result<bool, String> {
     let url = split(url).0;
+    ask_again_if_dropped(url);
     let (tx, rx) = std::sync::mpsc::channel();
     with_info(url, Box::new(move |r| tx.send(r.map(|_| ())).unwrap_or_default()));
     match rx.recv_timeout(std::time::Duration::from_secs(60)) {
@@ -1642,6 +1660,7 @@ pub fn probe_blocking(url: &str) -> Result<bool, String> {
 /// `Ok(false)` for any other file, read whole instead.
 pub fn probe(url: &str, then: Box<dyn FnOnce(Result<bool, String>) + Send>) {
     let url = split(url).0;
+    ask_again_if_dropped(url);
     with_info(
         url,
         Box::new(move |r| {
@@ -1673,6 +1692,7 @@ pub fn info_blocking(url: &str) -> Result<Arc<Info>, String> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn info_until(url: &str, stop: &std::sync::atomic::AtomicBool) -> Result<Arc<Info>, String> {
     let url = split(url).0;
+    ask_again_if_dropped(url);
     let (tx, rx) = std::sync::mpsc::channel();
     with_info(url, Box::new(move |r| tx.send(r).unwrap_or_default()));
     wait_until(&rx, Duration::from_secs(120), stop).map_err(|stopped| stopped_or(stopped, url, "no answer in two minutes"))?
@@ -2475,6 +2495,45 @@ mod tests {
         assert!(within(), "not armed again: {:?}", crate::cache::next_alarm());
         super::infos().lock().unwrap().remove(file);
     }
+
+    /// A file whose header's connection dropped each time (#2886) is asked for again when it is
+    /// asked for itself (a layer added again, an analysis), and not by the map's draws, which wait
+    /// as after any failure. Another failure waits for both.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_header_whose_connection_dropped_is_read_again_when_asked_for() {
+        let _turn = crate::cache::turn();
+        let _alarm = crate::cache::alarm_turn();
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let n = asked.clone();
+        crate::cache::set_fetcher(move |_, done| {
+            n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            done(Ok(b"not a tiff".to_vec()));
+        });
+        let file = "https://dropped-cog.invalid/a.tif";
+        let fail = |why: &str| {
+            let state = super::State::Failed(format!("{file}: {why}"), Instant::now(), crate::cache::ceiling_for(file));
+            super::infos().lock().unwrap().insert(file.to_string(), state);
+        };
+        let count = || asked.load(std::sync::atomic::Ordering::SeqCst);
+        let dropped = crate::failure::with_drops("io: Peer disconnected", 5);
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        fail(&dropped);
+        assert!(super::info(file).is_err_and(|e| e.contains(&dropped)) && count() == 0, "the map's draw asked again");
+        assert_eq!((super::probe_blocking(file), count()), (Ok(false), 1));
+        fail(&dropped);
+        assert!(super::info_blocking(file).is_err_and(|e| e.contains("not a GeoTIFF")) && count() == 2);
+        fail(&dropped);
+        super::probe(file, Box::new(move |r| tx.send(r).unwrap()));
+        assert_eq!((rx.recv().unwrap(), count()), (Ok(false), 3));
+
+        fail("http status: 503");
+        assert!(super::probe_blocking(file).is_err_and(|e| e.contains("503")) && count() == 3);
+        crate::cache::clear_fetcher();
+        super::infos().lock().unwrap().remove(file);
+    }
+
     #[test]
     fn public_restriction_rejects_an_in_flight_local_header_and_allows_retry() {
         let _turn = crate::cache::turn();

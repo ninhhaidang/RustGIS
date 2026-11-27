@@ -231,6 +231,14 @@ fn retry_after_secs(value: &str, now: u64) -> Option<u64> {
     Some(secs.clamp(1, MAX_RETRY_AFTER))
 }
 
+/// A failure's text (`io: Peer disconnected`) with how many times its range was asked for, the
+/// connection dropped before its bytes were in each time (#2886). Read back by
+/// [`crate::cache::connection_dropped`].
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn with_drops(text: &str, tries: usize) -> String {
+    format!("{text} (the connection dropped, tries: {tries})")
+}
+
 /// A status's usual name (`403` → `Forbidden`), for the common ones.
 pub fn status_name(status: u16) -> Option<&'static str> {
     Some(match status {

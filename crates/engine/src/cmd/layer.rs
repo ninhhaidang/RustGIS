@@ -5983,6 +5983,11 @@ pub(crate) fn add_cog_with(s: &mut Session, p: &Value, url: &str, strict: bool, 
     // (which follow the time slider) and AlphaEarth's quantised embeddings (which raster styles
     // don't dequantise) are tile layers.
     let (file, mut look) = crate::render::rustgis_tiles::cog::split(url);
+    // A header not read first (a plugin's command in the app, a data cube's file) whose connection
+    // dropped is read again by what draws the layer now, as a probed one is (#2886).
+    if !probed {
+        crate::render::rustgis_tiles::cog::forget_dropped(file);
+    }
     // A key given as `null` (a script's unused one) asks for nothing.
     let given = |k: &str| p.get(k).filter(|v| !v.is_null());
     // A data cube's file stays a tile layer, its project opened again too: its address says so.
@@ -6010,7 +6015,14 @@ pub(crate) fn add_cog_with(s: &mut Session, p: &Value, url: &str, strict: bool, 
         let dated = s.map().tiles.get(index).ok_or("added GeoTIFF tile is missing")?.url.clone();
         // Its header read now (natively) as an undated address's is before it is added.
         #[cfg(not(target_arch = "wasm32"))]
-        let probe = if s.leave_downloads { Ok(false) } else { crate::render::rustgis_tiles::cog::probe_blocking(&dated) };
+        // Not probed off the frame: the file shown (not the template) is read again by the map's
+        // draw if its connection dropped (#2886).
+        let probe = if s.leave_downloads {
+            crate::render::rustgis_tiles::cog::forget_dropped(&dated);
+            Ok(false)
+        } else {
+            crate::render::rustgis_tiles::cog::probe_blocking(&dated)
+        };
         #[cfg(target_arch = "wasm32")]
         let probe: Result<bool, String> = Ok(false);
         (dated, probe == Ok(true), probe.err())

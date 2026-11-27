@@ -40,9 +40,20 @@ pub(crate) fn host(url: &str) -> String {
         return String::new();
     };
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = rest.get(..end).unwrap_or(rest);
-    // Credentials in the address aren't part of the server.
-    authority.rsplit_once('@').map_or(authority, |(_, h)| h).to_ascii_lowercase()
+    server(rest.get(..end).unwrap_or(rest))
+}
+
+/// The server an address's authority names (`host[:port]`, lowercase): its credentials left out,
+/// and an absolute name (`example.org.`) the same server as `example.org`, as CDSE's token goes to
+/// both (#2886).
+pub(crate) fn server(authority: &str) -> String {
+    let server = authority.rsplit_once('@').map_or(authority, |(_, h)| h).to_ascii_lowercase();
+    let (name, port) = match server.rsplit_once(':') {
+        Some((name, port)) if !server.ends_with(']') => (name, Some(port)),
+        _ => (server.as_str(), None),
+    };
+    let name = name.trim_end_matches('.');
+    port.map_or_else(|| name.to_string(), |port| format!("{name}:{port}"))
 }
 
 /// How many fetches may be under way at once from `host`.
@@ -52,6 +63,8 @@ pub(crate) fn cap(host: &str) -> usize {
         LOCAL
     } else if name == "tile.openstreetmap.org" || name.ends_with(".tile.openstreetmap.org") {
         PER_HOST_OSM
+    } else if crate::copernicus::has_quota(name) {
+        crate::copernicus::PER_HOST
     } else {
         PER_HOST
     }
@@ -219,6 +232,15 @@ mod tests {
         assert_eq!(host("mbtiles:3/1/2@https://example.org/x.mbtiles"), "");
         assert_eq!(cap("a.tile.openstreetmap.org"), PER_HOST_OSM);
         assert_eq!(cap("tiles.example.com"), PER_HOST);
+        assert_eq!(cap("download.dataspace.copernicus.eu"), crate::copernicus::PER_HOST);
+        assert_eq!(cap("stac.dataspace.copernicus.eu"), PER_HOST);
+        // Every host the token goes to counts against the quota; an absolute name is its server.
+        for name in crate::copernicus::DATA_HOSTS {
+            assert_eq!(cap(name), crate::copernicus::PER_HOST, "{name}");
+        }
+        assert_eq!(host("https://Download.Dataspace.Copernicus.eu./a.tif"), "download.dataspace.copernicus.eu");
+        assert_eq!(host("http://example.org.:8080/a"), "example.org:8080");
+        assert_eq!(host("http://[::1]:8080/a"), "[::1]:8080");
         assert_eq!(cap(""), LOCAL);
     }
 

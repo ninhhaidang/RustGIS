@@ -849,6 +849,14 @@ pub fn retry_after(error: &str) -> Option<Duration> {
     Some(Duration::from_secs(secs.clamp(1, crate::failure::MAX_RETRY_AFTER)))
 }
 
+/// Whether a read failed because its connection dropped before its bytes were in, each time it was
+/// tried (see [`crate::failure::with_drops`]): the server is there, unlike one that can't be reached.
+pub(crate) fn connection_dropped(error: &str) -> bool {
+    error
+        .rsplit_once(" (the connection dropped, tries: ")
+        .is_some_and(|(_, rest)| rest.strip_suffix(')').is_some_and(|n| n.parse::<usize>().is_ok()))
+}
+
 /// How long a failed read waits before it is tried again: what its server asked for (see
 /// [`retry_after`]), else `default`.
 pub fn retry_wait(error: &str, default: Duration) -> Duration {
@@ -2562,8 +2570,10 @@ mod native {
     //! A tile costs one or two round trips plus the server's own time (Esri's World Imagery
     //! Wayback answers every tile with a redirect first), and the connections stay open between
     //! tiles, so fetching is bound by latency: how many requests are under way at once. Each
-    //! server gets up to [`PER_HOST`] of them (OpenStreetMap's tile servers [`PER_HOST_OSM`]), and
-    //! the workers share one agent, so a server never sees more open connections than that.
+    //! server gets up to [`PER_HOST`] of them (OpenStreetMap's tile servers [`PER_HOST_OSM`],
+    //! each of CDSE's data servers [`crate::copernicus::PER_HOST`], the connections its quota gives
+    //! a general account), and the workers share one agent, so a server never sees more open
+    //! connections than that.
 
     use std::collections::HashMap;
     use std::sync::{Condvar, Mutex, OnceLock};
@@ -2672,9 +2682,7 @@ mod native {
             return String::new();
         };
         let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-        let authority = rest.get(..end).unwrap_or(rest);
-        // Credentials in the address aren't part of the server.
-        authority.rsplit_once('@').map_or(authority, |(_, h)| h).to_ascii_lowercase()
+        crate::schedule::server(rest.get(..end).unwrap_or(rest))
     }
 
     /// How many fetches may be under way at once from `host`.
@@ -2684,6 +2692,8 @@ mod native {
             WORKERS
         } else if name == "tile.openstreetmap.org" || name.ends_with(".tile.openstreetmap.org") {
             PER_HOST_OSM
+        } else if crate::copernicus::has_quota(name) {
+            crate::copernicus::PER_HOST
         } else {
             PER_HOST
         }
@@ -3494,6 +3504,42 @@ mod native {
     /// The User-Agent every request goes with.
     const USER_AGENT: &str = concat!("RustGIS/", env!("CARGO_PKG_VERSION"), " (+https://rustgis.app)");
 
+    /// How long a range whose connection dropped before its bytes were in waits before each next
+    /// try (#2886): some servers drop a share of the connections they are offered, and one drop
+    /// would fail the whole window, file header or archive the range is for.
+    const DROP_WAITS: [std::time::Duration; 4] = [
+        std::time::Duration::from_millis(200),
+        std::time::Duration::from_millis(500),
+        std::time::Duration::from_secs(1),
+        std::time::Duration::from_secs(2),
+    ];
+    /// No try starts later than this after the range was first asked for, so a server slow to drop
+    /// its connections adds at most this to the agent's own time limit.
+    const DROP_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Whether `e` says the other side dropped the connection: while it was made secure, after the
+    /// request went, or before the whole body came. Not one refused, timed out or never found,
+    /// which asking again at once wouldn't change.
+    fn dropped(e: &std::io::Error) -> bool {
+        use std::io::ErrorKind::{BrokenPipe, ConnectionAborted, ConnectionReset, UnexpectedEof};
+        matches!(e.kind(), BrokenPipe | ConnectionAborted | ConnectionReset | UnexpectedEof)
+    }
+
+    /// Waits `wait` out, or stops once the request is no longer wanted. A queued fetch keeps its
+    /// place at its server meanwhile, so a server that drops connections isn't asked for more at
+    /// once while it does.
+    fn pause(wait: std::time::Duration) -> Result<(), String> {
+        let end = std::time::Instant::now() + wait;
+        loop {
+            super::check_current()?;
+            let left = end.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Ok(());
+            }
+            std::thread::sleep(left.min(std::time::Duration::from_millis(100)));
+        }
+    }
+
     /// A request that never got an answer: what kind of failure, for the user (#509).
     fn unanswered(e: ureq::Error) -> Failure {
         let reason = match &e {
@@ -3614,7 +3660,9 @@ mod native {
     /// `omit` is an expected answer: its failure isn't recorded, only noted once per server. A
     /// request carrying a login is recorded by its plain address and scrubbed text only
     /// ([`RequestDiagnostics::failed`]). `agent` must already enforce `initial` in its resolver;
-    /// the worker selects that pool before dispatch. Redirects can only narrow it further.
+    /// the worker selects that pool before dispatch. Redirects can only narrow it further. A range
+    /// whose connection drops is asked for again from the start ([`DROP_WAITS`]), what came of it
+    /// thrown away: its login and whether it is still wanted are checked again each time.
     pub(super) fn fetch_answer(
         agent: &ureq::Agent,
         url: &str,
@@ -3635,12 +3683,20 @@ mod native {
         omit: &'static [u16],
     ) -> Result<Fetched, Failure> {
         use std::io::Read;
+        // Kept over the tries of a dropped range: once any try carried a login, what comes back is
+        // scrubbed, as after a single try that did.
         let mut carried_login = false;
         // Local file failures are not network traffic.
         let local = crate::mbtiles::is_tile(url) || url.starts_with(LOCAL);
         let mut diagnostics = super::RequestDiagnostics::new(url, "GET");
         diagnostics.omit_statuses(omit);
-        let answer = (|| -> Result<Fetched, Failure> {
+        let dropped_now = std::cell::Cell::new(false);
+        // A body that didn't come whole.
+        let cut = |e: std::io::Error| {
+            dropped_now.set(dropped(&e));
+            Failure::from(e.to_string())
+        };
+        let mut attempt = || -> Result<Fetched, Failure> {
             super::check_current()?;
             if crate::mbtiles::is_tile(url) {
                 return crate::mbtiles::read_local(url).map(|bytes| Fetched { bytes, origin: Origin::named(url) }).map_err(Failure::from);
@@ -3707,7 +3763,10 @@ mod native {
                 };
                 // Recheck the original binding even after redirects dropped its credentials.
                 crate::logins::check(url).map_err(str::to_string)?;
-                let (mut resp, reached) = connected(|| req.call()).map_err(unanswered)?;
+                let (mut resp, reached) = connected(|| req.call()).map_err(|e| {
+                    dropped_now.set(matches!(&e, ureq::Error::Io(io) if dropped(io)));
+                    unanswered(e)
+                })?;
                 ceiling = ceiling.min(reached);
                 let status = resp.status().as_u16();
                 diagnostics.answered(status);
@@ -3837,7 +3896,7 @@ mod native {
                 Wanted::part(resp.body_mut().with_config().limit(limit.saturating_add(1)).reader())
                     .take(limit)
                     .read_to_end(&mut buf)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(cut)?;
                 if buf.len() as u64 > n {
                     return Err(rustgis_data::diagnostics::message_with_address(url, super::NO_RANGES).into());
                 }
@@ -3851,7 +3910,7 @@ mod native {
             Wanted::new(resp.body_mut().with_config().limit(max as u64 + 2).reader(), total)
                 .take(max as u64 + 1)
                 .read_to_end(&mut buf)
-                .map_err(|e| e.to_string())?;
+                .map_err(cut)?;
             if buf.len() > max {
                 return Err(format!("larger than {max} bytes").into());
             }
@@ -3862,7 +3921,27 @@ mod native {
                 buf.truncate(usize::try_from(b - a + 1).unwrap_or(usize::MAX));
             }
             Ok(Fetched { bytes: buf, origin })
-        })();
+        };
+        let (plain, tail) = super::split_tail(super::split_download_limit(url).0);
+        let ranged = tail.is_some() || super::split_range(plain).1.is_some();
+        let asked = std::time::Instant::now();
+        let mut drops = 0;
+        let answer = loop {
+            dropped_now.set(false);
+            let mut failure = match attempt() {
+                Err(failure) if ranged && dropped_now.get() => failure,
+                answer => break answer,
+            };
+            let wait = DROP_WAITS.get(drops).filter(|w| asked.elapsed() + **w <= DROP_WITHIN);
+            drops += 1;
+            let Some(wait) = wait else {
+                failure.message = crate::failure::with_drops(&failure.message, drops);
+                break Err(failure);
+            };
+            if let Err(e) = pause(*wait) {
+                break Err(e.into());
+            }
+        };
         let result = if local { answer } else { diagnostics.record(answer) };
         let result = crate::logins::check(super::resource_of(url)).map_err(Failure::from).and(result);
         result.map_err(|mut f| {
@@ -7103,12 +7182,103 @@ Connection: close
         assert!(native::cap("tile.openstreetmap.org") < native::cap("example.org"));
         assert_eq!(native::cap("a.tile.openstreetmap.org"), native::cap("tile.openstreetmap.org"));
         assert!(native::cap("") >= native::cap("example.org"));
+        // Copernicus Data Space's data servers get an account's quota; its catalog has none.
+        for host in ["download", "zipper", "eodata"] {
+            assert_eq!(native::cap(&format!("{host}.dataspace.copernicus.eu:443")), 4);
+        }
+        assert_eq!(native::cap("stac.dataspace.copernicus.eu"), native::cap("example.org"));
+        assert_eq!(native::cap("download.dataspace.copernicus.eu.example.org"), native::cap("example.org"));
+        // An absolute name (a trailing dot) is its server, as the token is sent to it (#2886).
+        let absolute = "https://Download.Dataspace.Copernicus.eu./a.tif";
+        assert!(crate::copernicus::is_data_host(absolute));
+        assert_eq!(native::host(absolute), "download.dataspace.copernicus.eu");
+        assert_eq!(native::host("http://example.org.:8080/a"), "example.org:8080");
         // The newest job whose server has room.
         let full = native::cap("a.org");
         let active: HashMap<String, usize> = [("a.org".to_string(), full)].into();
         assert_eq!(native::pick(&["b.org", "a.org", "b.org", "a.org"], &active), Some(2));
         assert_eq!(native::pick(&["a.org", "a.org"], &active), None);
         assert_eq!(native::pick(&["a.org"], &HashMap::new()), Some(0));
+    }
+
+    /// A server that drops its first `drops` connections once their request is in and `cut` is
+    /// sent, then answers with `answer`, and how many requests it has had.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn serve_after_drops(drops: usize, cut: &'static str, answer: &'static str) -> (String, Arc<AtomicUsize>) {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let asked = Arc::new(AtomicUsize::new(0));
+        let n = asked.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let _ = read_request(&mut stream);
+                let sent = if n.fetch_add(1, Ordering::SeqCst) < drops { cut } else { answer };
+                let _ = stream.write_all(sent.as_bytes());
+            }
+        });
+        (base, asked)
+    }
+
+    /// A range whose connection drops before its answer, or before its whole body, is asked for
+    /// again (#2886); a refusal, a connection refused and a request for a whole address aren't.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_range_whose_connection_drops_is_asked_for_again() {
+        const PART: &str =
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-3/9\r\nContent-Length: 4\r\nConnection: close\r\n\r\nrust";
+        let agent = native::agent();
+        // The start of `PART`, two of its four bytes in.
+        const CUT: &str = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-3/9\r\nContent-Length: 4\r\nConnection: close\r\n\r\nru";
+        for cut in ["", CUT] {
+            let (base, asked) = serve_after_drops(2, cut, PART);
+            assert_eq!(native::get(&agent, &format!("{base}/a{RANGE}0-3"), &[]).unwrap(), b"rust");
+            assert_eq!(asked.load(Ordering::SeqCst), 3);
+            let (base, asked) = serve_after_drops(1, cut, PART);
+            assert_eq!(native::get(&agent, &format!("{base}/a{TAIL}4"), &[]).unwrap(), b"rust");
+            assert_eq!(asked.load(Ordering::SeqCst), 2);
+        }
+
+        let (base, asked) = serve_after_drops(1, "", "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        let e = native::get(&agent, &format!("{base}/a"), &[]).unwrap_err();
+        assert!(!connection_dropped(&e), "{e}");
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        let (base, asked) = serve_after_drops(0, "", "HTTP/1.1 503 Busy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        assert_eq!(native::get(&agent, &format!("{base}/a{RANGE}0-3"), &[]).unwrap_err(), "http status: 503");
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let e = native::get(&agent, &format!("http://{closed}/a{RANGE}0-3"), &[]).unwrap_err();
+        assert!(!connection_dropped(&e), "{e}");
+    }
+
+    /// A range dropped every time fails after its tries, saying so; one no longer wanted stops
+    /// waiting for its next try.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_range_always_dropped_fails_after_its_tries() {
+        let agent = native::agent();
+        let (base, asked) = serve_after_drops(usize::MAX, "", "");
+        let url = format!("{base}/a{RANGE}0-3");
+        let e = native::get_detailed(&agent, &url).unwrap_err();
+        assert!(e.message.ends_with(" (the connection dropped, tries: 5)") && connection_dropped(&e.message), "{}", e.message);
+        assert_eq!(e.reason, crate::failure::Reason::Unreachable);
+        assert_eq!(asked.load(Ordering::SeqCst), 5);
+
+        let (base, asked) = serve_after_drops(usize::MAX, "", "");
+        let seen = asked.clone();
+        let still: Still = Arc::new(move || seen.load(Ordering::SeqCst) < 2);
+        let e = with_still(still, || native::get(&agent, &format!("{base}/a{RANGE}0-3"), &[])).unwrap_err();
+        assert!(!connection_dropped(&e), "{e}");
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn only_a_dropped_connection_is_read_back_as_one() {
+        assert!(connection_dropped("https://example.org/a.tif: io: Peer disconnected (the connection dropped, tries: 5)"));
+        for e in ["io: Peer disconnected", "http status: 503 (retry after 30 s)", "x (the connection dropped, tries: many)", ""] {
+            assert!(!connection_dropped(e), "{e}");
+        }
     }
 
     /// Many tiles from one server are fetched more than 8 at a time (the old pool), and never

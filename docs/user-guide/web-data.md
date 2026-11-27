@@ -593,7 +593,9 @@ without it.
 
 A collection's items list each band as an asset whose `alternate.https` address is on the data
 server: add it with `layer.addUrl` (`"cog": true`, since the address ends in `$value`, and `"bbox"`
-for a window) and it is read in place, as any COG. A plugin does the same and never sees the token. `copernicus.status` reports the sign-in (as whom, when the token
+for a window) and it is read in place, as any COG. Each of CDSE's data servers is asked for at most
+four parts at a time, the connections its quota gives a general account. A plugin does the same and
+never sees the token. `copernicus.status` reports the sign-in (as whom, when the token
 expires, until when it is renewed); `copernicus.logout` forgets it and empties the download cache.
 The command is for the desktop app and the command line (a password typed in a command line stays
 in the shell's history); the web app signs in from the panel.

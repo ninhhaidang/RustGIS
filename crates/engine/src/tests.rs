@@ -32659,6 +32659,74 @@ fn a_stac_data_cube_from_a_plugin_command_in_the_app() {
     );
 }
 
+/// A server that drops every connection once its request is in, and a signal for each request.
+#[cfg(not(target_arch = "wasm32"))]
+fn serve_dropping_all() -> (String, std::sync::mpsc::Receiver<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut buf = [0u8; 4096];
+            let _ = std::io::Read::read(&mut stream, &mut buf);
+            // Sent before the connection drops, so a read that has failed has been counted.
+            let _ = tx.send(());
+        }
+    });
+    (base, rx)
+}
+
+/// Whether a header whose connection dropped (#2886) is asked for again once `add` runs: the
+/// requests made before it are let go, and one is waited for after it.
+#[cfg(not(target_arch = "wasm32"))]
+fn asked_again_after(asked: &std::sync::mpsc::Receiver<()>, add: impl FnOnce()) -> bool {
+    while asked.try_recv().is_ok() {}
+    add();
+    asked.recv_timeout(std::time::Duration::from_secs(3)).is_ok()
+}
+
+/// A cube's file whose header's connection dropped each time (#2886) is asked for again when the
+/// app adds it again (a plugin's command, off the frame), as one the command line adds is.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_cube_file_whose_header_dropped_is_read_again_when_added_off_the_frame() {
+    let (base, asked) = serve_dropping_all();
+    let url = format!("{base}/dropped-cube.tif");
+    let e = crate::render::rustgis_tiles::cog::info_blocking(&url).err().unwrap_or_default();
+    assert!(e.contains("the connection dropped"), "{e}");
+    let mut s = Session::new(Project::default());
+    s.leave_downloads = true;
+    let again = asked_again_after(&asked, || {
+        s.run("layer.addUrl", &json!({"url": url, "cube": true})).unwrap();
+    });
+    assert!(again, "the header wasn't asked for again");
+}
+
+/// A dated address's file whose header's connection dropped (#2886) is asked for again when the
+/// app adds the address again off the frame: the file of the date shown, not the template.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_dated_file_whose_header_dropped_is_read_again_when_added_off_the_frame() {
+    let (base, asked) = serve_dropping_all();
+    let files: Vec<_> = (2020..=2021).map(|year| format!("{base}/{year}.tif")).collect();
+    let reads: Vec<_> = files
+        .iter()
+        .cloned()
+        .map(|file| std::thread::spawn(move || crate::render::rustgis_tiles::cog::info_blocking(&file).err().unwrap_or_default()))
+        .collect();
+    for read in reads {
+        let e = read.join().unwrap();
+        assert!(e.contains("the connection dropped"), "{e}");
+    }
+    let mut s = Session::new(Project::default());
+    s.leave_downloads = true;
+    let again = asked_again_after(&asked, || {
+        s.run("layer.addUrl", &json!({"url": format!("{base}/{{date:YYYY}}.tif"), "start": 2020, "end": 2021})).unwrap();
+    });
+    assert!(again, "the shown date's header wasn't asked for again");
+}
+
 /// An entry that gives no range, as JAXA Earth's don't, is added with one from a sample of its
 /// files (`"range": "auto"`): the same for every date. Its credit goes on the tile layers it
 /// added, and its collection's licence comes back with it.
