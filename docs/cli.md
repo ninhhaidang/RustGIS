@@ -22,6 +22,7 @@ tools and their parameters. See [Installation](installation.md) for the CLI pack
 
 `render <data|project> <out.png>` opens a data file or saved project and exports its map.
 It defaults to 1600 × 900 pixels at 96 DPI; `--width`, `--height` and `--dpi` change those.
+A `--width` or `--height` outside 16 to 8000 points (pixels at 96 DPI; a higher `--dpi` draws more pixels) is moved to the nearest limit, and it says so.
 A data file is zoomed to its full extent; a project keeps its saved view.
 `--tiles` accepts an XYZ template, vector tiles or a MapLibre-style address.
 
@@ -42,6 +43,11 @@ then), nor by `mcp --attach`.
 cores), as [`gp.threads`](user-guide/analysis.md#analysis-workflows) sets it. With `mcp --attach` the
 open app's own setting holds, so `--threads` is refused there. Without it, a run takes
 the computer's cores, up to 16.
+
+An option that takes a value (`--save`, `--data`, `--cmd`, `--width` and the rest) and gets none, or
+gets another option in its place, is refused with status 2 before anything runs, and so is a
+`--width`, `--height` or `--dpi` of `render` that isn't a number above 0. A value that starts with
+`--` is read as an option: put `./` in front of a file with such a name.
 
 ## Chaining commands
 
