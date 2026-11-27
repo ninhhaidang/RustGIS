@@ -2,6 +2,7 @@
 //! with the map) and edit values in place, a layer's or a standalone table's.
 
 mod dates;
+mod rowmenu;
 
 use std::collections::HashMap;
 use std::sync::Weak;
@@ -36,6 +37,8 @@ pub struct TableState {
     opened: u64,
     /// The answer of Statistics… for a column, shown in a window until it is closed.
     stats: Option<ColumnStats>,
+    /// The cell a row's right-click menu was last opened on.
+    menu: Option<rowmenu::Opened>,
 }
 
 struct RowOrder {
@@ -184,6 +187,7 @@ pub(crate) fn prune_views(app: &mut RustGisApp) {
         app.table.sort = None;
         app.table.sort_schema = None;
         app.table.row_order = None;
+        app.table.menu = None;
         app.table.opened = app.session.opened;
     }
     let project = &app.session.project;
@@ -507,6 +511,8 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
             let mut delete_field: Option<usize> = None;
             // A cell double-clicked in a column whose name finds another field.
             let mut by_other_name = false;
+            // The row right-clicked, or whose menu is open.
+            let mut menu_row: Option<rowmenu::RowAt> = None;
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 let mut tb = TableBuilder::new(ui)
                     .striped(true)
@@ -619,11 +625,31 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                             let sel = selection.contains(&r);
                             row.set_selected(sel);
                             let oid = ds.features.get(r).map(|f| f.id).unwrap_or(0);
-                            row.col(|ui| {
-                                ui.label(egui::RichText::new(oid.to_string()).size(11.5).color(t.text_dim));
+                            // The row's cells and the text in them, one response for its menu,
+                            // and the cell right-clicked.
+                            let mut over: Option<egui::Response> = None;
+                            let mut right: Option<usize> = None;
+                            let mut take = |cell: egui::Response, text: Option<egui::Response>, col: Option<usize>| {
+                                let cell = match text {
+                                    Some(text) => cell | text,
+                                    None => cell,
+                                };
+                                if cell.secondary_clicked() {
+                                    right = col;
+                                }
+                                match over.as_mut() {
+                                    Some(o) => *o |= cell,
+                                    None => over = Some(cell),
+                                }
+                            };
+                            let mut text = None;
+                            let (_, cell) = row.col(|ui| {
+                                text = Some(ui.label(egui::RichText::new(oid.to_string()).size(11.5).color(t.text_dim)));
                             });
+                            take(cell, text, None);
                             for &c in &shown {
-                                row.col(|ui| {
+                                let mut text = None;
+                                let (_, cell) = row.col(|ui| {
                                     let editing = app.table.editing.as_ref().is_some_and(|e| e.fid == oid && e.col == c);
                                     if editing {
                                         if let Some(e) = app.table.editing.as_mut() {
@@ -674,11 +700,19 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                                         } else if resp.clicked() {
                                             clicked = Some((r, ui.input(|i| i.modifiers.command || i.modifiers.shift)));
                                         }
+                                        text = Some(resp);
                                     }
                                 });
+                                take(cell, text, Some(c));
                             }
                             if row.response().clicked() {
                                 clicked = Some((r, row.response().ctx.input(|i| i.modifiers.command || i.modifiers.shift)));
+                            }
+                            // A right-click wins over another row's menu, still open this frame.
+                            if let Some(resp) = over
+                                && (resp.secondary_clicked() || (menu_row.is_none() && resp.context_menu_opened()))
+                            {
+                                menu_row = Some(rowmenu::RowAt { resp, row: r, fid: oid, col: right });
                             }
                         });
                     });
@@ -798,6 +832,10 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                 {
                     app.session.notify(e, true);
                 }
+            }
+            // Last, so a cell being typed in is kept before the menu's rows act.
+            if let Some(at) = menu_row {
+                rowmenu::show(app, key, at);
             }
         });
     statistics_window(app, ui.ctx());
@@ -1129,6 +1167,158 @@ mod tests {
         h.run_steps(2);
         assert_eq!(h.state().session.project.tables[0].dataset.value(0, 1).to_string(), "Rue Cler 2");
         assert!(h.state().table.editing.is_none(), "the editor closed");
+    }
+
+    /// A right-click on a row selects it, or keeps a selection it is in, and opens its menu, whose
+    /// rows act on those features of this layer alone: Zoom To; Copy; Delete, in one step to undo
+    /// and greyed while editing is off; and Copy Value for the cell clicked, the only row a
+    /// standalone table's menu can choose.
+    #[test]
+    fn right_clicking_a_row_opens_its_menu() {
+        use egui_kittest::kittest::NodeT;
+        use rustgis_engine::data::{Geometry, GeometryType};
+        use rustgis_engine::geom::Coord;
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let points = |name: &str, rows: &[(&str, f64, f64)]| {
+            let mut ds = Dataset::new(name, GeometryType::Point, fields(&["Name"]));
+            for &(name, x, y) in rows {
+                ds.push(Some(Geometry::Point(Coord::new(x, y))), vec![V::Text(name.into())]);
+            }
+            ds
+        };
+        let other = app.session.map_mut().add_dataset(points("Other", &[("Elsewhere", 1.0, 1.0)]));
+        let places = [("Alpha", 10.0, 20.0), ("Bravo", 40.0, -30.0), ("Charlie", -70.0, 5.0)];
+        let id = app.session.map_mut().add_dataset(points("Places", &places));
+        app.session.table_layer = Some(id);
+        app.session.run("edit.enable", &json!({"on": true})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 1000.0)).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                app.logic(&ui.ctx().clone());
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(2);
+        let names = |app: &RustGisApp, layer: u32| -> Vec<String> {
+            app.session.map().layer(layer).unwrap().dataset.features.column(0).map(ToString::to_string).collect()
+        };
+        let selected = |app: &RustGisApp, layer: u32| app.session.map().layer(layer).unwrap().selection.clone();
+
+        // A row that isn't selected is selected alone, as a click on it does: the selection in
+        // another layer goes too.
+        h.state_mut().run("select.rows", json!({"layer": other, "rows": [0]})).unwrap();
+        h.run_steps(2);
+        h.get_by_label("Bravo").click_secondary();
+        h.run_steps(3);
+        assert_eq!(selected(h.state(), id), [1], "the right-click selected the row");
+        assert!(selected(h.state(), other).is_empty(), "as a click does, in every layer");
+        for row in ["Zoom To", "Remove from Selection", "Copy Ctrl+C", "Copy Value", "Delete Delete"] {
+            assert!(h.query_by_label(row).is_some(), "{row} is in the menu");
+        }
+        h.get_by_label("Zoom To").click();
+        h.run_steps(3);
+        let at = h.state().session.map().camera.center_lonlat();
+        assert!((at.x - 40.0).abs() < 1e-3 && (at.y + 30.0).abs() < 1e-3, "zoomed to Bravo, not {at:?}");
+        assert!(h.query_by_label("Zoom To").is_none(), "choosing a row closes the menu");
+
+        h.get_by_label("Charlie").click_secondary();
+        h.run_steps(3);
+        h.get_by_label("Copy Value").click();
+        h.step();
+        assert_eq!(h.state().ui.copy_out.as_deref(), Some("Charlie"));
+        // The Feature ID cell opens the menu too, and its value is the feature's id.
+        let at = egui::pos2(h.get_by_label("Feature ID").rect().center().x, h.get_by_label("Charlie").rect().center().y);
+        h.event(egui::Event::PointerMoved(at));
+        h.step();
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.step();
+        }
+        h.run_steps(2);
+        h.get_by_label("Copy Value").click();
+        h.step();
+        let charlie = h.state().session.map().layer(id).unwrap().dataset.features.row(2).unwrap().id();
+        assert_eq!(h.state().ui.copy_out.clone(), Some(charlie.to_string()));
+
+        // A row inside a selection keeps it, and the menu acts on it all; the selection in another
+        // layer, which Delete would take too, is left behind.
+        h.state_mut().run("select.rows", json!({"layer": other, "rows": [0]})).unwrap();
+        h.state_mut().run("select.rows", json!({"layer": id, "rows": [0, 2], "mode": "new"})).unwrap();
+        h.state_mut().run("select.rows", json!({"layer": other, "rows": [0], "mode": "add"})).unwrap();
+        h.run_steps(2);
+        h.get_by_label("Charlie").click_secondary();
+        h.run_steps(3);
+        assert_eq!(selected(h.state(), id), [0, 2]);
+        assert_eq!(selected(h.state(), other), [0], "opening the menu changed nothing");
+        assert!(h.query_by_label("Zoom To 2 Rows").is_some());
+        // No keys beside Copy and Delete here: the keys would take the other layer's row too.
+        assert!(h.query_by_label("Copy 2 Rows Ctrl+C").is_none() && h.query_by_label("Delete 2 Rows Delete").is_none());
+        h.get_by_label("Copy 2 Rows").click();
+        h.run_steps(3);
+        let text = h.state().ui.copy_out.clone().unwrap();
+        assert!(text.contains("Alpha") && text.contains("Charlie"), "{text}");
+        assert!(!text.contains("Bravo") && !text.contains("Elsewhere"), "{text}");
+        h.state_mut().run("select.rows", json!({"layer": other, "rows": [0], "mode": "add"})).unwrap();
+        h.run_steps(2);
+        h.get_by_label("Charlie").click_secondary();
+        h.run_steps(3);
+        h.get_by_label("Delete 2 Rows").click();
+        h.run_steps(3);
+        assert_eq!(names(h.state(), id), ["Bravo"]);
+        assert_eq!(names(h.state(), other), ["Elsewhere"], "only this table's rows went");
+
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        h.run_steps(2);
+        assert_eq!(names(h.state(), id), ["Alpha", "Bravo", "Charlie"], "one Undo restores them");
+
+        // One row, deleted alone and brought back by one Undo.
+        h.state_mut().run("select.clear", json!({})).unwrap();
+        h.run_steps(2);
+        h.get_by_label("Alpha").click_secondary();
+        h.run_steps(3);
+        h.get_by_label("Delete Delete").click();
+        h.run_steps(3);
+        assert_eq!(names(h.state(), id), ["Bravo", "Charlie"]);
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        h.run_steps(2);
+        assert_eq!(names(h.state(), id), ["Alpha", "Bravo", "Charlie"]);
+
+        // The fields change under an open menu: the cell it was opened on may be another field's
+        // now, so the menu closes rather than copy that one's value.
+        h.get_by_label("Bravo").click_secondary();
+        h.run_steps(3);
+        assert!(h.query_by_label("Copy Value").is_some());
+        h.state_mut().run("edit.addField", json!({"layer": id, "name": "Rank", "type": "long"})).unwrap();
+        h.run_steps(3);
+        assert!(h.query_by_label("Copy Value").is_none(), "the menu closed");
+
+        h.state_mut().run("edit.enable", json!({"on": false})).unwrap();
+        h.run_steps(2);
+        h.get_by_label("Bravo").click_secondary();
+        h.run_steps(3);
+        assert!(h.get_by_label("Delete Delete").accesskit_node().is_disabled(), "editing is off");
+        assert!(!h.get_by_label("Zoom To").accesskit_node().is_disabled());
+        h.get_by_label("Remove from Selection").click();
+        h.run_steps(3);
+        assert!(selected(h.state(), id).is_empty());
+
+        let table = h.state_mut().run("layer.addDataText", json!({"fileName": "sites.csv", "text": "Name\nDelta\n"})).unwrap();
+        h.state_mut().session.table_layer = None;
+        h.state_mut().session.table_standalone = table["id"].as_u64().and_then(|id| u32::try_from(id).ok());
+        h.run_steps(2);
+        h.get_by_label("Delta").click_secondary();
+        h.run_steps(3);
+        for row in ["Zoom To", "Remove from Selection", "Copy", "Delete"] {
+            assert!(h.get_by_label(row).accesskit_node().is_disabled(), "{row} can't act on a table's row");
+        }
+        h.get_by_label("Copy Value").click();
+        h.step();
+        assert_eq!(h.state().ui.copy_out.as_deref(), Some("Delta"));
     }
 
     fn fields(names: &[&str]) -> Vec<Field> {
