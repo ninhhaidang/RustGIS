@@ -466,6 +466,12 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                 if resp.clicked() && !level {
                     let _ = app.run("map.resetNorth", json!({}));
                 }
+                // The pointer's coordinates and the map's coordinate system change on a click, so
+                // they are buttons, framed to look it. The two buttons' padding takes what the three
+                // narrower gaps give up, so the bar, full in a narrow window, stays about as wide.
+                let (gap, padding) = (ui.spacing().item_spacing.x, ui.spacing().button_padding.x);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.spacing_mut().button_padding.x = 3.0;
                 sep(ui, &t);
                 // Pointer coordinates.
                 let format = app.map.coord_format;
@@ -482,12 +488,9 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                 if let Some(s) = system.as_ref().filter(|_| format == crate::CoordReadout::Layer && kept.is_some()) {
                     text = format!("{text}  {}", s.name());
                 }
-                let resp = ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(text).monospace().size(11.5).color(if live { t.text_dim } else { t.text_disabled }),
-                    )
-                    .sense(Sense::click()),
-                );
+                // Dimmed, not disabled: in its frame, disabled text would look like a button that is off.
+                let color = if live { t.text } else { t.text_dim };
+                let resp = ui.add(egui::Button::new(egui::RichText::new(text).monospace().size(11.5).color(color)).small());
                 if resp.on_hover_text(format.hover()).clicked() {
                     let _ = app.run("ui.coordinateFormat", Value::Null);
                 }
@@ -496,10 +499,12 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                     rustgis_engine::map::Projection::WebMercator => tl!("WGS 84 / Web Mercator").to_string(),
                     p => tl!(p.label().as_str()).to_string(),
                 };
-                let resp = ui.add(egui::Label::new(egui::RichText::new(projection).size(11.0).color(t.text_dim)).sense(Sense::click()));
+                let resp = ui.add(egui::Button::new(egui::RichText::new(projection).size(11.0)).small());
                 if resp.on_hover_text(tl!("Change the map's coordinate system")).clicked() {
                     let _ = app.run("ui.dialog", json!({"name": "coordinateSystem"}));
                 }
+                ui.spacing_mut().item_spacing.x = gap;
+                ui.spacing_mut().button_padding.x = padding;
                 sep(ui, &t);
                 let n = app.session.map().selection_count();
                 ui.label(

@@ -769,8 +769,10 @@ project switches its countries when the new borders arrive; others keep the laye
 ## Projections
 
 The flat map is drawn in Web Mercator by default. **View › Projection** switches it to another
-projection, and clicking the coordinate system in the status bar opens the **Coordinate
-System** dialog, which also takes a projected EPSG code (such as `3035`, `32633` for UTM zone
+projection. The coordinate system button in the status bar opens the **Coordinate System**
+dialog, as does **Coordinate System…** on the right-click menu of the map's entry at the top of
+the Layers pane (also on the menus of the map's tab and of its entry in the Browser, for the map
+in view). The dialog also takes a projected EPSG code (such as `3035`, `32633` for UTM zone
 33N or `2056` for Switzerland) or an ESRI code, the one `.prj` files and ArcGIS name (such as
 `ESRI:102033` for South America Albers Equal Area Conic, or `ESRI:54030` for World Robinson). A
 code whose projection method RustGIS can't compute is refused with the reason, rather than drawn

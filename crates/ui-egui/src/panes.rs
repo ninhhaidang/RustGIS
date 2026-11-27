@@ -697,6 +697,8 @@ fn filter_shows(q: &str, name: &str) -> bool {
     q.is_empty() || name.to_lowercase().contains(q)
 }
 
+/// The Layers pane: the name filter and the view buttons, then the map's entry (right-click for
+/// the map's menu) over the layers and tables as the view picked lists them.
 fn contents(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     // The name filter (#300), above the list so it stays in view.
     let map_name = app.session.map().name.clone();
@@ -756,15 +758,15 @@ fn contents(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 ui.label(egui::RichText::new(&map_name).font(semibold(12.5)));
             })
             .response;
-        // The map's row takes copied layers (#491), at the top: there is one even with no layers.
-        // Across the pane, like the layer rows, not just its name.
+        // The map's row has the map's menu, as its tab does, which pastes copied layers on top
+        // (#491): there is one even with no layers. Across the pane, like the layer rows, not
+        // just its name.
         let row = Rect::from_min_max(header.rect.min, pos2(ui.max_rect().max.x, header.rect.max.y));
         let header = ui.interact(row, egui::Id::unique("layers_map_header"), Sense::click());
-        header.context_menu(|ui| {
-            if paste_layers_button(app, ui) {
-                ui.close();
-            }
-        });
+        // Not named by the map alone, which is its view tab's name.
+        let label = crate::i18n::fmt("Map: {name}", &[("name", &map_name)]);
+        header.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+        header.context_menu(|ui| map_menu(app, ui, &map_name));
         let layers: Vec<Layer> = app.session.map().layers.clone();
         let groups = app.session.map().service_groups.clone();
         let layer_groups = app.session.map().groups.clone();
@@ -958,14 +960,11 @@ fn paste_label(app: &RustGisApp) -> &'static str {
     }
 }
 
-/// A button pasting the copied layers (#491) on top of the map in view, off while none are;
-/// returns whether it was clicked.
-fn paste_layers_button(app: &mut RustGisApp, ui: &mut Ui) -> bool {
-    let clicked = ui.add_enabled(app.session.layer_clipboard.is_some(), egui::Button::new(paste_label(app))).clicked();
-    if clicked {
+/// A button pasting the copied layers (#491) on top of the map in view, off while none are.
+fn paste_layers_button(app: &mut RustGisApp, ui: &mut Ui) {
+    if ui.add_enabled(app.session.layer_clipboard.is_some(), egui::Button::new(paste_label(app))).clicked() {
         let _ = app.run("layer.paste", Value::Null);
     }
-    clicked
 }
 
 /// The Layers pane's filter box: the shared search field (#337) within the pane's 10 px margins,
@@ -7850,7 +7849,8 @@ fn raster_masking(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, d: &rustgis_engi
         });
 }
 
-/// A map's menu, in the Browser and on its view tab: rename, duplicate, paste layers, delete.
+/// A map's menu, in the Browser, on its view tab and on its entry in the layer list: rename,
+/// duplicate, paste layers, coordinate system, move, delete.
 pub(crate) fn map_menu(app: &mut RustGisApp, ui: &mut Ui, m: &str) {
     if ui.button(tl!("Rename…")).clicked() {
         let _ = app.run("ui.dialog", json!({"name": "renameMap", "target": m}));
@@ -7867,6 +7867,12 @@ pub(crate) fn map_menu(app: &mut RustGisApp, ui: &mut Ui, m: &str) {
     // Copied layers go on top of this map's, whichever map is in view (#491).
     if ui.add_enabled(app.session.layer_clipboard.is_some(), egui::Button::new(paste_label(app))).clicked() {
         let _ = app.run("layer.paste", json!({"map": m}));
+        ui.close();
+    }
+    // The dialog changes the map in view only, so another map's row is off, and says why.
+    let crs = ui.add_enabled(app.session.map().name == m, egui::Button::new(tl!("Coordinate System…")));
+    if crs.on_disabled_hover_text(tl!("Open this map to change its coordinate system")).clicked() {
+        let _ = app.run("ui.dialog", json!({"name": "coordinateSystem"}));
         ui.close();
     }
     let at = app.session.project.maps.iter().position(|x| x.name == m);
@@ -7957,6 +7963,49 @@ pub(crate) mod tests {
         assert_eq!(shown, "(linked, changed on disk)");
         assert!(detail.ends_with("\nChanged on disk."), "{detail}");
         assert_eq!(tint, Some(false));
+    }
+
+    /// A right-click on the map's entry at the top of the layer list opens the map's menu, whose
+    /// Coordinate System… opens that dialog. The menu of a map not in view greys the row, as the
+    /// dialog changes only the map in view.
+    #[test]
+    fn right_clicking_the_map_entry_offers_its_coordinate_system() {
+        use egui::{Event, Modifiers, PointerButton, Role};
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let app = RustGisApp::with_sample();
+        let name = app.session.map().name.clone();
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(300.0, 700.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                contents(app, ui, &Tokens::light());
+            },
+            app,
+        );
+        h.run_steps(3);
+        let at = h.get_by_role_and_label(Role::Button, &format!("Map: {name}")).rect().center();
+        h.event(Event::PointerMoved(at));
+        h.step();
+        for pressed in [true, false] {
+            h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+            h.step();
+        }
+        h.run_steps(2);
+        h.get_by_label("Coordinate System…").click();
+        h.run_steps(2);
+        assert_eq!(h.state().dialogs.open, Some("coordinateSystem"));
+        assert!(h.query_by_label("Coordinate System…").is_none(), "choosing the row closes the menu");
+
+        // The new map comes into view, so the first one's menu is another map's.
+        h.state_mut().run("map.new", json!({"name": "Second"})).unwrap();
+        let app = h.into_state();
+        let mut h = egui_kittest::Harness::builder().build_ui_state(move |ui, app: &mut RustGisApp| map_menu(app, ui, &name), app);
+        h.run_steps(2);
+        assert!(h.get_by_label("Coordinate System…").accesskit_node().is_disabled());
     }
 
     /// An editor sends back an image that draws as it is, and one refused for itself (not an

@@ -100,9 +100,9 @@ This guide walks through RustGIS by task. Each page covers one part of the app:
 - **Status bar**: the scale (type one, or pick from the list), the zoom level, bearing and pitch
   (click them to face north and look straight down again), the pointer's coordinates (click them
   to step through map coordinates (the map's own system, the default), decimal degrees, DMS, UTM, MGRS and layer coordinates (the active layer's projected system); see [Coordinate readouts](maps.md#coordinate-readouts)),
-  the coordinate system (click it to change the
-  projection), the selection count (with a button to clear it), the latest notice (click to open
-  **Messages**), a **Messages** button, the last draw time, the frame rate and a **GPU**/**CPU**
+  the coordinate system (click its button to
+  change the projection), the selection count (with a button to clear it), the latest notice (click
+  to open **Messages**), a **Messages** button, the last draw time, the frame rate and a **GPU**/**CPU**
   renderer switch. While agents control the desktop app, it also shows the MCP relay or file bridge.
 
 **Command Search** (++ctrl+k++, or the box at the top right) finds commands and geoprocessing
