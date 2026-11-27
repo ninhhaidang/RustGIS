@@ -48,6 +48,7 @@ fn a_numeric_column_gives_its_numbers_over_all_rows() {
     assert!((v["stdDev"].as_f64().unwrap() - (8.0f64 / 3.0).sqrt()).abs() < 1e-12, "{v}");
     let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
     assert_eq!(said, ["parcels: 1 value(s) in 'area' that aren't finite numbers (NaN, infinity or other text) left out of the statistics"]);
+    assert!(s.notices_since(mark).iter().all(|n| n.loss() == Some(rustgis_data::loss::LossCode::DroppedValue)), "each with its code");
     // Without a layer, the active one (the added layer).
     s.active_layer = s.map().layer_by_name("parcels").map(|l| l.id);
     assert_eq!(stats(&mut s, json!({"field": "N"}))["sum"], 100.0);
@@ -141,6 +142,42 @@ fn whole_numbers_added_with_decimals_past_2_53_say_how_many_are_rounded() {
     stats(&mut s, json!({"layer": "w", "field": "x"}));
     let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
     assert_eq!(said, ["w: 2 whole number(s) in 'x' past 2^53 are rounded in the statistics, because the column also holds decimals"]);
+    assert!(s.notices_since(mark).iter().all(|n| n.loss() == Some(rustgis_data::loss::LossCode::ChangedRounded)), "each with its code");
+    // Past 2^53 but held exactly (2^54): a sum with decimals that comes out rounded is said
+    // (2^54 + 5.5 is 2^54 + 4 as a decimal); one that comes out exact isn't.
+    let mut s = layer_of("w", fields.clone(), vec![vec![V::Int(5)], vec![V::Float(0.5)], vec![V::Int(1 << 54)]]);
+    let mark = s.notice_mark();
+    assert_eq!(stats(&mut s, json!({"layer": "w", "field": "x"}))["sum"], ((1_i64 << 54) + 4) as f64);
+    let said: Vec<_> = s.notices_since(mark).iter().map(|n| (n.text.contains("are rounded"), n.loss())).collect();
+    assert_eq!(said, [(true, Some(rustgis_data::loss::LossCode::ChangedRounded))]);
+    let mut s = layer_of("w", fields.clone(), vec![vec![V::Float(0.0)], vec![V::Int(1 << 54)]]);
+    let mark = s.notice_mark();
+    stats(&mut s, json!({"layer": "w", "field": "x"}));
+    assert!(s.notices_since(mark).is_empty(), "an exact sum says nothing");
+    // Decimals alone round a sum only as decimals do, which isn't said: the big ones cancel.
+    let cancel = vec![vec![V::Int(1 << 54)], vec![V::Int(-(1 << 54))], vec![V::Float(0.1)], vec![V::Float(0.2)]];
+    let mut s = layer_of("w", fields.clone(), cancel);
+    let mark = s.notice_mark();
+    stats(&mut s, json!({"layer": "w", "field": "x"}));
+    assert!(s.notices_since(mark).is_empty(), "{:?}", s.notices_since(mark));
+    // Decimals alone past 2^53 round it the same way, and say so.
+    let mut s = layer_of("w", fields.clone(), vec![vec![V::Float((1_i64 << 54) as f64)], vec![V::Float(0.5)]]);
+    let mark = s.notice_mark();
+    stats(&mut s, json!({"layer": "w", "field": "x"}));
+    let said: Vec<_> = s.notices_since(mark).iter().map(|n| n.loss()).collect();
+    assert_eq!(said, [Some(rustgis_data::loss::LossCode::ChangedRounded)]);
+    // So is the exact sum given where the running one overflows.
+    let huge = || vec![V::Float(f64::MAX), V::Float(f64::MAX), V::Float(-f64::MAX), V::Float(-f64::MAX), V::Int(1 << 54)];
+    let mut rows: Vec<Vec<V>> = huge().into_iter().map(|v| vec![v]).collect();
+    rows.push(vec![V::Float(0.5)]);
+    let mut s = layer_of("w", fields.clone(), rows);
+    let mark = s.notice_mark();
+    stats(&mut s, json!({"layer": "w", "field": "x"}));
+    assert!(
+        s.notices_since(mark).iter().any(|n| n.loss() == Some(rustgis_data::loss::LossCode::ChangedRounded)),
+        "{:?}",
+        s.notices_since(mark)
+    );
     // The same column with values a decimal holds: nothing said.
     let mut s = layer_of("w", fields, vec![vec![V::Int(5)], vec![V::Float(0.5)]]);
     let mark = s.notice_mark();
@@ -159,6 +196,10 @@ fn a_sum_too_large_for_a_decimal_is_left_out_with_a_notice_and_the_mean_stays_ri
     assert_eq!(v["count"], 2);
     let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
     assert_eq!(said, ["w: the sum of 'x' is too large to hold as a decimal number (past about 1.8e308) and is left out"]);
+    assert!(
+        s.notices_since(mark).iter().all(|n| n.loss() == Some(rustgis_data::loss::LossCode::DroppedCalculationResult)),
+        "each with its code"
+    );
     // Opposite extremes have a representable deviation, despite their squared spread.
     let mut s = layer_of("w", fields, vec![vec![V::Float(1.7e308)], vec![V::Float(-1.7e308)]]);
     let mark = s.notice_mark();
@@ -238,6 +279,7 @@ fn non_date_cells_in_a_date_field_are_counted_and_said() {
     let said: Vec<_> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
     assert_eq!(said.len(), 1);
     assert!(said[0].contains("1 value(s)") && said[0].contains("aren't dates"), "{said:?}");
+    assert!(s.notices_since(mark).iter().all(|n| n.loss() == Some(rustgis_data::loss::LossCode::DroppedValue)), "each with its code");
     let mut clean = layer_of("w", vec![Field::new("date", FieldType::Date)], vec![vec![V::Date(Date::parse("2026-01-01").unwrap())]]);
     let mark = clean.notice_mark();
     assert_eq!(stats(&mut clean, json!({"layer":"w","field":"date"}))["min"], "2026-01-01");
@@ -257,6 +299,7 @@ fn distinct_texts_are_counted_to_a_bound_and_past_it_the_answer_says_so() {
     assert_eq!(v["max"], "id99999");
     let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
     assert_eq!(said, ["w: 'id' has more than 100000 distinct values; the distinct count stops at 100000"]);
+    assert!(s.notices_since(mark).iter().all(|n| n.loss() == Some(rustgis_data::loss::LossCode::DroppedOverLimit)), "each with its code");
     // Exactly the bound: counted whole, nothing said.
     let mut s = layer_of("w", fields, rows(crate::cmd::table_stats::MAX_DISTINCT));
     let mark = s.notice_mark();

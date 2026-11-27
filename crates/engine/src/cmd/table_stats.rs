@@ -19,6 +19,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
+use rustgis_data::loss::{LossCode, Note};
 use rustgis_data::{Dataset, Value as Cell};
 use serde_json::{Value, json};
 
@@ -36,7 +37,7 @@ pub const MAX_DISTINCT_BYTES: usize = 8 << 20;
 /// significands at one binary exponent, in units of the smallest subnormal. 2098 bits hold
 /// any finite f64; usize::BITS more hold a whole column's sum. Each i128 bin holds at most
 /// usize::MAX 53-bit significands without overflowing, on either supported word size.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct WideSum(Vec<i128>);
 
 impl WideSum {
@@ -85,6 +86,13 @@ impl WideSum {
         let scale = if cut < 52 { f64::from_bits(1u64 << cut) } else { 2.0f64.powi(cut as i32 - 1074) };
         let total = significand as f64 * scale;
         if negative { -total } else { total }
+    }
+
+    /// How far `t` is from the sum: what is left once `t` is taken away, rounded once.
+    fn off_by(&self, t: f64) -> f64 {
+        let mut rest = self.clone();
+        rest.add(-t);
+        rest.total()
     }
 }
 
@@ -136,6 +144,8 @@ struct Numbers {
     /// How many of `count` are whole numbers, and how many of those are past 2^53.
     ints: usize,
     big: usize,
+    /// Of those, the ones a decimal can't hold, so rounded however the others add up.
+    inexact: usize,
     sum: f64,
     wide_sum: WideSum,
     all: Welford,
@@ -165,11 +175,21 @@ impl Numbers {
         }
     }
 
+    /// Whether the sum the answer gives is off by half a unit or more: rounded at the scale of the
+    /// whole numbers past 2^53, as decimals alone never round a sum this far (0.1 + 0.2 isn't).
+    /// The sum given is the running one, or the exact one where that overflowed.
+    fn sum_rounded(&self) -> bool {
+        let given = if self.sum.is_finite() { self.sum } else { self.wide_sum.total() };
+        given.is_finite() && self.wide_sum.off_by(given).abs() >= 0.5
+    }
+
     fn add_whole(&mut self, i: i64) {
         self.add_float(i as f64);
         self.ints += 1;
         if i.unsigned_abs() > EXACT_IN_F64 {
             self.big += 1;
+            // One a decimal still holds exactly (2^54) is rounded only as the sum adds it up.
+            self.inexact += usize::from((i as f64) as i128 != i128::from(i));
         }
         self.isum += i128::from(i);
         self.imin = Some(self.imin.map_or(i, |m| m.min(i)));
@@ -267,7 +287,8 @@ fn resolve(s: &Session, p: &Value) -> Result<Target, String> {
 /// An answer, and what it says to the user.
 struct Done {
     answer: Value,
-    notices: Vec<String>,
+    /// What the count left out or rounded, each with its code: every one is a real loss.
+    notices: Vec<rustgis_data::loss::Note>,
 }
 
 /// Counts column `t.column` of `ds` over its rows, looking at Cancel as it goes (see
@@ -336,25 +357,45 @@ fn gather(ds: &Dataset, t: &Target) -> Result<Done, String> {
         map.insert("max".into(), pick(max));
         map.insert("stdDev".into(), pick(json!(std_dev)));
         if n.skipped > 0 {
-            notices.push(format!(
-                "{}: {} value(s) in '{}' that aren't finite numbers (NaN, infinity or other text) left out of the statistics",
-                t.layer, n.skipped, f.name
+            notices.push(Note::loss(
+                LossCode::DroppedValue,
+                format!(
+                    "{}: {} value(s) in '{}' that aren't finite numbers (NaN, infinity or other text) left out of the statistics",
+                    t.layer, n.skipped, f.name
+                ),
             ));
         }
         // Whole numbers added up exactly unless the column also holds decimals, which add them as
         // decimals: the whole numbers past 2^53 are then rounded.
-        if !whole && n.big > 0 {
-            notices.push(format!(
-                "{}: {} whole number(s) in '{}' past 2^53 are rounded in the statistics, because the column also holds decimals",
-                t.layer, n.big, f.name
+        if !whole && n.inexact > 0 {
+            notices.push(Note::loss(
+                LossCode::ChangedRounded,
+                format!(
+                    "{}: {} whole number(s) in '{}' past 2^53 are rounded in the statistics, because the column also holds decimals",
+                    t.layer, n.inexact, f.name
+                ),
+            ));
+        } else if !whole && n.sum_rounded() {
+            // A sum past 2^53 with a fraction (5 + 0.5 + 2^54, or decimals alone): a decimal holds
+            // no fraction there, so it is rounded by half a unit or more. Checked against the exact
+            // sum, so one that comes out exact, or rounds only as decimals do, says nothing.
+            notices.push(Note::loss(
+                LossCode::ChangedRounded,
+                format!(
+                    "{}: the sum and mean of '{}' are rounded by half a unit or more, as a decimal number holds no fraction past 2^53",
+                    t.layer, f.name
+                ),
             ));
         }
         if !overflowed.is_empty() {
-            notices.push(format!(
-                "{}: the {} of '{}' is too large to hold as a decimal number (past about 1.8e308) and is left out",
-                t.layer,
-                overflowed.join(" and the "),
-                f.name
+            notices.push(Note::loss(
+                LossCode::DroppedCalculationResult,
+                format!(
+                    "{}: the {} of '{}' is too large to hold as a decimal number (past about 1.8e308) and is left out",
+                    t.layer,
+                    overflowed.join(" and the "),
+                    f.name
+                ),
             ));
         }
     } else {
@@ -411,18 +452,30 @@ fn gather(ds: &Dataset, t: &Target) -> Result<Done, String> {
         map.insert("distinct".into(), json!(t2.distinct.len()));
         if t2.capped {
             map.insert("distinctCapped".into(), json!(true));
-            notices.push(if t2.byte_capped { format!(
-                "{}: '{}' reached the {} MiB distinct-text budget; it has more than {} distinct values and the distinct count stops at {}",
-                t.layer, f.name, MAX_DISTINCT_BYTES >> 20, t2.distinct.len(), t2.distinct.len()
-            ) } else { format!(
-                "{}: '{}' has more than {MAX_DISTINCT} distinct values; the distinct count stops at {MAX_DISTINCT}",
-                t.layer, f.name
-            ) });
+            let text = if t2.byte_capped {
+                format!(
+                    "{}: '{}' reached the {} MiB distinct-text budget; it has more than {} distinct values and the distinct count stops at {}",
+                    t.layer,
+                    f.name,
+                    MAX_DISTINCT_BYTES >> 20,
+                    t2.distinct.len(),
+                    t2.distinct.len()
+                )
+            } else {
+                format!(
+                    "{}: '{}' has more than {MAX_DISTINCT} distinct values; the distinct count stops at {MAX_DISTINCT}",
+                    t.layer, f.name
+                )
+            };
+            notices.push(Note::loss(LossCode::DroppedOverLimit, text));
         }
         if t2.invalid_dates > 0 {
-            notices.push(format!(
-                "{}: {} value(s) in '{}' aren't dates and were left out of the date minimum and maximum",
-                t.layer, t2.invalid_dates, f.name
+            notices.push(Note::loss(
+                LossCode::DroppedValue,
+                format!(
+                    "{}: {} value(s) in '{}' aren't dates and were left out of the date minimum and maximum",
+                    t.layer, t2.invalid_dates, f.name
+                ),
             ));
         }
         map.insert("min".into(), json!(min));
@@ -482,7 +535,7 @@ pub(super) fn run(s: &mut Session, p: &Value) -> CmdResult {
         None => gather(&l.dataset, &target)?,
     };
     for n in done.notices {
-        s.notify(n, false);
+        s.say(n);
     }
     Ok(done.answer)
 }
