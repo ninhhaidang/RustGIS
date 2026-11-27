@@ -97,6 +97,7 @@ pub struct Workflow {
     /// The cell size typed for the environment, apart from the Wizard's, which is the run's own.
     pub env_cell: String,
     pub zonal_stats: ZonalStatsForm,
+    pub mosaic: MosaicForm,
     /// A workflow running on a thread of its own: its progress and Cancel show, and what it made
     /// lands through [`land_job`].
     #[cfg(not(target_arch = "wasm32"))]
@@ -187,6 +188,24 @@ pub struct ZonalStatsForm {
     pub bands: String,
     pub prefix: String,
     pub output: String,
+}
+
+/// The Mosaic Rasters section's inputs (#2907).
+#[derive(Default)]
+pub struct MosaicForm {
+    /// The rasters to join, in order (the first with data wins where they overlap): a layer's name,
+    /// or a file's path (`true`), read as the mosaic runs and not added to the map.
+    pub inputs: Vec<(String, bool)>,
+    /// The layer Add puts at the end of the list.
+    pub add: String,
+    /// The result's name; empty: the command's own, the first input's with `_mosaic`.
+    pub name: String,
+    /// The GeoTIFF to write; empty: none.
+    pub path: String,
+    /// The project ([`rustgis_engine::Session::opened`]) and the map in it the list's layers are
+    /// from, by its name (a project's maps have names of their own, case aside, as commands find
+    /// them by it): a map's place changes when another one is deleted.
+    pub project: Option<(u64, String)>,
 }
 
 /// A Script pane run, as the line above its results tells it: its number since the project opened
@@ -628,6 +647,7 @@ pub const SECTIONS: &[(&str, &str)] = &[
     ("functionEditor", "Function Editor"),
     ("suitability", "Suitability Modeler"),
     ("zonalStats", "Zonal Statistics"),
+    ("mosaic", "Mosaic Rasters"),
     ("visibility", "Visibility Analysis"),
     ("lineOfSight", "Exploratory 3D Analysis"),
     ("interpolate", "Geostatistical Wizard"),
@@ -939,6 +959,7 @@ pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 run(app, "gp.zonalStats", params);
             }
         }
+        "mosaic" => mosaic_section(app, ui, &rasters),
         "visibility" => {
             heading(ui, "Viewshed from a point");
             combo(ui, "wf_v", "Layer", &mut app.workflow.layer, &rasters);
@@ -1627,6 +1648,138 @@ pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     }
     if let Some(r) = app.workflow.result.clone() {
         result_view(ui, &r, t);
+    }
+}
+
+/// The Mosaic Rasters section (#2907): the rasters to join, in order, the result's name, and on the
+/// desktop a GeoTIFF to write or none. There it runs on a thread of its own ([`run`]), its progress
+/// and Cancel below.
+fn mosaic_section(app: &mut RustGisApp, ui: &mut Ui, rasters: &[String]) {
+    heading(ui, "Join tiles of one grid into one raster");
+    ui.label(egui::RichText::new(tl!("Where tiles overlap, the first in the list with data wins.")).small().weak());
+    let opened = (app.session.opened, app.session.map().name.to_ascii_lowercase());
+    let m = &mut app.workflow.mosaic;
+    // Another project opened, however it came, or another map shown (the one shown deleted, or
+    // renamed, too): the list's layers were the old map's, a same-named one too, so they leave
+    // it. A layer removed leaves it too. A file stays.
+    if m.project.as_ref().is_some_and(|p| *p != opened) {
+        m.inputs.retain(|(_, file)| *file);
+    }
+    m.project = Some(opened);
+    m.inputs.retain(|(name, file)| *file || rasters.contains(name));
+    let (count, mut change) = (m.inputs.len(), None);
+    for (i, (name, file)) in m.inputs.iter().enumerate() {
+        ui.horizontal(|ui| {
+            let shown = if *file { std::path::Path::new(name).file_name().and_then(|f| f.to_str()).unwrap_or(name) } else { name };
+            ui.label(format!("{}. {shown}", i + 1)).on_hover_text(name.as_str());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("×").on_hover_text(tl!("Remove")).clicked() {
+                    change = Some((i, None));
+                }
+                if ui.add_enabled(i + 1 < count, egui::Button::new("↓").small()).on_hover_text(tl!("Move down")).clicked() {
+                    change = Some((i, Some(i + 1)));
+                }
+                if ui.add_enabled(i > 0, egui::Button::new("↑").small()).on_hover_text(tl!("Move up")).clicked() {
+                    change = Some((i, Some(i - 1)));
+                }
+            });
+        });
+    }
+    match change {
+        Some((i, Some(j))) => m.inputs.swap(i, j),
+        Some((i, None)) => drop(m.inputs.remove(i)),
+        None => {}
+    }
+    // Commands find a layer by its name, case aside (`layer_by_name`), of any kind: a raster whose
+    // name a listed raster, an earlier one or a vector layer before it has would be read as that
+    // one, so it isn't offered, and the section says so.
+    let map = app.session.map();
+    let mut left: Vec<String> = Vec::new();
+    let mut shared = None;
+    for (i, r) in rasters.iter().enumerate() {
+        if rasters[..i].iter().any(|o| o.eq_ignore_ascii_case(r)) || map.layer_by_name(r).is_some_and(|l| !l.is_raster()) {
+            shared.get_or_insert(r);
+        } else if !m.inputs.iter().any(|(n, f)| !f && n.eq_ignore_ascii_case(r)) {
+            left.push(r.clone());
+        }
+    }
+    if !left.contains(&m.add) {
+        m.add = left.first().cloned().unwrap_or_default();
+    }
+    // Wrapped: Add File… goes below in a narrow pane rather than past its edge.
+    ui.horizontal_wrapped(|ui| {
+        combo(ui, "wf_mosaic_add", "Raster layer", &mut m.add, &left);
+        if ui.add_enabled(!m.add.is_empty(), egui::Button::new(tl!("Add"))).clicked() {
+            m.inputs.push((std::mem::take(&mut m.add), false));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if ui.button(tl!("Add File…")).on_hover_text(tl!("A raster file, read as the mosaic runs: it isn't added to the map")).clicked()
+            && let Some(path) = crate::dialogs::pick_open(rustgis_engine::data::raster::READ_EXTENSIONS, tl!("Rasters"))
+            && !m.inputs.iter().any(|(n, f)| *f && *n == path)
+        {
+            m.inputs.push((path, true));
+        }
+    });
+    // A listed layer whose name another layer has too (renamed, or moved before it, since it was
+    // added) can't be told apart by the command, which reads the first: Mosaic waits for a rename.
+    let clash = m
+        .inputs
+        .iter()
+        .find(|(n, file)| !file && map.layers.iter().filter(|l| l.name.eq_ignore_ascii_case(n)).count() > 1)
+        .map(|(n, _)| n.clone());
+    if let Some(name) = clash.as_ref().or(shared) {
+        let text = crate::i18n::fmt(
+            "{name}: another layer has this name, and the mosaic reads the first layer with it: rename one of them",
+            &[("name", name.as_str())],
+        );
+        ui.label(egui::RichText::new(text).small().weak());
+    }
+    // The command's own name, unless one is typed: its first raster's (a layer renamed keeps its
+    // raster's name), or a file's name.
+    let named = m.inputs.first().map_or_else(String::new, |(n, file)| {
+        let n = if *file {
+            std::path::Path::new(n).file_stem().and_then(|f| f.to_str()).unwrap_or(n)
+        } else {
+            map.layer_by_name(n).and_then(|l| l.raster.as_ref()?.data.as_ref()).map_or(n.as_str(), |r| r.name.as_str())
+        };
+        format!("{n}_mosaic")
+    });
+    ui.horizontal(|ui| {
+        let label = ui.label(tl!("Name"));
+        ui.add(egui::TextEdit::singleline(&mut m.name).hint_text(named.as_str()).desired_width(160.0)).labelled_by(label.id);
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    ui.horizontal(|ui| {
+        let label = ui.label(tl!("GeoTIFF"));
+        let shown = std::path::Path::new(&m.path).file_name().and_then(|f| f.to_str()).unwrap_or(&m.path);
+        if m.path.is_empty() {
+            ui.label(egui::RichText::new(tl!("None")).weak());
+        } else {
+            ui.label(shown).on_hover_text(m.path.as_str());
+        }
+        let file = format!("{}.tif", [m.name.trim(), &named].into_iter().find(|n| !n.is_empty()).unwrap_or("mosaic"));
+        if ui.button(tl!("Choose…")).on_hover_text(tl!("Write the mosaic to a GeoTIFF too")).labelled_by(label.id).clicked()
+            && let Some(path) = crate::dialogs::pick_save(&file, &["tif", "tiff"], tl!("GeoTIFF"))
+        {
+            m.path = path;
+        }
+        if !m.path.is_empty() && ui.small_button("×").on_hover_text(tl!("Write no file")).clicked() {
+            m.path.clear();
+        }
+    });
+    let ready = m.inputs.len() >= 2 && clash.is_none();
+    let button = ui.add_enabled(ready, egui::Button::new(tl!("Mosaic")));
+    let why =
+        if clash.is_some() { tl!("Another layer has a listed layer's name: rename one of them") } else { tl!("Add two or more rasters") };
+    if button.on_disabled_hover_text(why).clicked() {
+        let mut p = json!({"inputs": m.inputs.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()});
+        if !m.name.trim().is_empty() {
+            p["name"] = json!(m.name.trim());
+        }
+        if !m.path.is_empty() {
+            p["path"] = json!(m.path);
+        }
+        run(app, "raster.mosaic", p);
     }
 }
 
@@ -4320,6 +4473,178 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// The Mosaic Rasters section (#2907) joins its list in order on a thread of its own, from its
+    /// button: a layer and a file not on the map, named, written to a GeoTIFF. A layer gone from
+    /// the map leaves the list, and fewer than two inputs can't run.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_mosaic_from_its_section_runs_on_a_thread_and_lands() {
+        use base64::Engine;
+        use rustgis_engine::data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+        let dir = std::env::temp_dir().join(format!("rustgis-mosaic-pane-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 10 × 10 cells of one value; east starts half way across west.
+        let tile = |name: &str, x0: f64, v: f32| {
+            let gt = GeoTransform { origin_x: x0, origin_y: 1.0, pixel_width: 0.1, pixel_height: -0.1 };
+            Raster::new(name, 10, 10, vec![vec![v; 100]], gt, Crs::LonLat, Some(-9999.0), ColorHint::Gray, "Float32").unwrap()
+        };
+        let mut app = RustGisApp::with_sample();
+        let data = base64::engine::general_purpose::STANDARD.encode(geotiff::write(&tile("west", 0.0, 1.0), 0).unwrap());
+        app.session.run("layer.addDataBytes", &json!({"fileName": "west.tif", "data": data})).unwrap();
+        let west = app.session.map().layers.iter().rev().find(|l| l.is_raster()).unwrap().name.clone();
+        let east = dir.join("east.tif");
+        std::fs::write(&east, geotiff::write(&tile("east", 0.5, 2.0), 0).unwrap()).unwrap();
+        let out = dir.join("joined.tif");
+        let layers = app.session.map().layers.len();
+        app.workflow.section = "mosaic";
+        let m = &mut app.workflow.mosaic;
+        m.inputs = vec![("gone".into(), false), (west.clone(), false), (east.display().to_string(), true)];
+        m.name = "joined".into();
+        m.path = out.display().to_string();
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(500.0, 900.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                workflows(app, ui, &Tokens::light());
+            },
+            app,
+        );
+        h.run();
+        assert_eq!(h.state().workflow.mosaic.inputs.len(), 2, "a layer gone from the map leaves the list");
+        h.get_by_label("Mosaic").click();
+        // A few frames, not until it settles: its spinner keeps drawing while it runs.
+        h.run_steps(2);
+        assert!(h.state().workflow.job.as_ref().is_some_and(|j| j.name == "Mosaic Rasters"), "{:?}", h.state().workflow.error);
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while land_job(h.state_mut()) {
+            assert!(std::time::Instant::now() < end, "the run never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: polling for the mosaic to land
+        }
+        let app = h.state();
+        assert!(app.workflow.error.is_none(), "{:?}", app.workflow.error);
+        // One layer more (east was read, not added), 15 cells across, west's cells where they overlap.
+        assert_eq!(app.session.map().layers.len(), layers + 1);
+        let r = app.session.map().layer_by_name("joined").and_then(|l| l.raster.as_ref()?.data.clone()).expect("the mosaic");
+        assert_eq!((r.width, r.height), (15, 10));
+        assert_eq!((r.bands[0].data[7], r.bands[0].data[12]), (1.0, 2.0));
+        assert!(out.is_file());
+        drop(h);
+        // With one input left, the button is off.
+        let mut app = RustGisApp::with_sample();
+        app.workflow.section = "mosaic";
+        app.workflow.mosaic.inputs = vec![(east.display().to_string(), true)];
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(500.0, 900.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                workflows(app, ui, &Tokens::light());
+            },
+            app,
+        );
+        h.run();
+        h.get_by_label("Mosaic").click();
+        h.run();
+        assert!(h.state().workflow.job.is_none());
+        drop(h);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Another project opening, or another map shown, leaves the Mosaic list's layers, a
+    /// same-named one there too: they were the old map's. Its files stay, as they are on no map.
+    #[test]
+    fn another_project_leaves_the_mosaic_list_layers() {
+        let mut app = RustGisApp::with_sample();
+        app.workflow.mosaic.inputs = vec![("west".to_string(), false), ("tiles/east.tif".to_string(), true)];
+        let rasters = ["west".to_string()];
+        let ctx = egui::Context::default();
+        let draw = |app: &mut RustGisApp| {
+            ctx.run_ui(egui::RawInput::default(), |ui| mosaic_section(app, ui, &rasters)).textures_delta.clear();
+        };
+        draw(&mut app);
+        assert_eq!(app.workflow.mosaic.inputs.len(), 2, "kept in its own project");
+        app.session.run("project.new", &Value::Null).unwrap();
+        draw(&mut app);
+        assert_eq!(app.workflow.mosaic.inputs, vec![("tiles/east.tif".to_string(), true)]);
+        // Another map of the same project.
+        app.workflow.mosaic.inputs.insert(0, ("west".to_string(), false));
+        draw(&mut app);
+        assert_eq!(app.workflow.mosaic.inputs.len(), 2, "kept on its own map");
+        app.session.run("map.new", &json!({"name": "Other"})).unwrap();
+        draw(&mut app);
+        assert_eq!(app.workflow.mosaic.inputs, vec![("tiles/east.tif".to_string(), true)]);
+        // The map shown deleted: the next one takes its place (index 0) and is another map.
+        let first = app.session.project.maps[0].name.clone();
+        app.session.run("map.activate", &json!({"name": first})).unwrap();
+        draw(&mut app);
+        app.workflow.mosaic.inputs.insert(0, ("west".to_string(), false));
+        draw(&mut app);
+        assert_eq!(app.workflow.mosaic.inputs.len(), 2, "kept on its own map");
+        app.session.run("map.remove", &json!({"name": first})).unwrap();
+        assert_eq!(app.session.project.active_map, 0);
+        draw(&mut app);
+        assert_eq!(app.workflow.mosaic.inputs, vec![("tiles/east.tif".to_string(), true)]);
+    }
+
+    /// Commands find a raster by its name, case aside: a layer whose name another listed one has
+    /// isn't offered, as it would be read as that one, and the section says so.
+    #[test]
+    fn a_name_two_layers_share_is_offered_once() {
+        let mut app = RustGisApp::with_sample();
+        app.workflow.mosaic.inputs = vec![("DEM".to_string(), false)];
+        let rasters = ["DEM".to_string(), "dem".to_string(), "west".to_string()];
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| mosaic_section(&mut app, ui, &rasters)).textures_delta.clear();
+        assert_eq!(app.workflow.mosaic.add, "west", "\"dem\" would be read as \"DEM\"");
+        // A raster named as a vector layer before it ("Cities", case aside) is read as that one.
+        app.workflow.mosaic.inputs.clear();
+        app.workflow.mosaic.add.clear();
+        let rasters = ["cities".to_string(), "west".to_string()];
+        ctx.run_ui(egui::RawInput::default(), |ui| mosaic_section(&mut app, ui, &rasters)).textures_delta.clear();
+        assert_eq!(app.workflow.mosaic.add, "west", "\"cities\" would be read as the vector layer \"Cities\"");
+    }
+
+    /// A listed layer whose name another layer comes to have (renamed, or moved before it) can't be
+    /// told apart by the command, so Mosaic waits until one of them is renamed.
+    #[test]
+    fn a_listed_name_another_layer_comes_to_share_holds_the_mosaic() {
+        let mut app = RustGisApp::with_sample();
+        let (listed, other) = {
+            let layers = &app.session.map().layers;
+            (layers[0].name.clone(), layers[1].id)
+        };
+        app.workflow.mosaic.inputs = vec![(listed.clone(), false), ("tiles/east.tif".to_string(), true)];
+        let rasters = [listed.clone()];
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(500.0, 600.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                mosaic_section(app, ui, &rasters);
+            },
+            app,
+        );
+        h.run();
+        let off = |h: &egui_kittest::Harness<'_, RustGisApp>| {
+            egui_kittest::kittest::NodeT::accesskit_node(&h.get_by_label("Mosaic")).is_disabled()
+        };
+        assert!(!off(&h), "two inputs, each its own");
+        h.state_mut().session.run("layer.rename", &json!({"layer": other, "name": listed.to_lowercase()})).unwrap();
+        h.run();
+        assert!(off(&h), "{listed} is now two layers' name");
+    }
+
     /// Interpolate runs on a thread of its own from the pane (#1291 step 3): the pane goes on while
     /// it works, a second run waits for the first, and its layer lands through its command, which
     /// Record Task takes without the raster it handed over (a replay works it out again).
@@ -4442,6 +4767,9 @@ mod tests {
                 for label in ["First raster", "Second raster"] {
                     assert!(h.query_by_role_and_label(egui::accesskit::Role::ComboBox, label).is_some());
                 }
+            }
+            if section == "mosaic" {
+                assert!(h.query_by_role_and_label(egui::accesskit::Role::TextInput, "Name").is_some());
             }
             if section == "zonalStats" {
                 for label in ["Band", "Prefix", "Output"] {

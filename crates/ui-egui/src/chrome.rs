@@ -1529,6 +1529,7 @@ fn search_action(id: &str) -> Option<SearchAction> {
         "raster.process" => Workflow("process"),
         "raster.editPixels" => Workflow("pixels"),
         "raster.measure" => Workflow("mensuration"),
+        "raster.mosaic" => Workflow("mosaic"),
         "analysis.suitability" => Workflow("suitability"),
         "analysis.viewshed" => Workflow("visibility"),
         "analysis.lineOfSight" => Workflow("lineOfSight"),
@@ -2419,6 +2420,14 @@ mod tests {
         let mut app = RustGisApp::with_sample();
         app.session.run("layer.select", &json!({"layer": "Cities"})).unwrap();
         assert!(super::search_disabled(&app, "layer.definitionQuery").is_none(), "offered for a feature layer");
+    }
+
+    /// Command Search's Mosaic Rasters opens its Workflows section (#2907) rather than being greyed
+    /// for the inputs it needs.
+    #[test]
+    fn mosaic_rasters_opens_its_section() {
+        assert!(matches!(search_action("raster.mosaic"), Some(SearchAction::Workflow("mosaic"))));
+        assert!(super::search_disabled(&RustGisApp::with_sample(), "raster.mosaic").is_none());
     }
 
     /// Past the 200 notices the session keeps, each new notice it holds still makes one toast (#1755).
