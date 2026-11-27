@@ -659,25 +659,44 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
             let mut dir_truncated = entry_cap_hit;
             let mut iter = children.into_iter();
             while let Some(path) = iter.next() {
-                if path.is_dir() {
-                    if depth < max_depth && queue.len() < max_dirs.saturating_sub(dirs_visited) {
-                        queue.push_back((path, depth + 1));
-                    } else {
-                        skipped_dirs.push(path);
+                match std::fs::metadata(&path) {
+                    Ok(meta) if meta.is_dir() => {
+                        if depth < max_depth && queue.len() < max_dirs.saturating_sub(dirs_visited) {
+                            queue.push_back((path, depth + 1));
+                        } else {
+                            skipped_dirs.push(path);
+                        }
                     }
-                } else {
-                    if files_seen >= max_files {
-                        dir_truncated = true;
-                        skipped_dirs.extend(iter.filter(|p| p.is_dir()));
-                        break;
+                    Ok(_) => {
+                        if files_seen >= max_files {
+                            dir_truncated = true;
+                            for remaining in iter {
+                                match std::fs::metadata(&remaining) {
+                                    Ok(meta) if meta.is_dir() => skipped_dirs.push(remaining),
+                                    Ok(_) => {}
+                                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                                    Err(_) => {
+                                        summary.entry_errors += 1;
+                                        summary.sample_path.get_or_insert(remaining);
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        files_seen += 1;
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                            && let Some(&target_name) = targets.iter().find(|&&t| t == name)
+                        {
+                            let bucket = files.entry(target_name).or_default();
+                            if !bucket.contains(&path) {
+                                bucket.push(path);
+                            }
+                        }
                     }
-                    files_seen += 1;
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                        && let Some(&target_name) = targets.iter().find(|&&t| t == name)
-                    {
-                        let bucket = files.entry(target_name).or_default();
-                        if !bucket.contains(&path) {
-                            bucket.push(path);
+                    Err(err) => {
+                        if err.kind() != std::io::ErrorKind::NotFound {
+                            summary.entry_errors += 1;
+                            summary.sample_path.get_or_insert(path);
                         }
                     }
                 }
@@ -1818,5 +1837,44 @@ mod tests {
         let (chosen, _, _) =
             super::find_cjk_in_index(&revisited.files, super::CjkRegion::SimplifiedChinese).expect("shallower root should revisit target");
         assert_eq!(chosen, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_cjk_roots_reports_metadata_error_on_inaccessible_symlink_target() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Symlink loop produces a non-NotFound metadata error (ELOOP) even under root.
+        let loop_dir = tempfile::tempdir().unwrap();
+        let loop_a = loop_dir.path().join("loop-a");
+        let loop_b = loop_dir.path().join("loop-b");
+        std::os::unix::fs::symlink(&loop_b, &loop_a).unwrap();
+        std::os::unix::fs::symlink(&loop_a, &loop_b).unwrap();
+        let loop_scan = super::scan_cjk_roots(&[loop_dir.path().to_path_buf()]);
+        assert!(!loop_scan.summary.is_clean(), "{:?}", loop_scan.summary);
+        assert_eq!(loop_scan.summary.entry_errors, 2, "{:?}", loop_scan.summary);
+        assert_eq!(loop_scan.summary.sample_path.as_deref(), Some(loop_a.as_path()));
+
+        // Symlink pointing inside an inaccessible (0o000) directory reports a metadata error when non-root.
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        let hidden = locked.join("hidden");
+        std::fs::create_dir_all(&hidden).unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let link = root.join("fonts-link");
+        std::os::unix::fs::symlink(&hidden, &link).unwrap();
+
+        let original_mode = std::fs::metadata(&locked).unwrap().permissions().mode();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let can_still_stat = std::fs::metadata(&link).is_ok();
+        let perm_scan = if can_still_stat { None } else { Some(super::scan_cjk_roots(&[root])) };
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(original_mode)).unwrap();
+
+        if let Some(perm_scan) = perm_scan {
+            assert!(!perm_scan.summary.is_clean(), "{:?}", perm_scan.summary);
+            assert_eq!(perm_scan.summary.entry_errors, 1, "{:?}", perm_scan.summary);
+            assert_eq!(perm_scan.summary.sample_path.as_deref(), Some(link.as_path()));
+        }
     }
 }

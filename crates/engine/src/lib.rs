@@ -954,6 +954,10 @@ pub struct Session {
     /// Whether this front end has the Download Datum Grids setting (the desktop and web apps), so
     /// a note about a missing grid can point to it; the command line and Python have none.
     pub offers_grid_downloads: bool,
+    /// Whether a UI shell takes and translates the CJK font-scan diagnostic summary itself.
+    /// Headless callers (CLI, Python, scripts, tests) leave this `false` so [`Session::run`]
+    /// emits the English notice directly.
+    pub ui_handles_cjk_scan_notice: bool,
     /// The count of cloud-optimised GeoTIFF headers landed when [`Session::notice_landed_rasters`]
     /// last looked back at the dates a dated series has shown (`cog::landed_count`).
     cog_headers_seen: u64,
@@ -1504,6 +1508,7 @@ impl Session {
             // may have failed before it began.
             rebuild_failures_seen: (0, 0),
             offers_grid_downloads: false,
+            ui_handles_cjk_scan_notice: false,
             cog_headers_seen: 0,
             terrain_blocks_checked: Default::default(),
             table_layer: None,
@@ -1901,7 +1906,8 @@ impl Session {
             // A command may change a map's projection, or add layers to it.
             if s.depth == 0 {
                 s.note_shown_systems();
-                if let Some(summary) = rustgis_render::fonts::take_cjk_scan_summary()
+                if !s.ui_handles_cjk_scan_notice
+                    && let Some(summary) = rustgis_render::fonts::take_cjk_scan_summary()
                     && let Some(msg) = summary.notice()
                 {
                     s.notify(msg, false);
