@@ -1,10 +1,21 @@
 //! Publication Layout Wizard: `layout.publication` asked step by step (size, style, texts, accent),
 //! then made at once, as the New Layout › Publication Layout menu makes it (#2850).
+mod accent;
+mod review;
+mod size;
+mod style;
+mod texts;
+
 use crate::{RustGisApp, i18n, theme::Tokens};
+use accent::accent_step;
+use review::review_step;
 use rustgis_engine::Session;
-use rustgis_engine::cmd::layout::{MAX_PUBLICATION_TEXT, PUBLICATION_PROFILES, PUBLICATION_STYLES, publication_style_accent};
+use rustgis_engine::cmd::layout::{PUBLICATION_PROFILES, publication_style_accent};
 use rustgis_engine::map::layout::PAGES;
 use serde_json::{Value, json};
+use size::size_step;
+use style::style_step;
+use texts::texts_step;
 
 /// The wizard's steps, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -140,185 +151,15 @@ fn step_name(step: Step) -> &'static str {
     }
 }
 
-/// The size step: a sheet on any page size New Layout offers, turned as asked, or a figure.
-fn size_step(ui: &mut egui::Ui, d: &mut Draft) {
-    egui::Grid::new("publication_wizard_size").num_columns(2).spacing(egui::vec2(8.0, 8.0)).show(ui, |ui| {
-        let label = ui.label(tl!("Size"));
-        egui::ComboBox::from_id_salt("publication_wizard_size_pick")
-            .selected_text(size_label(&d.size))
-            .width(field_width(ui))
-            .show_ui(ui, |ui| {
-                for (id, ..) in PAGES {
-                    ui.selectable_value(&mut d.size, (*id).to_string(), size_label(id));
-                }
-                ui.separator();
-                for p in PUBLICATION_PROFILES.iter().filter(|p| !p.sheet) {
-                    ui.selectable_value(&mut d.size, p.id.to_string(), size_label(p.id));
-                }
-            })
-            .response
-            .labelled_by(label.id);
-        ui.end_row();
-        ui.label(tl!("Orientation"));
-        ui.add_enabled_ui(!d.figure(), |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.radio_value(&mut d.orientation, Orientation::Auto, tl!("Auto")).on_hover_text(tl!("The way the map comes out larger."));
-                ui.radio_value(&mut d.orientation, Orientation::Portrait, tl!("Portrait"));
-                ui.radio_value(&mut d.orientation, Orientation::Landscape, tl!("Landscape"));
-            });
-        });
-        ui.end_row();
-    });
-    if d.figure() {
-        figure_note(ui);
-    }
-}
-
 /// What a figure leaves out, said where its size is picked and in the review: the texts and
 /// accent typed for a sheet aren't drawn on it.
 fn figure_note(ui: &mut egui::Ui) {
     ui.label(egui::RichText::new(tl!("A figure is the map edge to edge: its title, texts and style go in its caption.")).small().weak());
 }
 
-/// The style step: each sheet style, by the name and description the menu gives it.
-fn style_step(ui: &mut egui::Ui, d: &mut Draft, app_accent: egui::Color32) {
-    let before = d.style.clone();
-    for (id, english) in PUBLICATION_STYLES {
-        let (name, about) = crate::ribbon::publication_style(id).unwrap_or_else(|| (tl!(*english), ""));
-        ui.radio_value(&mut d.style, (*id).to_string(), name);
-        ui.indent(*id, |ui| ui.label(egui::RichText::new(about).small().weak()));
-    }
-    // If the swatch was only seeded from the previous style's default (never customised), follow
-    // the newly chosen style's own accent instead of carrying the old style's colour over.
-    if d.style != before && d.picked.is_none() && d.accent == Some(style_accent(&before, app_accent)) {
-        d.accent = Some(style_accent(&d.style, app_accent));
-    }
-}
-
-/// The texts step: the title, subtitle, note, sources and credit line.
-fn texts_step(ui: &mut egui::Ui, d: &mut Draft) {
-    egui::Grid::new("publication_wizard_texts").num_columns(2).spacing(egui::vec2(8.0, 8.0)).show(ui, |ui| {
-        let line = |ui: &mut egui::Ui, label: &str, text: &mut String| {
-            let caption = ui.label(label);
-            ui.add(egui::TextEdit::singleline(text).char_limit(MAX_PUBLICATION_TEXT).desired_width(field_width(ui)))
-                .labelled_by(caption.id);
-            ui.end_row();
-        };
-        let label = ui.label(tl!("Title"));
-        let title = ui
-            .add(
-                egui::TextEdit::singleline(&mut d.title)
-                    .hint_text(tl!("No title"))
-                    .char_limit(MAX_PUBLICATION_TEXT)
-                    .desired_width(field_width(ui)),
-            )
-            .labelled_by(label.id);
-        d.title_typed |= title.changed();
-        ui.end_row();
-        line(ui, tl!("Subtitle"), &mut d.subtitle);
-        let label = ui.label(tl!("Note"));
-        ui.add(egui::TextEdit::multiline(&mut d.note).desired_rows(3).char_limit(MAX_PUBLICATION_TEXT).desired_width(field_width(ui)))
-            .labelled_by(label.id);
-        ui.end_row();
-        line(ui, tl!("Sources"), &mut d.sources);
-        let label = ui.label(tl!("Credit line"));
-        ui.add_enabled(
-            !d.no_author,
-            egui::TextEdit::singleline(&mut d.author)
-                .hint_text(default_credit())
-                .char_limit(MAX_PUBLICATION_TEXT)
-                .desired_width(field_width(ui)),
-        )
-        .labelled_by(label.id);
-        ui.end_row();
-        ui.label("");
-        ui.checkbox(&mut d.no_author, tl!("No credit line"));
-        ui.end_row();
-    });
-    // The boxes take no more, and cut a longer paste to fit: said, not done unseen.
-    let at_limit = [&d.title, &d.subtitle, &d.note, &d.sources].iter().any(|t| t.chars().count() >= MAX_PUBLICATION_TEXT)
-        || (!d.no_author && d.author.chars().count() >= MAX_PUBLICATION_TEXT);
-    if at_limit {
-        ui.label(
-            egui::RichText::new(i18n::fmt("Each field takes at most {limit} characters.", &[("limit", &MAX_PUBLICATION_TEXT.to_string())]))
-                .small()
-                .weak(),
-        );
-    }
-}
-
 /// A style's default accent as an egui colour, falling back to `fallback` if the style is unknown.
 fn style_accent(style: &str, fallback: egui::Color32) -> egui::Color32 {
     publication_style_accent(style).map_or(fallback, |c| egui::Color32::from_rgb(c.r(), c.g(), c.b()))
-}
-
-/// The accent step: the style's own colour, or one picked.
-fn accent_step(ui: &mut egui::Ui, d: &mut Draft, app_accent: egui::Color32) {
-    let mut ticked = d.accent.is_some();
-    if ui
-        .checkbox(&mut ticked, tl!("Pick a colour of your own"))
-        .on_hover_text(tl!(
-            "Starts from the colour picked last, or the style's own accent colour; the swatch shows the colour the layout takes."
-        ))
-        .changed()
-    {
-        // Unticked, keep a custom colour for the next tick; leave an untouched style default
-        // unremembered so switching styles starts from the new style's accent.
-        let default = style_accent(&d.style, app_accent);
-        if !ticked && d.picked.is_none() {
-            d.picked = d.accent.filter(|&c| c != default);
-        }
-        d.accent = ticked.then(|| d.picked.unwrap_or(default));
-    }
-    if let Some(c) = &mut d.accent {
-        if egui::color_picker::color_edit_button_srgba(ui, c, egui::color_picker::Alpha::Opaque).changed() {
-            d.picked = Some(*c);
-        }
-    } else {
-        ui.label(egui::RichText::new(tl!("The style's own colour.")).small().weak());
-    }
-}
-
-/// The review step: what was picked, step by step.
-fn review_step(ui: &mut egui::Ui, d: &Draft) {
-    let none = tl!("(none)");
-    let or_none = |t: &str| if t.trim().is_empty() { none.to_string() } else { t.trim().to_string() };
-    egui::Grid::new("publication_wizard_review").num_columns(2).spacing(egui::vec2(12.0, 6.0)).show(ui, |ui| {
-        let mut row = |key: &str, value: String| {
-            ui.label(egui::RichText::new(key).weak());
-            ui.label(value);
-            ui.end_row();
-        };
-        row(tl!("Size"), size_label(&d.size));
-        if d.figure() {
-            return;
-        }
-        let turned = match d.orientation {
-            Orientation::Auto => tl!("Auto: the way the map comes out larger"),
-            Orientation::Portrait => tl!("Portrait"),
-            Orientation::Landscape => tl!("Landscape"),
-        };
-        row(tl!("Orientation"), turned.to_string());
-        let style = crate::ribbon::publication_style(&d.style).map(|s| s.0.to_string()).unwrap_or_else(|| d.style.clone());
-        row(tl!("Style"), style);
-        row(tl!("Title"), or_none(&d.title));
-        row(tl!("Subtitle"), or_none(&d.subtitle));
-        row(tl!("Note"), or_none(&d.note));
-        row(tl!("Sources"), or_none(&d.sources));
-        let credit = if d.no_author {
-            none.to_string()
-        } else if d.author.trim().is_empty() {
-            default_credit()
-        } else {
-            d.author.trim().to_string()
-        };
-        row(tl!("Credit line"), credit);
-        let accent = d.accent.map(hex).unwrap_or_else(|| tl!("The style's own").to_string());
-        row(tl!("Accent"), accent);
-    });
-    if d.figure() {
-        figure_note(ui);
-    }
 }
 
 /// How the wizard names the credit line `layout.publication` writes when none is given: kept as a
@@ -428,26 +269,27 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     }
 }
 
+/// What the tests of the module's files share.
 #[cfg(test)]
-mod tests {
+mod harness {
     use super::*;
     use egui::accesskit::Role;
     use egui::vec2;
-    use egui_kittest::kittest::{NodeT, Queryable};
+    use egui_kittest::kittest::Queryable;
 
-    fn app() -> RustGisApp {
+    pub(super) fn app() -> RustGisApp {
         RustGisApp::with_sample()
     }
 
-    fn open(app: &mut RustGisApp) {
+    pub(super) fn open(app: &mut RustGisApp) {
         app.run("ui.dialog", json!({"name": "publicationWizard"})).unwrap();
     }
 
-    fn harness(app: RustGisApp) -> egui_kittest::Harness<'static, RustGisApp> {
+    pub(super) fn harness(app: RustGisApp) -> egui_kittest::Harness<'static, RustGisApp> {
         harness_sized(app, vec2(1400.0, 1000.0))
     }
 
-    fn harness_sized(app: RustGisApp, size: egui::Vec2) -> egui_kittest::Harness<'static, RustGisApp> {
+    pub(super) fn harness_sized(app: RustGisApp, size: egui::Vec2) -> egui_kittest::Harness<'static, RustGisApp> {
         // The dialogs alone: the ribbon has a Next of its own (the next extent).
         let mut fonts = false;
         let mut h = egui_kittest::Harness::builder().with_size(size).with_pixels_per_point(2.0).with_max_steps(64).build_ui_state(
@@ -469,14 +311,23 @@ mod tests {
         h
     }
 
-    fn click(h: &mut egui_kittest::Harness<'static, RustGisApp>, label: &str) {
+    pub(super) fn click(h: &mut egui_kittest::Harness<'static, RustGisApp>, label: &str) {
         h.get_by_role_and_label(Role::Button, label).click();
         h.run_steps(4);
     }
 
-    fn step(h: &egui_kittest::Harness<'static, RustGisApp>) -> Step {
+    pub(super) fn step(h: &egui_kittest::Harness<'static, RustGisApp>) -> Step {
         h.state().dialogs.publication.as_ref().expect("the wizard is open").step
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::harness::*;
+    use super::*;
+    use egui::accesskit::Role;
+    use egui::vec2;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     /// It opens on its first step: an A4 sheet turned Auto, the classic style, the map's name as
     /// the title and nothing else set; opened again while open, it keeps what was entered.
@@ -554,20 +405,6 @@ mod tests {
         assert_eq!(step(&h), Step::Size);
     }
 
-    /// The style step lists every sheet style, by the names and descriptions the menu gives them.
-    #[test]
-    fn the_style_step_lists_every_style_as_the_menu_names_it() {
-        let mut app = app();
-        open(&mut app);
-        app.dialogs.publication.as_mut().unwrap().step = Step::Style;
-        let h = harness(app);
-        for (id, _) in rustgis_engine::cmd::layout::PUBLICATION_STYLES {
-            let (name, about) = crate::ribbon::publication_style(id).unwrap();
-            assert!(h.query_by_label(name).is_some(), "{id}");
-            assert!(h.query_by_label(about).is_some(), "{id}");
-        }
-    }
-
     /// Create makes the layout in one step, closes the wizard and opens the Publish tab, as the
     /// menu does; Undo takes the layout away.
     #[test]
@@ -594,28 +431,6 @@ mod tests {
         );
         assert_eq!((app.dialogs.open, app.ui.tab.as_str()), (None, "Publish"));
         assert!(app.dialogs.publication.is_none());
-        h.state_mut().run("edit.undo", Value::Null).unwrap();
-        assert_eq!(h.state().session.project.layouts.len(), before);
-    }
-
-    /// A figure is made from its size alone, through the same command, and Undo takes it away.
-    #[test]
-    fn a_figure_is_made_from_its_size_alone() {
-        let mut app = app();
-        open(&mut app);
-        {
-            let d = app.dialogs.publication.as_mut().unwrap();
-            d.size = "figure-1col".into();
-            d.subtitle = "Not drawn".into();
-            d.step = Step::Review;
-        }
-        let before = app.session.project.layouts.len();
-        let mut h = harness(app);
-        click(&mut h, "Create");
-        let l = h.state().session.project.layouts.last().unwrap();
-        assert_eq!(h.state().session.project.layouts.len(), before + 1);
-        assert!((l.width - 90.0).abs() < 0.01, "a 1-column figure: {} mm wide", l.width);
-        assert_eq!(h.state().dialogs.open, None);
         h.state_mut().run("edit.undo", Value::Null).unwrap();
         assert_eq!(h.state().session.project.layouts.len(), before);
     }
@@ -656,43 +471,6 @@ mod tests {
         }
     }
 
-    /// Until the title is edited, it is the active map's name, as the menu titles a sheet: a map
-    /// opened while the wizard is open titles its sheet; a title typed stays.
-    #[test]
-    fn the_title_follows_the_active_map_until_it_is_edited() {
-        let mut app = app();
-        open(&mut app);
-        let mut h = harness(app);
-        h.state_mut().run("map.new", json!({"name": "Rivers"})).unwrap();
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().title, "Rivers");
-        click(&mut h, "Next");
-        click(&mut h, "Next");
-        h.get_by_label("Title").focus();
-        h.run_steps(1);
-        h.get_by_label("Title").type_text(" basins");
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().title, "Rivers basins");
-        h.state_mut().run("map.new", json!({"name": "Lakes"})).unwrap();
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().title, "Rivers basins", "typed, so kept");
-    }
-
-    /// The review says what will be drawn: the default credit line, dated when the layout is made, and for
-    /// a figure, that its texts and accent are left to the caption.
-    #[test]
-    fn the_review_says_what_will_be_drawn() {
-        let mut app = app();
-        open(&mut app);
-        app.dialogs.publication.as_mut().unwrap().step = Step::Review;
-        let mut h = harness(app);
-        assert!(h.query_by_label("Made with RustGIS · today's date").is_some());
-        assert!(h.query_by_label("Auto: the way the map comes out larger").is_some(), "the turn, decided at Create");
-        h.state_mut().dialogs.publication.as_mut().unwrap().size = "figure-1col".into();
-        h.run_steps(2);
-        assert!(h.query_by_label_contains("its caption").is_some(), "a figure's texts aren't drawn");
-    }
-
     /// Next stays where it was in a language whose descriptions run longer: a step taller than
     /// the others scrolls inside its height rather than growing the window.
     #[test]
@@ -717,162 +495,12 @@ mod tests {
         crate::i18n::set_current(previous);
     }
 
-    /// A colour picked stays picked: unticked, the style's own colour is sent; ticked again, the
-    /// swatch comes back with the colour picked before.
-    #[test]
-    fn a_colour_picked_comes_back_when_ticked_again() {
-        let mut app = app();
-        open(&mut app);
-        let red = egui::Color32::from_rgb(0xC0, 0x30, 0x30);
-        {
-            let d = app.dialogs.publication.as_mut().unwrap();
-            d.step = Step::Accent;
-            d.accent = Some(red);
-        }
-        let mut h = harness(app);
-        h.get_by_label("Pick a colour of your own").click();
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, None, "the style's own");
-        h.get_by_label("Pick a colour of your own").click();
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(red), "the colour picked before");
-    }
-
-    /// Ticking "Pick a colour of your own" starts from the chosen style's own accent from the
-    /// engine, not the app's accent; unticking without picking a custom colour lets a newly
-    /// chosen style start from its own accent too.
-    #[test]
-    fn accent_starts_from_the_chosen_styles_own_colour() {
-        let mut app = app();
-        open(&mut app);
-        let banner = publication_style_accent("banner").unwrap();
-        let banner = egui::Color32::from_rgb(banner.r(), banner.g(), banner.b());
-        let poster = publication_style_accent("poster").unwrap();
-        let poster = egui::Color32::from_rgb(poster.r(), poster.g(), poster.b());
-        assert_ne!(banner, poster);
-        {
-            let d = app.dialogs.publication.as_mut().unwrap();
-            d.style = "banner".into();
-            d.step = Step::Accent;
-        }
-        let mut h = harness(app);
-        h.get_by_label("Pick a colour of your own").click();
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(banner), "starts from Banner's accent");
-        // Unticking without editing leaves no custom colour remembered, so switching to Poster
-        // starts from Poster's own accent.
-        h.get_by_label("Pick a colour of your own").click();
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, None);
-        h.state_mut().dialogs.publication.as_mut().unwrap().style = "poster".into();
-        h.run_steps(2);
-        h.get_by_label("Pick a colour of your own").click();
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(poster), "starts from Poster's accent");
-    }
-
-    /// The text fields enforce the engine's character limit (`MAX_PUBLICATION_TEXT`) and say so
-    /// when a field reaches it, saying nothing on shorter text.
-    #[test]
-    fn texts_enforce_the_engines_character_limit_and_say_so() {
-        let mut app = app();
-        open(&mut app);
-        app.dialogs.publication.as_mut().unwrap().step = Step::Texts;
-        let mut h = harness(app);
-        let limit_text = format!("Each field takes at most {MAX_PUBLICATION_TEXT} characters.");
-        assert!(h.query_by_label(&limit_text).is_none(), "clean text shows no limit notice");
-        // Fill Subtitle to two characters below the limit, then type five more: stopped at the limit.
-        h.state_mut().dialogs.publication.as_mut().unwrap().subtitle = "x".repeat(MAX_PUBLICATION_TEXT - 2);
-        h.run_steps(2);
-        h.get_by_label("Subtitle").focus();
-        h.run_steps(1);
-        h.get_by_label("Subtitle").type_text("abcde");
-        h.run_steps(2);
-        let sub = &h.state().dialogs.publication.as_ref().unwrap().subtitle;
-        assert_eq!(sub.chars().count(), MAX_PUBLICATION_TEXT, "capped at MAX_PUBLICATION_TEXT");
-        assert!(sub.ends_with("xxab"), "kept up to the limit");
-        assert!(h.query_by_label(&limit_text).is_some(), "limit notice shown at the cap");
-    }
-
-    /// Switching styles while "Pick a colour of your own" is ticked re-seeds an untouched style
-    /// default to the new style's accent (so unticking afterward never remembers the old style's
-    /// colour), while preserving a custom colour the user picked.
-    #[test]
-    fn switching_style_while_accent_is_ticked_re_seeds_untouched_default() {
-        let mut app = app();
-        open(&mut app);
-        let accent_of = |id: &str| {
-            let c = publication_style_accent(id).unwrap();
-            egui::Color32::from_rgb(c.r(), c.g(), c.b())
-        };
-        let (banner, poster, editorial) = (accent_of("banner"), accent_of("poster"), accent_of("editorial"));
-        {
-            let d = app.dialogs.publication.as_mut().unwrap();
-            d.style = "banner".into();
-            d.step = Step::Accent;
-        }
-        let mut h = harness(app);
-        h.get_by_label("Pick a colour of your own").click();
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(banner));
-        // Go back to Style while still ticked and switch to Poster: accent follows Poster.
-        click(&mut h, "Back");
-        click(&mut h, "Back");
-        h.get_by_label("Poster").click();
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(poster), "re-seeded to Poster");
-        // Unticking on Poster must not remember Banner's or Poster's default as a custom colour.
-        click(&mut h, "Next");
-        click(&mut h, "Next");
-        h.get_by_label("Pick a colour of your own").click();
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, None);
-        click(&mut h, "Back");
-        click(&mut h, "Back");
-        h.get_by_label("Editorial").click();
-        h.run_steps(2);
-        click(&mut h, "Next");
-        click(&mut h, "Next");
-        h.get_by_label("Pick a colour of your own").click();
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(editorial), "starts from Editorial");
-        // A custom colour is kept when switching styles.
-        let red = egui::Color32::from_rgb(0xC0, 0x30, 0x30);
-        h.state_mut().dialogs.publication.as_mut().unwrap().accent = Some(red);
-        click(&mut h, "Back");
-        click(&mut h, "Back");
-        h.get_by_label("Banner").click();
-        h.run_steps(2);
-        assert_eq!(h.state().dialogs.publication.as_ref().unwrap().accent, Some(red), "custom colour kept");
-    }
-
     /// The review's default credit line matches the engine's `PUBLICATION_DEFAULT_CREDIT`.
     #[test]
     fn default_credit_matches_the_engines_constant() {
         use rustgis_engine::cmd::layout::PUBLICATION_DEFAULT_CREDIT;
         assert_eq!(PUBLICATION_DEFAULT_CREDIT, "Made with RustGIS · {date}");
         assert_eq!(default_credit(), PUBLICATION_DEFAULT_CREDIT.replace("{date}", "today's date"));
-    }
-
-    /// In English the style step fits its box: the wheel over it scrolls nothing, so the last
-    /// style's description isn't cut at the bottom.
-    #[test]
-    fn the_style_step_fits_without_scrolling_in_english() {
-        let mut app = app();
-        open(&mut app);
-        app.dialogs.publication.as_mut().unwrap().step = Step::Style;
-        let mut h = harness(app);
-        let before = h.get_by_label("Classic").rect();
-        h.event(egui::Event::PointerMoved(before.center()));
-        h.event(egui::Event::MouseWheel {
-            unit: egui::MouseWheelUnit::Point,
-            delta: vec2(0.0, -400.0),
-            modifiers: egui::Modifiers::NONE,
-            phase: egui::TouchPhase::Move,
-            source: egui::MouseWheelSource::Wheel,
-        });
-        h.run_steps(10);
-        assert_eq!(h.get_by_label("Classic").rect(), before, "the styles scroll: they don't fit the box");
     }
 
     /// On a screen narrower than the wizard, it narrows to fit, as the other dialogs do: Next and
