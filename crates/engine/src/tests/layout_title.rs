@@ -2,7 +2,7 @@
 //! changes the title.
 
 use super::*;
-use rustgis_map::layout::ElementKind;
+use rustgis_map::layout::{ElementKind, FontFamily, TextAlign};
 
 /// What the layout `li`'s element `name` says as the page draws it: its text with the tokens
 /// filled from the map in the layout's first map frame.
@@ -136,38 +136,73 @@ fn a_map_name_wider_than_the_title_wraps_as_drawn_and_follows_a_rename() {
     assert!(!wraps(&s, 6, "Title"));
 }
 
+/// Words whose advance and ink differ by enough to move a line break.
+const WORDS: &[&str] = &[
+    "AV", "T.", "WAVY", "and", "by", "county", "district", "flood", "fully", "if", "in", "land", "map", "north", "of", "off", "parcels",
+    "river", "roads", "survey", "use", "valley", "water", "zoning",
+];
+
+/// The `n`th name made of [`WORDS`], the same on every run: 6 to 29 of them, picked by a linear
+/// congruential generator seeded with `n`.
+fn candidate(n: u64) -> String {
+    let mut x = n;
+    let mut next = |below: usize| {
+        x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        (x >> 33) as usize % below
+    };
+    let words = 6 + next(24);
+    (0..words).map(|_| WORDS[next(WORDS.len())]).collect::<Vec<_>>().join(" ")
+}
+
 /// The box is sized by the lines drawn, not by the line breaking the sheet uses for other texts,
-/// which measures a line's advance rather than its ink: names the two count differently in the
-/// Linux interface fonts and serif.
+/// which measures a line's advance (in the serif, its ink). Which names the two count differently,
+/// if any, depends on the installed fonts: each style's box is checked on `LONG` and on a name that
+/// tells them apart where one turns up, and some style must find one.
 #[test]
 fn a_wrapped_map_title_is_sized_for_its_drawn_lines() {
     let mut s = world();
     let extent = json!([-46.8, -11.6, -38.5, -2.2]);
-    // Each style, what its title's box holds besides the text (1.5 mm for a classic one on A4), and
-    // the name.
-    let cases = [
-        ("classic", 1.5, "parcels by flood in flood use zoning roads valley T."),
-        ("banner", 0.0, "AV off in water district T. WAVY off river if roads county district and water and map"),
-        (
-            "panel",
-            0.0,
-            "use use by fully survey valley river fully of WAVY survey WAVY map of AV in zoning water in north use county zoning district valley if T.",
-        ),
-        ("editorial", 0.0, "north valley off north in map district zoning T. AV land county by flood use if north valley"),
-    ];
-    for (li, (style, pad, name)) in cases.into_iter().enumerate() {
-        s.run("map.rename", &json!({"name": name})).unwrap();
-        s.run("layout.publication", &json!({"profile": "a4-portrait", "extent": extent, "title": "{map}", "style": style})).unwrap();
-        // The names wrap in the Linux interface fonts; macOS and Windows fonts may fit one on a
-        // line, which leaves nothing to size.
-        if cfg!(target_os = "linux") {
-            assert!(wraps(&s, li, "Title"), "{style}");
-        } else if !wraps(&s, li, "Title") {
-            continue;
-        }
-        let lines = drawn_lines(&s, li, "Title");
-        assert_eq!(sized_lines(&s, li, "Title", pad), lines.len(), "{style}: {lines:?}");
+    let mut told_apart = false;
+    // Each style, and what its title's box holds besides the text (1.5 mm for a classic one on A4).
+    for (style, pad) in [("classic", 1.5), ("banner", 0.0), ("panel", 0.0), ("editorial", 0.0)] {
+        // The sheet titled `name`: its title's box width, size, face and alignment.
+        let titled = |s: &mut Session, name: &str| {
+            s.project.layouts.clear();
+            s.run("map.rename", &json!({"name": name})).unwrap();
+            s.run("layout.publication", &json!({"profile": "a4-portrait", "extent": extent, "title": "{map}", "style": style})).unwrap();
+            let e = element(s, 0, "Title");
+            let ElementKind::Text { size, bold, font, align, .. } = &e.kind else { panic!("{style}: the title isn't text") };
+            (e.w, *size, *bold, *font, *align)
+        };
+        // The page's lines for `name` in that box, where the sheet's line breaking counts them differently.
+        let breaks_differ = |name: &str, (w, size, bold, font, align): (f64, f64, bool, FontFamily, TextAlign)| {
+            let by_the_sheet = crate::render::report::wrap_with(name, w, |x| match font {
+                FontFamily::Serif => crate::render::report::serif_width_mm(x, size as f32, bold),
+                FontFamily::Sans => crate::render::report::width_mm(x, size as f32, bold),
+            });
+            let by_the_page = crate::render::layout::wrapped_lines(name, w, size, bold, font, align);
+            (by_the_page.len() > 1 && by_the_sheet.len() != by_the_page.len()).then_some(by_the_page.len())
+        };
+        // The lines the sheet's title is drawn in, which its box must be sized for.
+        let sized_as_drawn = |s: &Session| {
+            assert!(wraps(s, 0, "Title"), "{style}");
+            let lines = drawn_lines(s, 0, "Title");
+            assert_eq!(sized_lines(s, 0, "Title", pad), lines.len(), "{style}: {lines:?}");
+            lines
+        };
+        // A name is screened against the box `LONG` gets and then checked on its own sheet, so only the
+        // likely ones need a sheet.
+        let long_box = titled(&mut s, LONG);
+        sized_as_drawn(&s);
+        told_apart |= (0..20_000).map(candidate).filter(|name| breaks_differ(name, long_box).is_some()).any(|name| {
+            let title = titled(&mut s, &name);
+            let Some(counted) = breaks_differ(&name, title).filter(|_| wraps(&s, 0, "Title")) else { return false };
+            let lines = sized_as_drawn(&s);
+            assert_eq!(lines.len(), counted, "{style}: {lines:?}");
+            true
+        });
     }
+    assert!(told_apart, "no style found a name that the sheet and the page break differently in the installed fonts");
 }
 
 /// A column of sources is one element: one `{map}` source too wide for it wraps the element, the
