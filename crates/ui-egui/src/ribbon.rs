@@ -277,6 +277,7 @@ fn tab_strip(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         // The Project button opens the backstage.
         let pw = text_w(ui, tl!("Project"), semibold(12.5)) + 26.0;
         let (pr, presp) = ui.allocate_exact_size(vec2(pw, 26.0), Sense::click());
+        presp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl_raw!("Project")));
         let fill = if presp.hovered() { crate::theme::BRAND_DARK } else { crate::theme::BRAND };
         ui.painter().rect_filled(pr, CornerRadius::same(6), fill);
         ui.painter().text(pr.center(), Align2::CENTER_CENTER, tl!("Project"), semibold(12.5), egui::Color32::WHITE);
@@ -365,6 +366,7 @@ fn tab_strip(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             let icon = if app.ui.ribbon_minimized { "chevron_down" } else { "up" };
             icons::paint(ui.painter(), cr.shrink(5.0), icon, t.text_dim, t.accent);
             let title = if app.ui.ribbon_minimized { tl_raw!("Expand the ribbon") } else { tl_raw!("Collapse the ribbon") };
+            cresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, title));
             let shortcut = crate::keymap::shortcut_text(ui.ctx(), app, "ui.ribbon", &Value::Null);
             let tip = if shortcut.is_empty() {
                 crate::i18n::fmt("{title}", &[("title", title)])
@@ -5938,6 +5940,40 @@ mod tests {
         crate::i18n::set_current(previous);
         assert!(name.contains("Esc to stop") && name != shown, "the display form reverses the Latin run");
         assert!(found, "no button named {name:?}");
+    }
+
+    /// The Project button at the left of the tab strip is named, and opens the backstage.
+    #[test]
+    fn the_project_button_is_named_and_opens_the_backstage() {
+        use egui::accesskit::Role;
+        let strip: fn(&mut RustGisApp, &mut Ui) = |app, ui| tab_strip(app, ui, &Tokens::light());
+        let mut h = tab_harness(RustGisApp::with_sample(), strip);
+        h.run_steps(8);
+        assert!(!h.state().ui.backstage);
+        h.get_by_role_and_label(Role::Button, "Project").click();
+        h.run_steps(8);
+        assert!(h.state().ui.backstage);
+    }
+
+    /// The button at the right of the tab strip is named for what it does in the ribbon's state,
+    /// without the shortcut its tooltip adds.
+    #[test]
+    fn the_collapse_button_is_named_for_its_state_and_toggles_the_ribbon() {
+        use egui::accesskit::Role;
+        const COLLAPSE: &str = "Collapse the ribbon";
+        const EXPAND: &str = "Expand the ribbon";
+        let strip: fn(&mut RustGisApp, &mut Ui) = |app, ui| tab_strip(app, ui, &Tokens::light());
+        let mut h = tab_harness(RustGisApp::with_sample(), strip);
+        h.run_steps(8);
+        assert!(!h.state().ui.ribbon_minimized);
+        assert!(h.query_by_label(EXPAND).is_none());
+        h.get_by_role_and_label(Role::Button, COLLAPSE).click();
+        h.run_steps(8);
+        assert!(h.state().ui.ribbon_minimized);
+        assert!(h.query_by_label(COLLAPSE).is_none());
+        h.get_by_role_and_label(Role::Button, EXPAND).click();
+        h.run_steps(8);
+        assert!(!h.state().ui.ribbon_minimized);
     }
 
     /// View › Display › Graticule: the button shows or hides it, its menu picks the type (and shows
