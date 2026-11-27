@@ -312,8 +312,9 @@ thread_local! {
 
 /// Whether saving `value` saves a system whose PROJ definition doesn't place points as its WKT
 /// does ([`CustomCrs::wkt_needed`]): an older release reads only the definition, so a saved file
-/// with one requires `crs-wkt`. Written to nowhere to find out, and only when this run has such a
-/// system.
+/// with one requires `crs-wkt`. Serializes `value` to `io::sink()` (when this run has such a
+/// system); kept as a serialization oracle for tests alongside the direct [`Crs::needs_wkt`]
+/// field walks.
 pub fn saves_wkt(value: &impl Serialize) -> bool {
     let table: Vec<std::sync::Arc<CustomCrs>> = custom_table().lock().unwrap_or_else(|e| e.into_inner()).clone();
     if !table.iter().any(|d| d.wkt_needed()) {

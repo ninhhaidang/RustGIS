@@ -390,6 +390,75 @@ fn next_layer_instance() -> u64 {
 }
 
 impl Layer {
+    /// Whether saving this layer serializes a [`rustgis_data::raster::Crs`] requiring `crs-wkt`.
+    /// Exhaustively destructured so any new `Crs`-bearing field forces an explicit decision.
+    pub fn needs_wkt(&self) -> bool {
+        let Self {
+            id: _,
+            name: _,
+            visible: _,
+            dataset,
+            renderer: _,
+            labels: _,
+            transparency: _,
+            min_scale: _,
+            max_scale: _,
+            definition_query: _,
+            time: _,
+            selection: _,
+            expanded: _,
+            selectable: _,
+            graphics: _,
+            blend: _,
+            mask: _,
+            display_filters: _,
+            aggregation: _,
+            extrusion: _,
+            line_strokes: _,
+            fill_layers: _,
+            no_fill: _,
+            hidden_fills: _,
+            stroke_levels: _,
+            marker_rotation: _,
+            diagram: _,
+            symbol_by: _,
+            size_by: _,
+            reference_scale: _,
+            priority: _,
+            design: _,
+            raster: _,
+            source,
+            postgis: _,
+            gpkg: _,
+            synced: _,
+            connection: _,
+            anonymous: _,
+            instance_id: _,
+            replacement_rev: _,
+            projected: _,
+            projected_own: _,
+            display: _,
+            display_rejected: _,
+            display_levels: _,
+            projected_extents: _,
+            projected_vertices: _,
+            thinned: _,
+            projected_rev: _,
+            projected_for: _,
+            projected_crs: _,
+            lonlat: _,
+            unplaced: _,
+            flat_unplaced: _,
+            extent_cache: _,
+            row_boxes: _,
+            drawn: _,
+            view_memory: _,
+            geometry_kinds: _,
+            geometry_rev: _,
+        } = self;
+        dataset.needs_wkt() || source.as_ref().is_some_and(source::SourceLayer::needs_wkt)
+    }
+
     /// Identifies this live layer, independently of its reusable map-local ID.
     pub fn instance_id(&self) -> u64 {
         self.instance_id
@@ -2113,6 +2182,43 @@ pub struct LabelDisplay {
 }
 
 impl Map {
+    /// Whether saving this map serializes a [`rustgis_data::raster::Crs`] requiring `crs-wkt`.
+    /// Exhaustively destructured so any new `Crs`-bearing field forces an explicit decision.
+    pub fn needs_wkt(&self) -> bool {
+        let Self {
+            name: _,
+            offline_area_id: _,
+            layers,
+            service_groups: _,
+            groups: _,
+            basemap: _,
+            paper: _,
+            tiles: _,
+            camera: _,
+            bookmarks: _,
+            graticule: _,
+            graticule_type: _,
+            graticule_crs: _,
+            graticule_on_top: _,
+            graticule_color: _,
+            projection: _,
+            popup_mode: _,
+            label_display: _,
+            label_lock: _,
+            label_lock_line_anchors: _,
+            editing: _,
+            swipe: _,
+            view: _,
+            thumbnail: _,
+            animation: _,
+            time: _,
+            body: _,
+            next_layer_id: _,
+            instance_id: _,
+        } = self;
+        layers.iter().any(Layer::needs_wkt)
+    }
+
     /// All local linked files and record-only provenance in serialization order.
     pub fn file_paths_mut(&mut self) -> Vec<(&mut String, bool)> {
         let mut paths = Vec::new();

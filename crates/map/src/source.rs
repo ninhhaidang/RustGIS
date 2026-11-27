@@ -871,6 +871,63 @@ pub enum Polled {
 }
 
 impl SourceLayer {
+    /// Whether saving this source serializes a [`rustgis_data::raster::Crs`] requiring `crs-wkt`.
+    /// Exhaustively destructured so any new `Crs`-bearing field forces an explicit decision.
+    pub fn needs_wkt(&self) -> bool {
+        let Self {
+            path: _,
+            file_name: _,
+            table: _,
+            shapefile_crs,
+            embedded: _,
+            handle: _,
+            conversion_info: _,
+            conversion_fallback: _,
+            conversion_notes_unsaid: _,
+            unread_dates: _,
+            rounded_dates: _,
+            unread_dates_said: _,
+            rounded_dates_said: _,
+            null_text: _,
+            null_text_said: _,
+            not_utf8: _,
+            not_utf8_in: _,
+            not_utf8_said: _,
+            read_notes: _,
+            read_note_kinds: _,
+            window: _,
+            render_lod: _,
+            render_view: _,
+            render_drawn: _,
+            pending: _,
+            projection: _,
+            ready_cache: _,
+            byte_budget: _,
+            estimated_row_bytes: _,
+            full_read: _,
+            saved_selection: _,
+            grids: _,
+            window_fields: _,
+            query: _,
+            opening: _,
+            error: _,
+            error_said: _,
+            login: _,
+            reconnect_required: _,
+            limit: _,
+            reads: _,
+            display_read_said: _,
+            area_counts: _,
+            area_features: _,
+            gdal: _,
+            duckdb: _,
+            postgis: _,
+            mysql: _,
+            sqlserver: _,
+        } = self;
+        shapefile_crs.is_some_and(rustgis_data::raster::Crs::needs_wkt)
+    }
+
     /// Counts for the installed read, or `None` if its features have since been changed.
     pub fn unavailable_areas(&self, features: &rustgis_data::Features) -> Option<AmbiguousAreas> {
         self.area_features.as_ref().filter(|key| Weak::ptr_eq(key, &features.allocation_key())).map(|_| self.area_counts)

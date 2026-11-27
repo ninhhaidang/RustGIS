@@ -472,6 +472,26 @@ fn held_in_lonlat() -> raster::Crs {
 }
 
 impl Dataset {
+    /// Whether saving this dataset serializes a [`raster::Crs`] requiring `crs-wkt`
+    /// (`raster::Crs::needs_wkt`); windowed datasets omit `held_in` when serialized.
+    /// Exhaustively destructured so any new `Crs`-bearing field forces an explicit decision.
+    pub fn needs_wkt(&self) -> bool {
+        let Self {
+            name: _,
+            geometry_type: _,
+            fields: _,
+            features: _,
+            source: _,
+            crs,
+            crs_incomplete: _,
+            zm_dropped: _,
+            windowed,
+            held_in,
+            shown_in: _,
+        } = self;
+        crs.is_some_and(raster::Crs::needs_wkt) || (!*windowed && held_in.needs_wkt())
+    }
+
     /// The coordinate system its geometry is in ([`Dataset::held_in`]): the system a file was read
     /// in, else longitude/latitude (WGS 84). Drawing converts geometry from it
     /// ([`raster::Crs::to`]). Longitude/latitude never fails to convert, and [`Dataset::hold_in`]

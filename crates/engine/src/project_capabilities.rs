@@ -1038,32 +1038,75 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
     .collect()
 }
 
-/// Whether saving `ds` serializes a [`rustgis_data::raster::Crs`] whose WKT is required
-/// (`Crs::needs_wkt`); windowed datasets omit `held_in` when serialized.
-fn dataset_needs_wkt(ds: &rustgis_data::Dataset) -> bool {
-    ds.crs.is_some_and(rustgis_data::raster::Crs::needs_wkt) || (!ds.windowed && ds.held_in.needs_wkt())
-}
-
-/// Whether saving `layer` serializes a [`rustgis_data::raster::Crs`] requiring `crs-wkt`.
-fn layer_needs_wkt(layer: &Layer) -> bool {
-    dataset_needs_wkt(&layer.dataset)
-        || layer.source.as_ref().and_then(|s| s.shapefile_crs).is_some_and(rustgis_data::raster::Crs::needs_wkt)
-}
-
-/// Whether saving `map` serializes a [`rustgis_data::raster::Crs`] requiring `crs-wkt`.
-fn map_needs_wkt(map: &Map) -> bool {
-    map.layers.iter().any(layer_needs_wkt)
-}
-
 /// Whether saving `project` serializes any [`rustgis_data::raster::Crs`] requiring `crs-wkt`,
 /// inspected directly across all `Crs`-bearing fields without double-serializing the project.
+/// Every container struct is destructured exhaustively so adding a `Crs`-bearing field is a compile error.
 fn project_needs_wkt(project: &Project) -> bool {
-    project.coordinate_system.is_some_and(rustgis_data::raster::Crs::needs_wkt)
-        || project.gp_env.projected.is_some_and(|p| p.crs.needs_wkt())
-        || project.workspaces.iter().any(|w| w.crs.is_some_and(rustgis_data::raster::Crs::needs_wkt))
-        || project.tables.iter().any(|t| dataset_needs_wkt(&t.dataset))
-        || project.maps.iter().any(map_needs_wkt)
-        || project.offline_areas.iter().any(|a| map_needs_wkt(&a.data))
+    let Project {
+        first_layer: _,
+        read_notices: _,
+        format: _,
+        name: _,
+        origin_id: _,
+        field_origin: _,
+        given: _,
+        maps,
+        active_map: _,
+        tables,
+        next_table_id: _,
+        gp_history: _,
+        layouts: _,
+        folders: _,
+        styles: _,
+        ramps: _,
+        tasks: _,
+        gp_env,
+        models: _,
+        workspaces,
+        link_views: _,
+        thumbnail: _,
+        jobs: _,
+        offline_areas,
+        reports: _,
+        presentations: _,
+        notebooks: _,
+        dl_models: _,
+        shared: _,
+        data_stores: _,
+        coordinate_system,
+        crs_from_first_layer: _,
+    } = project;
+    let super::GpEnvironment { extent: _, cell_size: _, projected } = gp_env;
+    coordinate_system.is_some_and(rustgis_data::raster::Crs::needs_wkt)
+        || projected.is_some_and(|p| {
+            let super::ProjectedCells { crs, cell_size: _ } = p;
+            crs.needs_wkt()
+        })
+        || workspaces.iter().any(|w| {
+            let crate::cmd::imagery::Workspace { name: _, kind: _, images: _, cell_size: _, crs, projected_cell_size: _, method: _ } = w;
+            crs.is_some_and(rustgis_data::raster::Crs::needs_wkt)
+        })
+        || tables.iter().any(|t| {
+            let super::Table { id: _, dataset, instance_id: _ } = t;
+            dataset.needs_wkt()
+        })
+        || maps.iter().any(Map::needs_wkt)
+        || offline_areas.iter().any(|a| {
+            let super::OfflineArea {
+                id: _,
+                name: _,
+                map: _,
+                extent: _,
+                created: _,
+                synced: _,
+                generation: _,
+                returned: _,
+                ids: _,
+                conflicts: _,
+                data,
+            } = a;
+            data.needs_wkt()
+        })
 }
 
 #[derive(Serialize)]
@@ -1078,7 +1121,7 @@ struct Item<'a, T> {
 /// A map file has its own header, independent of the project it came from.
 pub(crate) fn map_file_bytes(map: &Map) -> Result<Vec<u8>, String> {
     let mut requires = map_capabilities([map]);
-    if map_needs_wkt(map) {
+    if map.needs_wkt() {
         requires.push("crs-wkt");
     }
     serde_json::to_vec(&Item { format: FORMAT, requires, value: map }).map_err(|e| e.to_string())
@@ -1121,7 +1164,7 @@ fn layout_capabilities(layouts: &[rustgis_map::layout::Layout]) -> Vec<&'static 
 /// A layer file keeps the same renderer capabilities as the layer saved inside a project.
 pub(crate) fn layer_file_bytes(layer: &Layer) -> Result<Vec<u8>, String> {
     let mut requires = layer_capabilities(layer);
-    if layer_needs_wkt(layer) {
+    if layer.needs_wkt() {
         requires.push("crs-wkt");
     }
     serde_json::to_vec(&Item { format: FORMAT, requires, value: layer }).map_err(|e| e.to_string())
@@ -3082,7 +3125,7 @@ mod tests {
         assert_eq!(project_needs_wkt(&base), payload_saves_wkt(&base));
 
         for (crs, expected) in [(wkt_crs, true), (plain_custom, false)] {
-            let mut cases: Vec<(&str, Box<dyn FnOnce(&mut Project)>)> = vec![
+            let cases: Vec<(&str, Box<dyn FnOnce(&mut Project)>)> = vec![
                 ("project.coordinate_system", Box::new(move |p| p.coordinate_system = Some(crs))),
                 (
                     "project.gp_env.projected",
@@ -3110,7 +3153,7 @@ mod tests {
                     Box::new(move |p| p.offline_areas[0].data.layers[0].source.as_mut().unwrap().shapefile_crs = Some(crs)),
                 ),
             ];
-            for (name, apply) in cases.drain(..) {
+            for (name, apply) in cases {
                 let mut p = populated_project();
                 apply(&mut p);
                 assert_eq!(project_needs_wkt(&p), expected, "{name}");
@@ -3125,15 +3168,15 @@ mod tests {
             assert!(!project_needs_wkt(&p));
             assert_eq!(project_needs_wkt(&p), payload_saves_wkt(&p));
 
-            // Standalone map_needs_wkt / layer_needs_wkt agree with saves_wkt and bytes helpers.
+            // Standalone Map::needs_wkt / Layer::needs_wkt agree with saves_wkt and bytes helpers.
             let mut p = populated_project();
             p.maps[0].layers[0].dataset.crs = Some(crs);
             let map = &p.maps[0];
             let layer = &map.layers[0];
-            assert_eq!(map_needs_wkt(map), expected);
-            assert_eq!(map_needs_wkt(map), rustgis_data::raster::crs::saves_wkt(map));
-            assert_eq!(layer_needs_wkt(layer), expected);
-            assert_eq!(layer_needs_wkt(layer), rustgis_data::raster::crs::saves_wkt(layer));
+            assert_eq!(map.needs_wkt(), expected);
+            assert_eq!(map.needs_wkt(), rustgis_data::raster::crs::saves_wkt(map));
+            assert_eq!(layer.needs_wkt(), expected);
+            assert_eq!(layer.needs_wkt(), rustgis_data::raster::crs::saves_wkt(layer));
             let map_doc = json_bytes(&map_file_bytes(map).unwrap());
             let layer_doc = json_bytes(&layer_file_bytes(layer).unwrap());
             assert_eq!(map_doc.get("requires").and_then(|v| v.as_array()).is_some_and(|a| a.iter().any(|x| x == "crs-wkt")), expected);
