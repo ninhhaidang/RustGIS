@@ -82,12 +82,12 @@ pub fn warm_up() {
     if WARMING.swap(true, Ordering::Relaxed) {
         return;
     }
+    crate::fonts::enable_async_cjk_scan();
     #[cfg(not(target_arch = "wasm32"))]
     if std::thread::Builder::new()
         .name("font-index".into())
         .spawn(|| {
             installed();
-            crate::fonts::warm_up_cjk_roots();
         })
         .is_ok()
     {

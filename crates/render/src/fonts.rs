@@ -577,10 +577,11 @@ struct CjkRootIndex {
 /// Shared bounded BFS under Linux `roots` indexing known CJK font filenames across all four regions
 /// (`MAX_DEPTH = 6`, `MAX_DIRS = 2_000`, `MAX_FILES = 20_000`).
 ///
-/// Warmed off the UI thread by `crate::families::warm_up` (after `installed()` finishes). If
-/// `cjk_font` reaches this fallback while warm-up is running, `cjk_root_index` waits for that
-/// scan to finish; if reached before warm-up starts (or in CLI/headless exports without warm-up),
-/// it runs once on the caller as a bounded non-cancellable step (`OnceLock`).
+/// In desktop UI sessions (`crate::families::warm_up` enables async fallback), this scan starts
+/// lazily on a background `"cjk-font-scan"` thread only if a CJK lookup misses every fixed path;
+/// `cjk_font` returns `None` without blocking while the walk runs and the UI retries once
+/// [`cjk_roots_ready`] flips true. In CLI/Python/headless runs without `warm_up`, it runs once
+/// synchronously on the caller as a bounded non-cancellable step.
 ///
 /// Out of scope for #2313: Arabic, Bengali, Lao, and symbol faces remain on their fixed paths
 /// (`script_paths`) without nested directory fallback search.
@@ -747,32 +748,173 @@ fn scan_cjk_roots_bounded(roots: &[std::path::PathBuf], max_depth: usize, max_di
     CjkRootIndex { files, summary }
 }
 
-static CJK_ROOT_INDEX: OnceLock<CjkRootIndex> = OnceLock::new();
-static CJK_SCAN_NOTICE_NEEDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static CJK_SCAN_NOTICE_TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-fn cjk_root_index() -> &'static CjkRootIndex {
-    CJK_ROOT_INDEX.get_or_init(|| scan_cjk_roots(&linux_font_roots()))
+struct CjkScanState {
+    async_enabled: std::sync::atomic::AtomicBool,
+    started: std::sync::atomic::AtomicBool,
+    done: std::sync::atomic::AtomicBool,
+    notice_needed: std::sync::atomic::AtomicBool,
+    notice_taken: std::sync::atomic::AtomicBool,
+    index: OnceLock<CjkRootIndex>,
+    fixed: [OnceLock<Option<(Vec<u8>, u32)>>; 4],
+    fallback: [OnceLock<Option<(Vec<u8>, u32)>>; 4],
 }
 
-/// Pre-populates the shared Linux CJK fallback folder index on the family-indexing background thread.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn warm_up_cjk_roots() {
-    if std::env::var_os("RUSTGIS_BUILTIN_FONTS").is_none() {
-        let _ = cjk_root_index();
+enum CjkResolveResult {
+    Pending,
+    Resolved(Option<&'static (Vec<u8>, u32)>),
+}
+
+impl CjkScanState {
+    const fn new() -> Self {
+        Self {
+            async_enabled: std::sync::atomic::AtomicBool::new(false),
+            started: std::sync::atomic::AtomicBool::new(false),
+            done: std::sync::atomic::AtomicBool::new(false),
+            notice_needed: std::sync::atomic::AtomicBool::new(false),
+            notice_taken: std::sync::atomic::AtomicBool::new(false),
+            index: OnceLock::new(),
+            fixed: [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()],
+            fallback: [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()],
+        }
     }
+
+    fn slot(region: CjkRegion) -> usize {
+        match region {
+            CjkRegion::SimplifiedChinese => 0,
+            CjkRegion::Japanese => 1,
+            CjkRegion::Korean => 2,
+            CjkRegion::TraditionalChinese => 3,
+        }
+    }
+
+    fn enable_async(&self) {
+        self.async_enabled.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn is_pending(&self) -> bool {
+        self.started.load(std::sync::atomic::Ordering::Acquire) && !self.done.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.done.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn take_summary(&self) -> Option<CjkRootScanSummary> {
+        if !self.notice_needed.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        if self.notice_taken.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return None;
+        }
+        self.index.get().filter(|idx| !idx.summary.is_clean()).map(|idx| idx.summary.clone())
+    }
+
+    /// Starts the bounded Linux CJK folder walk on a background thread once. Returns `true`
+    /// while the scan is running off-thread so UI callers return `None` without blocking.
+    fn start_async_scan(&'static self, scan: impl Fn() -> CjkRootIndex + Clone + Send + 'static) -> bool {
+        use std::sync::atomic::Ordering;
+        if self.done.load(Ordering::Acquire) || self.index.get().is_some() {
+            return false;
+        }
+        if self.started.swap(true, Ordering::AcqRel) {
+            return !self.done.load(Ordering::Acquire) && self.index.get().is_none();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            struct FinishOnDrop(&'static CjkScanState);
+            impl Drop for FinishOnDrop {
+                fn drop(&mut self) {
+                    self.0.done.store(true, Ordering::Release);
+                }
+            }
+            let bg_scan = scan.clone();
+            if std::thread::Builder::new()
+                .name("cjk-font-scan".into())
+                .spawn(move || {
+                    let _done = FinishOnDrop(self);
+                    let index = self.index.get_or_init(bg_scan);
+                    if !index.summary.is_clean() {
+                        self.notice_needed.store(true, Ordering::Release);
+                    }
+                    if !index.files.is_empty() {
+                        FONT_GENERATION.fetch_add(1, Ordering::Release);
+                    }
+                })
+                .is_ok()
+            {
+                return true;
+            }
+        }
+        // Thread spawn refused (or wasm32): run the bounded scan once before marking done.
+        let index = self.index.get_or_init(scan);
+        if !index.summary.is_clean() {
+            self.notice_needed.store(true, Ordering::Release);
+        }
+        self.done.store(true, Ordering::Release);
+        false
+    }
+
+    fn resolve_region(
+        &'static self,
+        region: CjkRegion,
+        find_fixed: impl FnOnce(CjkRegion) -> Option<(Vec<u8>, u32)>,
+        use_root_scan: bool,
+        scan: impl Fn() -> CjkRootIndex + Clone + Send + 'static,
+        find_cached: impl FnOnce(CjkRegion) -> Option<(Vec<u8>, u32)>,
+    ) -> CjkResolveResult {
+        let slot = Self::slot(region);
+        let Some(fixed_slot) = self.fixed.get(slot) else {
+            return CjkResolveResult::Resolved(None);
+        };
+        if let Some(found) = fixed_slot.get_or_init(|| find_fixed(region)).as_ref() {
+            return CjkResolveResult::Resolved(Some(found));
+        }
+        if use_root_scan && self.async_enabled.load(std::sync::atomic::Ordering::Acquire) && self.start_async_scan(scan.clone()) {
+            return CjkResolveResult::Pending;
+        }
+        let Some(fallback_slot) = self.fallback.get(slot) else {
+            return CjkResolveResult::Resolved(None);
+        };
+        let found = fallback_slot
+            .get_or_init(|| {
+                let scanned = if use_root_scan {
+                    let index = self.index.get_or_init(scan);
+                    if !index.summary.is_clean() {
+                        self.notice_needed.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                    find_cjk_in_index(&index.files, region).map(|(_, bytes, index)| (bytes, index))
+                } else {
+                    None
+                };
+                scanned.or_else(|| find_cached(region))
+            })
+            .as_ref();
+        CjkResolveResult::Resolved(found)
+    }
+}
+
+static CJK_SCAN: CjkScanState = CjkScanState::new();
+
+/// Enables non-blocking background CJK folder scanning for UI sessions (`crate::families::warm_up`).
+/// Does not start a scan eagerly; a thread is spawned only if a CJK lookup misses fixed paths.
+pub(crate) fn enable_async_cjk_scan() {
+    CJK_SCAN.enable_async();
+}
+
+/// Whether the background Linux CJK folder fallback scan is currently running off the UI thread.
+pub fn cjk_roots_pending() -> bool {
+    CJK_SCAN.is_pending()
+}
+
+/// Whether a background Linux CJK folder fallback scan has finished and its index is ready.
+pub fn cjk_roots_ready() -> bool {
+    CJK_SCAN.is_ready()
 }
 
 /// Returns truncation or directory-read diagnostics once if a CJK font lookup actually fell back
 /// to the bounded recursive scan and encountered limits or errors. Never starts a scan itself.
 pub fn take_cjk_scan_summary() -> Option<CjkRootScanSummary> {
-    if !CJK_SCAN_NOTICE_NEEDED.load(std::sync::atomic::Ordering::Acquire) {
-        return None;
-    }
-    if CJK_SCAN_NOTICE_TAKEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        return None;
-    }
-    CJK_ROOT_INDEX.get().filter(|idx| !idx.summary.is_clean()).map(|idx| idx.summary.clone())
+    CJK_SCAN.take_summary()
 }
 
 /// Selects the first usable CJK font from a scanned root index in `region`'s preference order.
@@ -816,44 +958,38 @@ fn regular_face(bytes: &[u8], family: &str) -> Option<u32> {
     })
 }
 
-/// An installed CJK font for `region` (bytes and face index), found once. `None` on the web or
-/// when nothing suitable is installed. Traditional Chinese falls back to the Simplified face,
-/// which has the Traditional characters in mainland China's glyph forms.
+fn find_fixed_cjk(region: CjkRegion) -> Option<(Vec<u8>, u32)> {
+    cjk_paths(region)
+        .iter()
+        .find_map(|(path, index)| read_cjk_path(path).filter(|b| draws_cjk(b, *index, region)).map(|b| (b, *index)))
+        .or_else(|| {
+            cjk_named_candidates(region).iter().find_map(|(path, family)| {
+                let bytes = read_cjk_path(path)?;
+                let index = regular_face(&bytes, family).filter(|i| draws_cjk(&bytes, *i, region))?;
+                Some((bytes, index))
+            })
+        })
+}
+
+/// An installed CJK font for `region` (bytes and face index), found once. `None` on the web,
+/// while an async Linux folder fallback scan is in flight, or when nothing suitable is installed.
+/// Traditional Chinese falls back to the Simplified face, which has the Traditional characters in
+/// mainland China's glyph forms.
 pub fn cjk_font(region: CjkRegion) -> Option<&'static (Vec<u8>, u32)> {
     if std::env::var_os("RUSTGIS_BUILTIN_FONTS").is_some() {
         return None;
     }
-    static FOUND: [OnceLock<Option<(Vec<u8>, u32)>>; 4] = [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
-    let slot = match region {
-        CjkRegion::SimplifiedChinese => &FOUND[0],
-        CjkRegion::Japanese => &FOUND[1],
-        CjkRegion::Korean => &FOUND[2],
-        CjkRegion::TraditionalChinese => &FOUND[3],
-    };
-    let found = slot.get_or_init(|| {
-        let indexed = cjk_paths(region)
-            .iter()
-            .find_map(|(path, index)| read_cjk_path(path).filter(|b| draws_cjk(b, *index, region)).map(|b| (b, *index)));
-        indexed
-            .or_else(|| {
-                cjk_named_candidates(region).iter().find_map(|(path, family)| {
-                    let bytes = read_cjk_path(path)?;
-                    let index = regular_face(&bytes, family).filter(|i| draws_cjk(&bytes, *i, region))?;
-                    Some((bytes, index))
-                })
-            })
-            .or_else(|| {
-                let index = cjk_root_index();
-                if !index.summary.is_clean() {
-                    CJK_SCAN_NOTICE_NEEDED.store(true, std::sync::atomic::Ordering::Release);
-                }
-                find_cjk_in_index(&index.files, region).map(|(_, bytes, index)| (bytes, index))
-            })
-            .or_else(|| cached_script_font(ScriptFont::Cjk(region)))
-    });
+    let found = CJK_SCAN.resolve_region(
+        region,
+        find_fixed_cjk,
+        cfg!(target_os = "linux"),
+        || scan_cjk_roots(&linux_font_roots()),
+        |r| cached_script_font(ScriptFont::Cjk(r)),
+    );
     match (found, region) {
-        (None, CjkRegion::TraditionalChinese) => cjk_font(CjkRegion::SimplifiedChinese),
-        (found, _) => found.as_ref(),
+        (CjkResolveResult::Pending, _) => None,
+        (CjkResolveResult::Resolved(None), CjkRegion::TraditionalChinese) => cjk_font(CjkRegion::SimplifiedChinese),
+        (CjkResolveResult::Resolved(found), _) => found,
     }
 }
 
@@ -1909,6 +2045,105 @@ mod tests {
         let (chosen_with_loop, _, _) = super::find_cjk_in_index(&with_loop.files, super::CjkRegion::SimplifiedChinese)
             .expect("nested CJK font still found alongside symlink loop");
         assert_eq!(chosen_with_loop, expected);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cjk_scan_state_stays_non_blocking_while_async_scan_runs_and_retries_when_ready() {
+        use std::sync::{Arc, Mutex, mpsc};
+
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("distro").join("sub");
+        std::fs::create_dir_all(&nested).unwrap();
+        let valid_font = include_bytes!("../testdata/test-fallback.otf");
+        std::fs::write(nested.join("NotoSansSC-Regular.otf"), valid_font).unwrap();
+
+        // 1) Fixed-path hit never starts the background scan, even with async enabled.
+        static FIXED_STATE: super::CjkScanState = super::CjkScanState::new();
+        FIXED_STATE.enable_async();
+        let fixed_res = FIXED_STATE.resolve_region(
+            super::CjkRegion::SimplifiedChinese,
+            |_| Some((valid_font.to_vec(), 0)),
+            true,
+            || super::scan_cjk_roots(&[]),
+            |_| None,
+        );
+        assert!(matches!(fixed_res, super::CjkResolveResult::Resolved(Some(_))));
+        assert!(!FIXED_STATE.is_pending());
+        assert!(!FIXED_STATE.is_ready(), "fixed-path hit must not start the folder walk");
+
+        // 2) Async UI mode: a fixed-path miss spawns a background scan and returns Pending without
+        // blocking; once the background scan completes, retrying returns the discovered font and
+        // bumps FONT_GENERATION.
+        static ASYNC_STATE: super::CjkScanState = super::CjkScanState::new();
+        ASYNC_STATE.enable_async();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let entered = Arc::new(Mutex::new(Some(entered_tx)));
+        let release = Arc::new(Mutex::new(Some(release_rx)));
+        let scan_root = dir.path().to_path_buf();
+        let gen_before = super::font_generation();
+
+        let first = ASYNC_STATE.resolve_region(
+            super::CjkRegion::SimplifiedChinese,
+            |_| None,
+            true,
+            move || {
+                if let Some(tx) = entered.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+                if let Some(rx) = release.lock().unwrap().take() {
+                    let _ = rx.recv();
+                }
+                super::scan_cjk_roots(std::slice::from_ref(&scan_root))
+            },
+            |_| None,
+        );
+        assert!(matches!(first, super::CjkResolveResult::Pending), "UI caller must not block while scanning");
+        entered_rx.recv().expect("background scan thread started");
+        assert!(ASYNC_STATE.is_pending());
+        assert!(!ASYNC_STATE.is_ready());
+
+        // Subsequent calls while still scanning also stay non-blocking and do not poison cache.
+        let second =
+            ASYNC_STATE.resolve_region(super::CjkRegion::SimplifiedChinese, |_| None, true, || super::scan_cjk_roots(&[]), |_| None);
+        assert!(matches!(second, super::CjkResolveResult::Pending));
+
+        release_tx.send(()).unwrap();
+        while !ASYNC_STATE.is_ready() {
+            std::thread::yield_now();
+        }
+        assert!(!ASYNC_STATE.is_pending());
+        assert!(super::font_generation() > gen_before, "completing scan with discovered files must bump font generation");
+
+        let retried =
+            ASYNC_STATE.resolve_region(super::CjkRegion::SimplifiedChinese, |_| None, true, || super::scan_cjk_roots(&[]), |_| None);
+        match retried {
+            super::CjkResolveResult::Resolved(Some((bytes, idx))) => {
+                assert_eq!(bytes.as_slice(), valid_font);
+                assert_eq!(*idx, 0);
+            }
+            _ => panic!("retry after background scan completes must return discovered CJK font"),
+        }
+        assert!(ASYNC_STATE.take_summary().is_none(), "clean scan emits no notice");
+
+        // 3) Sync headless/CLI mode (async not enabled): resolves synchronously on the first call.
+        static SYNC_STATE: super::CjkScanState = super::CjkScanState::new();
+        let sync_root = dir.path().to_path_buf();
+        let sync_res = SYNC_STATE.resolve_region(
+            super::CjkRegion::SimplifiedChinese,
+            |_| None,
+            true,
+            move || super::scan_cjk_roots(std::slice::from_ref(&sync_root)),
+            |_| None,
+        );
+        match sync_res {
+            super::CjkResolveResult::Resolved(Some((bytes, idx))) => {
+                assert_eq!(bytes.as_slice(), valid_font);
+                assert_eq!(*idx, 0);
+            }
+            _ => panic!("sync mode must discover nested CJK font immediately"),
+        }
     }
 
     #[cfg(unix)]

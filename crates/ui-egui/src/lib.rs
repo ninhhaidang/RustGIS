@@ -1616,6 +1616,13 @@ pub struct RustGisApp {
     /// Bounded CJK font-scan summary held until the selected interface language is active (or
     /// known to lack font coverage), so the notice is translated into the active UI language.
     pending_cjk_scan_notice: Option<rustgis_engine::render::fonts::CjkRootScanSummary>,
+    /// Whether the UI has already reconciled a completed background Linux CJK folder scan.
+    cjk_roots_applied: bool,
+    /// Whether `add_cjk_fallback` missed while an async Linux CJK folder scan was in flight and
+    /// should retry once that scan finishes.
+    cjk_fallback_deferred: bool,
+    #[cfg(test)]
+    test_cjk_roots_state: Option<(bool, bool)>,
     /// The project path last seen, so a change (whoever opened or saved it) updates Last Project.
     seen_project: Option<std::path::PathBuf>,
 }
@@ -1894,6 +1901,10 @@ impl RustGisApp {
             shown_lang: i18n::Lang::EN,
             language_coverage: None,
             pending_cjk_scan_notice: None,
+            cjk_roots_applied: rustgis_engine::render::fonts::cjk_roots_ready(),
+            cjk_fallback_deferred: false,
+            #[cfg(test)]
+            test_cjk_roots_state: None,
             seen_project: None,
             autosave: Default::default(),
             save_prompt: Default::default(),
@@ -2124,6 +2135,13 @@ impl RustGisApp {
             let name = format!("script-{region:?}");
             let have = self.extra_fonts.iter().any(|(_, _, r)| *r == Some(region));
             if !have
+                && !self.fonts_failed.contains(&name)
+                && matches!(region, rustgis_engine::render::fonts::ScriptFont::Cjk(_))
+                && self.cjk_scan_in_flight()
+            {
+                return false;
+            }
+            if !have
                 && self.fonts_requested.contains(&name)
                 && !self.fonts_failed.contains(&name)
                 && self.services.fetch_font.is_some()
@@ -2182,19 +2200,44 @@ impl RustGisApp {
         covered
     }
 
+    fn cjk_roots_pending(&self) -> bool {
+        #[cfg(test)]
+        if let Some((pending, _)) = self.test_cjk_roots_state {
+            return pending;
+        }
+        rustgis_engine::render::fonts::cjk_roots_pending()
+    }
+
+    fn cjk_roots_ready(&self) -> bool {
+        #[cfg(test)]
+        if let Some((_, ready)) = self.test_cjk_roots_state {
+            return ready;
+        }
+        rustgis_engine::render::fonts::cjk_roots_ready()
+    }
+
+    fn cjk_scan_in_flight(&self) -> bool {
+        self.cjk_roots_pending() || (!self.cjk_roots_applied && self.cjk_roots_ready())
+    }
+
     /// On the desktop, an installed CJK face as a last-resort fallback, so CJK text (language names
     /// in the picker, place names in data) renders whatever the interface language. The bytes are
-    /// borrowed from the font cache, not copied.
-    fn add_cjk_fallback(&mut self) {
+    /// borrowed from the font cache, not copied. Returns `true` when a face was newly added.
+    fn add_cjk_fallback(&mut self) -> bool {
         use rustgis_engine::render::fonts::{CjkRegion, cjk_font};
         if self.extra_fonts.iter().any(|(n, _, _)| n == "cjk-fallback") {
-            return;
+            return false;
         }
         let found = [CjkRegion::SimplifiedChinese, CjkRegion::Japanese, CjkRegion::Korean].into_iter().find_map(cjk_font);
         if let Some((bytes, index)) = found {
             let face = theme::installed_face(bytes, *index, true);
             self.extra_fonts.push(("cjk-fallback".into(), std::sync::Arc::new(face), None));
+            return true;
         }
+        if self.cjk_scan_in_flight() {
+            self.cjk_fallback_deferred = true;
+        }
+        false
     }
 
     /// Captures any CJK font-folder scan diagnostic summary after font lookups run and emits a
@@ -2283,7 +2326,7 @@ impl RustGisApp {
     /// Makes sure the current language's script has a font: an installed face on the desktop, a
     /// download on the web.
     fn ensure_script_font(&mut self) {
-        use rustgis_engine::render::fonts::{script_font, script_font_url};
+        use rustgis_engine::render::fonts::{ScriptFont, script_font, script_font_url};
         // Switching between script languages reorders the faces already loaded.
         if self.current_region() != self.installed_region {
             self.fonts_dirty = true;
@@ -2294,14 +2337,18 @@ impl RustGisApp {
         {
             return;
         }
-        self.fonts_requested.push(name.clone());
         if let Some((bytes, index)) = script_font(region) {
-            let face = theme::installed_face(bytes, *index, matches!(region, rustgis_engine::render::fonts::ScriptFont::Cjk(_)));
+            self.fonts_requested.push(name.clone());
+            let face = theme::installed_face(bytes, *index, matches!(region, ScriptFont::Cjk(_)));
             self.extra_fonts.push((name, std::sync::Arc::new(face), Some(region)));
             self.fonts_dirty = true;
+        } else if matches!(region, ScriptFont::Cjk(_)) && self.cjk_scan_in_flight() {
+            // Linux CJK folder scan is running off the UI thread; retry once it finishes.
         } else if let (Some(fetch), Some(url)) = (&self.services.fetch_font, script_font_url(region)) {
+            self.fonts_requested.push(name);
             fetch(url);
         } else {
+            self.fonts_requested.push(name);
             log::warn!("no {region:?} font installed; text in that script may not display");
         }
     }
@@ -2394,7 +2441,8 @@ impl RustGisApp {
     /// CJK font installed).
     fn ensure_data_cjk_font(&mut self, ctx: &egui::Context) {
         use rustgis_engine::render::fonts::{CjkRegion, CjkScript, ScriptFont, script_font_url, take_missing_cjk};
-        if self.fonts_dirty || self.fonts_pending {
+        let fetching = self.services.fetch_font.is_some();
+        if self.fonts_dirty || self.fonts_pending || (!fetching && self.cjk_scan_in_flight()) {
             return;
         }
         let samples = rustgis_engine::render::fonts::peek_missing_text();
@@ -2410,7 +2458,6 @@ impl RustGisApp {
             return;
         }
         let han = if missing.contains(&CjkScript::Han) { self.han_region() } else { CjkRegion::SimplifiedChinese };
-        let fetching = self.services.fetch_font.is_some();
         if !fetching {
             for script in missing {
                 if self.cjk_scripts_handled.contains(&script) {
@@ -7350,6 +7397,18 @@ impl RustGisApp {
             }
             None
         }));
+        // Reconcile a completed off-thread Linux CJK folder scan before requesting script fonts.
+        if !self.cjk_roots_applied && self.cjk_roots_ready() {
+            self.cjk_roots_applied = true;
+            if self.cjk_fallback_deferred {
+                self.cjk_fallback_deferred = false;
+                if self.add_cjk_fallback() {
+                    self.fonts_dirty = true;
+                }
+            }
+            self.map.invalidate();
+            self.layout.redraw();
+        }
         self.ensure_script_font();
         self.ensure_data_cjk_font(ctx);
         self.ensure_other_script_fonts(ctx);
@@ -7532,6 +7591,11 @@ impl RustGisApp {
             self.other_scripts_handled.clear();
             theme::install_fonts(ctx, &self.extra_fonts, self.installed_region);
             self.fonts_pending = true;
+        }
+        if self.cjk_roots_pending() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        } else if !self.cjk_roots_applied && self.cjk_roots_ready() {
+            ctx.request_repaint();
         }
         // Switch the drawn language once its font can draw it; until then keep the previous one.
         let chosen = self.chosen_lang();
@@ -8269,6 +8333,37 @@ mod language_coverage_tests {
             "{:?}",
             missing_app.session.notices_since(missing_mark)
         );
+    }
+
+    #[test]
+    fn cjk_language_waits_for_async_cjk_root_scan_before_reporting_unavailable() {
+        let (mut app, ctx) = without_script_font("ja");
+        // Keep `fonts_requested` populated so host macOS/Windows fonts are not pulled in, while
+        // clearing `fonts_failed` so `can_draw` behaves as an in-flight Linux CJK scan.
+        app.fonts_failed.clear();
+        app.cjk_roots_applied = false;
+        app.test_cjk_roots_state = Some((true, false));
+        let mark = app.session.notice_mark();
+
+        frame(&mut app, &ctx);
+        assert_eq!(app.lang(), i18n::Lang::EN);
+        assert!(app.language_coverage.is_none(), "must not cache failure while CJK root scan is pending");
+        assert!(!app.cjk_roots_applied);
+        assert!(
+            !app.session.notices_since(mark).iter().any(|n| n.text.contains("can't display")),
+            "must not emit missing-font notice before CJK root scan finishes: {:?}",
+            app.session.notices_since(mark)
+        );
+
+        // Once the background scan finishes with no Japanese font found, coverage is evaluated
+        // and the unavailability notice is emitted once.
+        app.test_cjk_roots_state = Some((false, true));
+        frame(&mut app, &ctx);
+        assert!(app.cjk_roots_applied);
+        assert_eq!(app.lang(), i18n::Lang::EN);
+        assert_eq!(app.language_coverage, Some((app.chosen_lang(), false)));
+        let unavailable: Vec<_> = app.session.notices_since(mark).iter().filter(|n| n.text.contains("can't display")).collect();
+        assert_eq!(unavailable.len(), 1, "{unavailable:?}");
     }
 }
 
