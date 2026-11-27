@@ -1268,6 +1268,7 @@ pub(crate) fn publication_style(id: &str) -> Option<(&'static str, &'static str)
         "editorial" => (tl!("Editorial"), tl!("A large serif title; the note, the locator and the legend in a column at the right.")),
         "modular" => (tl!("Modular"), tl!("Cards on a light page: the map, the locator and the legend each in one.")),
         "poster" => (tl!("Poster"), tl!("The page in colour, the title in light text and the map in a light card.")),
+        "edge" => (tl!("Edge"), tl!("The map from side to side of the page; a kicker and title over it, the footer under a thin rule.")),
         _ => return None,
     })
 }

@@ -52,6 +52,7 @@ pub const PUBLICATION_STYLES: &[(&str, &str)] = &[
     ("editorial", "Editorial"),
     ("modular", "Modular"),
     ("poster", "Poster"),
+    ("edge", "Edge"),
 ];
 
 /// The credit line `layout.publication` writes when `"author"` isn't given (`{date}` is filled
@@ -85,6 +86,9 @@ pub(in crate::cmd::layout) enum Style {
     /// The page in the accent colour: the title and subtitle in light text across the top, the
     /// map in a light card, the footer in darker blocks.
     Poster,
+    /// The map from one side of the page to the other, on a paper of its own colour: a kicker and
+    /// the title over it, the footer unboxed under a thin rule.
+    Edge,
 }
 
 impl Style {
@@ -96,6 +100,7 @@ impl Style {
             "editorial" => Some(Style::Editorial),
             "modular" => Some(Style::Modular),
             "poster" => Some(Style::Poster),
+            "edge" => Some(Style::Edge),
             _ => None,
         }
     }
@@ -108,10 +113,12 @@ impl Style {
             Style::Editorial => "editorial",
             Style::Modular => "modular",
             Style::Poster => "poster",
+            Style::Edge => "edge",
         }
     }
 
-    /// The accent colour when none is given: a deep blue, green or brown (a poster's page).
+    /// The accent colour when none is given: a deep blue, green or brown (a poster's page), or an
+    /// edge sheet's brick red, the same on a light paper and on a dark one.
     pub(in crate::cmd::layout) fn accent(self) -> Rgba {
         match self {
             Style::Classic => Rgba::rgb(0x2B, 0x26, 0x20),
@@ -120,6 +127,7 @@ impl Style {
             Style::Editorial => Rgba::rgb(0x1F, 0x2D, 0x4D),
             Style::Modular => Rgba::rgb(0x2F, 0x6B, 0x4F),
             Style::Poster => Rgba::rgb(0x3A, 0x26, 0x18),
+            Style::Edge => Rgba::rgb(0xB4, 0x43, 0x2E),
         }
     }
 

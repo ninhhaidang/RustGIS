@@ -115,7 +115,7 @@ fn a_map_name_wider_than_the_title_wraps_as_drawn_and_follows_a_rename() {
     let mut s = world();
     s.run("map.rename", &json!({"name": LONG})).unwrap();
     let extent = json!([-46.8, -11.6, -38.5, -2.2]);
-    for (li, style) in ["classic", "banner", "panel", "editorial", "modular", "poster"].into_iter().enumerate() {
+    for (li, style) in ["classic", "banner", "panel", "editorial", "modular", "poster", "edge"].into_iter().enumerate() {
         let r =
             s.run("layout.publication", &json!({"profile": "a4-portrait", "extent": extent, "title": "{map}", "style": style})).unwrap();
         assert_eq!(stored(&s, li, "Title"), "{map}", "{style}");
@@ -132,8 +132,8 @@ fn a_map_name_wider_than_the_title_wraps_as_drawn_and_follows_a_rename() {
     assert_eq!(drawn_lines(&s, 0, "Title"), ["Location map"]);
     // A name that fits needs no wrapping.
     s.run("layout.publication", &json!({"profile": "a4-portrait", "extent": extent, "title": "{map}"})).unwrap();
-    assert_eq!(stored(&s, 6, "Title"), "{map}");
-    assert!(!wraps(&s, 6, "Title"));
+    assert_eq!(stored(&s, 7, "Title"), "{map}");
+    assert!(!wraps(&s, 7, "Title"));
 }
 
 /// Words whose advance and ink differ by enough to move a line break.

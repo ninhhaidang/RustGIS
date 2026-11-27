@@ -103,6 +103,9 @@ mod layout_title;
 #[path = "tests/layout_removed_layer.rs"]
 mod layout_removed_layer;
 
+#[path = "tests/layout_edge.rs"]
+mod layout_edge;
+
 #[path = "tests/layout_publication_parts.rs"]
 mod layout_publication_parts;
 

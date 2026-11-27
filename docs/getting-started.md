@@ -35,7 +35,7 @@ sample again. **Settings › Start-up › Start With** chooses what opens next t
    adds a web tile layer, and its **Celestial Bodies** take the map to the Moon or Mars.
    Right-drag (or ++ctrl++-drag) turns and tilts the map; click the north arrow to reset it.
 6. **Share.** **Publish › Export Map** saves a PNG with labels and a scale bar. **Home › New
-   Layout** offers page sizes and **Publication Layout** presets for sheets (in one of six styles) and figures.
+   Layout** offers page sizes and **Publication Layout** presets for sheets (in one of seven styles) and figures.
    Choose a page size for a page with a map frame, legend, north arrow and scale bar.
    **Project › Save As** writes a `.rgis` project.
 

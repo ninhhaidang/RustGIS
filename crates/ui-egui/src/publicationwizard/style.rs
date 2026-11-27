@@ -49,7 +49,7 @@ const INK: egui::Color32 = egui::Color32::from_gray(150);
 /// a style keeps for its locator and legend, after `layout.publication`'s arrangement of the style
 /// (`cmd/layout/publication`), with `accent` where the sheet takes it, which Classic's nowhere
 /// does. A locator or legend over the map isn't drawn: its corner follows the data. An outline, not
-/// the sheet: laying the real one out six times on every change would run the placement six times
+/// the sheet: laying the real one out for every style on every change would run the placement that many times
 /// (#2850).
 fn outline(style: &str, page: egui::Rect, accent: egui::Color32) -> Vec<egui::Shape> {
     use egui::{Color32, CornerRadius, Shape, Stroke, StrokeKind};
@@ -119,6 +119,20 @@ fn outline(style: &str, page: egui::Rect, accent: egui::Color32) -> Vec<egui::Sh
             let dark = Color32::from_black_alpha(70);
             s.push(card(at(0.08, 0.8, 0.4, 0.13), dark));
             s.push(card(at(0.52, 0.8, 0.4, 0.13), dark));
+        }
+        "edge" => {
+            s.push(fill(at(0.08, 0.04, 0.3, 0.025), accent));
+            s.push(fill(at(0.08, 0.085, 0.55, 0.05), ink));
+            s.push(fill(at(0.08, 0.155, 0.4, 0.025), ink));
+            s.push(fill(at(0.0, 0.21, 1.0, 0.6), map));
+            s.push(Shape::line_segment(
+                [at(0.08, 0.85, 0.84, 0.0).left_top(), at(0.08, 0.85, 0.84, 0.0).right_top()],
+                Stroke::new(0.5, rule),
+            ));
+            for x in [0.08, 0.52] {
+                s.push(fill(at(x, 0.875, 0.3, 0.025), ink));
+                s.push(fill(at(x, 0.92, 0.24, 0.025), ink));
+            }
         }
         // Classic, which takes the accent nowhere, and a style added without an outline of its own.
         _ => {
@@ -239,6 +253,17 @@ mod tests {
         assert_eq!(marks.len(), 2, "{marks:?}");
         assert!(marks.iter().any(|r| r.bottom() <= map.top() && r.right() <= map.right() && r.height() > 0.05), "title {marks:?}");
         assert!(marks.iter().any(|r| r.left() > map.right() && r.bottom() <= map.top()), "column rule {marks:?}");
+    }
+
+    /// Edge's sheet: the map from one side of the page to the other, the kicker in the accent
+    /// above it.
+    #[test]
+    fn edges_outline_runs_its_map_from_side_to_side_under_its_kicker() {
+        let map = map_of("edge");
+        assert_eq!((map.left(), map.right()), (0.0, 1.0), "{map:?}");
+        let marks: Vec<egui::Rect> = boxes("edge").into_iter().filter(|(_, c)| *c == RED).map(|(r, _)| r).collect();
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        assert!(marks[0].bottom() <= map.top(), "{marks:?}");
     }
 
     /// Modular's sheet: the map's card at the left, the locator's and the legend's cards at its
