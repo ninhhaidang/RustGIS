@@ -699,6 +699,15 @@ the way, once for each document at most, and a map layer is added by the run tha
 16 documents are read at a time, and asking for more fails. In the web app
 `service.add` still refuses to download.
 
+`overture.add` does the same on the desktop when it adds an area's files: each GeoParquet file is
+left to download as `layer.addUrl` does, and while any is under way it answers `{"pending": true,
+"files": n, "layers": [...]}` (the layers already in; none on the first run), so the command can
+return and runs again once they are added, when `overture.add` answers the ids of the layers it
+added. Where it adds the files in the same run (the command line, the assistant) it adds all of an
+area's files or none. When they are left to download, a file that fails stops the command with an
+error that says how many landed before it. Those stay, each its own undo step.
+It also fetches the catalog on each run, which waits with the window held.
+
 While a command waits the window answers, so the user can work and the project can change. The
 status bar says the command is running, and asking for it again with the same parameters does
 nothing. A run again sees the view the command first ran with, and the window's size then, unless

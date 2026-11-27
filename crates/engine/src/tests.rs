@@ -38636,6 +38636,119 @@ fn overture_files_are_added_all_or_none() {
     assert_eq!(r["files"], 2);
     let names: Vec<&str> = s.map().layers.iter().map(|l| l.name.as_str()).collect();
     assert!(names.contains(&"Overture building (1/2)") && names.contains(&"Overture building (2/2)"), "{names:?}");
+    assert!(r.get("pending").is_none(), "files added here are not pending: {r}");
+}
+
+/// A plugin's command in the app leaves each Overture file to the app (`layer.addUrl`'s pending
+/// answer): `overture.add` says so, instead of answering an empty list of layers (#2677).
+#[test]
+fn overture_files_a_plugin_command_leaves_to_the_app_answer_pending() {
+    let home = "https://overturemaps-us-west-2.s3.amazonaws.com/release/2026-11-18.0/theme=buildings/type=building";
+    let urls = [format!("{home}/part-0.parquet"), format!("{home}/part-1.parquet")];
+    let mut s = Session::new(Project::default());
+    let r = s.run_leaving_downloads("overture.add", &json!({"theme": "buildings", "files": urls})).unwrap();
+    assert_eq!(r["pending"], true, "{r}");
+    assert_eq!((&r["files"], &r["layers"]), (&json!(2), &json!([])), "{r}");
+    assert!(s.map().layers.is_empty());
+    // Both files are asked for, named as the synchronous add names them; nothing was fetched.
+    let asked = s.take_url_requests();
+    let named: Vec<(&str, &str)> =
+        asked.iter().map(|q| (q.params()["url"].as_str().unwrap_or_default(), q.params()["name"].as_str().unwrap_or_default())).collect();
+    assert_eq!(named, [(urls[0].as_str(), "Overture building (1/2)"), (urls[1].as_str(), "Overture building (2/2)")]);
+}
+
+/// A plugin command that adds an area's Overture files in the app waits for them, and runs again
+/// once the app has added them: its `overture.add` then answers both layers, added once (#2677).
+#[test]
+fn a_plugin_command_adding_overture_files_runs_again_when_they_are_added() {
+    use rustgis_data::{Dataset, Feature, Field, FieldType, Geometry, GeometryType, Value};
+    let mut ds = Dataset::new("b", GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+    for i in 0..5u32 {
+        let c = rustgis_geom::Coord::new(7.0 + 0.01 * f64::from(i), 46.0);
+        ds.features.push(Feature { id: u64::from(i) + 1, geometry: Some(Geometry::Point(c)), attrs: vec![Value::Int(i64::from(i))] });
+    }
+    let bytes = rustgis_data::source::parquet::write(&ds).unwrap();
+    let mut s = world();
+    plugin("eng-overture", &["edit", "network"]);
+    let layers = s.map().layers.len();
+    let home = "https://overturemaps-us-west-2.s3.amazonaws.com/release/2026-11-18.0/theme=buildings/type=building";
+    let urls = [format!("{home}/part-0.parquet"), format!("{home}/part-1.parquet")];
+    let p = json!({"op": "overture.add", "params": {"theme": "buildings", "files": urls}});
+    let first = s.run_leaving_downloads("plugin:eng-overture/f", &p).unwrap();
+    assert_eq!(first["pending"], true, "{first}");
+    assert_eq!(s.map().layers.len(), layers, "the call's own run is undone");
+    let asked = s.take_url_requests();
+    assert_eq!(asked.len(), 2);
+    assert!(s.poll_plugin_retries().is_empty(), "nothing landed yet");
+    // The app downloads and adds both, each with its request's number.
+    for q in &asked {
+        let id = s.download_started_for(q).unwrap();
+        assert!(s.download_landed(id, bytes.clone()));
+        let mut add = q.params().clone();
+        add["id"] = json!(id);
+        s.complete_download(id, &add).unwrap();
+    }
+    assert_eq!(s.map().layers.len(), layers + 2);
+    let undo = s.undo.len();
+    let ran = s.poll_plugin_retries();
+    assert_eq!(ran.len(), 1, "{ran:?}");
+    let answer = ran[0].1.as_ref().unwrap();
+    assert_eq!(answer["layers"].as_array().map(Vec::len), Some(2), "{answer}");
+    assert!(answer.get("pending").is_none(), "{answer}");
+    let names: Vec<&str> = s.map().layers.iter().map(|l| l.name.as_str()).collect();
+    assert!(names.contains(&"Overture building (1/2)") && names.contains(&"Overture building (2/2)"), "{names:?}");
+    assert_eq!((s.map().layers.len(), s.undo.len()), (layers + 2, undo), "added once");
+    assert!(s.take_url_requests().is_empty() && !s.plugin_retries_waiting());
+    rustgis_plugins::unload("eng-overture");
+}
+
+/// When one of a plugin command's Overture files fails and the other landed (before or after it),
+/// the command's error says that one stays (its own undo step), not that none was added.
+#[test]
+fn a_failed_pending_overture_add_says_which_files_stay() {
+    // The failed file comes second (the loop has added the first) or first (it never reaches the
+    // one that landed after it).
+    for bad_first in [false, true] {
+        a_failed_pending_overture_add_says_which_files_stay_in(bad_first);
+    }
+}
+
+fn a_failed_pending_overture_add_says_which_files_stay_in(bad_first: bool) {
+    use rustgis_data::{Dataset, Feature, Field, FieldType, Geometry, GeometryType, Value};
+    let mut ds = Dataset::new("b", GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+    for i in 0..5u32 {
+        let c = rustgis_geom::Coord::new(7.0 + 0.01 * f64::from(i), 46.0);
+        ds.features.push(Feature { id: u64::from(i) + 1, geometry: Some(Geometry::Point(c)), attrs: vec![Value::Int(i64::from(i))] });
+    }
+    let good = rustgis_data::source::parquet::write(&ds).unwrap();
+    fn bad_bytes() -> Vec<u8> {
+        b"not a parquet file".to_vec()
+    }
+    let mut s = world();
+    plugin("eng-overture-fail", &["edit", "network"]);
+    let layers = s.map().layers.len();
+    let home = "https://overturemaps-us-west-2.s3.amazonaws.com/release/2026-11-18.0/theme=buildings/type=building";
+    let urls = [format!("{home}/part-0.parquet"), format!("{home}/part-1.parquet")];
+    let p = json!({"op": "overture.add", "params": {"theme": "buildings", "files": urls}});
+    s.run_leaving_downloads("plugin:eng-overture-fail/f", &p).unwrap();
+    let asked = s.take_url_requests();
+    assert_eq!(asked.len(), 2);
+    assert_eq!(asked[0].params()["url"], json!(urls[0]), "asked in the files' order");
+    // One lands and is added; the other's download fails.
+    for (q, bytes) in asked.iter().zip(if bad_first { [bad_bytes(), good.clone()] } else { [good.clone(), bad_bytes()] }) {
+        let id = s.download_started_for(q).unwrap();
+        assert!(s.download_landed(id, bytes));
+        let mut add = q.params().clone();
+        add["id"] = json!(id);
+        let _ = s.complete_download(id, &add);
+    }
+    let ran = s.poll_plugin_retries();
+    let e = ran.first().and_then(|r| r.1.as_ref().err()).cloned().unwrap_or_default();
+    assert_eq!(s.map().layers.len(), layers + 1, "the file that landed stays: {ran:?}");
+    assert!(e.contains("1 of the 2 files landed earlier and stay"), "{e}");
+    assert!(e.contains(if bad_first { "part-0.parquet" } else { "part-1.parquet" }), "the failed file's own error: {e}");
+    assert!(!e.contains("none of the"), "{e}");
+    rustgis_plugins::unload("eng-overture-fail");
 }
 
 /// A multi-file add that fails puts the map back exactly: the same layers in the same order, and

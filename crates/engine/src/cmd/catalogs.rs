@@ -11,7 +11,7 @@ use crate::{CmdResult, CommandSpec as C, Session};
 pub fn commands() -> Vec<C> {
     vec![
         C::new("overture.add", "Add Overture Maps Data", "Home › Add › Web Data", overture_add).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r#"{"theme": "buildings"|"places"|"transportation"|"divisions"|"base"|"addresses", "type"?: "the theme's type (building, building_part; place; segment, connector; division_area, division, division_boundary; land_use, land, land_cover, water, infrastructure, bathymetry; address)", "release"?: "such as 2026-09-23.1 (default: the latest)", "bbox"?: [west, south, east, north] | "view" (the map's extent, the default), "tiles"?: bool (the whole world as map tiles, from the theme's PMTiles archive, instead of the features in view), "files"?: [the files' GeoParquet addresses, when already found and opened (the app's background requests)]}"#,
+            r#"{"theme": "buildings"|"places"|"transportation"|"divisions"|"base"|"addresses", "type"?: "the theme's type (building, building_part; place; segment, connector; division_area, division, division_boundary; land_use, land, land_cover, water, infrastructure, bathymetry; address)", "release"?: "such as 2026-09-23.1 (default: the latest)", "bbox"?: [west, south, east, north] | "view" (the map's extent, the default), "tiles"?: bool (the whole world as map tiles, from the theme's PMTiles archive, instead of the features in view), "files"?: [the files' GeoParquet addresses, when already found and opened (the app's background requests)]} (in a plugin's command in the app the files are left to download: it answers pending, with the layers already in, and the command runs again once they are added; see docs/plugins.md)"#,
         ),
         C::new("sourcecoop.products", "List Source Cooperative Products", "Home › Add › Web Data", sourcecoop_products).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network))
             .view()
@@ -110,23 +110,52 @@ fn overture_add(s: &mut Session, p: &Value) -> CmdResult {
 
 /// Adds a theme type's files (read in place, the map's view kept), all or none: when one can't be
 /// added, the ones added before it are taken out again, so trying again doesn't add them twice.
+/// Files left to the app (a plugin's command in the app) make the answer `"pending": true`; the
+/// ones that landed before a later file failed stay (each its own undo step), and the error says so.
 pub(crate) fn add_files(s: &mut Session, ty: &str, urls: &[String]) -> CmdResult {
     // What a failure puts back: the map's layers in their order and its layer ids (not a copy of
     // their data), and the active layer.
     let (n, active, before) = (urls.len(), s.active_layer, s.map().layer_mark());
     let mut layers: Vec<u32> = Vec::new();
+    let mut pending = false;
     for (i, url) in urls.iter().enumerate() {
         match super::layer::add_url(s, &json!({"url": url, "name": overture::layer_name(ty, i, n), "zoom": false})) {
-            Ok(r) => layers
-                .extend(r["layers"].as_array().into_iter().flatten().filter_map(Value::as_u64).filter_map(|id| u32::try_from(id).ok())),
+            Ok(r) => {
+                // A plugin's command in the app leaves the file to the app (`layer.addUrl`'s pending
+                // answer): the layer comes when it lands, and the command runs again (#2677).
+                pending |= r.get("pending").and_then(Value::as_bool) == Some(true);
+                layers
+                    .extend(r["layers"].as_array().into_iter().flatten().filter_map(Value::as_u64).filter_map(|id| u32::try_from(id).ok()));
+            }
             Err(e) => {
                 s.map_mut().restore_layers(&before);
                 s.active_layer = active;
-                return Err(if n > 1 { format!("{e} (none of the {n} files was added)") } else { e });
+                // Layers a plugin's earlier run left to the app have landed before this run: they
+                // stay, each its own undo step, so say so rather than that none was added.
+                // Counted from the downloads that landed, whichever of the files they were: a file
+                // after the failed one may have landed too, and this loop never reached it.
+                let kept = s
+                    .rerun_landed
+                    .iter()
+                    .filter(|(asked, _, added)| {
+                        added.added_any()
+                            && !added.gone(s.map())
+                            && asked.get("url").and_then(Value::as_str).is_some_and(|u| urls.iter().any(|x| x == u))
+                    })
+                    .count();
+                return Err(match (n > 1, kept) {
+                    (false, _) => e,
+                    (true, 0) => format!("{e} (none of the {n} files was added)"),
+                    (true, k) => format!("{e} ({k} of the {n} files landed earlier and stay, each its own undo step)"),
+                });
             }
         }
     }
-    Ok(json!({"layers": layers, "files": n}))
+    let mut out = json!({"layers": layers, "files": n});
+    if pending {
+        out["pending"] = json!(true);
+    }
+    Ok(out)
 }
 
 fn sourcecoop_products(_s: &mut Session, p: &Value) -> CmdResult {
