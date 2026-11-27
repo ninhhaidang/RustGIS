@@ -937,6 +937,16 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
             {
                 continue;
             }
+            // The press that the shortcut takes, if it isn't only a held key's repeats, and the
+            // pane that was in use as it came.
+            let press = crate::inuse::press(app, b.chord.key, Some(b.chord.modifiers()));
+            let key_pane = press.map_or(pane, |press| press.pane);
+            // Select All is the text's while a text field has the focus, and is left alone where
+            // there are no features to select: in a layout, in ModelBuilder and in a standalone
+            // table's view.
+            if b.command == "select.all" && select_all_left_alone(app, key_pane, typing || text_field) {
+                continue;
+            }
             // Duplicating needs a selected layout element, and not a text field being typed in;
             // otherwise the key is left alone.
             if b.command == "layout.duplicateElement" && (!element || typing) {
@@ -947,8 +957,6 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
             if element && !b.chord.command && matches!(b.chord.key, Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown) {
                 continue;
             }
-            // The press that the shortcut takes, if it isn't only a held key's repeats.
-            let press = crate::inuse::press(app, b.chord.key, Some(b.chord.modifiers()));
             if i.consume_shortcut(&KeyboardShortcut::new(b.chord.modifiers(), b.chord.key)) {
                 let (id, params) = (b.command.clone(), b.params.clone());
                 match press {
@@ -992,13 +1000,25 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
                     }
                 }
             }
-            // Clipboard keys arrive as events, not key presses.
+            // Clipboard keys arrive as events, not key presses. In the layer list they act on the
+            // layers a click picks, so one that came while a click was under way waits for the
+            // click to be taken, as Delete does.
+            let (mut nth, mut waits) = (0, false);
             for e in &i.events {
-                match e {
-                    egui::Event::Copy => run.push(("ui.copy".into(), Value::Null, pane)),
-                    egui::Event::Cut => run.push(("ui.cut".into(), Value::Null, pane)),
-                    egui::Event::Paste(text) => run.push(("edit.paste".into(), json!({"text": text}), pane)),
-                    _ => {}
+                let (id, params) = match e {
+                    egui::Event::Copy => ("ui.copy", Value::Null),
+                    egui::Event::Cut => ("ui.cut", Value::Null),
+                    egui::Event::Paste(text) => ("edit.paste", json!({"text": text})),
+                    _ => continue,
+                };
+                let (key_pane, after_click) = crate::inuse::clipboard(app, nth).unwrap_or((pane, false));
+                nth += 1;
+                // Once one waits, those after it wait too, so they run in the order they came.
+                waits |= key_pane == Pane::Layers && after_click;
+                if waits {
+                    late.push(Late { id: id.into(), params, pane: key_pane, chord: None });
+                } else {
+                    run.push((id.into(), params, key_pane));
                 }
             }
         }
@@ -1063,12 +1083,19 @@ fn text_takes(chord: Option<crate::keymap::Chord>, typing: bool, text_field: boo
     }
 }
 
+/// Whether Select All's key is left alone, with `pane` in use: while text is typed or a text field
+/// has the focus (`in_text`: the key selects its text), and where there are no features to select
+/// (a layout, ModelBuilder, a standalone table's view).
+fn select_all_left_alone(app: &RustGisApp, pane: Pane, in_text: bool) -> bool {
+    in_text || app.session.active_layout.is_some() || app.mb.shown() || (pane == Pane::Table && app.session.table_layer.is_none())
+}
+
 /// Whether command `id` acts on what a click picks (the layer, the tab, the features). A frame
 /// reads its keys before it draws the panes, where a click is taken, so on a slow frame a layer
 /// clicked and Delete pressed would remove the layer picked before: the key of such a command,
 /// pressed while a click is under way, runs in [`late_keys`].
 fn follows_click(id: &str) -> bool {
-    matches!(id, "edit.delete" | "layer.rename")
+    matches!(id, "edit.delete" | "layer.rename" | "select.all")
 }
 
 /// Runs the keys [`shortcuts`] left for the end of the frame, now that the panes have taken its
@@ -1082,8 +1109,12 @@ pub fn late_keys(app: &mut RustGisApp, ctx: &egui::Context) {
         return;
     }
     let (typing, text_field) = (typing(app, ctx), ctx.text_edit_focused());
-    let run: Vec<(String, Value, Pane)> =
-        late.into_iter().filter(|key| !text_takes(key.chord, typing, text_field)).map(|key| (key.id, key.params, key.pane)).collect();
+    // Select All is judged again, now that the click may have put the cursor in a text field or
+    // brought a layout into view.
+    let dropped = |key: &Late| {
+        text_takes(key.chord, typing, text_field) || (key.id == "select.all" && select_all_left_alone(app, key.pane, typing || text_field))
+    };
+    let run: Vec<(String, Value, Pane)> = late.into_iter().filter(|key| !dropped(key)).map(|key| (key.id, key.params, key.pane)).collect();
     // The panes and dialogs were drawn before these keys run: another frame shows what they did.
     if !run.is_empty() {
         ctx.request_repaint();
@@ -1146,6 +1177,21 @@ fn run_keys(app: &mut RustGisApp, ctx: &egui::Context, run: &[(String, Value, Pa
             remove_picked_layers(app);
             continue;
         }
+        // There, Copy, Cut and Paste are for the layers picked too, as the layer menu's Copy
+        // Layer and Paste Layer are (#2944).
+        if pane == Pane::Layers && layer_clipboard_key(app, id, &p) {
+            continue;
+        }
+        // In the attribute table, Select All is for the layer it shows, which needn't be the
+        // active one.
+        if id == "select.all"
+            && p.get("layer").is_none()
+            && pane == Pane::Table
+            && let Some(layer) = app.session.table_layer
+        {
+            let _ = app.run("select.all", json!({"layer": layer}));
+            continue;
+        }
         // On the tabs, and in a layout, Rename (F2) is for the map or layout in view, as a
         // double-click on its tab is; elsewhere it renames the active layer (below).
         if id == "layer.rename"
@@ -1187,7 +1233,7 @@ fn run_keys(app: &mut RustGisApp, ctx: &egui::Context, run: &[(String, Value, Pa
             continue;
         }
         // Pasting text that isn't features (a stray copy from elsewhere) does nothing.
-        if id == "edit.paste" && !p.get("text").and_then(Value::as_str).is_some_and(|t| t.trim_start().starts_with('{')) {
+        if id == "edit.paste" && !pastes_features(&p) {
             continue;
         }
         // Exhausted undo/redo shortcuts are inert, like their disabled toolbar buttons.
@@ -1235,6 +1281,45 @@ fn remove_picked_layers(app: &mut RustGisApp) {
     } else {
         let _ = app.run("layer.remove", Value::Null);
     }
+}
+
+/// Copy, Cut and Paste in the layer list (`id`: `ui.copy`, `ui.cut`, `edit.paste` with the
+/// clipboard's text in `p`); false for one that isn't the list's to take.
+///
+/// Copy copies the layers picked, as the menu's Copy Layer does, and puts their names on the
+/// clipboard as text. Paste adds the copied layers above the active one while the clipboard still
+/// holds those names: anything copied since (features, text in another program) is the newer
+/// copy, and goes the way a paste goes anywhere else. Cut does nothing and says so: a held key
+/// repeats it, and each removal makes the next layer the active one, so it would take the list
+/// from there down. It must not cut the map's selected features either.
+fn layer_clipboard_key(app: &mut RustGisApp, id: &str, p: &Value) -> bool {
+    match id {
+        "ui.copy" => {
+            let picked = app.session.selected_layers();
+            if let Some(why) = why_disabled(app, "layer.remove") {
+                cannot_run(app, tl_raw!("Copy Layers"), tl_raw!(why));
+            } else {
+                crate::panes::copy_layers(app, json!({"layer": picked}));
+            }
+            true
+        }
+        "ui.cut" => {
+            cannot_run(app, tl_raw!("Cut"), tl_raw!("a layer isn't cut: copy it, then remove it with Delete"));
+            true
+        }
+        "edit.paste" if crate::panes::pastes_copied_layers(app, p.get("text").and_then(Value::as_str).unwrap_or_default()) => {
+            let at = app.session.active_layer.map_or(Value::Null, |layer| crate::panes::paste_above(app, layer));
+            let _ = app.run("layer.paste", at);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Whether a Paste's text is features (what Copy puts on the clipboard for them), not a stray
+/// copy from elsewhere.
+fn pastes_features(p: &Value) -> bool {
+    p.get("text").and_then(Value::as_str).is_some_and(|t| t.trim_start().starts_with('{'))
 }
 
 /// The dialog Rename (F2) opens for the map or layout in view, when `pane` is one where the key

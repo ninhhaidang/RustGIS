@@ -35,6 +35,9 @@ const DEFAULTS: &[(&str, &str, &str)] = &[
     ("Home", "map.zoomFull", ""),
     ("Escape", "tool.set", r#"{"tool":"explore"}"#),
     ("Delete", "edit.delete", ""),
+    // Every feature of the active layer; a text field with the focus keeps the key for its text
+    // (see `chrome`).
+    ("Mod+A", "select.all", ""),
     ("Mod+D", "layout.duplicateElement", ""),
     // The active layer in the Layers pane's outline, as a word processor's outline keys (#836).
     ("Alt+Shift+ArrowRight", "layer.indent", ""),

@@ -73,6 +73,9 @@ pub struct InUse {
     /// The keys that are down, each with the pane that was in use as it went down: a held key's
     /// repeats are that pane's.
     held: Vec<(Key, Pane)>,
+    /// This frame's Copy, Cut and Paste, in order: the pane in use as each came, and whether a
+    /// click was under way (as [`Press`] says of a key).
+    clipboard: Vec<(Pane, bool)>,
     /// This frame's keys kept until its panes are drawn, and the dialogs that were up as they
     /// were pressed (a number that differs when they do).
     late: Vec<Late>,
@@ -132,6 +135,8 @@ pub fn follow(app: &mut RustGisApp, ctx: &egui::Context) {
     // Each key going down (with its modifiers, how many of them came before and whether a click
     // was under way) or up (`None`), in order.
     let mut keys: Vec<(Key, Option<(Modifiers, usize, bool)>)> = Vec::new();
+    // Each Copy, Cut and Paste: how many of them came before it, and whether a click was under way.
+    let mut clips: Vec<(usize, bool)> = Vec::new();
     ctx.input(|i| {
         for e in &i.events {
             match e {
@@ -155,6 +160,7 @@ pub fn follow(app: &mut RustGisApp, ctx: &egui::Context) {
                     keys.push((*key, Some((*modifiers, worked.len(), clicked))));
                 }
                 egui::Event::Key { key, pressed: false, .. } => keys.push((*key, None)),
+                egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_) => clips.push((worked.len(), clicked)),
                 _ => {}
             }
         }
@@ -184,6 +190,8 @@ pub fn follow(app: &mut RustGisApp, ctx: &egui::Context) {
         });
     }
     in_use.pane = panes.last().copied().unwrap_or_default();
+    in_use.clipboard =
+        clips.into_iter().map(|(worked, after_click)| (panes.get(worked).copied().unwrap_or(in_use.pane), after_click)).collect();
     in_use.presses.clear();
     for (key, pressed) in keys {
         in_use.held.retain(|(held, _)| *held != key);
@@ -221,6 +229,12 @@ pub fn held_in(app: &RustGisApp, key: Key) -> Option<Pane> {
 pub fn press(app: &RustGisApp, key: Key, chord: Option<Modifiers>) -> Option<Press> {
     let matches = |p: &&Press| p.key == key && chord.map_or(p.modifiers.is_none(), |chord| p.modifiers.matches_logically(chord));
     app.ui.in_use.presses.iter().find(matches).copied()
+}
+
+/// The pane that was in use as this frame's `nth` Copy, Cut or Paste came, and whether a click was
+/// under way then.
+pub fn clipboard(app: &RustGisApp, nth: usize) -> Option<(Pane, bool)> {
+    app.ui.in_use.clipboard.get(nth).copied()
 }
 
 /// Keeps this frame's keys that run after its panes are drawn ([`crate::chrome::late_keys`]),
@@ -560,6 +574,157 @@ mod tests {
         in_one_frame(&mut h, [Event::PointerMoved(close), button(close, true), button(close, false), delete(true), delete(false)]);
         assert!(h.state().map.deleting.is_some(), "the click asked whether to delete the layout");
         assert!(h.state().session.project.layouts[li].element(title).is_some(), "Delete didn't reach the element behind the question");
+    }
+
+    /// Ctrl+A selects every feature of the active layer; with the attribute table in use, of the
+    /// layer it shows. A text field keeps the key for its text, and a layout has nothing to select.
+    #[test]
+    fn ctrl_a_selects_every_feature_of_the_layer() {
+        let mut app = RustGisApp::with_sample();
+        app.run("layer.select", json!({"layer": "Rivers"})).unwrap();
+        let mut h = window(app);
+        let selected = |h: &Window, name: &str| {
+            h.state().session.map().layer_by_name(name).map(|l| (l.selection.len(), l.dataset.features.len())).unwrap()
+        };
+        let all = |h: &Window, name: &str| {
+            let (selected, rows) = selected(h, name);
+            rows > 0 && selected == rows
+        };
+        let ctrl_a = |h: &mut Window| {
+            h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+            h.run_steps(2);
+        };
+        ctrl_a(&mut h);
+        assert!(all(&h, "Rivers"), "every river is selected: {:?}", selected(&h, "Rivers"));
+
+        // A layer clicked and the key pressed in one frame: the key is for the layer clicked.
+        h.state_mut().run("select.clear", Value::Null).unwrap();
+        h.run_steps(2);
+        let a = |pressed| Event::Key { key: Key::A, physical_key: None, pressed, repeat: false, modifiers: Modifiers::COMMAND };
+        let lakes = h.get_by_label("Lakes").rect().center();
+        in_one_frame(&mut h, [Event::PointerMoved(lakes), button(lakes, true), button(lakes, false), a(true), a(false)]);
+        assert!(all(&h, "Lakes"), "every lake is selected: {:?}", selected(&h, "Lakes"));
+        assert_eq!(selected(&h, "Rivers").0, 0, "and no river, the layer picked before");
+
+        // The table of another layer, pressed in: the key is for the layer it shows.
+        h.state_mut().run("select.clear", Value::Null).unwrap();
+        h.state_mut().run("table.open", json!({"layer": "Cities"})).unwrap();
+        h.state_mut().run("layer.select", json!({"layer": "Rivers"})).unwrap();
+        h.run_steps(3);
+        let table = rect(&h, Pane::Table);
+        press(&mut h, table.center());
+        assert_eq!(pane(h.state()), Pane::Table);
+        ctrl_a(&mut h);
+        assert!(all(&h, "Cities"), "every city is selected: {:?}", selected(&h, "Cities"));
+        assert_eq!(selected(&h, "Rivers").0, 0, "the active layer's features aren't");
+
+        // In a text field the key selects its text.
+        h.state_mut().run("select.clear", Value::Null).unwrap();
+        h.run_steps(2);
+        let filter = rect(&h, Pane::Layers).center_top() + vec2(0.0, 20.0);
+        press(&mut h, filter);
+        assert!(h.ctx.egui_wants_keyboard_input(), "the click is in the filter box");
+        ctrl_a(&mut h);
+        assert_eq!((selected(&h, "Cities").0, selected(&h, "Rivers").0), (0, 0), "Ctrl+A in a text field selects no feature");
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        // Nor with the click that puts the cursor there in the key's own frame.
+        let map = rect(&h, Pane::View).center();
+        press(&mut h, map);
+        in_one_frame(&mut h, [Event::PointerMoved(filter), button(filter, true), button(filter, false), a(true), a(false)]);
+        assert!(h.ctx.egui_wants_keyboard_input(), "the click is in the filter box");
+        assert_eq!((selected(&h, "Cities").0, selected(&h, "Rivers").0, selected(&h, "Lakes").0), (0, 0, 0));
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+
+        // A layout has no features to select.
+        h.state_mut().run("layout.new", json!({"name": "Sheet"})).unwrap();
+        h.run_steps(3);
+        ctrl_a(&mut h);
+        assert_eq!((selected(&h, "Cities").0, selected(&h, "Rivers").0), (0, 0), "Ctrl+A in a layout selects no feature");
+    }
+
+    /// Copy and Paste in the layer list are for the layers picked there, and for features
+    /// everywhere else; what was copied after the layers is what Paste takes, in the list too. Cut
+    /// in the list cuts nothing, layers or features, and says so.
+    #[test]
+    fn copy_and_paste_in_the_layer_list_are_for_layers() {
+        let mut app = RustGisApp::with_sample();
+        app.run("edit.enable", json!({"on": true})).unwrap();
+        app.run("select.rows", json!({"layer": "Cities", "rows": [0]})).unwrap();
+        let mut h = window(app);
+        let before = layer_names(&h);
+        let rivers = |h: &Window| layer_names(h).iter().filter(|n| n.starts_with("Rivers")).count();
+        let clip = |h: &mut Window, event: Event| {
+            h.event(event);
+            h.run_steps(2);
+        };
+
+        // On the map, Copy is for the selected feature: no layer is copied.
+        clip(&mut h, Event::Copy);
+        assert!(h.state().session.layer_clipboard.is_none());
+
+        // In the list, Copy copies the layer picked and Paste adds the copy; one Undo takes it out.
+        h.get_by_label("Rivers").click();
+        h.run_steps(2);
+        clip(&mut h, Event::Copy);
+        assert!(h.state().session.layer_clipboard.is_some(), "the layer was copied");
+        assert_eq!(layer_names(&h), before, "copying changes nothing");
+        clip(&mut h, Event::Paste("Rivers".into()));
+        assert_eq!((layer_names(&h).len(), rivers(&h)), (before.len() + 1, 2), "{:?}", layer_names(&h));
+        h.state_mut().run("edit.undo", Value::Null).unwrap();
+        h.run_steps(2);
+        assert_eq!(layer_names(&h), before);
+
+        // Text copied elsewhere since: the layers aren't the last thing copied any more.
+        clip(&mut h, Event::Paste("something else".into()));
+        assert_eq!(layer_names(&h), before, "a stale copy of layers isn't pasted");
+        // Another layer copied by a script since: the clipboard still names Rivers, which isn't
+        // what a paste would add.
+        h.state_mut().run("layer.copy", json!({"layer": "Cities"})).unwrap();
+        clip(&mut h, Event::Paste("Rivers".into()));
+        assert_eq!(layer_names(&h), before, "the clipboard names other layers than the ones copied");
+
+        // Features copied since: Paste in the list adds them, not the layer copied before.
+        let features = h.state_mut().run("edit.copy", Value::Null).unwrap()["text"].as_str().unwrap().to_string();
+        assert!(features.trim_start().starts_with('{'));
+        h.get_by_label("Cities").click();
+        h.run_steps(2);
+        let cities = |h: &Window| h.state().session.map().layer_by_name("Cities").unwrap().dataset.features.len();
+        let n = cities(&h);
+        clip(&mut h, Event::Paste(features));
+        assert_eq!(layer_names(&h), before, "no layer is pasted");
+        assert_eq!(cities(&h), n + 1, "the copied feature is");
+
+        // Cut in the list removes no layer and cuts no feature, and says why.
+        h.get_by_label("Rivers").click();
+        h.run_steps(2);
+        let n = cities(&h);
+        clip(&mut h, Event::Cut);
+        assert_eq!((layer_names(&h), cities(&h)), (before.clone(), n));
+        assert!(
+            says(&h, "Cut: a layer isn't cut: copy it, then remove it with Delete"),
+            "{:?}",
+            h.state().map.toasts.iter().map(|t| &t.text).collect::<Vec<_>>()
+        );
+
+        // A group with no layer in it, copied from its menu: it goes by its own name, so the
+        // feature copied before it isn't what Paste takes.
+        h.state_mut().run("group.add", json!({"name": "Empty"})).unwrap();
+        let groups = |h: &Window| h.state().session.map().groups.len();
+        let n = groups(&h);
+        crate::panes::copy_layers(h.state_mut(), json!({"group": "Empty"}));
+        assert_eq!(h.state().ui.copy_out.as_deref(), Some("Empty"));
+        h.run_steps(2);
+        clip(&mut h, Event::Paste("Empty".into()));
+        assert_eq!(groups(&h), n + 1, "the copied group is pasted");
+
+        // A layer clicked and Copy in one frame: the layer just clicked is the one copied.
+        let lakes = h.get_by_label("Lakes").rect().center();
+        in_one_frame(&mut h, [Event::PointerMoved(lakes), button(lakes, true), button(lakes, false), Event::Copy]);
+        let copied: Vec<String> =
+            h.state().session.layer_clipboard.as_ref().map(|c| c.layers.iter().map(|l| l.name.clone()).collect()).unwrap_or_default();
+        assert_eq!(copied, ["Lakes"]);
     }
 
     /// What ends the layer list's turn without a press in another pane, and what doesn't: its
